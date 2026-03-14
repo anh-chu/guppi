@@ -43,8 +43,8 @@ export function Login({ mode, error, onSubmit, onTrustCert }: LoginProps) {
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-foreground tracking-tight">guppi</h1>
           <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-            all your terminals<br />
-            all your agents<br />
+            all your tmux sessions<br />
+            all your ai agents<br />
             one interface
           </p>
           {isSetup && (

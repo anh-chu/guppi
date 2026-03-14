@@ -9,6 +9,7 @@ import { StatusBar } from './components/StatusBar'
 import { Settings } from './components/Settings'
 import { HelpModal } from './components/HelpModal'
 import { Login } from './components/Login'
+import { Setup } from './components/Setup'
 import { TrustCertificate } from './components/TrustCertificate'
 import { useSessions, Session, sessionKey, parseSessionKey } from './hooks/useSessions'
 import { useHosts } from './hooks/useHosts'
@@ -21,11 +22,14 @@ import { usePreferencesProvider, usePreferences, PreferencesContext } from './ho
 import { useAuth } from './hooks/useAuth'
 import { applyTheme } from './theme'
 
-type View = 'overview' | 'session' | 'settings'
+type View = 'overview' | 'session' | 'settings' | 'setup'
 
 function getViewFromPath(): { view: View; sessionKey: string | null } {
   if (window.location.pathname === '/settings') {
     return { view: 'settings', sessionKey: null }
+  }
+  if (window.location.pathname === '/setup') {
+    return { view: 'setup', sessionKey: null }
   }
   // /session/<host>/<name> or /session/<name> (backward compat)
   const hostMatch = window.location.pathname.match(/^\/session\/([^/]+)\/(.+)$/)
@@ -130,6 +134,8 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     let path: string
     if (view === 'settings') {
       path = '/settings'
+    } else if (view === 'setup') {
+      path = '/setup'
     } else if (sessKey) {
       const { host, name } = parseSessionKey(sessKey)
       if (host) {
@@ -166,8 +172,8 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         }
       }
 
-      // Help: Cmd/Ctrl + ? (Shift+/ or Shift+? depending on platform/keyboard)
-      if (mod && (e.key === '?' || (e.shiftKey && (e.key === '/' || e.code === 'Slash')))) {
+      // Help: Cmd/Ctrl + ? or Cmd/Ctrl + / (Linux Ctrl+Shift+/ often doesn't produce '?')
+      if (mod && (e.key === '?' || e.key === '/' || (e.shiftKey && e.code === 'Slash'))) {
         e.preventDefault()
         setHelpOpen(prev => !prev)
         return
@@ -200,10 +206,32 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         onLogout()
         return
       }
+
+      // Jump to next alert: Cmd/Ctrl + J
+      if (mod && e.key === 'j' && !e.shiftKey) {
+        e.preventDefault()
+        const pending = allToolEvents.filter(ev => ev.status === 'waiting' || ev.status === 'error')
+        if (pending.length === 0) return
+        const currentIdx = selectedSession
+          ? pending.findIndex(ev => (ev.host ? `${ev.host}/${ev.session}` : ev.session) === selectedSession)
+          : -1
+        const next = pending[(currentIdx + 1) % pending.length]
+        const sessKey = next.host ? `${next.host}/${next.session}` : next.session
+        navigateTo(sessKey, 'session')
+        if (next.window !== undefined) {
+          const { host, name } = parseSessionKey(sessKey)
+          fetch('/api/session/select-window', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host: host || undefined, session: name, window: next.window, pane: next.pane || undefined }),
+          }).catch(() => {})
+        }
+        return
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [prefs.quick_switcher_shortcut, navigateTo, onLogout])
+  }, [prefs.quick_switcher_shortcut, navigateTo, onLogout, allToolEvents, selectedSession])
 
   // Listen for state events via WebSocket
   const onEvent = useCallback((evt: any) => {
@@ -413,7 +441,9 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
           />
         )}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {currentView === 'settings' ? (
+          {currentView === 'setup' ? (
+            <Setup onComplete={() => navigateTo(null)} />
+          ) : currentView === 'settings' ? (
             <Settings pushState={pushState} onPushSubscribe={pushSubscribe} onPushUnsubscribe={pushUnsubscribe} onLogout={onLogout} />
           ) : selectedSession ? (
             <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
@@ -449,6 +479,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         updateAvailable={updateAvailable}
         hosts={hosts}
         agentCount={allToolEvents.filter(e => e.auto_detected || e.status === 'waiting' || e.status === 'error').length}
+        onHelp={() => setHelpOpen(true)}
       />
     </div>
   )
@@ -458,6 +489,7 @@ export default function App() {
   const prefsProvider = usePreferencesProvider()
   const { loading, authRequired, needsSetup, authenticated, error: authError, setup, login, logout } = useAuth()
   const [showTrust, setShowTrust] = useState(() => window.location.pathname === '/trust')
+  const [showOnboarding, setShowOnboarding] = useState(false)
 
   // Re-fetch preferences after login (initial fetch may have gotten 401)
   useEffect(() => {
@@ -499,11 +531,27 @@ export default function App() {
   }
 
   if (authRequired && needsSetup) {
-    return <Login mode="setup" error={authError} onSubmit={setup} onTrustCert={() => { setShowTrust(true); window.history.pushState(null, '', '/trust') }} />
+    const handleSetup = async (password: string) => {
+      const ok = await setup(password)
+      if (ok) setShowOnboarding(true)
+      return ok
+    }
+    return <Login mode="setup" error={authError} onSubmit={handleSetup} onTrustCert={() => { setShowTrust(true); window.history.pushState(null, '', '/trust') }} />
   }
 
   if (authRequired && !authenticated) {
     return <Login mode="login" error={authError} onSubmit={login} onTrustCert={() => { setShowTrust(true); window.history.pushState(null, '', '/trust') }} />
+  }
+
+  if (authenticated && showOnboarding) {
+    return (
+      <PreferencesContext.Provider value={prefsProvider}>
+        <Setup fullPage onComplete={() => {
+          setShowOnboarding(false)
+          try { localStorage.setItem('guppi:setup-seen', 'true') } catch {}
+        }} />
+      </PreferencesContext.Provider>
+    )
   }
 
   return (

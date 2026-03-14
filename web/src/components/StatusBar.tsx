@@ -22,9 +22,10 @@ interface StatusBarProps {
   updateAvailable: boolean
   hosts: Host[]
   agentCount: number
+  onHelp?: () => void
 }
 
-export function StatusBar({ sessionCount, connected, activeSession, waitingCount, pushState, version, updateAvailable, hosts, agentCount }: StatusBarProps) {
+export function StatusBar({ sessionCount, connected, activeSession, waitingCount, pushState, version, updateAvailable, hosts, agentCount, onHelp }: StatusBarProps) {
   const [stats, setStats] = useState<StatsData>({})
 
   useEffect(() => {
@@ -118,6 +119,15 @@ export function StatusBar({ sessionCount, connected, activeSession, waitingCount
               <span className="text-muted-foreground">{version}</span>
             )}
           </span>
+        )}
+        {onHelp && (
+          <button
+            onClick={onHelp}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+            title="Keyboard shortcuts (Ctrl+/)"
+          >
+            ?
+          </button>
         )}
       </div>
     </footer>

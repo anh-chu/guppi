@@ -15,14 +15,38 @@ let nextConnId = 0
 // asynchronously, so we stash the text and flush it on the next mousedown/keydown.
 let pendingClipboard: string | null = null
 
-// Try to write to clipboard immediately; on failure, stash for deferred write.
+// Synchronous fallback using execCommand('copy') — works inside and outside
+// user-gesture context in most browsers because the textarea selection counts
+// as a copy-eligible action.
+function execCommandCopy(text: string): boolean {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch { /* ignored */ }
+  document.body.removeChild(ta)
+  return ok
+}
+
+// Try to write to clipboard immediately; on failure, use execCommand fallback;
+// if that also fails, stash for deferred write on next user gesture.
 function copyToClipboard(text: string): Promise<void> {
   if (navigator.clipboard) {
     return navigator.clipboard.writeText(text).catch(() => {
-      pendingClipboard = text
+      if (!execCommandCopy(text)) {
+        pendingClipboard = text
+      }
     })
   }
-  pendingClipboard = text
+  if (!execCommandCopy(text)) {
+    pendingClipboard = text
+  }
   return Promise.resolve()
 }
 
@@ -31,10 +55,15 @@ function flushPendingClipboard(): void {
   if (pendingClipboard !== null) {
     const text = pendingClipboard
     pendingClipboard = null
-    navigator.clipboard?.writeText(text).catch(() => {
-      // Re-stash if it still fails (e.g. permissions denied)
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).catch(() => {
+        if (!execCommandCopy(text)) {
+          pendingClipboard = text
+        }
+      })
+    } else if (!execCommandCopy(text)) {
       pendingClipboard = text
-    })
+    }
   }
 }
 
@@ -106,6 +135,7 @@ export function useTerminal(sessionName: string, hostId?: string) {
       scrollback: prefs.terminal.scrollback,
       allowProposedApi: true,
       rightClickSelectsWord: true,
+      macOptionClickForcesSelection: true,
     })
 
     const fitAddon = new FitAddon()
@@ -115,6 +145,8 @@ export function useTerminal(sessionName: string, hostId?: string) {
 
     termRef.current = term
     fitAddonRef.current = fitAddon
+    // DEBUG: expose for diagnostics (remove after debugging)
+    ;(window as any).__term = term
 
     term.open(container)
 

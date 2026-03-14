@@ -22,6 +22,7 @@ import (
 
 	wp "github.com/SherClockHolmes/webpush-go"
 
+	"github.com/ekristen/guppi/pkg/agentcheck"
 	"github.com/ekristen/guppi/pkg/activity"
 	"github.com/ekristen/guppi/pkg/auth"
 	"github.com/ekristen/guppi/pkg/common"
@@ -240,6 +241,12 @@ func Run(ctx context.Context, opts *Options) error {
 
 			opts.Tracker.Record(&evt)
 			w.WriteHeader(http.StatusNoContent)
+		})
+
+		// Agent status — check which agents are installed/configured
+		r.Get("/agent-status", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(agentcheck.CheckAgents())
 		})
 
 		// Protected API routes

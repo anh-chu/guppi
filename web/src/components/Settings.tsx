@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { usePreferences, type Preferences } from '../hooks/usePreferences'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { themePresets, applyTheme } from '../theme'
 import { cn } from '../lib/utils'
+import { AgentStatusList, SetupCommandBox } from './Setup'
 
 const terminalFontFamilies = [
   'Space Mono',
@@ -53,7 +54,7 @@ const customizableVars = [
   { key: '--destructive', label: 'Destructive' },
 ]
 
-const sectionIds = ['appearance', 'terminal', 'interface', 'notifications', 'security'] as const
+const sectionIds = ['appearance', 'terminal', 'interface', 'notifications', 'agents', 'security'] as const
 
 function Section({ id, title, description, children }: { id: string; title: string; description?: string; children: React.ReactNode }) {
   return (
@@ -177,6 +178,7 @@ const sectionLabels: Record<typeof sectionIds[number], string> = {
   terminal: 'Terminal',
   interface: 'Interface',
   notifications: 'Notifications',
+  agents: 'Agents',
   security: 'Security',
 }
 
@@ -189,6 +191,21 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
   const { prefs, updatePrefs } = usePreferences()
   const [saving, setSaving] = useState(false)
   const [showCustomColors, setShowCustomColors] = useState(() => Object.keys(prefs.custom_theme || {}).length > 0)
+  const [agentStatus, setAgentStatus] = useState<{ agents: { name: string; key: string; installed: boolean; configured: boolean }[]; setup_command: string } | null>(null)
+  const [agentLoading, setAgentLoading] = useState(false)
+
+  const fetchAgentStatus = useCallback(async () => {
+    setAgentLoading(true)
+    try {
+      const res = await fetch('/api/agent-status')
+      if (res.ok) setAgentStatus(await res.json())
+    } catch {}
+    setAgentLoading(false)
+  }, [])
+
+  useEffect(() => {
+    fetchAgentStatus()
+  }, [fetchAgentStatus])
 
   const update = async (partial: Partial<Preferences>) => {
     setSaving(true)
@@ -476,6 +493,27 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
                 max={300}
               />
             </Row>
+          </Section>
+
+          {/* ── Agents ── */}
+          <Section id="agents" title="Agents" description="Agent installation and hook configuration status">
+            {agentStatus ? (
+              <div className="flex flex-col gap-3">
+                <AgentStatusList agents={agentStatus.agents} />
+                <SetupCommandBox command={agentStatus.setup_command} />
+                <button
+                  onClick={fetchAgentStatus}
+                  disabled={agentLoading}
+                  className="self-start px-3 py-1.5 rounded text-xs border border-border text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  {agentLoading ? 'Checking...' : 'Refresh'}
+                </button>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {agentLoading ? 'Checking agents...' : 'Could not load agent status.'}
+              </p>
+            )}
           </Section>
 
           {/* ── Security ── */}

@@ -20,9 +20,10 @@ function getShortcuts(quickSwitcherKey: string): ShortcutItem[] {
   return [
     { section: 'Navigation' },
     { keys: [shortcutLabels[quickSwitcherKey] || `${mod}+K`], label: 'Quick Switcher' },
+    { keys: [`${mod}+J`], label: 'Jump to next alert' },
     { keys: [`${mod}+O`], label: 'Overview' },
     { keys: [`${mod}+,`], label: 'Settings' },
-    { keys: [`${mod}+?`], label: 'Help' },
+    { keys: [`${mod}+/`], label: 'Help' },
     { keys: [`${mod}+L`], label: 'Lock / Sign out' },
 
     { keys: [`${mod}+\\`], label: 'Toggle sidebar' },
