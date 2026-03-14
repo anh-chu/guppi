@@ -115,22 +115,20 @@ Copilot CLI supports global hooks in `~/.copilot/hooks/` as JSON files. guppi wr
 
 **Auto-configured by `guppi agent-setup`.**
 
-guppi writes a hook script to `~/.config/opencode/guppi-hook.sh` that handles OpenCode's event types.
+guppi writes a JavaScript plugin to `~/.config/opencode/plugins/guppi.js` that hooks into OpenCode's event system. The plugin registers handlers for `permission.asked`, `permission.replied`, `tool.execute.before/after`, `session.idle`, and `session.error`.
 
-**Manual setup:** Create `~/.config/opencode/guppi-hook.sh`:
+**Manual setup:** Create `~/.config/opencode/plugins/guppi.js` with a Bun-compatible plugin module that calls `guppi notify` for each event type:
 
-```bash
-#!/bin/sh
-EVENT_TYPE="${1:-unknown}"
-case "$EVENT_TYPE" in
-  approval_needed) guppi notify -t opencode -s waiting -m "Approval needed" ;;
-  task_start)      guppi notify -t opencode -s active -m "Working" ;;
-  task_complete)   guppi notify -t opencode -s completed -m "Done" ;;
-  error)           guppi notify -t opencode -s error -m "Error occurred" ;;
-esac
-```
+| OpenCode Event | guppi Status | Message |
+|---------------|-------------|---------|
+| `permission.asked` | `waiting` | "Permission needed" |
+| `permission.replied` | `active` | "Working" |
+| `tool.execute.before` | `active` | "Using tool" |
+| `tool.execute.after` | `active` | "Working" |
+| `session.idle` | `completed` | "Idle" |
+| `session.error` | `error` | "Error" |
 
-Then configure OpenCode to use this hook script in its settings.
+Run `guppi agent-setup` to generate the plugin file automatically.
 
 ## The `notify` command
 

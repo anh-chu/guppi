@@ -84,7 +84,7 @@ web/
 
 ### Agent Detection
 
-Agent detection uses multiple layers — see `AGENT_DETECTION.md` for full details. Key rules:
+Agent detection uses multiple layers — see `docs/agent-detection.md` for full details. Key rules:
 
 - **Claude and OpenCode** have native "waiting" hooks. Codex and Copilot rely on silence-based detection or inactivity promotion.
 - The silence monitor only runs `capture-pane` on panes with a detected non-Claude agent that have been silent for 10+ seconds, limited to 2 checks per silence period.

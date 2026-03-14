@@ -1,55 +1,120 @@
-<p align="center">
-  <img src="web/public/icon-512.png" alt="guppi logo" width="128" />
-</p>
+# GUPPI
 
-<h1 align="center">guppi</h1>
+all your tmux sessions, all your agents, one interface
 
-<p align="center">
-  <strong>The guppi of your terminal workflow.</strong>
-</p>
-
-<p align="center">
-  A web dashboard for monitoring and interacting with tmux sessions and AI coding agents — all from your browser.
-</p>
+get notified when it matters
 
 ---
 
-## What is guppi?
+## What is GUPPI?
 
-guppi gives you a real-time web interface for your tmux sessions. It renders full terminal output in the browser using xterm.js backed by native PTY connections, so you get the exact same view as your local terminal — borders, splits, colors, and all.
+guppi gives you a real-time web interface for your tmux sessions. It renders full terminal output in the browser using xterm.js backed by PTY connections, so you get the exact same view as your local terminal — borders, splits, colors, and all.
 
 It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running inside your sessions, surfacing their status so you know when an agent needs input, hits an error, or finishes a task.
 
 ### Key features
 
-- **Full terminal in the browser** — PTY-backed xterm.js rendering, not a screen scrape. Type, scroll, resize — it just works.
+- **Full terminal in the browser** — PTY-backed xterm.js rendering. Type, scroll, resize — it just works.
 - **Real-time session discovery** — sessions, windows, and panes update live via tmux control mode.
 - **AI agent monitoring** — see which agents are active, waiting for input, or errored across all sessions at a glance.
 - **Push notifications** — get browser/desktop notifications when an agent needs attention, even with the tab backgrounded.
-- **Quick switcher** — Ctrl+K to jump between sessions and windows instantly.
+- **Quick switcher** — Ctrl+K to jump between sessions and windows instantly, hands never leave the keyboard.
 - **Single binary** — Go backend with the React frontend embedded. No separate processes, no Node runtime needed in production.
 - **Unix socket + HTTP** — local CLI notifications go through a Unix socket for zero-config, with HTTP as fallback.
+- **TLS first** -- TLS out of the gate, with easy instructions on trusting you CA certificate.
 
-## Quick start
+### Non-goals
 
-### Prerequisites
+- **Multi-user** — guppi is a single-user tool. One person, one dashboard. There are no user accounts, roles, or shared access controls.
+- **Agent orchestration** — guppi doesn't start, stop, or control your agents. It watches and reports. You run your agents however you want; guppi just tells you what they're doing.
+- **tmux management** — guppi doesn't configure or manage your tmux setup. Your `.tmux.conf`, layouts, and workflows stay yours.
 
-- [Go](https://go.dev/) 1.25+
-- [Node.js](https://nodejs.org/) 18+ (for building the frontend)
-- [tmux](https://github.com/tmux/tmux) running with at least one session
+## Installation
 
-### Build & run
+### Quick install
 
 ```bash
-# Build everything (frontend + Go binary)
-make build
-
-# Run the server
-./dist/guppi server
-
-# Open in your browser
-open http://localhost:7654
+curl -sSL https://get.guppi.sh | bash
 ```
+
+This downloads the latest release for your platform and puts `guppi` in your PATH.
+
+### From source
+
+Requires [Go](https://go.dev/) 1.25+ and [Node.js](https://nodejs.org/) 18+.
+
+```bash
+git clone https://github.com/ekristen/guppi.git
+cd guppi
+make build
+# Binary is at ./dist/guppi
+```
+
+## Usage
+
+### 1. Start the server
+
+Make sure [tmux](https://github.com/tmux/tmux) is running with at least one session, then:
+
+```bash
+guppi server
+```
+
+Open https://localhost:7654 in your browser. On first launch you'll set a password, then guppi will guide you through agent setup.
+
+### 2. Configure agent hooks
+
+guppi tracks AI agents running in your tmux sessions, but agents need hooks configured so they can report their status. Run:
+
+```bash
+guppi agent-setup
+```
+
+This auto-detects which agents you have installed and configures their hooks:
+
+- **Claude Code** — hooks in `~/.claude/settings.json`
+- **Codex** — `notify` command in `~/.codex/config.toml`
+- **GitHub Copilot CLI** — hooks in `~/.copilot/hooks/guppi.json`
+- **OpenCode** — plugin in `~/.config/opencode/plugins/guppi.js`
+
+If you're running guppi in a multi-host setup, run `guppi agent-setup` on each machine where you use agents.
+
+You can check hook status any time in the web UI under **Settings > Agents**, or by visiting `/setup`.
+
+See [docs/agent-setup.md](docs/agent-setup.md) for manual setup instructions.
+
+### 3. Use it
+
+Once hooks are configured, agent status shows up automatically:
+
+- The **Overview** page shows all sessions and any agents that need attention.
+- The **sidebar** badges sessions with active/waiting/errored agents.
+- **Push notifications** alert you when an agent needs input, even with the tab closed (enable in Settings > Notifications).
+### Keyboard shortcuts
+
+Press `Ctrl+/` (or `Cmd+/` on macOS) to see all shortcuts, or click the `?` in the status bar.
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+K` | Quick switcher — jump between sessions and windows |
+| `Ctrl+J` | Jump to next alert (cycles through waiting/error agents) |
+| `Ctrl+O` | Overview |
+| `Ctrl+,` | Settings |
+| `Ctrl+\` | Toggle sidebar |
+| `Ctrl+L` | Lock / sign out |
+| `Ctrl+/` | Keyboard shortcuts help |
+
+### Manual notifications
+
+You can also send status updates from scripts or the command line:
+
+```bash
+guppi notify -t claude -s waiting -m "Needs approval"
+guppi notify -t codex -s active
+guppi notify -t claude -s completed
+```
+
+The tmux session, window, and pane are auto-detected when run inside tmux.
 
 ### Development
 
@@ -60,32 +125,6 @@ cd web && npm install && npm run dev
 # Go server (watches for tmux changes)
 go run . server
 ```
-
-## Agent hooks
-
-guppi can track AI agent activity inside your tmux sessions. The `agent-setup` command auto-detects installed agents and configures their hooks:
-
-```bash
-guppi agent-setup
-```
-
-This configures hooks for any detected agents:
-- **Claude Code** — hooks in `~/.claude/settings.json`
-- **Codex** — `notify` command in `~/.codex/config.toml`
-- **GitHub Copilot CLI** — hooks in `~/.copilot/hooks/guppi.json`
-- **OpenCode** — hook script in `~/.config/opencode/`
-
-See [docs/agent-setup.md](docs/agent-setup.md) for detailed configuration and manual setup instructions.
-
-You can also send notifications manually:
-
-```bash
-guppi notify -t claude -s waiting -m "Needs approval"
-guppi notify -t codex -s active
-guppi notify -t claude -s completed
-```
-
-The tmux session, window, and pane are auto-detected when run inside tmux.
 
 ## Architecture
 
@@ -135,45 +174,49 @@ Push alerts (via the Web Push API) work independently of the browser tab, includ
 | `GUPPI_SOCKET` | auto | Unix socket path for local CLI |
 | `GUPPI_DISCOVERY_INTERVAL` | `2` | Session polling interval (seconds) |
 | `GUPPI_NO_CONTROL_MODE` | `false` | Disable tmux control mode |
-| `GUPPI_URL` | `http://localhost:7654` | Server URL for notify/agent-setup |
+| `GUPPI_URL` | `https://localhost:7654` | Server URL for notify/agent-setup |
+| `GUPPI_NO_AUTH` | `false` | Disable authentication |
+| `GUPPI_NO_TLS` | `false` | Disable TLS (serve plain HTTP) |
+| `GUPPI_TLS_CERT` | auto | Path to TLS certificate file |
+| `GUPPI_TLS_KEY` | auto | Path to TLS private key file |
+| `GUPPI_TLS_SAN` | | Additional TLS SANs (IPs or hostnames) |
+| `GUPPI_HUB` | | Hub address for peer mode |
+| `GUPPI_LOCAL_ONLY` | `false` | Only show local sessions in the web UI |
+| `GUPPI_INSECURE` | `false` | Skip TLS verification when connecting to hub |
+| `GUPPI_TLS_RELOAD_INTERVAL` | `60s` | Interval between TLS cert file change checks |
 
 ### CLI flags
 
 ```
 guppi server [flags]
-  -p, --port int              HTTP server port (default 7654)
-      --discovery-interval    Session discovery interval in seconds (default 2)
-      --no-control-mode       Disable tmux control mode (use polling only)
-      --socket string         Unix socket path (auto-detected if omitted)
+  -p, --port int                  HTTP server port (default 7654)
+      --discovery-interval int    Session discovery interval in seconds (default 2)
+      --no-control-mode           Disable tmux control mode (use polling only)
+      --socket string             Unix socket path (auto-detected if omitted)
+      --no-auth                   Disable authentication (not recommended for remote access)
+      --no-tls                    Disable TLS (serve plain HTTP)
+      --tls-cert string           Path to TLS certificate file (auto-generated if omitted)
+      --tls-key string            Path to TLS private key file (auto-generated if omitted)
+      --tls-san strings           Additional TLS SANs (IPs or hostnames, repeatable)
+      --hub string                Hub address for peer mode (e.g. https://desktop.ts.net:7654)
+      --local-only                Only show local sessions in the web UI
+      --insecure                  Skip TLS verification when connecting to hub
+      --tls-reload-interval duration  Interval between TLS cert file change checks (default 60s)
 ```
 
 ## FAQ
 
-### Copy/paste doesn't work with TUI apps (opencode, vim, etc.)
+### How do I copy text from the terminal?
 
-TUI applications capture mouse and keyboard input, which prevents normal text selection in the browser. There are two things to configure:
+The terminal captures mouse events, so normal click-and-drag selects text inside tmux rather than copying to your clipboard. Hold a modifier key while selecting to override this and copy to the system clipboard:
 
-**1. Use Shift+click/drag to select text**
+| Platform | Select to copy |
+|----------|---------------|
+| **macOS** | Hold `Option` and drag to select, then `Cmd+C` to copy |
+| **Linux** | Hold `Shift` and drag to select, then `Ctrl+Shift+C` to copy |
+| **iOS (Safari)** | Touch-select doesn't work in the terminal. Connect a mouse or trackpad and use `Option`+drag, then copy from the context menu |
 
-Holding Shift while clicking and dragging bypasses terminal mouse mode, letting you select text directly in xterm.js. Then use Cmd/Ctrl+C to copy.
-
-**2. Enable tmux clipboard passthrough**
-
-For clipboard integration to work through tmux (so that tmux copy mode and OSC 52-aware apps can write to your browser clipboard), add these to your `~/.tmux.conf`:
-
-```tmux
-set -g set-clipboard on
-set -g allow-passthrough on
-```
-
-Then reload with `tmux source-file ~/.tmux.conf`.
-
-**What these do:**
-
-- `set-clipboard on` — lets tmux process OSC 52 clipboard escape sequences and store them in both the tmux paste buffer and the outer terminal. The default (`external`) only forwards to the outer terminal and skips the paste buffer.
-- `allow-passthrough on` — lets applications inside tmux send escape sequences (including OSC 52 clipboard writes) through to the outer terminal, which in guppi's case is xterm.js in your browser.
-
-**Security note:** `allow-passthrough` permits any application running inside tmux to send arbitrary escape sequences to the outer terminal. This is standard for modern terminal workflows (neovim, image protocols, clipboard sync all use it), but means you should trust the code running in your sessions. If you run untrusted code, leave passthrough off and use Shift+select as your copy method instead.
+This is standard xterm.js behavior — the modifier key tells the browser to handle the selection instead of sending the mouse events to tmux.
 
 ## Tech stack
 
