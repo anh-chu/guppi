@@ -14,5 +14,4 @@ node_modules
 .claude
 logo.jpg
 build.sh
-.github/workflows
 notes/
