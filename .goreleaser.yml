@@ -5,7 +5,7 @@ release:
     name: guppi
 before:
   hooks:
-    - make frontend
+    - /usr/bin/make frontend
 builds:
   - id: guppi
     goos:
@@ -41,7 +41,7 @@ sboms:
   - artifacts: archive
 archives:
   - id: guppi
-    ids:
+    builds:
       - guppi
     name_template: "{{ .ProjectName }}-v{{ .Version }}-{{ .Os }}-{{ .Arch }}{{ .Arm }}"
 signs:
@@ -66,5 +66,6 @@ checksum:
   name_template: "checksums.txt"
 snapshot:
   version_template: '{{ trimprefix .Summary "v" }}'
+# We are skipping changelog because we are using release-please
 changelog:
   disable: true
