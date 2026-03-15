@@ -127,6 +127,11 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 	}
 
 	fmt.Println("Service enabled and started (systemctl --user)")
+	fmt.Println()
+	fmt.Println("  Status:   systemctl --user status guppi")
+	fmt.Println("  Logs:     journalctl --user -u guppi -f")
+	fmt.Println("  Restart:  systemctl --user restart guppi")
+	fmt.Println("  Web UI:   https://localhost:7654")
 	return nil
 }
 
@@ -178,6 +183,11 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 	}
 
 	fmt.Println("Service loaded and started (launchctl)")
+	fmt.Println()
+	fmt.Println("  Status:   launchctl list com.guppi.server")
+	fmt.Printf("  Logs:     tail -f %s/guppi.stderr.log\n", cfg.LogDir)
+	fmt.Printf("  Restart:  launchctl kickstart -k gui/$(id -u)/com.guppi.server\n")
+	fmt.Println("  Web UI:   https://localhost:7654")
 	return nil
 }
 

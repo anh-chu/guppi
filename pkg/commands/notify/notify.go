@@ -167,7 +167,7 @@ func queryPaneContext(paneID string) (string, int) {
 
 func postViaSocket(socketPath string, body []byte) (*http.Response, error) {
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 1 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
 				return net.Dial("unix", socketPath)
@@ -311,7 +311,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	if resp == nil {
 		url := fmt.Sprintf("%s/api/tool-event", serverURL)
 		log.WithField("url", url).Trace("sending via HTTP")
-		httpClient := &http.Client{Timeout: 5 * time.Second}
+		httpClient := &http.Client{Timeout: 1 * time.Second}
 		resp, err = httpClient.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
 			return fmt.Errorf("failed to notify guppi: %w", err)

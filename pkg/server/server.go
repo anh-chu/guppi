@@ -243,17 +243,17 @@ func Run(ctx context.Context, opts *Options) error {
 			w.WriteHeader(http.StatusNoContent)
 		})
 
-		// Agent status — check which agents are installed/configured
-		r.Get("/agent-status", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(agentcheck.CheckAgents())
-		})
-
 		// Protected API routes
 		r.Group(func(r chi.Router) {
 			if opts.AuthEnabled {
 				r.Use(auth.Middleware(opts.SessionMgr))
 			}
+
+			// Agent status — check which agents are installed/configured
+			r.Get("/agent-status", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(agentcheck.CheckAgents())
+			})
 
 			r.Get("/sessions", func(w http.ResponseWriter, r *http.Request) {
 				var sessions []*tmux.Session

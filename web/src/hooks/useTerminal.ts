@@ -239,7 +239,6 @@ export function useTerminal(sessionName: string, hostId?: string) {
         ws.close()
         return
       }
-      console.log(`Terminal WS connected: session ${sessionName}`)
       setTermConnected(true)
     }
 
@@ -252,7 +251,6 @@ export function useTerminal(sessionName: string, hostId?: string) {
     }
 
     ws.onclose = () => {
-      console.log(`Terminal WS disconnected: session ${sessionName}`)
       // Only handle if this is still the active connection
       if (activeConnId.current !== connId) return
       // Don't flash the disconnect overlay if the page is just hidden

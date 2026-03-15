@@ -18,7 +18,6 @@ export function useWebSocket(path: string, onMessage: (data: any) => void) {
       wsRef.current = ws
 
       ws.onopen = () => {
-        console.log(`WS connected: ${path}`)
         hasConnected.current = true
         setConnected(true)
       }
@@ -34,7 +33,6 @@ export function useWebSocket(path: string, onMessage: (data: any) => void) {
       }
 
       ws.onclose = () => {
-        console.log(`WS disconnected: ${path}`)
         // Don't flash the disconnect banner if the page is just hidden
         // or if we haven't established a connection yet (initial connect)
         if (!hiddenRef.current && hasConnected.current) {

@@ -20,7 +20,7 @@ type agentConfig struct {
 	key      string
 	binary   string
 	detected bool
-	setup    func(serverURL, guppiBin string, extraDirs []string) error
+	setup    func(serverURL, guppiBin string, resilient bool, extraDirs []string) error
 }
 
 func Execute(ctx context.Context, c *cli.Command) error {
@@ -89,6 +89,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	fmt.Println()
 
 	dryRun := c.Bool("dry-run")
+	resilient := !c.Bool("block")
 
 	anySetup := false
 	for _, agent := range agents {
@@ -104,7 +105,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 			}
 		} else {
 			fmt.Printf("Configuring hooks for %s...\n", agent.name)
-			if err := agent.setup(serverURL, guppiBin, extras); err != nil {
+			if err := agent.setup(serverURL, guppiBin, resilient, extras); err != nil {
 				logrus.WithError(err).WithField("agent", agent.name).Warn("failed to configure")
 				fmt.Printf("  Warning: %v\n", err)
 			} else {
@@ -124,7 +125,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 }
 
 // setupClaude configures Claude Code hooks in ~/.claude/settings.json and any extra dirs
-func setupClaude(serverURL, guppiBin string, extraDirs []string) error {
+func setupClaude(serverURL, guppiBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -132,14 +133,14 @@ func setupClaude(serverURL, guppiBin string, extraDirs []string) error {
 
 	dirs := append([]string{filepath.Join(homeDir, ".claude")}, extraDirs...)
 	for _, dir := range dirs {
-		if err := setupClaudeDir(dir, guppiBin); err != nil {
+		if err := setupClaudeDir(dir, guppiBin, resilient); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func setupClaudeDir(configDir, guppiBin string) error {
+func setupClaudeDir(configDir, guppiBin string, resilient bool) error {
 	settingsPath := filepath.Join(configDir, "settings.json")
 
 	// Read existing settings
@@ -159,10 +160,15 @@ func setupClaudeDir(configDir, guppiBin string) error {
 	// Notify auto-discovers the unix socket, so no --server needed
 	notifyCmd := fmt.Sprintf("%s notify", guppiBin)
 
+	suffix := ""
+	if resilient {
+		suffix = " || true"
+	}
+
 	// Build hooks config — each hook must be {"type": "command", "command": "..."}
 	makeHook := func(cmd string) []map[string]interface{} {
 		return []map[string]interface{}{
-			{"type": "command", "command": cmd},
+			{"type": "command", "command": cmd + suffix},
 		}
 	}
 
@@ -218,7 +224,7 @@ func setupClaudeDir(configDir, guppiBin string) error {
 }
 
 // setupCodex configures Codex CLI via ~/.codex/config.toml and any extra dirs
-func setupCodex(serverURL, guppiBin string, extraDirs []string) error {
+func setupCodex(serverURL, guppiBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -226,7 +232,7 @@ func setupCodex(serverURL, guppiBin string, extraDirs []string) error {
 
 	dirs := append([]string{filepath.Join(homeDir, ".codex")}, extraDirs...)
 	for _, dir := range dirs {
-		if err := setupCodexDir(dir, guppiBin); err != nil {
+		if err := setupCodexDir(dir, guppiBin, resilient); err != nil {
 			return err
 		}
 	}
@@ -236,7 +242,7 @@ func setupCodex(serverURL, guppiBin string, extraDirs []string) error {
 // setupCodexDir configures a single Codex config directory.
 // Codex supports a `notify` key in config.toml that fires when the agent
 // needs user attention. The value is an argv array passed to execvp.
-func setupCodexDir(configDir, guppiBin string) error {
+func setupCodexDir(configDir, guppiBin string, resilient bool) error {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return err
 	}
@@ -245,10 +251,19 @@ func setupCodexDir(configDir, guppiBin string) error {
 
 	// Codex passes the event JSON as argv[1] to the notify command.
 	// guppi notify --event-data parses it natively — no bash/jq needed.
-	notifyLine := fmt.Sprintf(
-		`notify = ["%s", "notify", "-t", "codex", "--event-data"] # guppi-agent-hook`,
-		guppiBin,
-	)
+	var notifyLine string
+	if resilient {
+		// Wrap in bash to support || true — Codex appends event JSON as $1
+		notifyLine = fmt.Sprintf(
+			`notify = ["bash", "-c", "%s notify -t codex --event-data \"$1\" || true", "--"] # guppi-agent-hook`,
+			guppiBin,
+		)
+	} else {
+		notifyLine = fmt.Sprintf(
+			`notify = ["%s", "notify", "-t", "codex", "--event-data"] # guppi-agent-hook`,
+			guppiBin,
+		)
+	}
 
 	// Read existing config.toml and update/insert the notify line.
 	// IMPORTANT: notify must appear as a top-level key BEFORE any TOML
@@ -310,7 +325,7 @@ func setupCodexDir(configDir, guppiBin string) error {
 }
 
 // setupCopilot configures GitHub Copilot CLI hooks via ~/.copilot/hooks/guppi.json and any extra dirs
-func setupCopilot(serverURL, guppiBin string, extraDirs []string) error {
+func setupCopilot(serverURL, guppiBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -318,7 +333,7 @@ func setupCopilot(serverURL, guppiBin string, extraDirs []string) error {
 
 	dirs := append([]string{filepath.Join(homeDir, ".copilot")}, extraDirs...)
 	for _, dir := range dirs {
-		if err := setupCopilotDir(dir, guppiBin); err != nil {
+		if err := setupCopilotDir(dir, guppiBin, resilient); err != nil {
 			return err
 		}
 	}
@@ -327,7 +342,7 @@ func setupCopilot(serverURL, guppiBin string, extraDirs []string) error {
 
 // setupCopilotDir configures a single Copilot config directory.
 // Copilot CLI supports global hooks in hooks/ as JSON files.
-func setupCopilotDir(configDir, guppiBin string) error {
+func setupCopilotDir(configDir, guppiBin string, resilient bool) error {
 	hooksDir := filepath.Join(configDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return err
@@ -336,10 +351,15 @@ func setupCopilotDir(configDir, guppiBin string) error {
 	hooksPath := filepath.Join(hooksDir, "guppi.json")
 	notifyCmd := fmt.Sprintf("%s notify", guppiBin)
 
+	suffix := ""
+	if resilient {
+		suffix = " || true"
+	}
+
 	makeHook := func(status, message string) map[string]interface{} {
 		return map[string]interface{}{
 			"type":    "command",
-			"bash":    fmt.Sprintf("%s -t copilot -s %s -m '%s'", notifyCmd, status, message),
+			"bash":    fmt.Sprintf("%s -t copilot -s %s -m '%s'%s", notifyCmd, status, message, suffix),
 			"comment": "guppi agent hook",
 		}
 	}
@@ -370,7 +390,7 @@ func setupCopilotDir(configDir, guppiBin string) error {
 }
 
 // setupOpenCode configures OpenCode via native plugin in ~/.config/opencode and any extra dirs
-func setupOpenCode(serverURL, guppiBin string, extraDirs []string) error {
+func setupOpenCode(serverURL, guppiBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -446,6 +466,10 @@ func init() {
 		&cli.BoolFlag{
 			Name:  "dry-run",
 			Usage: "show what would be configured without making changes",
+		},
+		&cli.BoolFlag{
+			Name:  "block",
+			Usage: "allow hook failures to block agents (by default hooks append '|| true' so failures are ignored)",
 		},
 		&cli.StringSliceFlag{
 			Name:  "config-dir",
