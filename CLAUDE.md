@@ -39,6 +39,7 @@ pkg/
   identity/              # ed25519 keypair, peer store, pairing
   toolevents/            # Agent detection, event tracking, silence monitor, prompt parser
   auth/                  # Password auth + session management
+  agentcheck/            # Agent installation & hook configuration checks
   activity/              # Activity tracking (sparklines)
   common/                # Command registration, version, logging setup
   socket/                # Unix socket communication

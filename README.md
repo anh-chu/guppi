@@ -21,7 +21,7 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 - **Quick switcher** — Ctrl+K to jump between sessions and windows instantly, hands never leave the keyboard.
 - **Single binary** — Go backend with the React frontend embedded. No separate processes, no Node runtime needed in production.
 - **Unix socket + HTTP** — local CLI notifications go through a Unix socket for zero-config, with HTTP as fallback.
-- **TLS first** -- TLS out of the gate, with easy instructions on trusting you CA certificate.
+- **TLS first** -- TLS out of the gate, with easy instructions on trusting your CA certificate.
 
 ### Non-goals
 
@@ -31,13 +31,21 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 
 ## Installation
 
+### Using dist (recommended)
+
+[dist](https://github.com/ekristen/distillery) installs binaries from GitHub releases with checksum verification and multi-version support.
+
+```bash
+dist install ekristen/guppi
+```
+
 ### Quick install
 
 ```bash
-curl -sSL https://get.guppi.sh | bash
+curl -sSL https://get.guppi.sh | sh
 ```
 
-This downloads the latest release for your platform and puts `guppi` in your PATH.
+This detects your platform, downloads the latest release, and puts `guppi` in `/usr/local/bin` (or `~/.local/bin` if not writable). You can pin a version with `VERSION=v0.1.0 curl -sSL ... | sh`.
 
 ### From source
 

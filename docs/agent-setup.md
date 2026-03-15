@@ -14,6 +14,22 @@ Use `--dry-run` to preview changes without writing files:
 guppi agent-setup --dry-run
 ```
 
+## Resilience
+
+By default, `guppi agent-setup` appends `|| true` to all hook commands so that failures (guppi binary missing, server down, etc.) never block the agent. This means hooks are fire-and-forget — if guppi isn't reachable, the agent continues working normally.
+
+Additionally, `guppi notify` uses 1-second timeouts for both unix socket and HTTP connections, so even without `|| true` the worst-case delay is ~2 seconds.
+
+To disable this and let hook failures propagate to the agent:
+
+```bash
+guppi agent-setup --block
+```
+
+**When to use `--block`:** If you want the agent to be aware that guppi notifications are failing (e.g., for debugging). In normal use, the default non-blocking behavior is recommended.
+
+**Note:** OpenCode hooks are always resilient regardless of `--block`, since the plugin uses native try/catch error handling.
+
 ## Supported Agents
 
 ### Claude Code
@@ -30,29 +46,29 @@ guppi adds hooks to `~/.claude/settings.json` that fire on tool use, notificatio
     "PreToolUse": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "guppi notify -t claude -s active -m 'Using tool'" }]
+        "hooks": [{ "type": "command", "command": "guppi notify -t claude -s active -m 'Using tool' || true" }]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "guppi notify -t claude -s active -m 'Working'" }]
+        "hooks": [{ "type": "command", "command": "guppi notify -t claude -s active -m 'Working' || true" }]
       }
     ],
     "Notification": [
       {
         "matcher": "permission_prompt",
-        "hooks": [{ "type": "command", "command": "guppi notify -t claude -s waiting -m 'Permission needed'" }]
+        "hooks": [{ "type": "command", "command": "guppi notify -t claude -s waiting -m 'Permission needed' || true" }]
       },
       {
         "matcher": "elicitation_dialog",
-        "hooks": [{ "type": "command", "command": "guppi notify -t claude -s waiting -m 'Needs input'" }]
+        "hooks": [{ "type": "command", "command": "guppi notify -t claude -s waiting -m 'Needs input' || true" }]
       }
     ],
     "Stop": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "guppi notify -t claude -s completed -m 'Task complete'" }]
+        "hooks": [{ "type": "command", "command": "guppi notify -t claude -s completed -m 'Task complete' || true" }]
       }
     ]
   }
@@ -69,7 +85,7 @@ Codex supports a `notify` key in `~/.codex/config.toml`. This fires when the age
 
 ```toml
 model = "o4-mini"
-notify = ["guppi", "notify", "-t", "codex", "--event-data"] # guppi-agent-hook
+notify = ["bash", "-c", "guppi notify -t codex --event-data \"$1\" || true", "--"] # guppi-agent-hook
 
 [sandbox]
 # ... rest of config
@@ -101,12 +117,12 @@ Copilot CLI supports global hooks in `~/.copilot/hooks/` as JSON files. guppi wr
 {
   "version": 1,
   "hooks": {
-    "sessionStart": [{ "type": "command", "bash": "guppi notify -t copilot -s active -m 'Session started'", "comment": "guppi agent hook" }],
-    "sessionEnd": [{ "type": "command", "bash": "guppi notify -t copilot -s completed -m 'Session ended'", "comment": "guppi agent hook" }],
-    "preToolUse": [{ "type": "command", "bash": "guppi notify -t copilot -s active -m 'Using tool'", "comment": "guppi agent hook" }],
-    "postToolUse": [{ "type": "command", "bash": "guppi notify -t copilot -s active -m 'Working'", "comment": "guppi agent hook" }],
-    "userPromptSubmitted": [{ "type": "command", "bash": "guppi notify -t copilot -s active -m 'Thinking'", "comment": "guppi agent hook" }],
-    "errorOccurred": [{ "type": "command", "bash": "guppi notify -t copilot -s error -m 'Error occurred'", "comment": "guppi agent hook" }]
+    "sessionStart": [{ "type": "command", "bash": "guppi notify -t copilot -s active -m 'Session started' || true", "comment": "guppi agent hook" }],
+    "sessionEnd": [{ "type": "command", "bash": "guppi notify -t copilot -s completed -m 'Session ended' || true", "comment": "guppi agent hook" }],
+    "preToolUse": [{ "type": "command", "bash": "guppi notify -t copilot -s active -m 'Using tool' || true", "comment": "guppi agent hook" }],
+    "postToolUse": [{ "type": "command", "bash": "guppi notify -t copilot -s active -m 'Working' || true", "comment": "guppi agent hook" }],
+    "userPromptSubmitted": [{ "type": "command", "bash": "guppi notify -t copilot -s active -m 'Thinking' || true", "comment": "guppi agent hook" }],
+    "errorOccurred": [{ "type": "command", "bash": "guppi notify -t copilot -s error -m 'Error occurred' || true", "comment": "guppi agent hook" }]
   }
 }
 ```
@@ -158,7 +174,7 @@ echo '{"hook_event_name":"Stop","last_assistant_message":"Done"}' | guppi notify
 | `--server` | | guppi server URL (default: `http://localhost:7654`) |
 | `--socket` | | Unix socket path (auto-detected) |
 
-**Communication:** `guppi notify` tries the Unix socket first (zero-config when guppi server is running locally), then falls back to HTTP.
+**Communication:** `guppi notify` tries the Unix socket first (zero-config when guppi server is running locally), then falls back to HTTP. Both use 1-second timeouts to minimize impact on agent performance.
 
 ## Inactivity-based waiting detection
 
