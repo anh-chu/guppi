@@ -64,14 +64,12 @@ export function TopBar({
   }, [events, prefs.agent_banner.auto_dismiss_seconds, onDismiss])
 
   return (
-    <header className="flex items-center justify-between px-4 h-12 border-b border-border bg-card shrink-0">
+    <header className="flex items-center justify-between px-4 h-12 border-b border-border bg-card shrink-0 font-mono text-sm font-bold">
       {/* Left: Logo + alerts */}
       <div className="flex items-center gap-4 flex-1 overflow-hidden">
         <div className="flex items-center gap-2 cursor-pointer shrink-0" onClick={onOverview}>
           <img src="/icon-192.png" alt="guppi" width="22" height="22" className="rounded-sm" />
-          <span className="text-lg font-bold text-foreground tracking-wider font-sans">
-            GUPPI
-          </span>
+          <span className="font-mono text-sm font-bold text-[#7dd3fc]">GUPPI</span>
         </div>
 
         {/* New session + collapse sidebar */}

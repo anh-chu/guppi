@@ -31,7 +31,6 @@ type Preferences struct {
 	Terminal                Terminal          `json:"terminal"`
 	Theme                   string            `json:"theme"`
 	CustomTheme             map[string]string `json:"custom_theme,omitempty"`
-	UIFontFamily            string            `json:"ui_font_family"`
 	Sidebar                 Sidebar           `json:"sidebar"`
 	DefaultView             string            `json:"default_view"`
 	Notifications           Notifications     `json:"notifications"`
@@ -55,7 +54,6 @@ func Default() *Preferences {
 		},
 		Theme:        "retro-blue",
 		CustomTheme:  map[string]string{},
-		UIFontFamily: "VT323",
 		Sidebar: Sidebar{
 			DefaultCollapsed: false,
 			HiddenSessions:   []string{},

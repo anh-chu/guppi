@@ -8,7 +8,6 @@ export interface Preferences {
   }
   theme: string
   custom_theme: Record<string, string>
-  ui_font_family: string
   sidebar: {
     default_collapsed: boolean
     hidden_sessions: string[]
@@ -39,7 +38,6 @@ export const defaultPreferences: Preferences = {
   },
   theme: 'retro-blue',
   custom_theme: {},
-  ui_font_family: 'VT323',
   sidebar: {
     default_collapsed: false,
     hidden_sessions: [],

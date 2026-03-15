@@ -38,7 +38,7 @@ export function Login({ mode, error, onSubmit, onTrustCert }: LoginProps) {
   }
 
   return (
-    <div className="flex items-center justify-center h-dvh w-screen bg-background">
+    <div className="flex items-center justify-center h-dvh w-screen bg-background font-mono text-sm font-bold">
       <div className="w-full max-w-sm p-8">
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-foreground tracking-tight">guppi</h1>

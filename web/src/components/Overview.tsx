@@ -50,12 +50,13 @@ function isSessionActive(session: Session): boolean {
   )
 }
 
-function Sparkline({ data, width = 120, height = 20 }: { data: number[]; width?: number; height?: number }) {
+function Sparkline({ data, height = 20 }: { data: number[]; height?: number }) {
   if (!data || data.length === 0) return null
   const max = Math.max(...data, 1)
-  const barWidth = width / data.length
+  const viewWidth = data.length
+  const barWidth = 1
   return (
-    <svg width={width} height={height} className="block">
+    <svg viewBox={`0 0 ${viewWidth} ${height}`} preserveAspectRatio="none" width="100%" height={height} className="block">
       {data.map((val, i) => {
         const barHeight = (val / max) * height
         return (
@@ -63,7 +64,7 @@ function Sparkline({ data, width = 120, height = 20 }: { data: number[]; width?:
             key={i}
             x={i * barWidth}
             y={height - barHeight}
-            width={Math.max(barWidth - 0.5, 0.5)}
+            width={Math.max(barWidth - 0.05, 0.05)}
             height={barHeight}
             style={{ fill: val > 0 ? 'var(--chart-primary)' : 'var(--muted)' }}
             opacity={val > 0 ? 0.7 : 0.3}
@@ -279,7 +280,7 @@ export function Overview({
   }, [prefs.overview_refresh_interval])
 
   return (
-    <div className="flex-1 p-6 overflow-y-auto">
+    <div className="flex-1 p-6 overflow-y-auto font-mono text-sm font-bold">
       {/* Stat cards */}
       <div className="flex gap-3 mb-6 flex-wrap">
         {hasMultipleHosts && (
@@ -439,7 +440,7 @@ export function Overview({
                     {/* Sparkline */}
                     {prefs.sparklines_visible && act && act.sparkline && (
                       <div className={events.length > 0 ? 'mb-2' : ''}>
-                        <Sparkline data={act.sparkline} width={290} height={18} />
+                        <Sparkline data={act.sparkline} height={18} />
                       </div>
                     )}
 

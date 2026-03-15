@@ -88,7 +88,7 @@ export function Setup({ onComplete, fullPage = false }: { onComplete: () => void
   const allConfigured = status?.agents.every(a => !a.installed || a.configured) ?? false
 
   const handleThemeChange = async (themeName: string) => {
-    applyTheme(themeName, prefs.custom_theme, prefs.ui_font_family)
+    applyTheme(themeName, prefs.custom_theme)
     await updatePrefs({ theme: themeName })
   }
 

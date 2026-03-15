@@ -237,7 +237,7 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
         )}
         {!termConnected && (
           <div className="absolute inset-0 flex items-center justify-center bg-background/85 z-10 pointer-events-none rounded">
-            <div className="py-4 px-6 rounded bg-card border border-border text-foreground text-sm flex items-center gap-2.5">
+            <div className="py-4 px-6 rounded bg-card border border-border text-foreground text-sm font-mono font-bold flex items-center gap-2.5">
               <span className="inline-block w-2 h-2 rounded-full bg-destructive animate-[pulse_1.5s_ease-in-out_infinite]" />
               Disconnected — reconnecting...
             </div>

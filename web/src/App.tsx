@@ -503,9 +503,8 @@ export default function App() {
     try {
       const cached = localStorage.getItem('guppi:theme')
       const cachedCustom = localStorage.getItem('guppi:custom-theme')
-      const cachedFont = localStorage.getItem('guppi:ui-font')
       if (cached) {
-        applyTheme(cached, cachedCustom ? JSON.parse(cachedCustom) : undefined, cachedFont || undefined)
+        applyTheme(cached, cachedCustom ? JSON.parse(cachedCustom) : undefined)
       }
     } catch {}
   }, [])
@@ -513,14 +512,13 @@ export default function App() {
   // Apply theme when preferences load or theme/customizations change, and cache for login page
   useEffect(() => {
     if (prefsProvider.loaded) {
-      applyTheme(prefsProvider.prefs.theme, prefsProvider.prefs.custom_theme, prefsProvider.prefs.ui_font_family)
+      applyTheme(prefsProvider.prefs.theme, prefsProvider.prefs.custom_theme)
       try {
         localStorage.setItem('guppi:theme', prefsProvider.prefs.theme)
         localStorage.setItem('guppi:custom-theme', JSON.stringify(prefsProvider.prefs.custom_theme || {}))
-        localStorage.setItem('guppi:ui-font', prefsProvider.prefs.ui_font_family || '')
       } catch {}
     }
-  }, [prefsProvider.loaded, prefsProvider.prefs.theme, prefsProvider.prefs.custom_theme, prefsProvider.prefs.ui_font_family])
+  }, [prefsProvider.loaded, prefsProvider.prefs.theme, prefsProvider.prefs.custom_theme])
 
   if (loading) {
     return <div className="flex items-center justify-center h-dvh w-screen bg-background" />
