@@ -57,7 +57,7 @@ export function StatusBar({ sessionCount, connected, activeSession, waitingCount
   const totalAgents = stats.agent_panes ?? agentCount
 
   return (
-    <footer className="flex items-center justify-between px-4 py-1 border-t border-border bg-card text-xs text-muted-foreground">
+    <footer className="flex items-center justify-between px-4 py-1 border-t border-border bg-card text-xs text-muted-foreground font-mono font-bold">
       <div className="flex items-center gap-4">
         {peersConfigured > 0 && (
           <span>PEERS: <span className={peersConnected === peersConfigured ? 'text-foreground' : 'text-warning'}>{peersConnected}/{peersConfigured}</span></span>

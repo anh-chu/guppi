@@ -349,7 +349,7 @@ export const themePresets: Record<string, ThemePreset> = {
     }
 }
 
-export function applyTheme(themeName: string, customTheme?: Record<string, string>, uiFontFamily?: string) {
+export function applyTheme(themeName: string, customTheme?: Record<string, string>) {
     const theme = themePresets[themeName] || themePresets['retro-blue']
     const root = document.documentElement
     for (const [key, value] of Object.entries(theme.cssVars)) {
@@ -360,10 +360,6 @@ export function applyTheme(themeName: string, customTheme?: Record<string, strin
         for (const [key, value] of Object.entries(customTheme)) {
             if (value) root.style.setProperty(key, value)
         }
-    }
-    // Apply UI font
-    if (uiFontFamily) {
-        root.style.setProperty('--font-sans', `'${uiFontFamily}', sans-serif`)
     }
 }
 

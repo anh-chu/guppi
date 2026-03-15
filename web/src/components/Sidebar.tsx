@@ -52,12 +52,13 @@ function ToolBadge({ event }: { event: ToolEvent }) {
   )
 }
 
-function Sparkline({ data, width = 80, height = 16 }: { data: number[]; width?: number; height?: number }) {
+function Sparkline({ data, height = 16 }: { data: number[]; height?: number }) {
   if (!data || data.length === 0) return null
   const max = Math.max(...data, 1)
-  const barWidth = width / data.length
+  const viewWidth = data.length
+  const barWidth = 1
   return (
-    <svg width={width} height={height} className="block">
+    <svg viewBox={`0 0 ${viewWidth} ${height}`} preserveAspectRatio="none" width="100%" height={height} className="block">
       {data.map((val, i) => {
         const barHeight = (val / max) * height
         return (
@@ -65,7 +66,7 @@ function Sparkline({ data, width = 80, height = 16 }: { data: number[]; width?: 
             key={i}
             x={i * barWidth}
             y={height - barHeight}
-            width={Math.max(barWidth - 0.5, 0.5)}
+            width={Math.max(barWidth - 0.05, 0.05)}
             height={barHeight}
             style={{ fill: val > 0 ? 'var(--chart-primary)' : 'var(--muted)' }}
             opacity={val > 0 ? 0.7 : 0.3}
@@ -213,7 +214,7 @@ export function Sidebar({
               />
             ) : (
               <span className={cn(
-                'text-sm tracking-wide flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left',
+                'tracking-wide flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left',
                 isSelected && 'text-primary',
               )}>
                 {collapsed ? session.name.charAt(0).toUpperCase() : session.name}
@@ -230,7 +231,7 @@ export function Sidebar({
           {/* Row 2: sparkline */}
           {!collapsed && prefs.sparklines_visible && act && act.sparkline && (
             <div className={cn('mt-1.5 w-full', events.filter(e => e.status === 'waiting' || e.status === 'error').length > 0 && 'mb-1')}>
-              <Sparkline data={act.sparkline} width={180} height={14} />
+              <Sparkline data={act.sparkline} height={14} />
             </div>
           )}
 
@@ -253,7 +254,7 @@ export function Sidebar({
 
   return (
     <aside className={cn(
-      'flex flex-col h-full bg-sidebar transition-all duration-300',
+      'flex flex-col h-full bg-sidebar transition-all duration-300 font-mono text-sm font-bold',
       collapsed
         ? collapseMode === 'hidden' ? 'w-0 overflow-hidden' : 'w-16'
         : 'w-56',

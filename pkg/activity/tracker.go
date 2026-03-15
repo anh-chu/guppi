@@ -7,9 +7,9 @@ import (
 
 const (
 	// BucketDuration is the size of each sparkline bucket
-	BucketDuration = 5 * time.Second
-	// BucketCount is how many buckets to keep (60 buckets × 5s = 5 minutes of history)
-	BucketCount = 60
+	BucketDuration = 15 * time.Second
+	// BucketCount is how many buckets to keep (20 buckets × 15s = 5 minutes of history)
+	BucketCount = 20
 )
 
 // SessionActivity tracks output activity for a single session

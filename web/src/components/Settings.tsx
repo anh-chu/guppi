@@ -16,14 +16,6 @@ const terminalFontFamilies = [
   'monospace',
 ]
 
-const uiFontFamilies = [
-  { value: 'VT323', label: 'VT323 (retro)' },
-  { value: 'Space Mono', label: 'Space Mono' },
-  { value: 'JetBrains Mono', label: 'JetBrains Mono' },
-  { value: 'Inter', label: 'Inter' },
-  { value: 'system-ui', label: 'System Default' },
-]
-
 const timestampFormats = [
   { value: 'relative', label: 'Relative (2m ago)' },
   { value: 'absolute', label: 'Absolute (14:32:05)' },
@@ -222,23 +214,18 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
   }
 
   const handleThemeChange = async (theme: string) => {
-    applyTheme(theme, prefs.custom_theme, prefs.ui_font_family)
+    applyTheme(theme, prefs.custom_theme)
     await update({ theme })
-  }
-
-  const handleUIFontChange = async (font: string) => {
-    applyTheme(prefs.theme, prefs.custom_theme, font)
-    await update({ ui_font_family: font })
   }
 
   const handleCustomColorChange = async (cssVar: string, hex: string) => {
     const next = { ...(prefs.custom_theme || {}), [cssVar]: hex }
-    applyTheme(prefs.theme, next, prefs.ui_font_family)
+    applyTheme(prefs.theme, next)
     await update({ custom_theme: next })
   }
 
   const handleResetCustomColors = async () => {
-    applyTheme(prefs.theme, {}, prefs.ui_font_family)
+    applyTheme(prefs.theme, {})
     await update({ custom_theme: {} })
     setShowCustomColors(false)
   }
@@ -256,7 +243,7 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
   const hasCustomColors = Object.values(customTheme).some(v => !!v)
 
   return (
-    <div className="flex-1 p-6 overflow-y-auto">
+    <div className="flex-1 p-6 overflow-y-auto font-mono text-sm font-bold">
       <div className="max-w-2xl">
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-lg font-bold text-foreground tracking-wider">SETTINGS</h2>
@@ -341,13 +328,6 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
 
             <Divider />
 
-            <Row label="UI Font" description="Font used throughout the interface">
-              <SelectInput
-                value={prefs.ui_font_family}
-                onChange={handleUIFontChange}
-                options={uiFontFamilies}
-              />
-            </Row>
             <Row label="Timestamp Format" description="How timestamps are shown in the UI">
               <SelectInput
                 value={prefs.timestamp_format}
