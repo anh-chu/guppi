@@ -359,23 +359,13 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     setTerminalFullscreen(f => !f)
   }, [])
 
-  // Dynamic document title
+  // Keep the browser title stable unless user attention is needed.
   useEffect(() => {
-    if (currentView === 'session' && selectedSession) {
-      const session = sessions.find(s => sessionKey(s) === selectedSession)
-      const displayName = session ? session.name : parseSessionKey(selectedSession).name
-      const activeWindow = session?.windows?.find(w => w.active)
-      if (activeWindow) {
-        document.title = `${displayName}:${activeWindow.index}:${activeWindow.name} — guppi`
-      } else {
-        document.title = `${displayName} — guppi`
-      }
-    } else if (currentView === 'settings') {
-      document.title = 'settings — guppi'
-    } else {
-      document.title = 'guppi'
-    }
-  }, [currentView, selectedSession, sessions])
+    const needsAttention = allToolEvents.some(
+      evt => evt.status === 'waiting' || evt.status === 'error',
+    )
+    document.title = needsAttention ? 'Guppi - Attention needed' : 'Guppi'
+  }, [allToolEvents])
 
   // Exit fullscreen when navigating away from terminal
   useEffect(() => {
