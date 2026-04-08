@@ -182,19 +182,53 @@ func (m *Manager) UpdateSessionMetadataFromEvent(evt *toolevents.Event) {
 
 	m.mu.Lock()
 	meta := m.meta[evt.Session]
+	changed := false
 	if evt.CWD != "" {
+		if meta.ProjectPath != evt.CWD {
+			changed = true
+		}
 		meta.ProjectPath = evt.CWD
 	}
 	if evt.Tool != "" {
-		meta.AgentType = string(evt.Tool)
+		tool := string(evt.Tool)
+		if meta.AgentType != tool {
+			changed = true
+		}
+		meta.AgentType = tool
 	}
 	if evt.Message != "" {
+		if meta.PromptPreview != evt.Message {
+			changed = true
+		}
 		meta.PromptPreview = evt.Message
 	}
 	if evt.AgentSessionID != "" {
+		if meta.AgentSessionID != evt.AgentSessionID {
+			changed = true
+		}
 		meta.AgentSessionID = evt.AgentSessionID
 	}
+
+	if !changed {
+		m.mu.Unlock()
+		return
+	}
+
 	m.meta[evt.Session] = meta
+	if session := m.sessions[evt.Session]; session != nil {
+		if session.ProjectPath == "" && meta.ProjectPath != "" {
+			session.ProjectPath = meta.ProjectPath
+		}
+		if session.AgentType == "" && meta.AgentType != "" {
+			session.AgentType = tmux.NormalizeAgentType(meta.AgentType)
+		}
+		if session.PromptPreview == "" && meta.PromptPreview != "" {
+			session.PromptPreview = meta.PromptPreview
+		}
+		if meta.AgentSessionID != "" {
+			session.AgentSessionID = meta.AgentSessionID
+		}
+	}
 	m.mu.Unlock()
 
 	m.broadcast(StateEvent{Type: "sessions-changed"})

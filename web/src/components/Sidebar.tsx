@@ -194,6 +194,10 @@ export function Sidebar({
   }, [projectFilters])
 
   useEffect(() => {
+    // Don't clear persisted ordering/hidden state during the initial empty
+    // session snapshot before the first /api/sessions refresh completes.
+    if (sessions.length === 0) return
+
     const validKeys = new Set(sessions.map(sessionKey))
     const nextOrder = manualOrder.filter(key => validKeys.has(key))
     if (nextOrder.length !== manualOrder.length) {
@@ -249,14 +253,26 @@ export function Sidebar({
       setRenamingSession(null)
       return
     }
+    const nextName = renameValue.trim()
+    const oldKey = renamingSession
+    const newKey = nextName
     try {
       const res = await fetch('/api/session/rename', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ old_name: renamingSession, new_name: renameValue.trim() }),
+        body: JSON.stringify({ old_name: renamingSession, new_name: nextName }),
       })
       if (res.ok) {
-        onSessionRenamed?.(renamingSession, renameValue.trim())
+        if (hiddenSet.has(oldKey)) {
+          const nextHidden = new Set(hiddenSet)
+          nextHidden.delete(oldKey)
+          nextHidden.add(newKey)
+          setHiddenSet(nextHidden)
+        }
+        if (manualOrder.includes(oldKey)) {
+          setManualOrder(current => current.map(key => key === oldKey ? newKey : key))
+        }
+        onSessionRenamed?.(renamingSession, nextName)
       }
     } catch (err) {
       console.error('Failed to rename session:', err)

@@ -217,7 +217,6 @@ func (t *Tracker) Clear(host, session string, window int, pane string) {
 func (t *Tracker) ClearAll() {
 	t.mu.Lock()
 	t.events = make(map[PaneKey]*Event)
-	t.sessionMeta = make(map[string]SessionMeta)
 	t.mu.Unlock()
 }
 
