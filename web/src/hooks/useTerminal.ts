@@ -121,6 +121,9 @@ export function useTerminal(sessionName: string, hostId?: string) {
   const reconnectTimer = useRef<number | undefined>(undefined)
   const activeConnId = useRef(0)
   const [termConnected, setTermConnected] = useState(false)
+  const [ctrlModifierActive, setCtrlModifierActive] = useState(false)
+  const ctrlModifierRef = useRef(false)
+  const suppressedInputRef = useRef<string | null>(null)
   const { prefs } = usePreferences()
 
   const sendRawBytes = useCallback((bytes: Uint8Array) => {
@@ -128,6 +131,21 @@ export function useTerminal(sessionName: string, hostId?: string) {
     if (currentWs && currentWs.readyState === WebSocket.OPEN) {
       currentWs.send(bytes)
     }
+  }, [])
+
+  const sendText = useCallback((text: string) => {
+    if (!text) return
+    sendRawBytes(new TextEncoder().encode(text))
+  }, [sendRawBytes])
+
+  const clearCtrlModifier = useCallback(() => {
+    ctrlModifierRef.current = false
+    setCtrlModifierActive(false)
+  }, [])
+
+  const toggleCtrlModifier = useCallback(() => {
+    ctrlModifierRef.current = !ctrlModifierRef.current
+    setCtrlModifierActive(ctrlModifierRef.current)
   }, [])
 
   const cleanupWs = useCallback(() => {
@@ -198,6 +216,22 @@ export function useTerminal(sessionName: string, hostId?: string) {
     term.attachCustomKeyEventHandler((e) => {
       if (e.type === 'keydown') {
         flushPendingClipboard()
+      }
+      if (
+        e.type === 'keydown' &&
+        ctrlModifierRef.current &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.key.length === 1
+      ) {
+        const key = e.key.toUpperCase()
+        if (key >= 'A' && key <= 'Z') {
+          suppressedInputRef.current = e.key
+          sendRawBytes(new Uint8Array([key.charCodeAt(0) - 64]))
+          clearCtrlModifier()
+          return false
+        }
       }
       // Don't let xterm process global app shortcuts (quick switcher, overview, etc.)
       if (e.type === 'keydown' && (e.metaKey || e.ctrlKey)) {
@@ -364,6 +398,11 @@ export function useTerminal(sessionName: string, hostId?: string) {
 
     // Forward keystrokes as binary messages
     term.onData((data) => {
+      if (suppressedInputRef.current !== null && data === suppressedInputRef.current) {
+        suppressedInputRef.current = null
+        return
+      }
+      suppressedInputRef.current = null
       if (ws.readyState === WebSocket.OPEN) {
         const encoder = new TextEncoder()
         ws.send(encoder.encode(data))
@@ -409,5 +448,17 @@ export function useTerminal(sessionName: string, hostId?: string) {
     termRef.current?.focus()
   }, [])
 
-  return { termRef, connect, disconnect, fit, focus, termConnected }
+  return {
+    termRef,
+    connect,
+    disconnect,
+    fit,
+    focus,
+    termConnected,
+    sendRawBytes,
+    sendText,
+    ctrlModifierActive,
+    toggleCtrlModifier,
+    clearCtrlModifier,
+  }
 }

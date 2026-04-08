@@ -377,7 +377,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const showingTerminal = currentView === 'session' && !!selectedSession
 
   return (
-    <div className="flex flex-col h-dvh w-screen bg-background text-foreground relative">
+    <div className="flex flex-col h-full w-full bg-background text-foreground relative">
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
       {quickSwitcherOpen && (
         <QuickSwitcher
@@ -481,6 +481,27 @@ export default function App() {
   const [showTrust, setShowTrust] = useState(() => window.location.pathname === '/trust')
   const [showOnboarding, setShowOnboarding] = useState(false)
 
+  useEffect(() => {
+    const syncViewport = () => {
+      const viewport = window.visualViewport
+      const height = viewport?.height ?? window.innerHeight
+      const width = viewport?.width ?? window.innerWidth
+      document.documentElement.style.setProperty('--app-height', `${Math.round(height)}px`)
+      document.documentElement.style.setProperty('--app-width', `${Math.round(width)}px`)
+    }
+
+    syncViewport()
+    window.addEventListener('resize', syncViewport)
+    window.visualViewport?.addEventListener('resize', syncViewport)
+    window.visualViewport?.addEventListener('scroll', syncViewport)
+
+    return () => {
+      window.removeEventListener('resize', syncViewport)
+      window.visualViewport?.removeEventListener('resize', syncViewport)
+      window.visualViewport?.removeEventListener('scroll', syncViewport)
+    }
+  }, [])
+
   // Re-fetch preferences after login (initial fetch may have gotten 401)
   useEffect(() => {
     if (authenticated) {
@@ -511,7 +532,7 @@ export default function App() {
   }, [prefsProvider.loaded, prefsProvider.prefs.theme, prefsProvider.prefs.custom_theme])
 
   if (loading) {
-    return <div className="flex items-center justify-center h-dvh w-screen bg-background" />
+    return <div className="flex items-center justify-center h-full w-full bg-background" />
   }
 
   if (showTrust || window.location.pathname === '/trust') {

@@ -3,6 +3,8 @@
 @import url('https://fonts.googleapis.com/css2?family=VT323&family=Space+Mono:wght@400;700&family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
+  --app-height: 100dvh;
+  --app-width: 100vw;
   /* Retro CRT Blue Theme */
   --background: oklch(0.08 0.02 250);
   --foreground: oklch(0.78 0.12 230);
@@ -89,14 +91,11 @@
     @apply bg-background text-foreground font-sans antialiased;
   }
   html, body, #root {
-    height: 100%;
-    height: 100dvh;
-    width: 100%;
+    height: var(--app-height);
+    width: var(--app-width);
     overflow: hidden;
     overscroll-behavior: none;
     touch-action: none;
-    position: fixed;
-    inset: 0;
   }
 }
 
@@ -132,4 +131,97 @@
 @keyframes alertSlideIn {
   from { opacity: 0; transform: translateX(20px); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+.terminal-keybar-shell {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in oklch, var(--border) 85%, transparent);
+  border-radius: 0.45rem;
+  background: color-mix(in oklch, var(--card) 94%, transparent);
+  overflow: visible;
+}
+
+.terminal-keybar {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.25rem;
+  padding: 0.35rem;
+  position: relative;
+}
+
+.terminal-key {
+  min-height: 2.2rem;
+  border: 1px solid color-mix(in oklch, var(--border) 85%, transparent);
+  border-radius: 0.35rem;
+  background: color-mix(in oklch, var(--card) 82%, transparent);
+  color: var(--foreground);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.terminal-key:active {
+  background: color-mix(in oklch, var(--accent) 18%, var(--card));
+  border-color: color-mix(in oklch, var(--accent) 55%, var(--border));
+  color: var(--accent-foreground);
+}
+
+.terminal-key-clipboard {
+  position: relative;
+}
+
+.terminal-key-page,
+.terminal-key-pad {
+  font-size: 0.62rem;
+  letter-spacing: -0.02em;
+}
+
+.terminal-key-active {
+  background: color-mix(in oklch, var(--accent) 20%, var(--card));
+  border-color: color-mix(in oklch, var(--accent) 60%, var(--border));
+  color: var(--accent-foreground);
+}
+
+.terminal-keybar-menu {
+  position: absolute;
+  left: 0.35rem;
+  bottom: calc(100% - 0.1rem);
+  display: flex;
+  flex-direction: column;
+  min-width: 6rem;
+  border: 1px solid color-mix(in oklch, var(--border) 85%, transparent);
+  border-radius: 0.45rem;
+  background: color-mix(in oklch, var(--popover) 94%, transparent);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  z-index: 10;
+}
+
+.terminal-keybar-menu-item {
+  min-height: 2.25rem;
+  padding: 0.5rem 0.75rem;
+  border: 0;
+  background: transparent;
+  color: var(--popover-foreground);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-align: left;
+}
+
+.terminal-keybar-menu-item:active {
+  background: color-mix(in oklch, var(--accent) 16%, var(--popover));
+}
+
+@media (min-width: 901px) and (pointer: fine) {
+  .terminal-keybar {
+    display: none;
+  }
 }

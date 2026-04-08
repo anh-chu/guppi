@@ -190,12 +190,12 @@ export function TrustCertificate({ onBack }: { onBack: () => void }) {
   }, [])
 
   if (caAvailable === null) {
-    return <div className="flex items-center justify-center h-dvh w-screen bg-background" />
+    return <div className="flex items-center justify-center h-full w-full bg-background" />
   }
 
   if (!caAvailable) {
     return (
-      <div className="flex items-center justify-center h-dvh w-screen bg-background">
+      <div className="flex items-center justify-center h-full w-full bg-background">
         <div className="w-full max-w-md p-8">
           <div className="text-center mb-6">
             <h1 className="text-2xl font-bold text-foreground tracking-tight">guppi</h1>
@@ -215,7 +215,7 @@ export function TrustCertificate({ onBack }: { onBack: () => void }) {
   const platforms: Platform[] = ['ios', 'macos', 'android', 'windows', 'linux']
 
   return (
-    <div className="flex items-center justify-center min-h-dvh w-screen bg-background py-8">
+    <div className="flex items-center justify-center min-h-full w-full bg-background py-8">
       <div className="w-full max-w-md px-8">
         <div className="text-center mb-6">
           <h1 className="text-2xl font-bold text-foreground tracking-tight">guppi</h1>

@@ -93,7 +93,7 @@ export function Setup({ onComplete, fullPage = false }: { onComplete: () => void
   }
 
   return (
-    <div className={fullPage ? "flex items-center justify-center min-h-dvh w-screen bg-background py-8" : "flex-1 flex items-center justify-center overflow-y-auto"}>
+    <div className={fullPage ? "flex items-center justify-center min-h-full w-full bg-background py-8" : "flex-1 flex items-center justify-center overflow-y-auto"}>
       <div className="w-full max-w-md p-8">
         <div className="text-center mb-6">
           <h1 className="text-2xl font-bold text-foreground tracking-tight">
