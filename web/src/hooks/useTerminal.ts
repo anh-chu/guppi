@@ -123,6 +123,13 @@ export function useTerminal(sessionName: string, hostId?: string) {
   const [termConnected, setTermConnected] = useState(false)
   const { prefs } = usePreferences()
 
+  const sendRawBytes = useCallback((bytes: Uint8Array) => {
+    const currentWs = wsRef.current
+    if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+      currentWs.send(bytes)
+    }
+  }, [])
+
   const cleanupWs = useCallback(() => {
     if (wsRef.current) {
       // Nullify handlers BEFORE closing to prevent ghost reconnects
@@ -186,6 +193,7 @@ export function useTerminal(sessionName: string, hostId?: string) {
 
     // Cmd/Ctrl+C: copy selection to clipboard if text is selected,
     // otherwise let it pass through as SIGINT.
+    // Cmd/Ctrl+B: force-send tmux prefix so browser shortcuts can't steal it.
     // Also flush any pending clipboard on every keydown (user gesture context).
     term.attachCustomKeyEventHandler((e) => {
       if (e.type === 'keydown') {
@@ -194,7 +202,7 @@ export function useTerminal(sessionName: string, hostId?: string) {
       // Don't let xterm process global app shortcuts (quick switcher, overview, etc.)
       if (e.type === 'keydown' && (e.metaKey || e.ctrlKey)) {
         const key = e.key.toLowerCase()
-        if (!e.shiftKey && (key === 'k' || key === 'p' || key === 'o' || key === 'h' ||
+        if (!e.shiftKey && (key === 'k' || key === 'p' || key === 'h' ||
             key === 'l' || key === ',' || key === '\\' || key === ' ')) {
           return false
         }
@@ -212,10 +220,11 @@ export function useTerminal(sessionName: string, hostId?: string) {
         }
         // Explicitly send SIGINT (0x03) — iPad/tablets may not translate
         // Ctrl+C correctly, causing it to act as Enter instead
-        const currentWs = wsRef.current
-        if (currentWs && currentWs.readyState === WebSocket.OPEN) {
-          currentWs.send(new Uint8Array([0x03]))
-        }
+        sendRawBytes(new Uint8Array([0x03]))
+        return false
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'b' && e.type === 'keydown') {
+        sendRawBytes(new Uint8Array([0x02]))
         return false
       }
       return true
@@ -233,6 +242,17 @@ export function useTerminal(sessionName: string, hostId?: string) {
     // to intercept before xterm.js can stopPropagation)
     const onMouseDown = () => flushPendingClipboard()
     const onKeyDown = () => flushPendingClipboard()
+    const onWindowKeyDownCapture = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'b') return
+
+      const active = document.activeElement
+      const terminalFocused = !!active && (container.contains(active) || active === container)
+      if (!terminalFocused) return
+
+      e.preventDefault()
+      e.stopPropagation()
+      sendRawBytes(new Uint8Array([0x02]))
+    }
     const onPaste = (e: ClipboardEvent) => {
       const items = Array.from(e.clipboardData?.items ?? [])
       const imageItem = items.find(item => item.type.startsWith('image/'))
@@ -255,6 +275,7 @@ export function useTerminal(sessionName: string, hostId?: string) {
 
     container.addEventListener('mousedown', onMouseDown, true)
     container.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keydown', onWindowKeyDownCapture, true)
     helperTextarea?.addEventListener('paste', onPaste)
 
     // Suppress browser's native context menu so right-click passes through to tmux
@@ -262,6 +283,7 @@ export function useTerminal(sessionName: string, hostId?: string) {
     listenerCleanupRef.current = () => {
       container.removeEventListener('mousedown', onMouseDown, true)
       container.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('keydown', onWindowKeyDownCapture, true)
       helperTextarea?.removeEventListener('paste', onPaste)
       container.removeEventListener('contextmenu', onContextMenu)
     }
@@ -354,7 +376,7 @@ export function useTerminal(sessionName: string, hostId?: string) {
         ws.send(JSON.stringify({ type: 'resize', cols, rows }))
       }
     })
-  }, [sessionName, hostId, cleanupWs, prefs.theme, prefs.terminal.font_size, prefs.terminal.font_family, prefs.terminal.scrollback])
+  }, [sessionName, hostId, cleanupWs, prefs.theme, prefs.terminal.font_size, prefs.terminal.font_family, prefs.terminal.scrollback, sendRawBytes])
 
   const disconnect = useCallback(() => {
     // Invalidate any active connection
