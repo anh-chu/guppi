@@ -341,11 +341,37 @@ func Run(ctx context.Context, opts *Options) error {
 				var req struct {
 					OldName string `json:"old_name"`
 					NewName string `json:"new_name"`
+					Host    string `json:"host,omitempty"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.OldName == "" || req.NewName == "" {
 					http.Error(w, "old_name and new_name are required", http.StatusBadRequest)
 					return
 				}
+
+				// Remote host — forward via peer connection
+				if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
+					peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
+					if peerConn == nil {
+						http.Error(w, "peer not connected", http.StatusBadGateway)
+						return
+					}
+					params, _ := json.Marshal(map[string]string{
+						"old_name": req.OldName,
+						"new_name": req.NewName,
+					})
+					msg, _ := peer.NewMessage(peer.MsgSessionAction, peer.SessionActionPayload{
+						Action: "rename",
+						Params: params,
+					})
+					select {
+					case peerConn.Send <- msg:
+						w.WriteHeader(http.StatusNoContent)
+					default:
+						http.Error(w, "peer send queue full", http.StatusBadGateway)
+					}
+					return
+				}
+
 				if err := opts.Client.RenameSession(req.OldName, req.NewName); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return

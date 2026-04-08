@@ -20,6 +20,12 @@ interface SidebarProps {
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
 }
 
+interface RenameState {
+  key: string
+  name: string
+  host?: string
+}
+
 const shellCommands = new Set(['bash', 'zsh', 'fish', 'sh', 'dash', 'ksh', 'csh', 'tcsh', 'tmux', 'login'])
 
 function isSessionActive(session: Session): boolean {
@@ -147,9 +153,9 @@ export function Sidebar({
   const [manualOrder, setManualOrder] = useState<string[]>(() => readStoredList('guppi:session-order'))
   const [projectFilters, setProjectFilters] = useState<string[]>(() => readStoredList('guppi:project-filters'))
   const [hiddenExpanded, setHiddenExpanded] = useState(false)
-  const [renamingSession, setRenamingSession] = useState<string | null>(null)
+  const [renamingSession, setRenamingSession] = useState<RenameState | null>(null)
   const [renameValue, setRenameValue] = useState('')
-  const [contextMenu, setContextMenu] = useState<{ key: string; name: string; x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ key: string; name: string; host?: string; x: number; y: number } | null>(null)
   const [filterOpen, setFilterOpen] = useState(false)
   const [draggingKey, setDraggingKey] = useState<string | null>(null)
   const [dropTargetKey, setDropTargetKey] = useState<string | null>(null)
@@ -242,25 +248,29 @@ export function Sidebar({
     setContextMenu(null)
   }
 
-  const startRename = (name: string) => {
-    setRenamingSession(name)
-    setRenameValue(name)
+  const startRename = (session: RenameState) => {
+    setRenamingSession(session)
+    setRenameValue(session.name)
     setContextMenu(null)
   }
 
   const submitRename = async () => {
-    if (!renamingSession || !renameValue.trim() || renameValue === renamingSession) {
+    if (!renamingSession || !renameValue.trim() || renameValue === renamingSession.name) {
       setRenamingSession(null)
       return
     }
     const nextName = renameValue.trim()
-    const oldKey = renamingSession
-    const newKey = nextName
+    const oldKey = renamingSession.key
+    const newKey = renamingSession.host ? `${renamingSession.host}/${nextName}` : nextName
     try {
       const res = await fetch('/api/session/rename', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ old_name: renamingSession, new_name: nextName }),
+        body: JSON.stringify({
+          old_name: renamingSession.name,
+          new_name: nextName,
+          host: renamingSession.host || undefined,
+        }),
       })
       if (res.ok) {
         if (hiddenSet.has(oldKey)) {
@@ -272,7 +282,7 @@ export function Sidebar({
         if (manualOrder.includes(oldKey)) {
           setManualOrder(current => current.map(key => key === oldKey ? newKey : key))
         }
-        onSessionRenamed?.(renamingSession, nextName)
+        onSessionRenamed?.(oldKey, newKey)
       }
     } catch (err) {
       console.error('Failed to rename session:', err)
@@ -334,7 +344,7 @@ export function Sidebar({
     const events = getSessionEvents(sk)
     const act = getSessionActivity(sk)
     const active = isSessionActive(session)
-    const isRenaming = renamingSession === session.name
+    const isRenaming = renamingSession?.key === sk
     const isOffline = session.host && session.host_online === false
     const promptPreview = session.prompt_preview?.trim()
     const projectName = pathLeaf(session.project_path)
@@ -342,7 +352,9 @@ export function Sidebar({
 
     return (
       <li key={sk}>
-        <button
+        <div
+          role="button"
+          tabIndex={0}
           draggable={!collapsed && !isRenaming}
           onDragStart={() => setDraggingKey(sk)}
           onDragEnd={() => {
@@ -358,9 +370,15 @@ export function Sidebar({
             handleDrop(sk)
           }}
           onClick={() => !isRenaming && onSessionSelect(session)}
+          onKeyDown={(e) => {
+            if (!isRenaming && (e.key === 'Enter' || e.key === ' ')) {
+              e.preventDefault()
+              onSessionSelect(session)
+            }
+          }}
           onContextMenu={(e) => {
             e.preventDefault()
-            setContextMenu({ key: sk, name: session.name, x: e.clientX, y: e.clientY })
+            setContextMenu({ key: sk, name: session.name, host: session.host, x: e.clientX, y: e.clientY })
           }}
           className={cn(
             'flex flex-col w-full p-3 rounded transition-all duration-200 text-sidebar-foreground',
@@ -445,7 +463,7 @@ export function Sidebar({
                 ))}
             </div>
           )}
-        </button>
+        </div>
       </li>
     )
   }
@@ -455,7 +473,7 @@ export function Sidebar({
   const contextTargetSession = contextMenu
     ? orderedSessions.find(session => sessionKey(session) === contextMenu.key) || null
     : null
-  const canRenameContextTarget = Boolean(contextTargetSession && !contextTargetSession.host)
+  const canRenameContextTarget = Boolean(contextTargetSession)
 
   return (
     <aside className={cn(
@@ -561,7 +579,11 @@ export function Sidebar({
           onClick={(e) => e.stopPropagation()}
         >
           <div
-            onClick={() => canRenameContextTarget && startRename(contextMenu.name)}
+            onClick={() => canRenameContextTarget && startRename({
+              key: contextMenu.key,
+              name: contextMenu.name,
+              host: contextMenu.host,
+            })}
             className={cn(
               'px-3 py-1.5 text-sm text-popover-foreground hover:bg-accent hover:text-accent-foreground',
               canRenameContextTarget ? 'cursor-pointer' : 'cursor-not-allowed opacity-50',
