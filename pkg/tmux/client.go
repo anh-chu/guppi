@@ -109,7 +109,7 @@ func (c *Client) ListWindows(sessionName string) ([]*Window, error) {
 // ListPanes returns panes for a window
 func (c *Client) ListPanes(target string) ([]*Pane, error) {
 	out, err := c.Exec("list-panes", "-t", target, "-F",
-		"#{pane_id}:#{window_id}:#{session_id}:#{pane_index}:#{pane_active}:#{pane_width}:#{pane_height}:#{pane_current_command}:#{pane_pid}")
+		"#{pane_id}:#{window_id}:#{session_id}:#{pane_index}:#{pane_active}:#{pane_width}:#{pane_height}:#{pane_current_command}:#{pane_current_path}:#{pane_pid}")
 	if err != nil {
 		return nil, err
 	}
@@ -119,14 +119,14 @@ func (c *Client) ListPanes(target string) ([]*Pane, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, ":", 9)
-		if len(parts) < 9 {
+		parts := strings.SplitN(line, ":", 10)
+		if len(parts) < 10 {
 			continue
 		}
 		idx, _ := strconv.Atoi(parts[3])
 		w, _ := strconv.Atoi(parts[5])
 		h, _ := strconv.Atoi(parts[6])
-		pid, _ := strconv.Atoi(parts[8])
+		pid, _ := strconv.Atoi(parts[9])
 		panes = append(panes, &Pane{
 			ID:             parts[0],
 			WindowID:       parts[1],
@@ -136,6 +136,7 @@ func (c *Client) ListPanes(target string) ([]*Pane, error) {
 			Width:          w,
 			Height:         h,
 			CurrentCommand: parts[7],
+			CurrentPath:    parts[8],
 			PID:            pid,
 		})
 	}
@@ -178,7 +179,7 @@ func (c *Client) ListAllPanesDetailed() ([]*PaneDetailed, error) {
 // ListAllPanes returns all panes across all sessions
 func (c *Client) ListAllPanes() ([]*Pane, error) {
 	out, err := c.Exec("list-panes", "-a", "-F",
-		"#{pane_id}:#{window_id}:#{session_id}:#{pane_index}:#{pane_active}:#{pane_width}:#{pane_height}:#{pane_current_command}:#{pane_pid}")
+		"#{pane_id}:#{window_id}:#{session_id}:#{pane_index}:#{pane_active}:#{pane_width}:#{pane_height}:#{pane_current_command}:#{pane_current_path}:#{pane_pid}")
 	if err != nil {
 		if strings.Contains(err.Error(), "no server running") || strings.Contains(err.Error(), "no sessions") {
 			return nil, nil
@@ -191,14 +192,14 @@ func (c *Client) ListAllPanes() ([]*Pane, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, ":", 9)
-		if len(parts) < 9 {
+		parts := strings.SplitN(line, ":", 10)
+		if len(parts) < 10 {
 			continue
 		}
 		idx, _ := strconv.Atoi(parts[3])
 		w, _ := strconv.Atoi(parts[5])
 		h, _ := strconv.Atoi(parts[6])
-		pid, _ := strconv.Atoi(parts[8])
+		pid, _ := strconv.Atoi(parts[9])
 		panes = append(panes, &Pane{
 			ID:             parts[0],
 			WindowID:       parts[1],
@@ -208,6 +209,7 @@ func (c *Client) ListAllPanes() ([]*Pane, error) {
 			Width:          w,
 			Height:         h,
 			CurrentCommand: parts[7],
+			CurrentPath:    parts[8],
 			PID:            pid,
 		})
 	}
@@ -232,9 +234,18 @@ func (c *Client) SelectPane(target string) error {
 	return err
 }
 
-// NewSession creates a new tmux session with the given name (detached)
-func (c *Client) NewSession(name string) error {
-	_, err := c.Exec("new-session", "-d", "-s", name)
+// NewSession creates a new tmux session with the given name (detached).
+// Optional projectPath sets the initial working directory, and command starts
+// the requested agent or shell process inside the session.
+func (c *Client) NewSession(name, projectPath, command string) error {
+	args := []string{"new-session", "-d", "-s", name}
+	if projectPath != "" {
+		args = append(args, "-c", projectPath)
+	}
+	if command != "" {
+		args = append(args, command)
+	}
+	_, err := c.Exec(args...)
 	return err
 }
 
@@ -247,4 +258,14 @@ func (c *Client) RenameSession(oldName, newName string) error {
 // CapturePaneContent returns the visible text content of a pane
 func (c *Client) CapturePaneContent(paneID string) (string, error) {
 	return c.Exec("capture-pane", "-t", paneID, "-p")
+}
+
+// CapturePaneHistory returns pane content including recent scrollback.
+func (c *Client) CapturePaneHistory(paneID string, startLine int) (string, error) {
+	args := []string{"capture-pane", "-t", paneID}
+	if startLine != 0 {
+		args = append(args, "-S", strconv.Itoa(startLine))
+	}
+	args = append(args, "-p")
+	return c.Exec(args...)
 }

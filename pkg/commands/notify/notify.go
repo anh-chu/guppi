@@ -83,6 +83,14 @@ type codexEvent struct {
 	LastAssistantMessage string `json:"last-assistant-message"`
 }
 
+func parseCodexEvent(data string) (*codexEvent, error) {
+	var evt codexEvent
+	if err := json.Unmarshal([]byte(data), &evt); err != nil {
+		return nil, fmt.Errorf("failed to parse codex event JSON: %w", err)
+	}
+	return &evt, nil
+}
+
 // parseEventData parses a JSON string passed via --event-data (argv) and maps
 // it to status/message based on the tool type.
 func parseEventData(tool, data string) (string, string, error) {
@@ -102,9 +110,9 @@ func parseEventData(tool, data string) (string, string, error) {
 // parseCodexEventData parses Codex's notification JSON.
 // Currently only "agent-turn-complete" is emitted.
 func parseCodexEventData(data string) (string, string, error) {
-	var evt codexEvent
-	if err := json.Unmarshal([]byte(data), &evt); err != nil {
-		return "", "", fmt.Errorf("failed to parse codex event JSON: %w", err)
+	evt, err := parseCodexEvent(data)
+	if err != nil {
+		return "", "", err
 	}
 
 	switch evt.Type {
@@ -194,6 +202,8 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	window := int(c.Int("window"))
 	pane := c.String("pane")
 	serverURL := c.String("server")
+	cwd := ""
+	agentSessionID := ""
 
 	log := logrus.WithField("component", "notify")
 
@@ -220,6 +230,14 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		}
 		if !c.IsSet("message") {
 			message = evtMessage
+		}
+		if tool == "codex" {
+			codexEvt, err := parseCodexEvent(rawData)
+			if err != nil {
+				return fmt.Errorf("event-data parse: %w", err)
+			}
+			agentSessionID = codexEvt.ThreadID
+			cwd = codexEvt.CWD
 		}
 	}
 
@@ -271,12 +289,14 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	}
 
 	evt := &toolevents.Event{
-		Tool:    toolevents.Tool(tool),
-		Status:  toolevents.Status(status),
-		Session: session,
-		Window:  window,
-		Pane:    pane,
-		Message: message,
+		Tool:           toolevents.Tool(tool),
+		Status:         toolevents.Status(status),
+		Session:        session,
+		Window:         window,
+		Pane:           pane,
+		Message:        message,
+		CWD:            cwd,
+		AgentSessionID: agentSessionID,
 	}
 
 	body, err := json.Marshal(evt)

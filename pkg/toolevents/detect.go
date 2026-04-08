@@ -44,6 +44,15 @@ var agentPatterns = []agentPattern{
 		},
 	},
 	{
+		tool: ToolGemini,
+		match: func(args []string) bool {
+			if matchBinaryName(args, "gemini") {
+				return true
+			}
+			return matchNodeScript(args, "gemini")
+		},
+	},
+	{
 		tool: ToolOpenCode,
 		match: func(args []string) bool {
 			return matchBinaryName(args, "opencode")

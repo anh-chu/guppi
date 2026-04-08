@@ -1,6 +1,7 @@
 export const toolColors: Record<string, string> = {
     claude: '#c4a0ff',
     codex: '#66e088',
+    gemini: '#7fd4ff',
     copilot: '#66b3ff',
     opencode: '#bc8cff',
 }

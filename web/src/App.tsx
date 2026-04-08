@@ -333,13 +333,13 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     setNewSessionModalOpen(true)
   }, [])
 
-  const handleCreateSession = useCallback(async (name: string, hostId?: string) => {
+  const handleCreateSession = useCallback(async (name: string, path: string, command: string, hostId?: string) => {
     setNewSessionModalOpen(false)
     try {
       const res = await fetch('/api/session/new', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, host: hostId || undefined }),
+        body: JSON.stringify({ name, path, command, host: hostId || undefined }),
       })
       if (res.ok) {
         const sessKey = hostId ? `${hostId}/${name}` : name

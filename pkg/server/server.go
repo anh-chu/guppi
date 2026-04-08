@@ -9,10 +9,10 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"strings"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,8 +22,8 @@ import (
 
 	wp "github.com/SherClockHolmes/webpush-go"
 
-	"github.com/ekristen/guppi/pkg/agentcheck"
 	"github.com/ekristen/guppi/pkg/activity"
+	"github.com/ekristen/guppi/pkg/agentcheck"
 	"github.com/ekristen/guppi/pkg/auth"
 	"github.com/ekristen/guppi/pkg/common"
 	"github.com/ekristen/guppi/pkg/identity"
@@ -38,7 +38,6 @@ import (
 	"github.com/ekristen/guppi/pkg/webpush"
 	"github.com/ekristen/guppi/pkg/ws"
 )
-
 
 type Options struct {
 	Port            int
@@ -240,6 +239,9 @@ func Run(ctx context.Context, opts *Options) error {
 			}).Debug("received tool event via API")
 
 			opts.Tracker.Record(&evt)
+			if opts.StateMgr != nil {
+				opts.StateMgr.UpdateSessionMetadataFromEvent(&evt)
+			}
 			w.WriteHeader(http.StatusNoContent)
 		})
 
@@ -262,6 +264,7 @@ func Run(ctx context.Context, opts *Options) error {
 				} else {
 					sessions = opts.StateMgr.GetSessions()
 				}
+				enrichSessionsFromTracker(sessions, opts.Tracker)
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(sessions)
 			})
@@ -278,11 +281,23 @@ func Run(ctx context.Context, opts *Options) error {
 
 			r.Post("/session/new", func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
-					Name string `json:"name"`
-					Host string `json:"host,omitempty"`
+					Name    string `json:"name"`
+					Host    string `json:"host,omitempty"`
+					Path    string `json:"path,omitempty"`
+					Command string `json:"command,omitempty"`
 				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
-					http.Error(w, "name is required", http.StatusBadRequest)
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				req.Name = strings.TrimSpace(req.Name)
+				req.Path = strings.TrimSpace(req.Path)
+				req.Command = strings.TrimSpace(req.Command)
+				if req.Name == "" {
+					req.Name = defaultSessionName(req.Command, req.Path)
+				}
+				if req.Name == "" {
+					http.Error(w, "name or path is required", http.StatusBadRequest)
 					return
 				}
 
@@ -293,7 +308,11 @@ func Run(ctx context.Context, opts *Options) error {
 						http.Error(w, "peer not connected", http.StatusBadGateway)
 						return
 					}
-					params, _ := json.Marshal(map[string]string{"name": req.Name})
+					params, _ := json.Marshal(map[string]string{
+						"name":    req.Name,
+						"path":    req.Path,
+						"command": req.Command,
+					})
 					msg, _ := peer.NewMessage(peer.MsgSessionAction, peer.SessionActionPayload{
 						Action: "new",
 						Params: params,
@@ -307,7 +326,7 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 
-				if err := opts.Client.NewSession(req.Name); err != nil {
+				if err := opts.Client.NewSession(req.Name, req.Path, req.Command); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
@@ -880,4 +899,74 @@ func buildMobileConfig(caCertPEM string) []byte {
 	}
 
 	return []byte(fmt.Sprintf(profileTemplate, clean))
+}
+
+func enrichSessionsFromTracker(sessions []*tmux.Session, tracker *toolevents.Tracker) {
+	if tracker == nil {
+		return
+	}
+	for _, session := range sessions {
+		meta := tracker.SessionMetaFor(session.Host, session.Name)
+		if session.AgentType == "" && meta.Tool != "" {
+			session.AgentType = string(meta.Tool)
+		}
+		if session.ProjectPath == "" && meta.CWD != "" {
+			session.ProjectPath = meta.CWD
+		}
+		if session.PromptPreview == "" && meta.Message != "" {
+			session.PromptPreview = meta.Message
+		}
+		if session.AgentSessionID == "" && meta.AgentSessionID != "" {
+			session.AgentSessionID = meta.AgentSessionID
+		}
+	}
+}
+
+func defaultSessionName(command, projectPath string) string {
+	base := strings.TrimSpace(command)
+	if idx := strings.IndexByte(base, ' '); idx >= 0 {
+		base = base[:idx]
+	}
+	base = strings.Trim(base, `"'`)
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "session"
+	}
+	if projectPath == "" {
+		return ""
+	}
+
+	projectBase := strings.TrimSpace(projectPath)
+	projectBase = strings.TrimRight(projectBase, "/")
+	if idx := strings.LastIndex(projectBase, "/"); idx >= 0 {
+		projectBase = projectBase[idx+1:]
+	}
+	projectBase = sanitizeSessionSegment(projectBase)
+	if projectBase == "" {
+		projectBase = "workspace"
+	}
+
+	return sanitizeSessionSegment(base) + "-" + projectBase
+}
+
+func sanitizeSessionSegment(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		case r == '-', r == '_', r == '.', r == '/', r == ' ':
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }

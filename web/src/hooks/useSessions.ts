@@ -9,6 +9,7 @@ export interface Pane {
   width: number
   height: number
   current_command: string
+  current_path?: string
   pid: number
 }
 
@@ -32,6 +33,10 @@ export interface Session {
   created: string
   attached: boolean
   last_activity: string
+  project_path?: string
+  agent_type?: string
+  prompt_preview?: string
+  agent_session_id?: string
 }
 
 // Unique key for a session across hosts
@@ -66,6 +71,8 @@ export function useSessions() {
 
   useEffect(() => {
     refresh()
+    const interval = setInterval(refresh, 5000)
+    return () => clearInterval(interval)
   }, [refresh])
 
   return { sessions, loading, refresh }

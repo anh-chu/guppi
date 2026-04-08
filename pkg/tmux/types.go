@@ -4,15 +4,19 @@ import "time"
 
 // Session represents a tmux session
 type Session struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Host         string    `json:"host,omitempty"`         // peer fingerprint (empty = local)
-	HostName     string    `json:"host_name,omitempty"`    // peer display name
-	HostOnline   bool      `json:"host_online,omitempty"`  // whether the host peer is connected
-	Windows      []*Window `json:"windows"`
-	Created      time.Time `json:"created"`
-	Attached     bool      `json:"attached"`
-	LastActivity time.Time `json:"last_activity"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Host           string    `json:"host,omitempty"`        // peer fingerprint (empty = local)
+	HostName       string    `json:"host_name,omitempty"`   // peer display name
+	HostOnline     bool      `json:"host_online,omitempty"` // whether the host peer is connected
+	Windows        []*Window `json:"windows"`
+	Created        time.Time `json:"created"`
+	Attached       bool      `json:"attached"`
+	LastActivity   time.Time `json:"last_activity"`
+	ProjectPath    string    `json:"project_path,omitempty"`
+	AgentType      string    `json:"agent_type,omitempty"`
+	PromptPreview  string    `json:"prompt_preview,omitempty"`
+	AgentSessionID string    `json:"agent_session_id,omitempty"`
 }
 
 // Window represents a tmux window
@@ -45,5 +49,6 @@ type Pane struct {
 	Width          int    `json:"width"`
 	Height         int    `json:"height"`
 	CurrentCommand string `json:"current_command"`
+	CurrentPath    string `json:"current_path,omitempty"`
 	PID            int    `json:"pid"`
 }

@@ -12,9 +12,10 @@ import (
 type Tool string
 
 const (
-	ToolClaude  Tool = "claude"
-	ToolCodex   Tool = "codex"
-	ToolCopilot Tool = "copilot"
+	ToolClaude   Tool = "claude"
+	ToolCodex    Tool = "codex"
+	ToolCopilot  Tool = "copilot"
+	ToolGemini   Tool = "gemini"
 	ToolOpenCode Tool = "opencode"
 )
 
@@ -30,16 +31,18 @@ const (
 
 // Event is a single notification from an agent hook
 type Event struct {
-	Tool         Tool      `json:"tool"`
-	Status       Status    `json:"status"`
-	Host         string    `json:"host,omitempty"`          // peer fingerprint (empty = local)
-	HostName     string    `json:"host_name,omitempty"`     // peer display name
-	Session      string    `json:"session"`                 // tmux session name
-	Window       int       `json:"window"`                  // tmux window index
-	Pane         string    `json:"pane,omitempty"`          // tmux pane ID (optional)
-	Message      string    `json:"message,omitempty"`       // human-readable detail
-	Timestamp    time.Time `json:"timestamp"`
-	AutoDetected bool      `json:"auto_detected,omitempty"` // true if detected via process tree (not hooks)
+	Tool           Tool      `json:"tool"`
+	Status         Status    `json:"status"`
+	Host           string    `json:"host,omitempty"`             // peer fingerprint (empty = local)
+	HostName       string    `json:"host_name,omitempty"`        // peer display name
+	Session        string    `json:"session"`                    // tmux session name
+	Window         int       `json:"window"`                     // tmux window index
+	Pane           string    `json:"pane,omitempty"`             // tmux pane ID (optional)
+	Message        string    `json:"message,omitempty"`          // human-readable detail
+	CWD            string    `json:"cwd,omitempty"`              // current working directory when provided by the agent hook
+	AgentSessionID string    `json:"agent_session_id,omitempty"` // upstream agent session/thread id when available
+	Timestamp      time.Time `json:"timestamp"`
+	AutoDetected   bool      `json:"auto_detected,omitempty"` // true if detected via process tree (not hooks)
 }
 
 // PaneKey uniquely identifies a tmux pane
@@ -48,6 +51,13 @@ type PaneKey struct {
 	Session string
 	Window  int
 	Pane    string
+}
+
+type SessionMeta struct {
+	Tool           Tool
+	CWD            string
+	AgentSessionID string
+	Message        string
 }
 
 // nativeWaitingTools is the set of tools that send explicit "waiting" events
@@ -70,13 +80,16 @@ type Tracker struct {
 	// Subscribers
 	subMu       sync.RWMutex
 	subscribers []chan *Event
+
+	sessionMeta map[string]SessionMeta
 }
 
 // NewTracker creates a new tool event tracker
 func NewTracker() *Tracker {
 	return &Tracker{
-		events:     make(map[PaneKey]*Event),
-		lastActive: make(map[PaneKey]*Event),
+		events:      make(map[PaneKey]*Event),
+		lastActive:  make(map[PaneKey]*Event),
+		sessionMeta: make(map[string]SessionMeta),
 	}
 }
 
@@ -102,6 +115,7 @@ func (t *Tracker) Record(evt *Event) {
 		Window:  evt.Window,
 		Pane:    evt.Pane,
 	}
+	sessionKey := evt.Host + "\x00" + evt.Session
 
 	t.mu.Lock()
 	if evt.Status == StatusCompleted || evt.Status == StatusActive {
@@ -134,6 +148,22 @@ func (t *Tracker) Record(evt *Event) {
 		}
 	} else if evt.AutoDetected {
 		log.Trace("tracker: skipping lastActive (auto-detected)")
+	}
+	meta := t.sessionMeta[sessionKey]
+	if evt.Tool != "" {
+		meta.Tool = evt.Tool
+	}
+	if evt.CWD != "" {
+		meta.CWD = evt.CWD
+	}
+	if evt.AgentSessionID != "" {
+		meta.AgentSessionID = evt.AgentSessionID
+	}
+	if evt.Message != "" {
+		meta.Message = evt.Message
+	}
+	if meta != (SessionMeta{}) {
+		t.sessionMeta[sessionKey] = meta
 	}
 	t.mu.Unlock()
 
@@ -187,7 +217,14 @@ func (t *Tracker) Clear(host, session string, window int, pane string) {
 func (t *Tracker) ClearAll() {
 	t.mu.Lock()
 	t.events = make(map[PaneKey]*Event)
+	t.sessionMeta = make(map[string]SessionMeta)
 	t.mu.Unlock()
+}
+
+func (t *Tracker) SessionMetaFor(host, session string) SessionMeta {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.sessionMeta[host+"\x00"+session]
 }
 
 // GetForSession returns events for a specific session

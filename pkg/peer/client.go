@@ -428,13 +428,15 @@ func (c *Client) handleSessionAction(payload *SessionActionPayload, conn *websoc
 	switch payload.Action {
 	case "new":
 		var params struct {
-			Name string `json:"name"`
+			Name    string `json:"name"`
+			Path    string `json:"path,omitempty"`
+			Command string `json:"command,omitempty"`
 		}
 		if err := json.Unmarshal(payload.Params, &params); err != nil || params.Name == "" {
 			log.WithError(err).Debug("invalid new session params")
 			return
 		}
-		if err := c.tmuxClient.NewSession(params.Name); err != nil {
+		if err := c.tmuxClient.NewSession(params.Name, params.Path, params.Command); err != nil {
 			log.WithError(err).Warn("failed to create session on peer")
 			return
 		}

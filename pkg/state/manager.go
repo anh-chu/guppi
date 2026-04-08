@@ -6,13 +6,22 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/ekristen/guppi/pkg/tmux"
+	"github.com/ekristen/guppi/pkg/toolevents"
 )
+
+type SessionMetadata struct {
+	ProjectPath    string
+	AgentType      string
+	PromptPreview  string
+	AgentSessionID string
+}
 
 // Manager holds the central state tree
 type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*tmux.Session
 	client   *tmux.Client
+	meta     map[string]SessionMetadata
 
 	// Subscribers for state changes
 	subMu       sync.RWMutex
@@ -33,6 +42,7 @@ func NewManager(client *tmux.Client) *Manager {
 	return &Manager{
 		sessions: make(map[string]*tmux.Session),
 		client:   client,
+		meta:     make(map[string]SessionMetadata),
 	}
 }
 
@@ -130,7 +140,64 @@ func (m *Manager) loadSessionDetails(session *tmux.Session) error {
 	}
 
 	session.Windows = windows
+	session.ProjectPath = tmux.ResolveProjectPath(windows, "")
+	session.AgentType = tmux.InferAgentType(windows, "")
+
+	if pane := tmux.PrimaryPane(windows); pane != nil {
+		if content, err := m.client.CapturePaneHistory(pane.ID, -200); err == nil {
+			session.PromptPreview = tmux.ExtractPromptPreview(content)
+		}
+	}
+
+	m.applyMetadata(session)
+
 	return nil
+}
+
+func (m *Manager) applyMetadata(session *tmux.Session) {
+	m.mu.RLock()
+	meta := m.meta[session.Name]
+	m.mu.RUnlock()
+
+	if meta.ProjectPath != "" && session.ProjectPath == "" {
+		session.ProjectPath = meta.ProjectPath
+	}
+	if session.AgentType == "" {
+		session.AgentType = tmux.NormalizeAgentType(meta.AgentType)
+	}
+	if meta.PromptPreview != "" && session.PromptPreview == "" {
+		session.PromptPreview = meta.PromptPreview
+	}
+	if meta.AgentSessionID != "" {
+		session.AgentSessionID = meta.AgentSessionID
+	}
+}
+
+// UpdateSessionMetadataFromEvent stores stable metadata derived from agent
+// hooks so it remains available after transient status events are cleared.
+func (m *Manager) UpdateSessionMetadataFromEvent(evt *toolevents.Event) {
+	if evt == nil || evt.Session == "" {
+		return
+	}
+
+	m.mu.Lock()
+	meta := m.meta[evt.Session]
+	if evt.CWD != "" {
+		meta.ProjectPath = evt.CWD
+	}
+	if evt.Tool != "" {
+		meta.AgentType = string(evt.Tool)
+	}
+	if evt.Message != "" {
+		meta.PromptPreview = evt.Message
+	}
+	if evt.AgentSessionID != "" {
+		meta.AgentSessionID = evt.AgentSessionID
+	}
+	m.meta[evt.Session] = meta
+	m.mu.Unlock()
+
+	m.broadcast(StateEvent{Type: "sessions-changed"})
 }
 
 // SessionForPane returns the session name for a given pane ID (e.g. "%42").

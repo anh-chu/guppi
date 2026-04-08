@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Session, sessionKey } from '../hooks/useSessions'
 import { ToolEvent } from '../hooks/useToolEvents'
 import { ActivitySnapshot } from '../hooks/useActivity'
 import { usePreferences } from '../hooks/usePreferences'
-import { toolColors, statusConfig } from '../theme'
+import { statusConfig, toolColors } from '../theme'
 import { cn } from '../lib/utils'
+import { AgentMark } from './AgentMark'
 
 interface SidebarProps {
   sessions: Session[]
@@ -77,17 +78,56 @@ function Sparkline({ data, height = 16 }: { data: number[]; height?: number }) {
   )
 }
 
-function getHiddenSessions(): Set<string> {
+function readStoredList(key: string): string[] {
   try {
-    const stored = localStorage.getItem('guppi:hidden-sessions')
-    return stored ? new Set(JSON.parse(stored)) : new Set()
+    const stored = localStorage.getItem(key)
+    if (!stored) return []
+    const parsed = JSON.parse(stored)
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
   } catch {
-    return new Set()
+    return []
   }
 }
 
-function setHiddenSessions(hidden: Set<string>) {
-  localStorage.setItem('guppi:hidden-sessions', JSON.stringify([...hidden]))
+function writeStoredList(key: string, values: string[]) {
+  localStorage.setItem(key, JSON.stringify(values))
+}
+
+function pathLeaf(path?: string): string {
+  if (!path) return ''
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const parts = trimmed.split(/[\\/]/)
+  return parts[parts.length - 1] || trimmed
+}
+
+function shortSessionId(value?: string): string {
+  if (!value) return ''
+  return value.length > 8 ? value.slice(0, 8) : value
+}
+
+function formatUptime(created?: string): string {
+  if (!created) return ''
+  const ms = Date.now() - new Date(created).getTime()
+  if (!Number.isFinite(ms) || ms < 0) return ''
+  const minutes = Math.floor(ms / 60000)
+  if (minutes < 1) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  const days = Math.floor(hours / 24)
+  return `${days}d`
+}
+
+function orderSessions(sessions: Session[], order: string[]): Session[] {
+  const rank = new Map(order.map((value, index) => [value, index]))
+  return [...sessions].sort((a, b) => {
+    const aRank = rank.get(sessionKey(a))
+    const bRank = rank.get(sessionKey(b))
+    if (aRank !== undefined && bRank !== undefined) return aRank - bRank
+    if (aRank !== undefined) return -1
+    if (bRank !== undefined) return 1
+    return a.name.localeCompare(b.name)
+  })
 }
 
 export function Sidebar({
@@ -103,12 +143,19 @@ export function Sidebar({
   getSessionActivity,
 }: SidebarProps) {
   const { prefs } = usePreferences()
-  const [hiddenSet, setHiddenSet] = useState<Set<string>>(() => getHiddenSessions())
+  const [hiddenSet, setHiddenSet] = useState<Set<string>>(() => new Set(readStoredList('guppi:hidden-sessions')))
+  const [manualOrder, setManualOrder] = useState<string[]>(() => readStoredList('guppi:session-order'))
+  const [projectFilters, setProjectFilters] = useState<string[]>(() => readStoredList('guppi:project-filters'))
   const [hiddenExpanded, setHiddenExpanded] = useState(false)
   const [renamingSession, setRenamingSession] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
-  const [contextMenu, setContextMenu] = useState<{ session: string; x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ key: string; name: string; x: number; y: number } | null>(null)
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [draggingKey, setDraggingKey] = useState<string | null>(null)
+  const [dropTargetKey, setDropTargetKey] = useState<string | null>(null)
+  const [, setUptimeTick] = useState(0)
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const filterRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (renamingSession && renameInputRef.current) {
@@ -118,21 +165,76 @@ export function Sidebar({
   }, [renamingSession])
 
   useEffect(() => {
-    if (!contextMenu) return
-    const handler = () => setContextMenu(null)
+    const id = window.setInterval(() => setUptimeTick(value => value + 1), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    if (!contextMenu && !filterOpen) return
+    const handler = (event: MouseEvent) => {
+      const target = event.target as Node | null
+      if (filterOpen && target && filterRef.current?.contains(target)) return
+      setContextMenu(null)
+      setFilterOpen(false)
+    }
     window.addEventListener('click', handler)
     return () => window.removeEventListener('click', handler)
-  }, [contextMenu])
+  }, [contextMenu, filterOpen])
 
-  const visibleSessions = [...sessions.filter(s => !hiddenSet.has(s.name))].sort((a, b) => a.name.localeCompare(b.name))
-  const hiddenSessions = sessions.filter(s => hiddenSet.has(s.name))
+  useEffect(() => {
+    writeStoredList('guppi:hidden-sessions', [...hiddenSet])
+  }, [hiddenSet])
 
-  const toggleHide = (name: string) => {
+  useEffect(() => {
+    writeStoredList('guppi:session-order', manualOrder)
+  }, [manualOrder])
+
+  useEffect(() => {
+    writeStoredList('guppi:project-filters', projectFilters)
+  }, [projectFilters])
+
+  useEffect(() => {
+    const validKeys = new Set(sessions.map(sessionKey))
+    const nextOrder = manualOrder.filter(key => validKeys.has(key))
+    if (nextOrder.length !== manualOrder.length) {
+      setManualOrder(nextOrder)
+    }
+    const nextHidden = [...hiddenSet].filter(key => validKeys.has(key))
+    if (nextHidden.length !== hiddenSet.size) {
+      setHiddenSet(new Set(nextHidden))
+    }
+  }, [sessions, manualOrder, hiddenSet])
+
+  const projects = useMemo(
+    () => Array.from(new Set(sessions.map(s => s.project_path).filter((value): value is string => Boolean(value)))).sort(),
+    [sessions],
+  )
+
+  useEffect(() => {
+    if (projectFilters.length === 0) return
+    const validProjects = new Set(projects)
+    const nextFilters = projectFilters.filter(project => validProjects.has(project))
+    if (nextFilters.length !== projectFilters.length) {
+      setProjectFilters(nextFilters)
+    }
+  }, [projectFilters, projects])
+
+  const orderedSessions = useMemo(() => orderSessions(sessions, manualOrder), [sessions, manualOrder])
+
+  const visibleSessions = useMemo(() => {
+    const filtered = orderedSessions.filter(session => !hiddenSet.has(sessionKey(session)))
+    if (projectFilters.length === 0) return filtered
+    const allowed = new Set(projectFilters)
+    return filtered.filter(session => session.project_path && allowed.has(session.project_path))
+  }, [orderedSessions, hiddenSet, projectFilters])
+
+  const hiddenSessions = orderedSessions.filter(session => hiddenSet.has(sessionKey(session)))
+
+  const toggleHide = (key: string) => {
     const next = new Set(hiddenSet)
-    if (next.has(name)) next.delete(name)
-    else next.add(name)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
     setHiddenSet(next)
-    setHiddenSessions(next)
     setContextMenu(null)
   }
 
@@ -154,13 +256,6 @@ export function Sidebar({
         body: JSON.stringify({ old_name: renamingSession, new_name: renameValue.trim() }),
       })
       if (res.ok) {
-        if (hiddenSet.has(renamingSession)) {
-          const next = new Set(hiddenSet)
-          next.delete(renamingSession)
-          next.add(renameValue.trim())
-          setHiddenSet(next)
-          setHiddenSessions(next)
-        }
         onSessionRenamed?.(renamingSession, renameValue.trim())
       }
     } catch (err) {
@@ -168,6 +263,53 @@ export function Sidebar({
     }
     setRenamingSession(null)
   }
+
+  const handleDrop = (targetKey: string) => {
+    if (!draggingKey || draggingKey === targetKey) {
+      setDraggingKey(null)
+      setDropTargetKey(null)
+      return
+    }
+
+    const visibleKeys = visibleSessions.map(sessionKey)
+    const oldIndex = visibleKeys.indexOf(draggingKey)
+    const newIndex = visibleKeys.indexOf(targetKey)
+    if (oldIndex === -1 || newIndex === -1) {
+      setDraggingKey(null)
+      setDropTargetKey(null)
+      return
+    }
+
+    const reorderedVisible = [...visibleKeys]
+    const [removed] = reorderedVisible.splice(oldIndex, 1)
+    reorderedVisible.splice(newIndex, 0, removed)
+
+    const fullOrder = orderedSessions.map(sessionKey)
+    const visibleSet = new Set(reorderedVisible)
+    let visibleIndex = 0
+    const nextOrder = fullOrder.map(key => {
+      if (!visibleSet.has(key)) return key
+      const next = reorderedVisible[visibleIndex]
+      visibleIndex += 1
+      return next
+    })
+
+    setManualOrder(nextOrder)
+    setDraggingKey(null)
+    setDropTargetKey(null)
+  }
+
+  const groupedVisibleSessions = useMemo(() => {
+    if (!hasMultipleHosts) return []
+    const groups: Array<{ label: string; sessions: Session[] }> = []
+    for (const session of visibleSessions) {
+      const label = session.host_name || 'Local'
+      const existing = groups.find(group => group.label === label)
+      if (existing) existing.sessions.push(session)
+      else groups.push({ label, sessions: [session] })
+    }
+    return groups
+  }, [hasMultipleHosts, visibleSessions])
 
   const renderSessionItem = (session: Session, isHiddenSection = false) => {
     const sk = sessionKey(session)
@@ -178,27 +320,46 @@ export function Sidebar({
     const active = isSessionActive(session)
     const isRenaming = renamingSession === session.name
     const isOffline = session.host && session.host_online === false
+    const promptPreview = session.prompt_preview?.trim()
+    const projectName = pathLeaf(session.project_path)
+    const agentType = session.agent_type || events[0]?.tool
 
     return (
       <li key={sk}>
         <button
+          draggable={!collapsed && !isRenaming}
+          onDragStart={() => setDraggingKey(sk)}
+          onDragEnd={() => {
+            setDraggingKey(null)
+            setDropTargetKey(null)
+          }}
+          onDragOver={(event) => {
+            event.preventDefault()
+            if (draggingKey && draggingKey !== sk) setDropTargetKey(sk)
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            handleDrop(sk)
+          }}
           onClick={() => !isRenaming && onSessionSelect(session)}
           onContextMenu={(e) => {
             e.preventDefault()
-            setContextMenu({ session: session.name, x: e.clientX, y: e.clientY })
+            setContextMenu({ key: sk, name: session.name, x: e.clientX, y: e.clientY })
           }}
           className={cn(
-            'flex flex-col w-full p-3 rounded transition-all duration-200',
-            'hover:bg-sidebar-accent text-sidebar-foreground',
+            'flex flex-col w-full p-3 rounded transition-all duration-200 text-sidebar-foreground',
+            'hover:bg-sidebar-accent',
             isSelected && 'bg-sidebar-accent text-sidebar-primary border-l-2 border-primary',
             needsAttention && !isSelected && 'border-l-2 border-warning bg-warning/5',
             !isSelected && !needsAttention && 'border-l-2 border-transparent',
             (isHiddenSection || isOffline) && 'opacity-60',
             isRenaming && 'cursor-default',
+            draggingKey === sk && 'opacity-75 cursor-grabbing',
+            dropTargetKey === sk && 'ring-1 ring-primary/60',
           )}
         >
-          {/* Row 1: name + status */}
           <div className="flex items-center gap-2 w-full">
+            {!collapsed && <AgentMark agentType={agentType} className="h-5 min-w-8 px-1.5 shrink-0" />}
             {isRenaming ? (
               <input
                 ref={renameInputRef}
@@ -220,6 +381,16 @@ export function Sidebar({
                 {collapsed ? session.name.charAt(0).toUpperCase() : session.name}
               </span>
             )}
+            {!collapsed && session.agent_session_id && (
+              <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground font-mono" title={session.agent_session_id}>
+                {shortSessionId(session.agent_session_id)}
+              </span>
+            )}
+            {!collapsed && (
+              <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground" title={`Uptime: ${formatUptime(session.created)}`}>
+                {formatUptime(session.created)}
+              </span>
+            )}
             {!collapsed && session.attached && (
               <span className="w-2 h-2 rounded-full bg-success shrink-0" title="attached" />
             )}
@@ -228,14 +399,27 @@ export function Sidebar({
             )}
           </div>
 
-          {/* Row 2: sparkline */}
-          {!collapsed && prefs.sparklines_visible && act && act.sparkline && (
+          {!collapsed && (projectName || promptPreview) && (
+            <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+              {projectName && (
+                <span className="shrink-0 rounded border border-border px-1.5 py-0.5" title={session.project_path}>
+                  {projectName}
+                </span>
+              )}
+              {promptPreview && (
+                <span className="min-w-0 truncate italic" title={promptPreview}>
+                  "{promptPreview}"
+                </span>
+              )}
+            </div>
+          )}
+
+          {!collapsed && prefs.sparklines_visible && act?.sparkline && (
             <div className={cn('mt-1.5 w-full', events.filter(e => e.status === 'waiting' || e.status === 'error').length > 0 && 'mb-1')}>
               <Sparkline data={act.sparkline} height={14} />
             </div>
           )}
 
-          {/* Row 3: agent badges */}
           {!collapsed && events.filter(e => e.status === 'waiting' || e.status === 'error').length > 0 && (
             <div className="flex gap-1 flex-wrap mt-1">
               {events
@@ -251,55 +435,89 @@ export function Sidebar({
   }
 
   const isHidden = collapsed && collapseMode === 'hidden'
+  const filterLabel = projectFilters.length === 0 ? 'All projects' : `${projectFilters.length} projects`
+  const contextTargetSession = contextMenu
+    ? orderedSessions.find(session => sessionKey(session) === contextMenu.key) || null
+    : null
+  const canRenameContextTarget = Boolean(contextTargetSession && !contextTargetSession.host)
 
   return (
     <aside className={cn(
       'flex flex-col h-full bg-sidebar transition-all duration-300 font-mono text-sm font-bold',
       collapsed
         ? collapseMode === 'hidden' ? 'w-0 overflow-hidden' : 'w-16'
-        : 'w-56',
+        : 'w-72',
       !isHidden && 'border-r border-sidebar-border',
     )}>
-      {/* Session list */}
+      {!collapsed && (
+        <div className="px-2 pt-2" ref={filterRef}>
+          <button
+            type="button"
+            onClick={() => setFilterOpen(value => !value)}
+            className="w-full rounded border border-sidebar-border bg-sidebar-accent px-3 py-2 text-left text-[11px] text-muted-foreground hover:text-sidebar-foreground"
+          >
+            {filterLabel}
+          </button>
+          {filterOpen && (
+            <div className="mt-1 rounded border border-sidebar-border bg-sidebar p-2 shadow-lg">
+              <label className="flex items-center gap-2 px-1 py-1 text-[11px] text-sidebar-foreground">
+                <input
+                  type="checkbox"
+                  checked={projectFilters.length === 0}
+                  onChange={() => setProjectFilters([])}
+                />
+                All projects
+              </label>
+              <div className="max-h-48 overflow-y-auto">
+                {projects.map(project => (
+                  <label key={project} className="flex items-center gap-2 px-1 py-1 text-[11px] text-sidebar-foreground" title={project}>
+                    <input
+                      type="checkbox"
+                      checked={projectFilters.includes(project)}
+                      onChange={() => {
+                        setProjectFilters(current => current.includes(project)
+                          ? current.filter(value => value !== project)
+                          : [...current, project])
+                      }}
+                    />
+                    <span className="truncate">{pathLeaf(project)}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <nav className="flex-1 overflow-y-auto p-2">
         <ul className="space-y-1">
-          {sessions.length === 0 && (
+          {visibleSessions.length === 0 && (
             <li className="p-3 text-muted-foreground text-sm">
               {collapsed ? '—' : 'No sessions'}
             </li>
           )}
 
           {hasMultipleHosts ? (
-            // Group by host
-            (() => {
-              const groups = new Map<string, Session[]>()
-              for (const s of visibleSessions) {
-                const hostLabel = s.host_name || 'Local'
-                if (!groups.has(hostLabel)) groups.set(hostLabel, [])
-                groups.get(hostLabel)!.push(s)
-              }
-              return Array.from(groups.entries()).sort(([a], [b]) => a === 'Local' ? -1 : b === 'Local' ? 1 : a.localeCompare(b)).map(([hostLabel, hostSessions]) => (
-                <li key={hostLabel}>
-                  {!collapsed && (
-                    <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
-                      <span className={cn(
-                        'w-1.5 h-1.5 rounded-full',
-                        hostSessions[0]?.host_online !== false ? 'bg-success' : 'bg-muted-foreground',
-                      )} />
-                      {hostLabel}
-                    </div>
-                  )}
-                  <ul className="space-y-0.5">
-                    {hostSessions.map(session => renderSessionItem(session))}
-                  </ul>
-                </li>
-              ))
-            })()
+            groupedVisibleSessions.map(group => (
+              <li key={group.label}>
+                {!collapsed && (
+                  <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
+                    <span className={cn(
+                      'w-1.5 h-1.5 rounded-full',
+                      group.sessions[0]?.host_online !== false ? 'bg-success' : 'bg-muted-foreground',
+                    )} />
+                    {group.label}
+                  </div>
+                )}
+                <ul className="space-y-0.5">
+                  {group.sessions.map(session => renderSessionItem(session))}
+                </ul>
+              </li>
+            ))
           ) : (
-            visibleSessions.map((session) => renderSessionItem(session))
+            visibleSessions.map(session => renderSessionItem(session))
           )}
 
-          {/* Hidden sessions */}
           {hiddenSessions.length > 0 && !collapsed && (
             <>
               <li
@@ -314,13 +532,12 @@ export function Sidebar({
                 </span>
                 Hidden ({hiddenSessions.length})
               </li>
-              {hiddenExpanded && hiddenSessions.map((session) => renderSessionItem(session, true))}
+              {hiddenExpanded && hiddenSessions.map(session => renderSessionItem(session, true))}
             </>
           )}
         </ul>
       </nav>
 
-      {/* Context menu */}
       {contextMenu && (
         <div
           className="fixed bg-popover border border-border rounded-md py-1 z-[1000] shadow-lg min-w-[140px]"
@@ -328,16 +545,19 @@ export function Sidebar({
           onClick={(e) => e.stopPropagation()}
         >
           <div
-            onClick={() => startRename(contextMenu.session)}
-            className="px-3 py-1.5 text-sm text-popover-foreground cursor-pointer hover:bg-accent hover:text-accent-foreground"
+            onClick={() => canRenameContextTarget && startRename(contextMenu.name)}
+            className={cn(
+              'px-3 py-1.5 text-sm text-popover-foreground hover:bg-accent hover:text-accent-foreground',
+              canRenameContextTarget ? 'cursor-pointer' : 'cursor-not-allowed opacity-50',
+            )}
           >
             Rename
           </div>
           <div
-            onClick={() => toggleHide(contextMenu.session)}
+            onClick={() => toggleHide(contextMenu.key)}
             className="px-3 py-1.5 text-sm text-popover-foreground cursor-pointer hover:bg-accent hover:text-accent-foreground"
           >
-            {hiddenSet.has(contextMenu.session) ? 'Unhide' : 'Hide'}
+            {hiddenSet.has(contextMenu.key) ? 'Unhide' : 'Hide'}
           </div>
         </div>
       )}
