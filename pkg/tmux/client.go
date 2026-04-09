@@ -245,7 +245,7 @@ func (c *Client) NewSession(name, projectPath, command string) error {
 		args = append(args, "-c", projectPath)
 	}
 	if command != "" {
-		args = append(args, command)
+		args = append(args, wrapSessionCommand(command)...)
 	}
 	_, err := c.Exec(args...)
 	return err
@@ -270,6 +270,23 @@ func expandSessionPath(projectPath string) string {
 	default:
 		return projectPath
 	}
+}
+
+func wrapSessionCommand(command string) []string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil
+	}
+
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+
+	// Run the requested command in a login shell, then hand control back to an
+	// interactive shell when it exits so the pane stays alive.
+	script := command + "; exec " + shell + " -i"
+	return []string{shell, "-lc", script}
 }
 
 // RenameSession renames a tmux session
