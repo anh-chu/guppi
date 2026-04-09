@@ -1,9 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Host } from '../hooks/useHosts'
+import { Session } from '../hooks/useSessions'
 import { AgentMark } from './AgentMark'
 
 interface NewSessionModalProps {
   hosts: Host[]
+  sessions: Session[]
   onCreateSession: (name: string, path: string, command: string, hostId?: string) => void
   onClose: () => void
 }
@@ -24,10 +26,10 @@ function basename(value: string): string {
   return parts[parts.length - 1] || ''
 }
 
-export function NewSessionModal({ hosts, onCreateSession, onClose }: NewSessionModalProps) {
+export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: NewSessionModalProps) {
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
-  const [preset, setPreset] = useState('codex')
+  const [preset, setPreset] = useState<string | null>('claude')
   const [customCommand, setCustomCommand] = useState('')
   const onlineHosts = hosts.filter(h => h.online)
   const showHostSelect = onlineHosts.length > 1
@@ -35,14 +37,34 @@ export function NewSessionModal({ hosts, onCreateSession, onClose }: NewSessionM
   const [selectedHost, setSelectedHost] = useState<string>(localHost?.id || '')
   const pathInputRef = useRef<HTMLInputElement>(null)
   const resolvedCommand = useMemo(() => {
+    if (!preset) return ''
     if (preset === 'custom') return customCommand.trim()
     return presets.find(p => p.id === preset)?.command || ''
   }, [preset, customCommand])
+  const existingNames = useMemo(() => {
+    return new Set(
+      sessions
+        .filter(session => (selectedHost ? session.host === selectedHost : !session.host))
+        .map(session => session.name),
+    )
+  }, [selectedHost, sessions])
+  const uniqueSessionName = (value: string) => {
+    const trimmed = value.trim()
+    if (!trimmed) return ''
+    if (!existingNames.has(trimmed)) return trimmed
+    let suffix = 2
+    let candidate = `${trimmed}-${suffix}`
+    while (existingNames.has(candidate)) {
+      suffix += 1
+      candidate = `${trimmed}-${suffix}`
+    }
+    return candidate
+  }
   const suggestedName = useMemo(() => {
     const leaf = basename(path)
     if (!leaf) return ''
-    return `${preset === 'custom' ? 'session' : preset}-${leaf}`
-  }, [path, preset])
+    return uniqueSessionName(`${!preset || preset === 'custom' ? 'session' : preset}-${leaf}`)
+  }, [path, preset, existingNames])
 
   useEffect(() => {
     pathInputRef.current?.focus()
@@ -62,8 +84,8 @@ export function NewSessionModal({ hosts, onCreateSession, onClose }: NewSessionM
 
   const handleSubmit = () => {
     const trimmedPath = path.trim()
-    const trimmedName = name.trim() || suggestedName
-    if (!trimmedPath || !trimmedName || !resolvedCommand) return
+    const trimmedName = uniqueSessionName(name.trim() || suggestedName)
+    if (!trimmedPath || !trimmedName) return
     onCreateSession(trimmedName, trimmedPath, resolvedCommand, selectedHost || undefined)
   }
 
@@ -106,7 +128,7 @@ export function NewSessionModal({ hosts, onCreateSession, onClose }: NewSessionM
                     <button
                       key={option.id}
                       type="button"
-                      onClick={() => setPreset(option.id)}
+                      onClick={() => setPreset(current => (current === option.id ? null : option.id))}
                       className={`flex items-center gap-2 rounded border px-2 py-2 text-xs transition-colors ${active ? 'border-primary bg-primary/15 text-foreground' : 'border-border text-muted-foreground hover:text-foreground hover:border-primary/40'}`}
                     >
                       <AgentMark agentType={option.id} className="h-5 min-w-8 px-1.5" />
@@ -164,7 +186,7 @@ export function NewSessionModal({ hosts, onCreateSession, onClose }: NewSessionM
             </button>
             <button
               onClick={handleSubmit}
-              disabled={!path.trim() || !resolvedCommand || !(name.trim() || suggestedName)}
+              disabled={!path.trim() || !(name.trim() || suggestedName) || (preset === 'custom' && !resolvedCommand)}
               className="text-xs text-foreground bg-primary/20 hover:bg-primary/30 border border-primary/40 px-3 py-1 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Create

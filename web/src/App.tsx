@@ -342,7 +342,9 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         body: JSON.stringify({ name, path, command, host: hostId || undefined }),
       })
       if (res.ok) {
-        const sessKey = hostId ? `${hostId}/${name}` : name
+        const payload = await res.json().catch(() => null)
+        const resolvedName = payload?.name || name
+        const sessKey = hostId ? `${hostId}/${resolvedName}` : resolvedName
         pendingSessionRef.current = sessKey
         navigateTo(sessKey)
         await refresh()
@@ -392,6 +394,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       {newSessionModalOpen && (
         <NewSessionModal
           hosts={hosts}
+          sessions={sessions}
           onCreateSession={handleCreateSession}
           onClose={() => setNewSessionModalOpen(false)}
         />

@@ -293,9 +293,7 @@ func Run(ctx context.Context, opts *Options) error {
 				req.Name = strings.TrimSpace(req.Name)
 				req.Path = strings.TrimSpace(req.Path)
 				req.Command = strings.TrimSpace(req.Command)
-				if req.Name == "" {
-					req.Name = defaultSessionName(req.Command, req.Path)
-				}
+				req.Name = resolveNewSessionName(opts, req.Host, req.Name, req.Command, req.Path)
 				if req.Name == "" {
 					http.Error(w, "name or path is required", http.StatusBadRequest)
 					return
@@ -319,7 +317,8 @@ func Run(ctx context.Context, opts *Options) error {
 					})
 					select {
 					case peerConn.Send <- msg:
-						w.WriteHeader(http.StatusNoContent)
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(map[string]string{"name": req.Name})
 					default:
 						http.Error(w, "peer send queue full", http.StatusBadGateway)
 					}
@@ -334,7 +333,8 @@ func Run(ctx context.Context, opts *Options) error {
 				if fresh, err := opts.Client.ListSessions(); err == nil {
 					opts.StateMgr.UpdateSessions(fresh)
 				}
-				w.WriteHeader(http.StatusNoContent)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"name": req.Name})
 			})
 
 			r.Post("/session/rename", func(w http.ResponseWriter, r *http.Request) {
@@ -995,4 +995,83 @@ func sanitizeSessionSegment(value string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+func resolveNewSessionName(opts *Options, host, name, command, projectPath string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = defaultSessionName(command, projectPath)
+	}
+	if name == "" {
+		return ""
+	}
+	return ensureUniqueSessionName(name, existingSessionNames(opts, host))
+}
+
+func existingSessionNames(opts *Options, host string) []string {
+	if opts == nil {
+		return nil
+	}
+
+	if host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(host) {
+		sessions := opts.PeerMgr.GetAllSessions()
+		names := make([]string, 0, len(sessions))
+		for _, session := range sessions {
+			if session != nil && session.Host == host {
+				names = append(names, session.Name)
+			}
+		}
+		return names
+	}
+
+	if opts.Client != nil {
+		if sessions, err := opts.Client.ListSessions(); err == nil {
+			names := make([]string, 0, len(sessions))
+			for _, session := range sessions {
+				if session != nil {
+					names = append(names, session.Name)
+				}
+			}
+			return names
+		}
+	}
+
+	if opts.StateMgr != nil {
+		sessions := opts.StateMgr.GetSessions()
+		names := make([]string, 0, len(sessions))
+		for _, session := range sessions {
+			if session != nil {
+				names = append(names, session.Name)
+			}
+		}
+		return names
+	}
+
+	return nil
+}
+
+func ensureUniqueSessionName(name string, existing []string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+
+	used := make(map[string]struct{}, len(existing))
+	for _, candidate := range existing {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" {
+			used[candidate] = struct{}{}
+		}
+	}
+
+	if _, exists := used[name]; !exists {
+		return name
+	}
+
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", name, i)
+		if _, exists := used[candidate]; !exists {
+			return candidate
+		}
+	}
 }

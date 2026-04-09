@@ -3,7 +3,9 @@ package tmux
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -239,7 +241,7 @@ func (c *Client) SelectPane(target string) error {
 // the requested agent or shell process inside the session.
 func (c *Client) NewSession(name, projectPath, command string) error {
 	args := []string{"new-session", "-d", "-s", name}
-	if projectPath != "" {
+	if projectPath = expandSessionPath(projectPath); projectPath != "" {
 		args = append(args, "-c", projectPath)
 	}
 	if command != "" {
@@ -247,6 +249,27 @@ func (c *Client) NewSession(name, projectPath, command string) error {
 	}
 	_, err := c.Exec(args...)
 	return err
+}
+
+func expandSessionPath(projectPath string) string {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" || projectPath[0] != '~' {
+		return projectPath
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return projectPath
+	}
+
+	switch {
+	case projectPath == "~":
+		return home
+	case strings.HasPrefix(projectPath, "~/"):
+		return filepath.Join(home, strings.TrimPrefix(projectPath, "~/"))
+	default:
+		return projectPath
+	}
 }
 
 // RenameSession renames a tmux session
