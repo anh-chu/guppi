@@ -4,6 +4,7 @@ export const toolColors: Record<string, string> = {
     gemini: '#7fd4ff',
     copilot: '#66b3ff',
     opencode: '#bc8cff',
+    pi: '#ff7b29',
 }
 
 export const statusConfig: Record<string, { color: string; label: string; icon?: string; bg?: string }> = {

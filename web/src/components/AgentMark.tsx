@@ -7,6 +7,7 @@ const agentLabels: Record<string, string> = {
   gemini: 'Ge',
   copilot: 'Cp',
   opencode: 'Oc',
+  pi: 'Pi',
   custom: '*>',
 }
 

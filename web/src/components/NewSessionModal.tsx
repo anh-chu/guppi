@@ -13,11 +13,11 @@ interface NewSessionModalProps {
 
 const presets = [
   { id: 'claude', label: 'Claude', command: 'claude' },
+  { id: 'pi', label: 'Pi', command: 'pi' },
   { id: 'codex', label: 'Codex', command: 'codex' },
   { id: 'gemini', label: 'Gemini', command: 'gemini' },
   { id: 'copilot', label: 'Copilot', command: 'copilot' },
   { id: 'opencode', label: 'OpenCode', command: 'opencode' },
-  { id: 'custom', label: 'Custom', command: '' },
 ]
 
 function basename(value: string): string {
@@ -31,17 +31,13 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [preset, setPreset] = useState<string | null>('claude')
-  const [customCommand, setCustomCommand] = useState('')
+  const [command, setCommand] = useState('claude')
   const onlineHosts = hosts.filter(h => h.online)
   const showHostSelect = onlineHosts.length > 1
   const localHost = onlineHosts.find(h => h.local)
   const [selectedHost, setSelectedHost] = useState<string>(localHost?.id || '')
   const pathInputRef = useRef<HTMLInputElement>(null)
-  const resolvedCommand = useMemo(() => {
-    if (!preset) return ''
-    if (preset === 'custom') return customCommand.trim()
-    return presets.find(p => p.id === preset)?.command || ''
-  }, [preset, customCommand])
+  const resolvedCommand = command.trim()
   const existingNames = useMemo(() => {
     return new Set(
       sessions
@@ -64,8 +60,18 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   const suggestedName = useMemo(() => {
     const leaf = basename(path || '~')
     if (!leaf) return ''
-    return uniqueSessionName(`${!preset || preset === 'custom' ? 'session' : preset}-${leaf}`)
+    return uniqueSessionName(`${preset || 'session'}-${leaf}`)
   }, [path, preset, existingNames])
+
+  const handlePresetClick = (id: string) => {
+    if (preset === id) {
+      setPreset(null)
+      setCommand('')
+    } else {
+      setPreset(id)
+      setCommand(presets.find(p => p.id === id)?.command || '')
+    }
+  }
 
   useEffect(() => {
     pathInputRef.current?.focus()
@@ -129,7 +135,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
                     <button
                       key={option.id}
                       type="button"
-                      onClick={() => setPreset(current => (current === option.id ? null : option.id))}
+                      onClick={() => handlePresetClick(option.id)}
                       className={cn(
                         'flex flex-col items-center gap-2 rounded-lg border p-3 transition-all duration-200',
                         active 
@@ -146,15 +152,13 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
                   )
                 })}
               </div>
-              {preset === 'custom' && (
-                <input
-                  value={customCommand}
-                  onChange={e => setCustomCommand(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Custom shell command..."
-                  className="mt-3 w-full text-[13px] text-ink bg-surface-elevated border border-hairline rounded-sm px-3 py-2 outline-none font-mono placeholder:text-mute/40 focus:border-primary/60 transition-colors"
-                />
-              )}
+              <input
+                value={command}
+                onChange={e => { setCommand(e.target.value); setPreset(null) }}
+                onKeyDown={handleKeyDown}
+                placeholder="shell command..."
+                className="mt-3 w-full text-[13px] text-ink bg-surface-elevated border border-hairline rounded-sm px-3 py-2 outline-none font-mono placeholder:text-mute/40 focus:border-primary/60 transition-colors"
+              />
             </div>
             <div>
               <div className="text-xs font-bold text-mute/60 uppercase tracking-wider mb-2 ml-1">Session Name</div>
@@ -198,7 +202,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
           <div className="flex gap-3">
             <button
               onClick={handleSubmit}
-              disabled={!(name.trim() || suggestedName) || (preset === 'custom' && !resolvedCommand)}
+              disabled={!(name.trim() || suggestedName) || !resolvedCommand}
               className="px-6 py-2 rounded-full text-[13px] font-bold uppercase tracking-widest bg-primary text-primary-foreground hover:bg-white/90 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             >
               Create
