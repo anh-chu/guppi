@@ -2,6 +2,7 @@ package ws
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -29,6 +30,13 @@ func CheckSameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true // non-browser clients (curl, CLI) don't send Origin
+	}
+	// Allow connections from loopback — dev proxy (e.g. Vite) runs on localhost
+	// and forwards requests with a different origin than the server host.
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return true
+		}
 	}
 	// Parse the origin to extract the host
 	// Origin format: scheme://host[:port]

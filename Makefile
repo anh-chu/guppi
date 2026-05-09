@@ -10,7 +10,7 @@ frontend:
 
 # Development mode - run Go server with live reload
 dev:
-	go run . server
+	go run . server --no-tls
 
 # Clean build artifacts
 clean:

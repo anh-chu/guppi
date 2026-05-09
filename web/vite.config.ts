@@ -15,11 +15,13 @@ export default defineConfig({
     },
   },
   server: {
+  	allowedHosts: ["devvm"],
     proxy: {
       '/api': 'http://localhost:7654',
       '/ws': {
-        target: 'ws://localhost:7654',
+        target: 'http://localhost:7654',
         ws: true,
+        rewriteWsOrigin: true,
       },
     },
   },
