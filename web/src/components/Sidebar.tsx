@@ -321,26 +321,23 @@ export function Sidebar({
     return splitPanes.filter(key => visibleKeys.has(key))
   }, [splitPanes, visibleSessions])
 
+  const splitKeySet = useMemo(() => new Set(splitKeys), [splitKeys])
+
   const splitSessions = useMemo(() => {
     return splitKeys.map(key => visibleSessions.find(s => sessionKey(s) === key)!).filter(Boolean)
   }, [splitKeys, visibleSessions])
 
-  const restSessions = useMemo(() => {
-    const splitKeySet = new Set(splitKeys)
-    return visibleSessions.filter(s => !splitKeySet.has(sessionKey(s)))
-  }, [visibleSessions, splitKeys])
-
-  const groupedRestSessions = useMemo(() => {
+  const groupedVisibleSessions = useMemo(() => {
     if (!hasMultipleHosts) return []
     const groups: Array<{ label: string; sessions: Session[] }> = []
-    for (const session of restSessions) {
+    for (const session of visibleSessions) {
       const label = session.host_name || 'Local'
-      const existing = groups.find(group => group.label === label)
+      const existing = groups.find(g => g.label === label)
       if (existing) existing.sessions.push(session)
       else groups.push({ label, sessions: [session] })
     }
     return groups
-  }, [hasMultipleHosts, restSessions])
+  }, [hasMultipleHosts, visibleSessions])
 
   const renderSessionItem = (session: Session, isHiddenSection = false, bracketChar?: string | null) => {
     const sk = sessionKey(session)
@@ -630,24 +627,8 @@ export function Sidebar({
             </li>
           )}
 
-          {splitSessions.length > 0 && (
-            <li>
-              <ul className="space-y-0.5">
-                {splitSessions.map((session, index) => {
-                  const showBrackets = splitSessions.length > 1
-                  const bc = !collapsed && showBrackets
-                    ? index === 0 ? '┬' : index === splitSessions.length - 1 ? '└' : '├'
-                    : null
-                  return renderSessionItem(session, false, bc)
-                })}
-              </ul>
-            </li>
-          )}
-          {splitSessions.length > 0 && restSessions.length > 0 && (
-            <li className="h-2" />
-          )}
           {hasMultipleHosts ? (
-            groupedRestSessions.map(group => (
+            groupedVisibleSessions.map(group => (
               <li key={group.label}>
                 {!collapsed && (
                   <div className="px-3 pt-2 pb-1 text-xs uppercase tracking-wider text-mute font-semibold flex items-center gap-1.5">
@@ -664,7 +645,16 @@ export function Sidebar({
               </li>
             ))
           ) : (
-            restSessions.map(session => renderSessionItem(session))
+            visibleSessions.map((session, idx) => {
+              const sk = sessionKey(session)
+              let bc: string | null = null
+              if (!collapsed && splitKeySet.has(sk) && splitKeys.length > 1) {
+                const prevSplit = idx > 0 && splitKeySet.has(sessionKey(visibleSessions[idx - 1]))
+                const nextSplit = idx < visibleSessions.length - 1 && splitKeySet.has(sessionKey(visibleSessions[idx + 1]))
+                if (prevSplit || nextSplit) bc = !prevSplit ? '┬' : !nextSplit ? '└' : '├'
+              }
+              return renderSessionItem(session, false, bc)
+            })
           )}
 
           {hiddenSessions.length > 0 && !collapsed && (
