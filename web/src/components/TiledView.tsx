@@ -118,8 +118,9 @@ export function TiledView({
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     // Ignore pane swap drags
     if (e.dataTransfer.types.includes('application/x-guppi-pane')) return
+    // Only clear when leaving the container itself, not moving into a child
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return
     e.preventDefault()
-    e.stopPropagation()
     setDragOver(false)
   }, [])
 
@@ -137,6 +138,13 @@ export function TiledView({
     },
     [onDropSession],
   )
+
+  // Safety net: clear overlay if drag is cancelled (Escape) or ends outside
+  useEffect(() => {
+    const onDragEnd = () => { setDragOver(false); setDropTarget(null) }
+    document.addEventListener('dragend', onDragEnd)
+    return () => document.removeEventListener('dragend', onDragEnd)
+  }, [])
 
   const dropOverlay = dragOver ? (
     <div className="absolute inset-0 z-10 bg-primary/10 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
@@ -205,6 +213,7 @@ export function TiledView({
             return
           }
           // Sidebar session drop
+          setDragOver(false)
           const sidebarKey = e.dataTransfer.getData('text/plain')
           if (sidebarKey) onDropSession?.(sidebarKey)
         }}
