@@ -2,9 +2,9 @@
 
 > **Stack:** chi | none | react | go
 
-> 72 routes | 0 models | 13 components | 55 lib files | 6 env vars | 1 middleware | 0% test coverage
-> **Token savings:** this file is ~5,300 tokens. Without it, AI exploration would cost ~66,100 tokens. **Saves ~60,900 tokens per conversation.**
-> **Last scanned:** 2026-05-10 05:33 — re-run after significant changes
+> 72 routes | 0 models | 13 components | 55 lib files | 7 env vars | 1 middleware | 0% test coverage
+> **Token savings:** this file is ~5,300 tokens. Without it, AI exploration would cost ~66,200 tokens. **Saves ~61,000 tokens per conversation.**
+> **Last scanned:** 2026-05-10 05:53 — re-run after significant changes
 
 ---
 
@@ -292,6 +292,7 @@
 
 ## Environment Variables
 
+- `GUPPI_BIN` **required** — pkg/commands/agent-setup/pi-extension/guppi.ts
 - `PATH` **required** — pkg/commands/install/install.go
 - `SHELL` **required** — pkg/tmux/client.go
 - `TMPDIR` **required** — pkg/socket/socket.go

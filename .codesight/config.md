@@ -2,6 +2,7 @@
 
 ## Environment Variables
 
+- `GUPPI_BIN` **required** — pkg/commands/agent-setup/pi-extension/guppi.ts
 - `PATH` **required** — pkg/commands/install/install.go
 - `SHELL` **required** — pkg/tmux/client.go
 - `TMPDIR` **required** — pkg/socket/socket.go

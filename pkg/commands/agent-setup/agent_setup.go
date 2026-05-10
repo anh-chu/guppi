@@ -2,6 +2,7 @@ package agentsetup
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,9 @@ import (
 
 	"github.com/ekristen/guppi/pkg/common"
 )
+
+//go:embed pi-extension/guppi.ts
+var piExtensionTemplate string
 
 type agentConfig struct {
 	name     string
@@ -71,6 +75,12 @@ func Execute(ctx context.Context, c *cli.Command) error {
 			key:    "opencode",
 			binary: "opencode",
 			setup:  setupOpenCode,
+		},
+		{
+			name:   "Pi",
+			key:    "pi",
+			binary: "pi",
+			setup:  setupPi,
 		},
 	}
 
@@ -452,6 +462,39 @@ func setupOpenCodeDir(configDir, guppiBin string) error {
 		}
 	}
 
+	return nil
+}
+
+// setupPi configures Pi extension in ~/.pi/agent/extensions/ and any extra dirs
+func setupPi(serverURL, guppiBin string, resilient bool, extraDirs []string) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	dirs := append([]string{filepath.Join(homeDir, ".pi", "agent", "extensions")}, extraDirs...)
+	for _, dir := range dirs {
+		if err := setupPiDir(dir, guppiBin, resilient); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func setupPiDir(configDir, guppiBin string, resilient bool) error {
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return err
+	}
+
+	// Replace placeholder with actual guppi binary path
+	content := strings.ReplaceAll(piExtensionTemplate, "__GUPPI_BIN__", guppiBin)
+
+	pluginFile := filepath.Join(configDir, "guppi.ts")
+	if err := os.WriteFile(pluginFile, []byte(content), 0o644); err != nil {
+		return err
+	}
+
+	fmt.Printf("  Wrote extension to %s\n", pluginFile)
 	return nil
 }
 

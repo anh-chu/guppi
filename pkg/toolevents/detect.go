@@ -58,6 +58,12 @@ var agentPatterns = []agentPattern{
 			return matchBinaryName(args, "opencode")
 		},
 	},
+	{
+		tool: ToolPi,
+		match: func(args []string) bool {
+			return matchBinaryName(args, "pi")
+		},
+	},
 }
 
 // matchBinaryName checks if the first arg (the binary) has the given base name.

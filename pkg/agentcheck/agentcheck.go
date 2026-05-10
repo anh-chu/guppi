@@ -52,6 +52,12 @@ func CheckAgents() *StatusResult {
 				Installed:  isInstalled("opencode"),
 				Configured: isOpenCodeConfigured(home),
 			},
+			{
+				Name:       "Pi",
+				Key:        "pi",
+				Installed:  isInstalled("pi"),
+				Configured: isPiConfigured(home),
+			},
 		},
 	}
 	return result
@@ -86,6 +92,12 @@ func isCopilotConfigured(home string) bool {
 
 func isOpenCodeConfigured(home string) bool {
 	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", "guppi.js")
+	_, err := os.Stat(pluginPath)
+	return err == nil
+}
+
+func isPiConfigured(home string) bool {
+	pluginPath := filepath.Join(home, ".pi", "agent", "extensions", "guppi.ts")
 	_, err := os.Stat(pluginPath)
 	return err == nil
 }

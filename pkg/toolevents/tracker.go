@@ -17,6 +17,7 @@ const (
 	ToolCopilot  Tool = "copilot"
 	ToolGemini   Tool = "gemini"
 	ToolOpenCode Tool = "opencode"
+	ToolPi       Tool = "pi"
 )
 
 // Status represents the current state of an agent
@@ -66,6 +67,7 @@ type SessionMeta struct {
 var nativeWaitingTools = map[Tool]bool{
 	ToolClaude:   true,
 	ToolOpenCode: true,
+	ToolPi:       true,
 }
 
 // Tracker tracks the latest status of AI tools per tmux pane

@@ -6,7 +6,7 @@
 
 ## Scale
 
-72 API routes · 13 UI components · 55 library files · 1 middleware layers · 6 environment variables
+72 API routes · 13 UI components · 55 library files · 1 middleware layers · 7 environment variables
 
 ## Subsystems
 
@@ -52,6 +52,7 @@ Changes to these files have the widest blast radius across the codebase:
 
 ## Required Environment Variables
 
+- `GUPPI_BIN` — `pkg/commands/agent-setup/pi-extension/guppi.ts`
 - `PATH` — `pkg/commands/install/install.go`
 - `SHELL` — `pkg/tmux/client.go`
 - `TMPDIR` — `pkg/socket/socket.go`
