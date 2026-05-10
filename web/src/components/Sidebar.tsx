@@ -418,26 +418,54 @@ export function Sidebar({
               onPairSessions?.(draggingKey, sk)
             } else {
               const position = ratio < 0.25 ? 'above' : 'below'
-              // Both in split group — reorder pane tree, not manualOrder
-              if (splitKeys.includes(draggingKey) && splitKeys.includes(sk)) {
-                onReorderSplitPanes?.(draggingKey, sk)
-                setDraggingKey(null); setPairTarget(null); setDropIndicator(null)
-                return
+              const dragInSplit = splitKeySet.has(draggingKey)
+              const targetInSplit = splitKeySet.has(sk)
+
+              const applyOrder = (newOrder: string[]) => {
+                const full = orderedSessions.map(sessionKey)
+                const s = new Set(newOrder); let i = 0
+                setManualOrder(full.map(k => s.has(k) ? newOrder[i++] : k))
               }
-              const visibleKeys = visibleSessions.map(sessionKey)
-              const from = visibleKeys.indexOf(draggingKey)
-              const targetIdx = visibleKeys.indexOf(sk)
-              if (from !== -1 && targetIdx !== -1) {
-                const reordered = [...visibleKeys]
-                reordered.splice(from, 1)
-                const insertAt = position === 'above'
-                  ? (targetIdx > from ? targetIdx - 1 : targetIdx)
-                  : (targetIdx > from ? targetIdx : targetIdx + 1)
-                reordered.splice(Math.max(0, insertAt), 0, draggingKey)
-                const fullOrder = orderedSessions.map(sessionKey)
-                const visibleSet = new Set(reordered)
-                let vi = 0
-                setManualOrder(fullOrder.map(key => visibleSet.has(key) ? reordered[vi++] : key))
+
+              if (dragInSplit && targetInSplit) {
+                // Both split: swap in pane tree
+                onReorderSplitPanes?.(draggingKey, sk)
+              } else if (!dragInSplit && targetInSplit) {
+                // Rest onto split edge: move rest to before/after the whole group
+                const keys = visibleSessions.map(sessionKey)
+                const withoutDrag = keys.filter(k => k !== draggingKey)
+                const splitIdxs = splitKeys.map(k => withoutDrag.indexOf(k)).filter(i => i !== -1)
+                if (splitIdxs.length > 0) {
+                  const insertAt = position === 'above'
+                    ? Math.min(...splitIdxs)
+                    : Math.max(...splitIdxs) + 1
+                  withoutDrag.splice(Math.max(0, insertAt), 0, draggingKey)
+                  applyOrder(withoutDrag)
+                }
+              } else if (dragInSplit && !targetInSplit) {
+                // Split onto rest edge: move whole group before/after target
+                const keys = visibleSessions.map(sessionKey)
+                const withoutGroup = keys.filter(k => !splitKeySet.has(k))
+                const targetIdx = withoutGroup.indexOf(sk)
+                if (targetIdx !== -1) {
+                  const insertAt = position === 'above' ? targetIdx : targetIdx + 1
+                  withoutGroup.splice(Math.max(0, insertAt), 0, ...splitKeys)
+                  applyOrder(withoutGroup)
+                }
+              } else {
+                // Both rest: normal reorder
+                const keys = visibleSessions.map(sessionKey)
+                const from = keys.indexOf(draggingKey)
+                const to = keys.indexOf(sk)
+                if (from !== -1 && to !== -1) {
+                  const reordered = [...keys]
+                  reordered.splice(from, 1)
+                  const insertAt = position === 'above'
+                    ? (to > from ? to - 1 : to)
+                    : (to > from ? to : to + 1)
+                  reordered.splice(Math.max(0, insertAt), 0, draggingKey)
+                  applyOrder(reordered)
+                }
               }
             }
             setDraggingKey(null)
