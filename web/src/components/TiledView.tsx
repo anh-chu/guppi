@@ -247,15 +247,16 @@ export function TiledView({
         )}
         {/* Header — only when more than one leaf */}
         {totalLeaves > 1 && (
-          <div className="flex items-center justify-between px-2.5 py-1 bg-surface border-b border-hairline rounded-t-lg shrink-0">
-            <span
+          <div
+              className="flex items-center justify-between px-2.5 py-1 bg-surface border-b border-hairline rounded-t-lg shrink-0 cursor-grab active:cursor-grabbing"
               draggable={totalLeaves > 1}
               onDragStart={(e) => {
+                if ((e.target as HTMLElement).closest('button')) { e.preventDefault(); return }
                 e.dataTransfer.setData('application/x-guppi-pane', sessionKey)
                 e.dataTransfer.effectAllowed = 'move'
               }}
-              className="text-[11px] font-medium text-ink truncate min-w-0 mr-2 cursor-grab"
             >
+            <span className="text-[11px] font-medium text-ink truncate min-w-0 mr-2 select-none">
               {name}
             </span>
             <div className="flex items-center gap-1">

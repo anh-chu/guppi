@@ -412,24 +412,28 @@ export function Sidebar({
           onDrop={(e) => {
             e.preventDefault()
             if (!draggingKey || draggingKey === sk) return
-            if (pairTarget === sk) {
+            // Recompute zone from drop position — onDragLeave may have cleared state
+            const rect = e.currentTarget.getBoundingClientRect()
+            const ratio = (e.clientY - rect.top) / rect.height
+            if (ratio >= 0.25 && ratio <= 0.75) {
               onPairSessions?.(draggingKey, sk)
-            } else if (dropIndicator?.key === sk) {
-              // reorder: move draggingKey to before or after sk
+            } else {
+              const position = ratio < 0.25 ? 'above' : 'below'
               const visibleKeys = visibleSessions.map(sessionKey)
               const from = visibleKeys.indexOf(draggingKey)
-              let to = visibleKeys.indexOf(sk)
-              if (dropIndicator.position === 'below') to += 1
-              if (from === -1 || to === -1) return
-              const reordered = [...visibleKeys]
-              reordered.splice(from, 1)
-              const adjustedTo = dropIndicator.position === 'below' && to > from ? to - 1 : to
-              reordered.splice(Math.max(0, adjustedTo), 0, draggingKey)
-              const fullOrder = orderedSessions.map(sessionKey)
-              const visibleSet = new Set(reordered)
-              let vi = 0
-              const nextOrder = fullOrder.map(key => visibleSet.has(key) ? reordered[vi++] : key)
-              setManualOrder(nextOrder)
+              const targetIdx = visibleKeys.indexOf(sk)
+              if (from !== -1 && targetIdx !== -1) {
+                const reordered = [...visibleKeys]
+                reordered.splice(from, 1)
+                const insertAt = position === 'above'
+                  ? (targetIdx > from ? targetIdx - 1 : targetIdx)
+                  : (targetIdx > from ? targetIdx : targetIdx + 1)
+                reordered.splice(Math.max(0, insertAt), 0, draggingKey)
+                const fullOrder = orderedSessions.map(sessionKey)
+                const visibleSet = new Set(reordered)
+                let vi = 0
+                setManualOrder(fullOrder.map(key => visibleSet.has(key) ? reordered[vi++] : key))
+              }
             }
             setDraggingKey(null)
             setPairTarget(null)
@@ -538,7 +542,7 @@ export function Sidebar({
             </div>
           )}
           {pairTarget === sk && (
-            <div className="absolute inset-0 rounded-sm bg-primary/10 border border-primary/60 flex items-center justify-center pointer-events-none z-10">
+            <div className="absolute inset-0 rounded-sm bg-canvas/80 backdrop-blur-sm border-2 border-primary flex items-center justify-center pointer-events-none z-10">
               <span className="text-[10px] font-bold text-primary uppercase tracking-widest">⊞ Split</span>
             </div>
           )}
