@@ -2,9 +2,9 @@
 
 > **Stack:** chi | none | react | go
 
-> 72 routes | 0 models | 14 components | 55 lib files | 7 env vars | 1 middleware | 0% test coverage
-> **Token savings:** this file is ~5,300 tokens. Without it, AI exploration would cost ~66,600 tokens. **Saves ~61,200 tokens per conversation.**
-> **Last scanned:** 2026-05-10 07:55 — re-run after significant changes
+> 72 routes | 0 models | 14 components | 56 lib files | 7 env vars | 1 middleware | 0% test coverage
+> **Token savings:** this file is ~5,400 tokens. Without it, AI exploration would cost ~66,800 tokens. **Saves ~61,400 tokens per conversation.**
+> **Last scanned:** 2026-05-10 08:36 — re-run after significant changes
 
 ---
 
@@ -98,7 +98,7 @@
 - **AgentStatusList** — props: agents — `web/src/components/Setup.tsx`
 - **StatusBar** — props: sessionCount, connected, activeSession, waitingCount, pushState, version, updateAvailable, hosts, agentCount, onHelp — `web/src/components/StatusBar.tsx`
 - **Terminal** — props: sessionName, hostId, fullscreen, onToggleFullscreen — `web/src/components/Terminal.tsx`
-- **TiledView** — props: panes, activePaneIndex, onActivate, onClose, fullscreen, onToggleFullscreen, terminalContainerRef, onDropSession, onPopOut — `web/src/components/TiledView.tsx`
+- **TiledView** — props: tree, activeKey, onActivate, onClose, onPopOut, onSplit, onRatioChange, fullscreen, onToggleFullscreen, terminalContainerRef — `web/src/components/TiledView.tsx`
 - **TopBar** — props: currentView, sidebarCollapsed, onToggleCollapse, onOverview, onSettings, onNewSession, events, connected, onJumpToSession, onDismiss — `web/src/components/TopBar.tsx`
 - **TrustCertificate** — props: onBack — `web/src/components/TrustCertificate.tsx`
 
@@ -281,6 +281,14 @@
 - `web/src/hooks/useTerminal.ts` — function useTerminal: (sessionName, hostId?) => void
 - `web/src/hooks/useToolEvents.ts` — function useToolEvents: () => void, interface ToolEvent
 - `web/src/hooks/useWebSocket.ts` — function useWebSocket: (path, onMessage) => void
+- `web/src/lib/paneTree.ts`
+  - function getLeaves: (tree) => string[]
+  - function findLeaf: (tree, key) => boolean
+  - function splitLeaf: (tree, targetKey, direction, newKey) => PaneTree
+  - function removeLeaf: (tree, key) => PaneTree | null
+  - function replaceLeaf: (tree, oldKey, newKey) => PaneTree
+  - function updateRatio: (tree, path, ratio) => PaneTree
+  - _...4 more_
 - `web/src/lib/utils.ts` — function cn: (...inputs) => void
 - `web/src/theme.ts`
   - function applyTheme: (themeName, customTheme?, string>) => void

@@ -2,131 +2,76 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { Terminal } from './Terminal'
 import { parseSessionKey } from '../hooks/useSessions'
 import { cn } from '../lib/utils'
+import { PaneTree, getLeaves } from '../lib/paneTree'
 
 interface TiledViewProps {
-  panes: string[]
-  activePaneIndex: number
-  onActivate: (index: number) => void
-  onClose: (index: number) => void
+  tree: PaneTree | null
+  activeKey: string | null
+  onActivate: (key: string) => void
+  onClose: (key: string) => void
+  onPopOut: (key: string) => void
+  onSplit: (key: string, direction: 'h' | 'v') => void
+  onRatioChange: (path: string, ratio: number) => void
   fullscreen: boolean
   onToggleFullscreen: () => void
   terminalContainerRef?: React.RefObject<HTMLDivElement | null>
-  onDropSession?: (sessKey: string) => void
-  onPopOut?: (index: number) => void
+  onDropSession?: (key: string) => void
 }
 
 const MIN_PANE_SIZE = 200 // px
 
-type DividerOrientation = 'vertical' | 'horizontal'
-
-interface DragState {
-  orientation: DividerOrientation
-  /** Which dimension index this divider controls in the sizes array */
-  sizeIndex: number
-  /** Pointer start position (clientX for vertical, clientY for horizontal) */
-  startPos: number
-  /** Snapshot of sizes at drag start */
-  startSizes: number[]
-  /** Pane count at drag start */
-  paneCount: number
-}
-
 export function TiledView({
-  panes,
-  activePaneIndex,
+  tree,
+  activeKey,
   onActivate,
   onClose,
+  onPopOut,
+  onSplit,
+  onRatioChange,
   fullscreen,
   onToggleFullscreen,
   terminalContainerRef,
   onDropSession,
-  onPopOut,
 }: TiledViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const paneCount = panes.length
   const [dragOver, setDragOver] = useState(false)
 
-  // --------------- sizes state ---------------
+  const totalLeaves = tree ? getLeaves(tree).length : 0
 
-  const getDefaultSizes = useCallback((count: number): number[] => {
-    switch (count) {
-      case 2: return [50]
-      case 3: return [33.33, 33.33]
-      case 4: return [50, 50, 50]
-      default: return []
-    }
-  }, [])
+  // --------------- divider drag handling ---------------
 
-  const [sizes, setSizes] = useState<number[]>(() => getDefaultSizes(paneCount))
+  const dragRef = useRef<{
+    path: string
+    direction: 'h' | 'v'
+    startPos: number
+    startRatio: number
+  } | null>(null)
 
-  // Reset sizes when pane count changes (e.g. 2→3→2 etc.)
-  useEffect(() => {
-    setSizes(getDefaultSizes(paneCount))
-  }, [paneCount, getDefaultSizes])
-
-  // --------------- drag handling ---------------
-
-  const dragRef = useRef<DragState | null>(null)
-  // Keep a mutable ref to the latest sizes/paneCount so pointer handlers
-  // can read them without stale closures
-  const liveRef = useRef({ sizes, paneCount, containerRef })
-  liveRef.current = { sizes, paneCount, containerRef }
+  const onRatioChangeRef = useRef(onRatioChange)
+  onRatioChangeRef.current = onRatioChange
 
   useEffect(() => {
     const onPointerMove = (e: PointerEvent) => {
       const state = dragRef.current
       if (!state) return
-
-      const { sizes: curSizes, containerRef: cRef, paneCount: pc } = liveRef.current
-      const container = cRef.current
+      const container = containerRef.current
       if (!container) return
 
       const rect = container.getBoundingClientRect()
       const containerSize =
-        state.orientation === 'vertical' ? rect.width : rect.height
+        state.direction === 'h' ? rect.width : rect.height
       if (containerSize <= 0) return
 
       const currentPos =
-        state.orientation === 'vertical' ? e.clientX : e.clientY
+        state.direction === 'h' ? e.clientX : e.clientY
       const delta = currentPos - state.startPos
-      const deltaPercent = (delta / containerSize) * 100
-      const minPercent = (MIN_PANE_SIZE / containerSize) * 100
+      const deltaRatio = delta / containerSize
+      const minPercent = MIN_PANE_SIZE / containerSize
 
-      const newSizes = [...state.startSizes]
-      const idx = state.sizeIndex
+      let newRatio = state.startRatio + deltaRatio
+      newRatio = Math.max(minPercent, Math.min(1 - minPercent, newRatio))
 
-      if (state.orientation === 'vertical') {
-        if (pc === 2) {
-          // One divider: sizes[0] = left width
-          newSizes[0] = Math.max(
-            minPercent,
-            Math.min(100 - minPercent, state.startSizes[0] + deltaPercent),
-          )
-        } else if (pc === 3) {
-          // Two dividers: sizes[0] = col1, sizes[1] = col2, col3 = remaining
-          const otherFixed = idx === 0 ? state.startSizes[1] : state.startSizes[0]
-          const maxVal = 100 - minPercent - otherFixed
-          newSizes[idx] = Math.max(
-            minPercent,
-            Math.min(maxVal, state.startSizes[idx] + deltaPercent),
-          )
-        } else if (pc === 4) {
-          // sizes[1] = top-left, sizes[2] = bottom-left
-          const maxVal = 100 - minPercent
-          newSizes[idx] = Math.max(
-            minPercent,
-            Math.min(maxVal, state.startSizes[idx] + deltaPercent),
-          )
-        }
-      } else {
-        // Horizontal divider (only for 4-pane): sizes[0] = top row height %
-        newSizes[0] = Math.max(
-          minPercent,
-          Math.min(100 - minPercent, state.startSizes[0] + deltaPercent),
-        )
-      }
-
-      setSizes(newSizes)
+      onRatioChangeRef.current(state.path, newRatio)
     }
 
     const onPointerUp = () => {
@@ -141,26 +86,21 @@ export function TiledView({
     }
   }, [])
 
-  const onDividerPointerDown = useCallback(
-    (orientation: DividerOrientation, sizeIndex: number) =>
-      (e: React.PointerEvent<HTMLDivElement>) => {
-        e.preventDefault()
-        const container = containerRef.current
-        if (!container) return
-
-        dragRef.current = {
-          orientation,
-          sizeIndex,
-          startPos:
-            orientation === 'vertical' ? e.clientX : e.clientY,
-          startSizes: [...liveRef.current.sizes],
-          paneCount: liveRef.current.paneCount,
-        }
-      },
+  const handleDividerPointerDown = useCallback(
+    (
+      path: string,
+      direction: 'h' | 'v',
+      currentRatio: number,
+      e: React.PointerEvent<HTMLDivElement>,
+    ) => {
+      e.preventDefault()
+      const startPos = direction === 'h' ? e.clientX : e.clientY
+      dragRef.current = { path, direction, startPos, startRatio: currentRatio }
+    },
     [],
   )
 
-  // --------------- render helpers ---------------
+  // --------------- drop handling ---------------
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -174,53 +114,109 @@ export function TiledView({
     setDragOver(false)
   }, [])
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragOver(false)
-    const sessKey = e.dataTransfer.getData('text/plain')
-    if (sessKey && paneCount < 4 && panes.indexOf(sessKey) === -1) {
-      onDropSession?.(sessKey)
-    }
-  }, [onDropSession, paneCount, panes])
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      setDragOver(false)
+      const sessKey = e.dataTransfer.getData('text/plain')
+      if (sessKey) {
+        onDropSession?.(sessKey)
+      }
+    },
+    [onDropSession],
+  )
 
-  const dropOverlay = dragOver && paneCount < 4 ? (
+  const dropOverlay = dragOver ? (
     <div className="absolute inset-0 z-10 bg-primary/10 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
       <span className="text-sm font-medium text-primary">Drop to split</span>
     </div>
   ) : null
 
-  const renderPane = (index: number) => {
-    const key = panes[index]
-    const { host, name } = parseSessionKey(key)
-    const isActive = index === activePaneIndex
+  // --------------- render pane ---------------
+
+  const renderPane = (sessionKey: string) => {
+    const { host, name } = parseSessionKey(sessionKey)
+    const isActive = sessionKey === activeKey
 
     return (
       <div
-        key={key}
+        key={sessionKey}
         className={cn(
           'flex-1 flex flex-col overflow-hidden rounded-lg border min-h-0',
           isActive ? 'border-primary' : 'border-hairline',
         )}
         onClick={() => {
-          if (index !== activePaneIndex) onActivate(index)
+          if (sessionKey !== activeKey) onActivate(sessionKey)
         }}
       >
-        {/* Header — only when more than one tile */}
-        {paneCount > 1 && (
+        {/* Header — only when more than one leaf */}
+        {totalLeaves > 1 && (
           <div className="flex items-center justify-between px-2.5 py-1 bg-surface border-b border-hairline rounded-t-lg shrink-0">
             <span className="text-[11px] font-medium text-ink truncate min-w-0 mr-2">
               {name}
             </span>
             <div className="flex items-center gap-1">
+              {/* Split horizontal */}
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
-                  onPopOut?.(index)
+                  onSplit(sessionKey, 'h')
+                }}
+                className="text-mute hover:text-ink p-0.5 rounded shrink-0 hover:bg-surface-elevated transition-colors"
+                aria-label="Split pane horizontally"
+                title="Split horizontally"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="3" y="3" width="7" height="18" rx="1" />
+                  <rect x="14" y="3" width="7" height="18" rx="1" />
+                </svg>
+              </button>
+              {/* Split vertical */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onSplit(sessionKey, 'v')
+                }}
+                className="text-mute hover:text-ink p-0.5 rounded shrink-0 hover:bg-surface-elevated transition-colors"
+                aria-label="Split pane vertically"
+                title="Split vertically"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="3" y="3" width="18" height="7" rx="1" />
+                  <rect x="3" y="14" width="18" height="7" rx="1" />
+                </svg>
+              </button>
+              {/* Pop out */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onPopOut(sessionKey)
                 }}
                 className="text-mute hover:text-ink p-0.5 rounded shrink-0 hover:bg-surface-elevated transition-colors"
                 aria-label="Pop out pane"
+                title="Pop out"
               >
                 <svg
                   width="12"
@@ -238,14 +234,16 @@ export function TiledView({
                   <line x1="3" y1="21" x2="10" y2="14" />
                 </svg>
               </button>
+              {/* Close */}
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
-                  onClose(index)
+                  onClose(sessionKey)
                 }}
                 className="text-mute hover:text-ink p-0.5 rounded shrink-0 hover:bg-surface-elevated transition-colors"
                 aria-label="Close pane"
+                title="Close"
               >
                 <svg
                   width="12"
@@ -279,135 +277,58 @@ export function TiledView({
     )
   }
 
-  const renderVerticalDivider = (sizeIndex: number) => (
-    <div
-      key={`vdiv-${sizeIndex}`}
-      className="relative shrink-0 bg-hairline hover:bg-primary/40 transition-colors cursor-col-resize"
-      style={{ width: 2 }}
-      onPointerDown={onDividerPointerDown('vertical', sizeIndex)}
-    />
-  )
+  // --------------- recursive render ---------------
 
-  const renderHorizontalDivider = () => (
-    <div
-      key="hdiv"
-      className="relative shrink-0 bg-hairline hover:bg-primary/40 transition-colors cursor-row-resize"
-      style={{ height: 2 }}
-      onPointerDown={onDividerPointerDown('horizontal', 0)}
-    />
-  )
+  const renderNode = (node: PaneTree, path: string): React.ReactNode => {
+    if (node.type === 'leaf') {
+      return renderPane(node.sessionKey)
+    }
 
-  // --------------- layout ---------------
+    // Split node
+    const isH = node.direction === 'h'
+    const isV = node.direction === 'v'
 
-  if (paneCount === 1) {
+    const dividerProps: React.HTMLAttributes<HTMLDivElement> & {
+      style: React.CSSProperties
+    } = {
+      className:
+        'relative shrink-0 bg-hairline hover:bg-primary/40 transition-colors',
+      style: isH
+        ? { width: 2, cursor: 'col-resize' }
+        : { height: 2, cursor: 'row-resize' },
+      onPointerDown: (e: React.PointerEvent<HTMLDivElement>) =>
+        handleDividerPointerDown(path, node.direction, node.ratio, e),
+    }
+
     return (
       <div
-        ref={containerRef}
-        className="flex-1 flex flex-col overflow-hidden relative"
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        {renderPane(0)}
-        {dropOverlay}
-      </div>
-    )
-  }
-
-  if (paneCount === 2) {
-    return (
-      <div
-        ref={containerRef}
-        className="flex-1 flex flex-row overflow-hidden gap-0 relative"
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
+        className={`flex-1 flex overflow-hidden ${isH ? 'flex-row' : 'flex-col'}`}
       >
         <div
           className="flex flex-col overflow-hidden"
-          style={{ flex: `0 0 ${sizes[0]}%` }}
+          style={{ flex: `0 0 ${node.ratio * 100}%` }}
         >
-          {renderPane(0)}
+          {renderNode(node.first, path ? `${path}/0` : '0')}
         </div>
-        {renderVerticalDivider(0)}
+        <div {...dividerProps} />
         <div className="flex flex-col overflow-hidden min-w-0 flex-1">
-          {renderPane(1)}
+          {renderNode(node.second, path ? `${path}/1` : '1')}
         </div>
-        {dropOverlay}
       </div>
     )
   }
 
-  if (paneCount === 3) {
-    return (
-      <div
-        ref={containerRef}
-        className="flex-1 flex flex-row overflow-hidden gap-0 relative"
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <div
-          className="flex flex-col overflow-hidden"
-          style={{ flex: `0 0 ${sizes[0]}%` }}
-        >
-          {renderPane(0)}
-        </div>
-        {renderVerticalDivider(0)}
-        <div
-          className="flex flex-col overflow-hidden"
-          style={{ flex: `0 0 ${sizes[1]}%` }}
-        >
-          {renderPane(1)}
-        </div>
-        {renderVerticalDivider(1)}
-        <div className="flex flex-col overflow-hidden min-w-0 flex-1">
-          {renderPane(2)}
-        </div>
-        {dropOverlay}
-      </div>
-    )
-  }
+  // --------------- main render ---------------
 
-  // paneCount === 4
   return (
     <div
       ref={containerRef}
-      className="flex-1 flex flex-col overflow-hidden gap-0 relative"
+      className="flex-1 flex flex-col overflow-hidden relative"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Top row */}
-      <div
-        className="flex flex-row overflow-hidden"
-        style={{ flex: `0 0 ${sizes[0]}%` }}
-      >
-        <div
-          className="flex flex-col overflow-hidden"
-          style={{ flex: `0 0 ${sizes[1]}%` }}
-        >
-          {renderPane(0)}
-        </div>
-        {renderVerticalDivider(1)}
-        <div className="flex flex-col overflow-hidden min-w-0 flex-1">
-          {renderPane(1)}
-        </div>
-      </div>
-      {renderHorizontalDivider()}
-      {/* Bottom row */}
-      <div className="flex flex-row overflow-hidden min-w-0 flex-1">
-        <div
-          className="flex flex-col overflow-hidden"
-          style={{ flex: `0 0 ${sizes[2]}%` }}
-        >
-          {renderPane(2)}
-        </div>
-        {renderVerticalDivider(2)}
-        <div className="flex flex-col overflow-hidden min-w-0 flex-1">
-          {renderPane(3)}
-        </div>
-      </div>
+      {tree ? renderNode(tree, '') : null}
       {dropOverlay}
     </div>
   )

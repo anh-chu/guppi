@@ -175,6 +175,14 @@
 - `web/src/hooks/useTerminal.ts` — function useTerminal: (sessionName, hostId?) => void
 - `web/src/hooks/useToolEvents.ts` — function useToolEvents: () => void, interface ToolEvent
 - `web/src/hooks/useWebSocket.ts` — function useWebSocket: (path, onMessage) => void
+- `web/src/lib/paneTree.ts`
+  - function getLeaves: (tree) => string[]
+  - function findLeaf: (tree, key) => boolean
+  - function splitLeaf: (tree, targetKey, direction, newKey) => PaneTree
+  - function removeLeaf: (tree, key) => PaneTree | null
+  - function replaceLeaf: (tree, oldKey, newKey) => PaneTree
+  - function updateRatio: (tree, path, ratio) => PaneTree
+  - _...4 more_
 - `web/src/lib/utils.ts` — function cn: (...inputs) => void
 - `web/src/theme.ts`
   - function applyTheme: (themeName, customTheme?, string>) => void

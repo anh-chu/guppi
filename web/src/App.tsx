@@ -6,6 +6,7 @@ import { QuickSwitcher } from './components/QuickSwitcher'
 import { NewSessionModal } from './components/NewSessionModal'
 import { TopBar } from './components/TopBar'
 import { TiledView } from './components/TiledView'
+import { PaneTree, getLeaves, findLeaf, splitLeaf, removeLeaf, replaceLeaf, updateRatio, popOut } from './lib/paneTree'
 import { StatusBar } from './components/StatusBar'
 import { Settings } from './components/Settings'
 import { HelpModal } from './components/HelpModal'
@@ -54,12 +55,14 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const { hosts, refresh: refreshHosts } = useHosts()
   const [currentView, setCurrentView] = useState<View>(() => getViewFromPath().view)
-  const [panes, setPanes] = useState<string[]>(() => {
+  const [paneTree, setPaneTree] = useState<PaneTree | null>(() => {
     const sk = getViewFromPath().sessionKey
-    return sk ? [sk] : []
+    return sk ? popOut(sk) : null
   })
-  const [activePaneIndex, setActivePaneIndex] = useState(0)
-  const selectedSession = panes[activePaneIndex] ?? null
+  const [activeKey, setActiveKey] = useState<string | null>(() => {
+    return getViewFromPath().sessionKey
+  })
+  const selectedSession = activeKey
   const hasMultipleHosts = hosts.length > 1
   const [serverVersion, setServerVersion] = useState<string | null>(null)
   const loadedVersionRef = useRef<string | null>(null)
@@ -73,8 +76,9 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const [terminalFullscreen, setTerminalFullscreen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const pendingSessionRef = useRef<string | null>(null)
-  const addPaneModeRef = useRef(false)
-  const splitModeRef = useRef(false)
+  const splitTargetRef = useRef<{ key: string; direction: 'h' | 'v' } | null>(null)
+  const activeKeyRef = useRef(activeKey)
+  activeKeyRef.current = activeKey
   const { prefs } = usePreferences()
 
   // Auto-lock: idle detection + optional background accelerator
@@ -130,8 +134,13 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     const onPopState = () => {
       const { view, sessionKey } = getViewFromPath()
       setCurrentView(view)
-      setPanes(sessionKey ? [sessionKey] : [])
-      setActivePaneIndex(0)
+      if (sessionKey) {
+        setPaneTree(popOut(sessionKey))
+        setActiveKey(sessionKey)
+      } else {
+        setPaneTree(null)
+        setActiveKey(null)
+      }
     }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
@@ -160,57 +169,77 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     }
     setCurrentView(view || (sessKey ? 'session' : 'overview'))
     if (!sessKey) {
-      setPanes([])
-      setActivePaneIndex(0)
+      setPaneTree(null)
+      setActiveKey(null)
       return
     }
-    setPanes(prev => {
-      if (prev.length === 0) {
-        return [sessKey]
+    setPaneTree(prev => {
+      if (prev === null) return popOut(sessKey)
+      const currentActive = activeKeyRef.current
+      if (currentActive !== null && findLeaf(prev, currentActive)) {
+        return replaceLeaf(prev, currentActive, sessKey)
       }
-      const next = [...prev]
-      next[activePaneIndex] = sessKey
-      return next
-    })
-  }, [activePaneIndex])
-
-  const addPane = useCallback((sessKey: string) => {
-    setPanes(prev => {
-      if (prev.length >= 4) return prev
-      return [...prev, sessKey]
-    })
-    setActivePaneIndex(panes.length)
-  }, [panes.length])
-
-  const closePane = useCallback((i: number) => {
-    setPanes(prev => prev.filter((_, idx) => idx !== i))
-    setActivePaneIndex(prev => {
-      if (i < prev) return prev - 1
-      if (i === prev) return Math.max(0, prev - 1)
       return prev
+    })
+    setActiveKey(sessKey)
+  }, [])
+
+  const handleDropSession = useCallback((sessKey: string) => {
+    const currentActive = activeKeyRef.current
+    setPaneTree(prev => {
+      if (prev === null) return popOut(sessKey)
+      if (currentActive !== null && findLeaf(prev, currentActive)) {
+        return splitLeaf(prev, currentActive, 'h', sessKey)
+      }
+      // No active key – split the first leaf
+      const leaves = getLeaves(prev)
+      if (leaves.length > 0) {
+        return splitLeaf(prev, leaves[0], 'h', sessKey)
+      }
+      return popOut(sessKey)
+    })
+    setActiveKey(sessKey)
+  }, [])
+
+  const closePane = useCallback((sessKey: string) => {
+    setPaneTree(prev => {
+      if (prev === null) return null
+      const newTree = removeLeaf(prev, sessKey)
+      if (newTree === null) {
+        setActiveKey(null)
+        return null
+      }
+      // If the closed pane was the active one, pick the first leaf
+      if (sessKey === activeKeyRef.current) {
+        const leaves = getLeaves(newTree)
+        setActiveKey(leaves[0] || null)
+      }
+      return newTree
     })
   }, [])
 
-  const popOutPane = useCallback((i: number) => {
-    const sessKey = panes[i]
-    setPanes([sessKey])
-    setActivePaneIndex(0)
-    navigateTo(sessKey)
-  }, [panes, navigateTo])
+  const popOutPane = useCallback((sessKey: string) => {
+    setPaneTree(popOut(sessKey))
+    setActiveKey(sessKey)
+    const { host, name } = parseSessionKey(sessKey)
+    const path = host
+      ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
+      : `/session/${encodeURIComponent(name)}`
+    window.history.pushState(null, '', path)
+    setCurrentView('session')
+  }, [])
 
-  // Navigate back to overview when all panes are closed
+  // Navigate back to overview when the tree becomes empty
   useEffect(() => {
-    if (panes.length === 0 && currentView === 'session') {
+    if (paneTree === null && currentView === 'session') {
       navigateTo(null)
     }
-  }, [panes.length, currentView, navigateTo])
+  }, [paneTree, currentView, navigateTo])
 
-  // Clamp activePaneIndex when panes shrink
-  useEffect(() => {
-    if (activePaneIndex >= panes.length && panes.length > 0) {
-      setActivePaneIndex(panes.length - 1)
-    }
-  }, [panes.length, activePaneIndex])
+  const openNewSessionModal = useCallback(() => {
+    setQuickSwitcherOpen(false)
+    setNewSessionModalOpen(true)
+  }, [])
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -291,9 +320,9 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       // Split pane: Cmd/Ctrl + Shift + \
       if (mod && e.shiftKey && e.key === '\\') {
         e.preventDefault()
-        if (panes.length < 4) {
-          addPaneModeRef.current = true
-          setQuickSwitcherOpen(true)
+        if (activeKey !== null) {
+          splitTargetRef.current = { key: activeKey, direction: 'h' }
+          openNewSessionModal()
         }
         return
       }
@@ -301,8 +330,8 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       // Close active pane: Cmd/Ctrl + Shift + W
       if (mod && e.shiftKey && (e.key === 'w' || e.key === 'W')) {
         e.preventDefault()
-        if (panes.length > 0) {
-          closePane(activePaneIndex)
+        if (activeKey !== null) {
+          closePane(activeKey)
         }
         return
       }
@@ -310,8 +339,14 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       // Previous pane: Cmd/Ctrl + Shift + [ or Cmd/Ctrl + Alt + Left
       if (mod && ((e.shiftKey && e.key === '[') || (e.altKey && e.key === 'ArrowLeft'))) {
         e.preventDefault()
-        if (panes.length > 1) {
-          setActivePaneIndex(prev => (prev - 1 + panes.length) % panes.length)
+        if (activeKey !== null) {
+          const leaves = paneTree ? getLeaves(paneTree) : []
+          if (leaves.length > 1) {
+            const idx = leaves.indexOf(activeKey)
+            if (idx >= 0) {
+              setActiveKey(leaves[(idx - 1 + leaves.length) % leaves.length])
+            }
+          }
         }
         return
       }
@@ -319,15 +354,21 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       // Next pane: Cmd/Ctrl + Shift + ] or Cmd/Ctrl + Alt + Right
       if (mod && ((e.shiftKey && e.key === ']') || (e.altKey && e.key === 'ArrowRight'))) {
         e.preventDefault()
-        if (panes.length > 1) {
-          setActivePaneIndex(prev => (prev + 1) % panes.length)
+        if (activeKey !== null) {
+          const leaves = paneTree ? getLeaves(paneTree) : []
+          if (leaves.length > 1) {
+            const idx = leaves.indexOf(activeKey)
+            if (idx >= 0) {
+              setActiveKey(leaves[(idx + 1) % leaves.length])
+            }
+          }
         }
         return
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [prefs.quick_switcher_shortcut, navigateTo, onLogout, allToolEvents, selectedSession, panes.length, activePaneIndex, closePane, setActivePaneIndex])
+  }, [prefs.quick_switcher_shortcut, navigateTo, onLogout, allToolEvents, selectedSession, paneTree, activeKey, closePane, openNewSessionModal])
 
   // Listen for state events via WebSocket
   const onEvent = useCallback((evt: any) => {
@@ -362,12 +403,22 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   // If a pane's session was removed, remove that pane
   // (don't bounce if we're waiting for a newly created session to appear)
   useEffect(() => {
-    if (sessions.length === 0) return
-    setPanes(prev => prev.filter(p => {
-      if (p === pendingSessionRef.current) return true
-      return sessions.some(s => sessionKey(s) === p)
-    }))
-  }, [sessions]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (sessions.length === 0 || paneTree === null) return
+    const validKeys = new Set(sessions.map(s => sessionKey(s)))
+    const keysToRemove = getLeaves(paneTree).filter(
+      k => k !== pendingSessionRef.current && !validKeys.has(k),
+    )
+    if (keysToRemove.length === 0) return
+    setPaneTree(prev => {
+      if (prev === null) return null
+      let tree: PaneTree | null = prev
+      for (const key of keysToRemove) {
+        if (tree === null) break
+        tree = removeLeaf(tree, key)
+      }
+      return tree
+    })
+  }, [sessions, paneTree]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSessionSelect = (session: Session) => {
     navigateTo(sessionKey(session))
@@ -402,31 +453,12 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   }, [navigateTo])
 
   const closeQuickSwitcher = useCallback(() => {
-    addPaneModeRef.current = false
     setQuickSwitcherOpen(false)
     if (selectedSession) refocusTerminal()
   }, [selectedSession, refocusTerminal])
 
   const handleQuickSwitch = useCallback(async (sessKey: string, windowIndex?: number) => {
     setQuickSwitcherOpen(false)
-    if (addPaneModeRef.current) {
-      addPaneModeRef.current = false
-      addPane(sessKey)
-      if (windowIndex !== undefined) {
-        const { host, name } = parseSessionKey(sessKey)
-        try {
-          await fetch('/api/session/select-window', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ host: host || undefined, session: name, window: windowIndex }),
-          })
-        } catch (err) {
-          console.error('Failed to select window:', err)
-        }
-      }
-      setTimeout(() => refocusTerminal(), 200)
-      return
-    }
     navigateTo(sessKey)
     if (windowIndex !== undefined) {
       const { host, name } = parseSessionKey(sessKey)
@@ -442,12 +474,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     }
     // Refocus after navigation and window switch settle
     setTimeout(() => refocusTerminal(), 200)
-  }, [navigateTo, refocusTerminal, addPane])
-
-  const openNewSessionModal = useCallback(() => {
-    setQuickSwitcherOpen(false)
-    setNewSessionModalOpen(true)
-  }, [])
+  }, [navigateTo, refocusTerminal])
 
   const handleCreateSession = useCallback(async (name: string, path: string, command: string, hostId?: string, agentType?: string) => {
     setNewSessionModalOpen(false)
@@ -462,9 +489,17 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         const resolvedName = payload?.name || name
         const sessKey = hostId ? `${hostId}/${resolvedName}` : resolvedName
         pendingSessionRef.current = sessKey
-        if (splitModeRef.current) {
-          splitModeRef.current = false
-          addPane(sessKey)
+        const target = splitTargetRef.current
+        splitTargetRef.current = null
+        if (target) {
+          setPaneTree(prev => {
+            if (prev === null) return popOut(sessKey)
+            if (findLeaf(prev, target.key)) {
+              return splitLeaf(prev, target.key, target.direction, sessKey)
+            }
+            return prev
+          })
+          setActiveKey(sessKey)
           await refresh()
           pendingSessionRef.current = null
           setTimeout(() => refocusTerminal(), 300)
@@ -479,7 +514,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       console.error('Failed to create session:', err)
       pendingSessionRef.current = null
     }
-  }, [navigateTo, refresh, refocusTerminal, addPane])
+  }, [navigateTo, refresh, refocusTerminal])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
@@ -537,9 +572,11 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
           onJumpToSession={jumpToSession}
           onDismiss={dismissEvent}
           onDismissAll={dismissAllEvents}
-          panesCount={panes.length}
+          panesCount={paneTree ? getLeaves(paneTree).length : 0}
           onSplitPane={() => {
-            splitModeRef.current = true
+            if (activeKey !== null) {
+              splitTargetRef.current = { key: activeKey, direction: 'h' }
+            }
             openNewSessionModal()
           }}
         />
@@ -555,8 +592,12 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             hasMultipleHosts={hasMultipleHosts}
             onSessionSelect={handleSessionSelect}
             onSessionRenamed={(oldKey, newKey) => {
-              setPanes(prev => prev.map(p => p === oldKey ? newKey : p))
-              if (selectedSession === oldKey) {
+              setPaneTree(prev => {
+                if (prev === null) return null
+                return replaceLeaf(prev, oldKey, newKey)
+              })
+              if (activeKey === oldKey) {
+                setActiveKey(newKey)
                 const { host, name } = parseSessionKey(newKey)
                 const path = host
                   ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
@@ -574,17 +615,27 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             <Setup onComplete={() => navigateTo(null)} />
           ) : currentView === 'settings' ? (
             <Settings pushState={pushState} onPushSubscribe={pushSubscribe} onPushUnsubscribe={pushUnsubscribe} onLogout={onLogout} />
-          ) : panes.length > 0 ? (
+          ) : paneTree ? (
             <TiledView
-              panes={panes}
-              activePaneIndex={activePaneIndex}
-              onActivate={(i) => { setActivePaneIndex(i); refocusTerminal() }}
+              tree={paneTree}
+              activeKey={activeKey}
+              onActivate={(key) => { setActiveKey(key); refocusTerminal() }}
               onClose={closePane}
+              onPopOut={popOutPane}
+              onSplit={(key, direction) => {
+                splitTargetRef.current = { key, direction }
+                openNewSessionModal()
+              }}
+              onRatioChange={(path, ratio) => {
+                setPaneTree(prev => {
+                  if (prev === null) return null
+                  return updateRatio(prev, path, ratio)
+                })
+              }}
               fullscreen={terminalFullscreen}
               onToggleFullscreen={toggleFullscreen}
               terminalContainerRef={terminalContainerRef}
-              onDropSession={addPane}
-              onPopOut={popOutPane}
+              onDropSession={handleDropSession}
             />
           ) : (
             <Overview

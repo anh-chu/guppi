@@ -2,7 +2,7 @@
 
 > **Navigation aid.** Library inventory extracted via AST. Read the source files listed here before modifying exported functions.
 
-**55 library files** across 2 modules
+**56 library files** across 2 modules
 
 ## Pkg (43 files)
 
@@ -33,8 +33,9 @@
 - `pkg/webpush/sender.go` — NewSender, PushPayload, Sender
 - _…and 18 more files_
 
-## Web (12 files)
+## Web (13 files)
 
+- `web/src/lib/paneTree.ts` — getLeaves, findLeaf, splitLeaf, removeLeaf, replaceLeaf, updateRatio, …
 - `web/src/hooks/useSessions.ts` — sessionKey, parseSessionKey, useSessions, Pane, Window, Session
 - `web/src/theme.ts` — applyTheme, getXtermTheme, ThemePreset, toolColors, statusConfig, themePresets
 - `web/src/hooks/usePreferences.ts` — usePreferencesProvider, usePreferences, Preferences, defaultPreferences, PreferencesContext
