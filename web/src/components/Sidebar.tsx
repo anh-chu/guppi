@@ -179,8 +179,9 @@ export function Sidebar({
   const [hiddenExpanded, setHiddenExpanded] = useState(false)
   const [renamingSession, setRenamingSession] = useState<RenameState | null>(null)
   const [renameValue, setRenameValue] = useState('')
-  const [contextMenu, setContextMenu] = useState<{ key: string; id: string; name: string; host?: string; x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ key: string; id: string; name: string; host?: string; isWorktree?: boolean; x: number; y: number } | null>(null)
   const [confirmKillKey, setConfirmKillKey] = useState<string | null>(null)
+  const [confirmWorktreeKillKey, setConfirmWorktreeKillKey] = useState<string | null>(null)
   const [filterOpen, setFilterOpen] = useState(false)
   const [draggingKey, setDraggingKey] = useState<string | null>(null)
   const [pairTarget, setPairTarget] = useState<string | null>(null)
@@ -209,6 +210,7 @@ export function Sidebar({
       if (filterOpen && target && filterRef.current?.contains(target)) return
       setContextMenu(null)
       setConfirmKillKey(null)
+      setConfirmWorktreeKillKey(null)
       setFilterOpen(false)
     }
     window.addEventListener('click', handler)
@@ -308,6 +310,7 @@ export function Sidebar({
   const killSession = async (id: string, name: string, host?: string) => {
     setContextMenu(null)
     setConfirmKillKey(null)
+    setConfirmWorktreeKillKey(null)
     try {
       await fetch('/api/session/kill', {
         method: 'POST',
@@ -316,6 +319,21 @@ export function Sidebar({
       })
     } catch (err) {
       console.error('Failed to kill session:', err)
+    }
+  }
+
+  const killSessionAndWorktree = async (id: string, name: string, host?: string) => {
+    setContextMenu(null)
+    setConfirmKillKey(null)
+    setConfirmWorktreeKillKey(null)
+    try {
+      await fetch('/api/session/kill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, name, host: host || undefined, remove_worktree: true }),
+      })
+    } catch (err) {
+      console.error('Failed to kill session + worktree:', err)
     }
   }
 
@@ -418,7 +436,7 @@ export function Sidebar({
       const y = touch.clientY
       touchTimerRef.current = setTimeout(() => {
         touchTimerRef.current = null
-        setContextMenu({ key: sk, id: session.id, name: session.name, host: session.host, x, y })
+        setContextMenu({ key: sk, id: session.id, name: session.name, host: session.host, isWorktree: session.is_worktree ?? false, x, y })
       }, 600)
     }
 
@@ -551,7 +569,7 @@ export function Sidebar({
           }}
           onContextMenu={(e) => {
             e.preventDefault()
-            setContextMenu({ key: sk, id: session.id, name: session.name, host: session.host, x: e.clientX, y: e.clientY })
+            setContextMenu({ key: sk, id: session.id, name: session.name, host: session.host, isWorktree: session.is_worktree ?? false, x: e.clientX, y: e.clientY })
           }}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
@@ -614,8 +632,13 @@ export function Sidebar({
             )}
           </div>
 
-          {!collapsed && (projectName || promptPreview) && (
+          {!collapsed && (projectName || promptPreview || session.is_worktree) && (
             <div className="mt-1 flex items-center gap-2 text-xs text-mute font-medium">
+              {session.is_worktree && (
+                <span className="shrink-0 rounded-xs border border-hairline px-1.5 py-0.5 bg-surface-card/50 text-primary/70" title="git worktree">
+                  ⎇
+                </span>
+              )}
               {projectName && (
                 <span className="shrink-0 rounded-xs border border-hairline px-1.5 py-0.5 bg-surface-card/50" title={session.project_path}>
                   {projectName}
@@ -857,7 +880,7 @@ export function Sidebar({
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSessionSelect(session) } }}
                     onContextMenu={(e) => {
                       e.preventDefault()
-                      setContextMenu({ key: sk, id: session.id, name: session.name, host: session.host, x: e.clientX, y: e.clientY })
+                      setContextMenu({ key: sk, id: session.id, name: session.name, host: session.host, isWorktree: session.is_worktree ?? false, x: e.clientX, y: e.clientY })
                     }}
                     className={cn(
                       'relative flex items-center gap-2 w-full px-2.5 py-1 rounded-sm transition-all duration-200 min-w-0',
@@ -938,6 +961,20 @@ export function Sidebar({
           >
             {confirmKillKey === contextMenu.key ? 'Confirm kill?' : 'Kill'}
           </div>
+          {contextMenu.isWorktree && (
+            <div
+              onClick={() => {
+                if (confirmWorktreeKillKey === contextMenu.key) {
+                  killSessionAndWorktree(contextMenu.id, contextMenu.name, contextMenu.host)
+                } else {
+                  setConfirmWorktreeKillKey(contextMenu.key)
+                }
+              }}
+              className="px-3 py-1.5 text-sm cursor-pointer text-red-400 hover:bg-red-500/10"
+            >
+              {confirmWorktreeKillKey === contextMenu.key ? 'Confirm remove worktree?' : 'Kill + remove worktree'}
+            </div>
+          )}
         </div>
       )}
     </aside>

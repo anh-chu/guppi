@@ -5,6 +5,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/ekristen/guppi/pkg/git"
 	"github.com/ekristen/guppi/pkg/tmux"
 	"github.com/ekristen/guppi/pkg/toolevents"
 )
@@ -151,6 +152,15 @@ func (m *Manager) loadSessionDetails(session *tmux.Session) error {
 
 	m.applyMetadata(session)
 
+	// Detect linked git worktrees so the UI can offer cleanup on kill.
+	if session.ProjectPath != "" {
+		if ok, err := git.IsWorktree(session.ProjectPath); err == nil {
+			session.IsWorktree = ok
+		} else {
+			logrus.WithError(err).WithField("path", session.ProjectPath).Debug("git worktree check failed")
+		}
+	}
+
 	return nil
 }
 
@@ -257,6 +267,19 @@ func (m *Manager) SetSessionAgentType(sessionName, agentType string) {
 		session.AgentType = agentType
 	}
 	m.mu.Unlock()
+}
+
+// GetSessionProjectPath returns the ProjectPath for a session, or empty string if unknown.
+func (m *Manager) GetSessionProjectPath(name string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if s, ok := m.sessions[name]; ok {
+		return s.ProjectPath
+	}
+	if meta, ok := m.meta[name]; ok {
+		return meta.ProjectPath
+	}
+	return ""
 }
 
 // SessionForPane returns the session name for a given pane ID (e.g. "%42").

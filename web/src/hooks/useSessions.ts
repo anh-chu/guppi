@@ -34,6 +34,7 @@ export interface Session {
   attached: boolean
   last_activity: string
   project_path?: string
+  is_worktree?: boolean
   agent_type?: string
   prompt_preview?: string
   agent_session_id?: string

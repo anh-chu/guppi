@@ -11,6 +11,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +25,7 @@ import (
 	wp "github.com/SherClockHolmes/webpush-go"
 
 	"github.com/ekristen/guppi/pkg/activity"
+	"github.com/ekristen/guppi/pkg/git"
 	"github.com/ekristen/guppi/pkg/agentcheck"
 	"github.com/ekristen/guppi/pkg/auth"
 	"github.com/ekristen/guppi/pkg/common"
@@ -281,11 +284,12 @@ func Run(ctx context.Context, opts *Options) error {
 
 			r.Post("/session/new", func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
-					Name      string `json:"name"`
-					Host      string `json:"host,omitempty"`
-					Path      string `json:"path,omitempty"`
-					Command   string `json:"command,omitempty"`
-					AgentType string `json:"agent_type,omitempty"`
+					Name           string `json:"name"`
+					Host           string `json:"host,omitempty"`
+					Path           string `json:"path,omitempty"`
+					Command        string `json:"command,omitempty"`
+					AgentType      string `json:"agent_type,omitempty"`
+					WorktreeBranch string `json:"worktree_branch,omitempty"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -328,6 +332,35 @@ func Run(ctx context.Context, opts *Options) error {
 						http.Error(w, "peer send queue full", http.StatusBadGateway)
 					}
 					return
+				}
+
+				// If a worktree branch is requested, create the linked worktree first
+				// and redirect the session path to it.
+				if req.WorktreeBranch != "" && req.Path != "" {
+					expanded := req.Path
+					if strings.HasPrefix(expanded, "~") {
+						if home, err := os.UserHomeDir(); err == nil && home != "" {
+							expanded = home + expanded[1:]
+						}
+					}
+					// Resolve bare relative paths (e.g. "guppi") against the home dir.
+					if !filepath.IsAbs(expanded) {
+						if home, err := os.UserHomeDir(); err == nil {
+							expanded = filepath.Join(home, expanded)
+						}
+					}
+					sanitized := strings.ReplaceAll(req.WorktreeBranch, "/", "-")
+					worktreesDir := filepath.Join(expanded, ".worktrees")
+					if err := os.MkdirAll(worktreesDir, 0755); err != nil {
+						http.Error(w, "mkdir .worktrees: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
+					destPath := filepath.Join(worktreesDir, sanitized)
+					if err := git.CreateWorktree(expanded, req.WorktreeBranch, destPath); err != nil {
+						http.Error(w, "git worktree add: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
+					req.Path = destPath
 				}
 
 				if err := opts.Client.NewSession(req.Name, req.Path, req.Command); err != nil {
@@ -447,9 +480,10 @@ func Run(ctx context.Context, opts *Options) error {
 
 			r.Post("/session/kill", func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
-					ID   string `json:"id,omitempty"`
-					Name string `json:"name"`
-					Host string `json:"host,omitempty"`
+					ID            string `json:"id,omitempty"`
+					Name          string `json:"name"`
+					Host          string `json:"host,omitempty"`
+					RemoveWorktree bool   `json:"remove_worktree,omitempty"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 					http.Error(w, "name is required", http.StatusBadRequest)
@@ -477,6 +511,12 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 
+				// Capture worktree path before state is cleared.
+				var worktreePath string
+				if req.RemoveWorktree && opts.StateMgr != nil {
+					worktreePath = opts.StateMgr.GetSessionProjectPath(req.Name)
+				}
+
 				// Kill by ID first (avoids tmux special-target interpretation of names
 				// like '~'); fall back to name. Always clean up state regardless.
 				if err := opts.Client.KillSession(req.ID, req.Name); err != nil {
@@ -485,6 +525,15 @@ func Run(ctx context.Context, opts *Options) error {
 				if opts.StateMgr != nil {
 					opts.StateMgr.RemoveSession(req.Name)
 				}
+
+				// Remove the linked worktree if requested. Non-fatal — session is
+				// already gone; log and continue.
+				if req.RemoveWorktree && worktreePath != "" {
+					if err := git.RemoveWorktree(worktreePath); err != nil {
+						logrus.WithError(err).WithField("path", worktreePath).Warn("git worktree remove failed")
+					}
+				}
+
 				w.WriteHeader(http.StatusNoContent)
 			})
 
