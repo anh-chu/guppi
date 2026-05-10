@@ -74,6 +74,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const [helpOpen, setHelpOpen] = useState(false)
   const pendingSessionRef = useRef<string | null>(null)
   const addPaneModeRef = useRef(false)
+  const splitModeRef = useRef(false)
   const { prefs } = usePreferences()
 
   // Auto-lock: idle detection + optional background accelerator
@@ -189,6 +190,13 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       return prev
     })
   }, [])
+
+  const popOutPane = useCallback((i: number) => {
+    const sessKey = panes[i]
+    setPanes([sessKey])
+    setActivePaneIndex(0)
+    navigateTo(sessKey)
+  }, [panes, navigateTo])
 
   // Navigate back to overview when all panes are closed
   useEffect(() => {
@@ -454,16 +462,24 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         const resolvedName = payload?.name || name
         const sessKey = hostId ? `${hostId}/${resolvedName}` : resolvedName
         pendingSessionRef.current = sessKey
-        navigateTo(sessKey)
-        await refresh()
-        pendingSessionRef.current = null
-        setTimeout(() => refocusTerminal(), 300)
+        if (splitModeRef.current) {
+          splitModeRef.current = false
+          addPane(sessKey)
+          await refresh()
+          pendingSessionRef.current = null
+          setTimeout(() => refocusTerminal(), 300)
+        } else {
+          navigateTo(sessKey)
+          await refresh()
+          pendingSessionRef.current = null
+          setTimeout(() => refocusTerminal(), 300)
+        }
       }
     } catch (err) {
       console.error('Failed to create session:', err)
       pendingSessionRef.current = null
     }
-  }, [navigateTo, refresh, refocusTerminal])
+  }, [navigateTo, refresh, refocusTerminal, addPane])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
@@ -523,8 +539,8 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
           onDismissAll={dismissAllEvents}
           panesCount={panes.length}
           onSplitPane={() => {
-            addPaneModeRef.current = true
-            setQuickSwitcherOpen(true)
+            splitModeRef.current = true
+            openNewSessionModal()
           }}
         />
       )}
@@ -567,6 +583,8 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
               fullscreen={terminalFullscreen}
               onToggleFullscreen={toggleFullscreen}
               terminalContainerRef={terminalContainerRef}
+              onDropSession={addPane}
+              onPopOut={popOutPane}
             />
           ) : (
             <Overview

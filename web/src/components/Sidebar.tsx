@@ -391,7 +391,10 @@ export function Sidebar({
           role="button"
           tabIndex={0}
           draggable={!collapsed && !isRenaming}
-          onDragStart={() => setDraggingKey(sk)}
+          onDragStart={(e) => {
+            e.dataTransfer.setData('text/plain', sk)
+            setDraggingKey(sk)
+          }}
           onDragEnd={() => {
             setDraggingKey(null)
             setDropTargetKey(null)
@@ -426,7 +429,7 @@ export function Sidebar({
             !isSelected && !needsAttention && 'border border-transparent',
             (isHiddenSection || isOffline) && 'opacity-60',
             isRenaming && 'cursor-default',
-            draggingKey === sk && 'opacity-75 cursor-grabbing',
+            draggingKey === sk && 'opacity-75 cursor-grab',
             dropTargetKey === sk && 'ring-1 ring-primary/60',
           )}
         >

@@ -11,6 +11,8 @@ interface TiledViewProps {
   fullscreen: boolean
   onToggleFullscreen: () => void
   terminalContainerRef?: React.RefObject<HTMLDivElement | null>
+  onDropSession?: (sessKey: string) => void
+  onPopOut?: (index: number) => void
 }
 
 const MIN_PANE_SIZE = 200 // px
@@ -37,9 +39,12 @@ export function TiledView({
   fullscreen,
   onToggleFullscreen,
   terminalContainerRef,
+  onDropSession,
+  onPopOut,
 }: TiledViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const paneCount = panes.length
+  const [dragOver, setDragOver] = useState(false)
 
   // --------------- sizes state ---------------
 
@@ -157,6 +162,34 @@ export function TiledView({
 
   // --------------- render helpers ---------------
 
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOver(false)
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOver(false)
+    const sessKey = e.dataTransfer.getData('text/plain')
+    if (sessKey && paneCount < 4 && panes.indexOf(sessKey) === -1) {
+      onDropSession?.(sessKey)
+    }
+  }, [onDropSession, paneCount, panes])
+
+  const dropOverlay = dragOver && paneCount < 4 ? (
+    <div className="absolute inset-0 z-10 bg-primary/10 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
+      <span className="text-sm font-medium text-primary">Drop to split</span>
+    </div>
+  ) : null
+
   const renderPane = (index: number) => {
     const key = panes[index]
     const { host, name } = parseSessionKey(key)
@@ -179,29 +212,56 @@ export function TiledView({
             <span className="text-[11px] font-medium text-ink truncate min-w-0 mr-2">
               {name}
             </span>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onClose(index)
-              }}
-              className="text-mute hover:text-ink p-0.5 rounded shrink-0 hover:bg-surface-elevated transition-colors"
-              aria-label="Close pane"
-            >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onPopOut?.(index)
+                }}
+                className="text-mute hover:text-ink p-0.5 rounded shrink-0 hover:bg-surface-elevated transition-colors"
+                aria-label="Pop out pane"
               >
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <polyline points="15 3 21 3 21 9" />
+                  <polyline points="9 21 3 21 3 15" />
+                  <line x1="21" y1="3" x2="14" y2="10" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onClose(index)
+                }}
+                className="text-mute hover:text-ink p-0.5 rounded shrink-0 hover:bg-surface-elevated transition-colors"
+                aria-label="Close pane"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
           </div>
         )}
         <div
@@ -241,8 +301,15 @@ export function TiledView({
 
   if (paneCount === 1) {
     return (
-      <div ref={containerRef} className="flex-1 flex flex-col overflow-hidden">
+      <div
+        ref={containerRef}
+        className="flex-1 flex flex-col overflow-hidden relative"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         {renderPane(0)}
+        {dropOverlay}
       </div>
     )
   }
@@ -251,7 +318,10 @@ export function TiledView({
     return (
       <div
         ref={containerRef}
-        className="flex-1 flex flex-row overflow-hidden gap-0"
+        className="flex-1 flex flex-row overflow-hidden gap-0 relative"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
       >
         <div
           className="flex flex-col overflow-hidden"
@@ -263,6 +333,7 @@ export function TiledView({
         <div className="flex flex-col overflow-hidden min-w-0 flex-1">
           {renderPane(1)}
         </div>
+        {dropOverlay}
       </div>
     )
   }
@@ -271,7 +342,10 @@ export function TiledView({
     return (
       <div
         ref={containerRef}
-        className="flex-1 flex flex-row overflow-hidden gap-0"
+        className="flex-1 flex flex-row overflow-hidden gap-0 relative"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
       >
         <div
           className="flex flex-col overflow-hidden"
@@ -290,6 +364,7 @@ export function TiledView({
         <div className="flex flex-col overflow-hidden min-w-0 flex-1">
           {renderPane(2)}
         </div>
+        {dropOverlay}
       </div>
     )
   }
@@ -298,7 +373,10 @@ export function TiledView({
   return (
     <div
       ref={containerRef}
-      className="flex-1 flex flex-col overflow-hidden gap-0"
+      className="flex-1 flex flex-col overflow-hidden gap-0 relative"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
     >
       {/* Top row */}
       <div
@@ -330,6 +408,7 @@ export function TiledView({
           {renderPane(3)}
         </div>
       </div>
+      {dropOverlay}
     </div>
   )
 }

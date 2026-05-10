@@ -4,7 +4,7 @@
 
 > 72 routes | 0 models | 14 components | 55 lib files | 7 env vars | 1 middleware | 0% test coverage
 > **Token savings:** this file is ~5,300 tokens. Without it, AI exploration would cost ~66,600 tokens. **Saves ~61,200 tokens per conversation.**
-> **Last scanned:** 2026-05-10 07:48 — re-run after significant changes
+> **Last scanned:** 2026-05-10 07:55 — re-run after significant changes
 
 ---
 
@@ -98,7 +98,7 @@
 - **AgentStatusList** — props: agents — `web/src/components/Setup.tsx`
 - **StatusBar** — props: sessionCount, connected, activeSession, waitingCount, pushState, version, updateAvailable, hosts, agentCount, onHelp — `web/src/components/StatusBar.tsx`
 - **Terminal** — props: sessionName, hostId, fullscreen, onToggleFullscreen — `web/src/components/Terminal.tsx`
-- **TiledView** — props: panes, activePaneIndex, onActivate, onClose, fullscreen, onToggleFullscreen, terminalContainerRef — `web/src/components/TiledView.tsx`
+- **TiledView** — props: panes, activePaneIndex, onActivate, onClose, fullscreen, onToggleFullscreen, terminalContainerRef, onDropSession, onPopOut — `web/src/components/TiledView.tsx`
 - **TopBar** — props: currentView, sidebarCollapsed, onToggleCollapse, onOverview, onSettings, onNewSession, events, connected, onJumpToSession, onDismiss — `web/src/components/TopBar.tsx`
 - **TrustCertificate** — props: onBack — `web/src/components/TrustCertificate.tsx`
 
