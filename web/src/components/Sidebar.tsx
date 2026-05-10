@@ -361,27 +361,42 @@ export function Sidebar({
     [layoutGroups]
   )
 
-  const allGroupLeaves = useMemo(() =>
-    layoutGroups?.flatMap(g => g.leaves) ?? [],
-    [layoutGroups]
-  )
+  // Build interleaved list: group brackets appear at the first member's position
+  type UnifiedItem =
+    | { kind: 'session'; session: Session }
+    | { kind: 'group'; group: NonNullable<typeof layoutGroups>[number]; sessions: Session[] }
 
-  const ungroupedVisibleSessions = useMemo(() =>
-    visibleSessions.filter(s => !allGroupedKeys.has(sessionKey(s))),
-    [visibleSessions, allGroupedKeys]
-  )
-
-  const groupedVisibleSessions = useMemo(() => {
-    if (!hasMultipleHosts) return []
-    const groups: Array<{ label: string; sessions: Session[] }> = []
-    for (const session of ungroupedVisibleSessions) {
-      const label = session.host_name || 'Local'
-      const existing = groups.find(g => g.label === label)
-      if (existing) existing.sessions.push(session)
-      else groups.push({ label, sessions: [session] })
+  const unifiedItems = useMemo((): UnifiedItem[] => {
+    const items: UnifiedItem[] = []
+    const seenGroups = new Set<string>()
+    for (const session of visibleSessions) {
+      const sk = sessionKey(session)
+      const group = layoutGroups?.find(g => g.leaves.includes(sk))
+      if (group) {
+        if (!seenGroups.has(group.id)) {
+          seenGroups.add(group.id)
+          const groupSessions = group.leaves
+            .map(k => visibleSessions.find(s => sessionKey(s) === k))
+            .filter((s): s is Session => !!s)
+          items.push({ kind: 'group', group, sessions: groupSessions })
+        }
+        // else: already emitted as part of the bracket above
+      } else {
+        items.push({ kind: 'session', session })
+      }
     }
-    return groups
-  }, [hasMultipleHosts, ungroupedVisibleSessions])
+    // Groups whose members aren't in visibleSessions yet (remote/offline)
+    for (const group of layoutGroups ?? []) {
+      if (!seenGroups.has(group.id)) {
+        const groupSessions = group.leaves
+          .map(k => visibleSessions.find(s => sessionKey(s) === k))
+          .filter((s): s is Session => !!s)
+        if (groupSessions.length > 0)
+          items.push({ kind: 'group', group, sessions: groupSessions })
+      }
+    }
+    return items
+  }, [visibleSessions, layoutGroups])
 
   const renderSessionItem = (session: Session, isHiddenSection = false, bracketChar?: string | null) => {
     const sk = sessionKey(session)
@@ -462,8 +477,8 @@ export function Sidebar({
               onPairSessions?.(draggingKey, sk)
             } else {
               const position = ratio < 0.25 ? 'above' : 'below'
-              const dragInSplit = allGroupedKeys.has(draggingKey)
-              const targetInSplit = allGroupedKeys.has(sk)
+              const dragGroup = layoutGroups?.find(g => g.leaves.includes(draggingKey)) ?? null
+              const targetGroup = layoutGroups?.find(g => g.leaves.includes(sk)) ?? null
 
               const applyOrder = (newOrder: string[]) => {
                 const full = orderedSessions.map(sessionKey)
@@ -471,32 +486,44 @@ export function Sidebar({
                 setManualOrder(full.map(k => s.has(k) ? newOrder[i++] : k))
               }
 
-              if (dragInSplit && targetInSplit) {
-                // Both in groups: no reorder from sidebar — use the layout view drag instead
-              } else if (!dragInSplit && targetInSplit) {
-                // Rest onto group edge: move rest to before/after the whole group
+              if (dragGroup && targetGroup && dragGroup.id === targetGroup.id) {
+                // Same group — no-op
+              } else if (dragGroup && targetGroup) {
+                // Group onto group: move dragGroup as a unit before/after targetGroup
+                const keys = visibleSessions.map(sessionKey)
+                const withoutDragGroup = keys.filter(k => !dragGroup.leaves.includes(k))
+                const targetIdxs = targetGroup.leaves.map(k => withoutDragGroup.indexOf(k)).filter(i => i !== -1)
+                if (targetIdxs.length > 0) {
+                  const insertAt = position === 'above'
+                    ? Math.min(...targetIdxs)
+                    : Math.max(...targetIdxs) + 1
+                  withoutDragGroup.splice(Math.max(0, insertAt), 0, ...dragGroup.leaves)
+                  applyOrder(withoutDragGroup)
+                }
+              } else if (!dragGroup && targetGroup) {
+                // Session onto group edge: move session before/after the whole group
                 const keys = visibleSessions.map(sessionKey)
                 const withoutDrag = keys.filter(k => k !== draggingKey)
-                const splitIdxs = allGroupLeaves.map(k => withoutDrag.indexOf(k)).filter(i => i !== -1)
-                if (splitIdxs.length > 0) {
+                const targetIdxs = targetGroup.leaves.map(k => withoutDrag.indexOf(k)).filter(i => i !== -1)
+                if (targetIdxs.length > 0) {
                   const insertAt = position === 'above'
-                    ? Math.min(...splitIdxs)
-                    : Math.max(...splitIdxs) + 1
+                    ? Math.min(...targetIdxs)
+                    : Math.max(...targetIdxs) + 1
                   withoutDrag.splice(Math.max(0, insertAt), 0, draggingKey)
                   applyOrder(withoutDrag)
                 }
-              } else if (dragInSplit && !targetInSplit) {
-                // Group onto rest edge: move whole group before/after target
+              } else if (dragGroup && !targetGroup) {
+                // Group onto session: move whole group before/after target
                 const keys = visibleSessions.map(sessionKey)
-                const withoutGroup = keys.filter(k => !allGroupedKeys.has(k))
+                const withoutGroup = keys.filter(k => !dragGroup.leaves.includes(k))
                 const targetIdx = withoutGroup.indexOf(sk)
                 if (targetIdx !== -1) {
                   const insertAt = position === 'above' ? targetIdx : targetIdx + 1
-                  withoutGroup.splice(Math.max(0, insertAt), 0, ...allGroupLeaves)
+                  withoutGroup.splice(Math.max(0, insertAt), 0, ...dragGroup.leaves)
                   applyOrder(withoutGroup)
                 }
               } else {
-                // Both rest: normal reorder
+                // Both ungrouped: normal reorder
                 const keys = visibleSessions.map(sessionKey)
                 const from = keys.indexOf(draggingKey)
                 const to = keys.indexOf(sk)
@@ -698,21 +725,14 @@ export function Sidebar({
             </li>
           )}
 
-          {/* Layout groups */}
-          {layoutGroups?.map(group => {
-            const groupSessions = group.leaves
-              .map(key => visibleSessions.find(s => sessionKey(s) === key))
-              .filter((s): s is Session => !!s)
-            if (groupSessions.length === 0) return null
+          {/* Unified ordered list — groups appear at their natural position */}
+          {unifiedItems.map(item => {
+            if (item.kind === 'session') {
+              return renderSessionItem(item.session, false, null)
+            }
+            const { group, sessions: groupSessions } = item
             return (
               <li key={group.id}>
-                {!collapsed && (
-                  <div className="flex items-center gap-2 px-3 pt-2 pb-1">
-                    <span className="text-xs text-mute font-semibold uppercase tracking-wider">
-                      {group.isActive ? 'Active' : 'Group'}
-                    </span>
-                  </div>
-                )}
                 <div className={cn(
                   !collapsed && 'ml-1 pl-2 border-l-2 rounded-l-md',
                   group.isActive ? 'border-primary/40' : 'border-primary/20',
@@ -724,16 +744,9 @@ export function Sidebar({
                         ? (idx === 0 ? '┬' : idx === arr.length - 1 ? '└' : '├')
                         : null
                       return (
-                        <div
-                          key={sessionKey(session)}
-                          onClick={() => {
-                            if (!group.isActive) {
-                              onSwitchGroup?.(group.id)
-                            } else {
-                              onSessionSelect(session)
-                            }
-                          }}
-                        >
+                        <div key={sessionKey(session)} onClick={() =>
+                          group.isActive ? onSessionSelect(session) : onSwitchGroup?.(group.id)
+                        }>
                           {renderSessionItem(session, false, bc)}
                         </div>
                       )
@@ -743,28 +756,6 @@ export function Sidebar({
               </li>
             )
           })}
-
-          {/* Ungrouped sessions */}
-          {hasMultipleHosts ? (
-            groupedVisibleSessions.map(group => (
-              <li key={group.label}>
-                {!collapsed && (
-                  <div className="px-3 pt-2 pb-1 text-xs uppercase tracking-wider text-mute font-semibold flex items-center gap-1.5">
-                    <span className={cn(
-                      'w-1.5 h-1.5 rounded-full',
-                      group.sessions[0]?.host_online !== false ? 'bg-success' : 'bg-muted-foreground',
-                    )} />
-                    {group.label}
-                  </div>
-                )}
-                <ul className="space-y-0.5">
-                  {group.sessions.map(session => renderSessionItem(session))}
-                </ul>
-              </li>
-            ))
-          ) : (
-            ungroupedVisibleSessions.map(session => renderSessionItem(session, false, null))
-          )}
 
           {hiddenSessions.length > 0 && !collapsed && (
             <>
