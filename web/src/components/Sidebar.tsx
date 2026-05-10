@@ -20,7 +20,6 @@ interface SidebarProps {
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
   splitPanes?: string[]
   onPairSessions?: (keyA: string, keyB: string) => void
-  onReorderSplitPanes?: (keyA: string, keyB: string) => void
 }
 
 interface RenameState {
@@ -152,7 +151,6 @@ export function Sidebar({
   getSessionActivity,
   splitPanes,
   onPairSessions,
-  onReorderSplitPanes,
 }: SidebarProps) {
   const { prefs } = usePreferences()
   const [hiddenSet, setHiddenSet] = useState<Set<string>>(() => new Set(readStoredList('guppi:hidden-sessions')))
@@ -428,8 +426,7 @@ export function Sidebar({
               }
 
               if (dragInSplit && targetInSplit) {
-                // Both split: swap in pane tree
-                onReorderSplitPanes?.(draggingKey, sk)
+                // Both split: no reorder from sidebar — use the layout view drag instead
               } else if (!dragInSplit && targetInSplit) {
                 // Rest onto split edge: move rest to before/after the whole group
                 const keys = visibleSessions.map(sessionKey)

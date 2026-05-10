@@ -229,14 +229,13 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     const currentActive = activeKeyRef.current
     setPaneTree(prev => {
       if (prev === null) return popOut(sessKey)
+      // Already in the layout — just focus, don't duplicate
+      if (findLeaf(prev, sessKey)) { setActiveKey(sessKey); return prev }
       if (currentActive !== null && findLeaf(prev, currentActive)) {
         return splitLeaf(prev, currentActive, 'h', sessKey)
       }
-      // No active key – split the first leaf
       const leaves = getLeaves(prev)
-      if (leaves.length > 0) {
-        return splitLeaf(prev, leaves[0], 'h', sessKey)
-      }
+      if (leaves.length > 0) return splitLeaf(prev, leaves[0], 'h', sessKey)
       return popOut(sessKey)
     })
     setActiveKey(sessKey)
@@ -487,15 +486,14 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const handlePairSessions = useCallback((draggedKey: string, targetKey: string) => {
     setSingleView(null)
     setPaneTree(prev => {
+      // Both already in layout — no-op (avoid duplicate panes)
+      if (prev && findLeaf(prev, draggedKey) && findLeaf(prev, targetKey)) return prev
       if (prev && findLeaf(prev, targetKey)) {
-        // Target already in layout — add dragged beside it
         return splitLeaf(prev, targetKey, 'h', draggedKey)
       }
       if (prev && findLeaf(prev, draggedKey)) {
-        // Dragged already in layout — add target beside it
         return splitLeaf(prev, draggedKey, 'h', targetKey)
       }
-      // Neither in layout — fresh pair
       return { type: 'split', direction: 'h', ratio: 0.5, first: { type: 'leaf', sessionKey: draggedKey }, second: { type: 'leaf', sessionKey: targetKey } }
     })
     setActiveKey(draggedKey)
@@ -693,7 +691,6 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             getSessionActivity={getSessionActivity}
             splitPanes={paneTree ? getLeaves(paneTree) : []}
             onPairSessions={handlePairSessions}
-            onReorderSplitPanes={(a, b) => setPaneTree(prev => prev ? swapLeaves(prev, a, b) : prev)}
           />
         )}
         <div className="flex-1 flex flex-col overflow-hidden">
