@@ -271,12 +271,12 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     setCurrentView('session')
   }, [])
 
-  // Navigate back to overview when the tree becomes empty
+  // Navigate back to overview when the tree becomes empty (but not if singleView is active)
   useEffect(() => {
-    if (paneTree === null && currentView === 'session') {
+    if (paneTree === null && !singleView && currentView === 'session') {
       navigateTo(null)
     }
-  }, [paneTree, currentView, navigateTo])
+  }, [paneTree, singleView, currentView, navigateTo])
 
   const openNewSessionModal = useCallback(() => {
     setQuickSwitcherOpen(false)
