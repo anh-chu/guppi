@@ -183,6 +183,7 @@ export function Sidebar({
   const [confirmKillKey, setConfirmKillKey] = useState<string | null>(null)
   const [confirmWorktreeKillKey, setConfirmWorktreeKillKey] = useState<string | null>(null)
   const [filterOpen, setFilterOpen] = useState(false)
+  const [hoveredBg, setHoveredBg] = useState<string | null>(null)
   const [draggingKey, setDraggingKey] = useState<string | null>(null)
   const [pairTarget, setPairTarget] = useState<string | null>(null)
   const [dropIndicator, setDropIndicator] = useState<{ key: string; position: 'above' | 'below' } | null>(null)
@@ -878,6 +879,8 @@ export function Sidebar({
                     tabIndex={0}
                     onClick={() => onSessionSelect(session)}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSessionSelect(session) } }}
+                    onMouseEnter={() => setHoveredBg(sk)}
+                    onMouseLeave={() => setHoveredBg(null)}
                     onContextMenu={(e) => {
                       e.preventDefault()
                       setContextMenu({ key: sk, id: session.id, name: session.name, host: session.host, isWorktree: session.is_worktree ?? false, x: e.clientX, y: e.clientY })
@@ -908,6 +911,18 @@ export function Sidebar({
                       >
                         {cmdLabel}
                       </span>
+                    )}
+                    {hoveredBg === sk && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); toggleBackground(sk) }}
+                        title="Bring to foreground"
+                        className="shrink-0 ml-auto flex items-center justify-center w-5 h-5 rounded-xs hover:bg-surface-card text-mute hover:text-ink transition-colors"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M6 1.5v9M2.5 6l3.5-3.5L9.5 6" />
+                        </svg>
+                      </button>
                     )}
                   </div>
                 </li>
