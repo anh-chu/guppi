@@ -171,8 +171,7 @@ export function TiledView({
       <div
         key={sessionKey}
         className={cn(
-          'flex-1 flex flex-col overflow-hidden rounded-lg border min-h-0 relative',
-          isActive ? 'border-primary' : 'border-hairline',
+          'flex-1 flex flex-col overflow-hidden min-h-0 relative',
         )}
         onClick={() => {
           if (sessionKey !== activeKey) onActivate(sessionKey)
@@ -279,7 +278,7 @@ export function TiledView({
         {/* Header — only when more than one leaf */}
         {totalLeaves > 1 && (
           <div
-              className="flex items-center justify-between px-2.5 py-1 bg-surface border-b border-hairline rounded-t-lg shrink-0 cursor-grab active:cursor-grabbing"
+              className="flex items-center justify-between px-2.5 py-1 bg-surface border-b border-hairline shrink-0 cursor-grab active:cursor-grabbing"
               draggable={totalLeaves > 1}
               onDragStart={(e) => {
                 if ((e.target as HTMLElement).closest('button')) { e.preventDefault(); return }
