@@ -731,13 +731,71 @@ export function Sidebar({
               return renderSessionItem(item.session, false, null)
             }
             const { group, sessions: groupSessions } = item
+            const firstLeaf = group.leaves[0]
             return (
-              <li key={group.id}>
-                <div className={cn(
-                  !collapsed && 'ml-1 pl-2 border-l-2 rounded-l-md',
-                  group.isActive ? 'border-primary/40' : 'border-primary/20',
-                  !group.isActive && 'opacity-70'
-                )}>
+              <li key={group.id} className="flex items-stretch">
+                {/* Bracket drag handle */}
+                {!collapsed && (
+                  <div
+                    draggable={!!firstLeaf}
+                    title="Drag to reorder group"
+                    className={cn(
+                      'w-4 shrink-0 flex justify-center py-0.5 rounded-l-sm cursor-grab active:cursor-grabbing transition-colors hover:bg-surface-elevated',
+                      !group.isActive && 'opacity-60'
+                    )}
+                    onDragStart={(e) => {
+                      if (!firstLeaf) return
+                      e.dataTransfer.setData('text/plain', firstLeaf)
+                      e.dataTransfer.effectAllowed = 'move'
+                      setDraggingKey(firstLeaf)
+                    }}
+                    onDragEnd={() => {
+                      setDraggingKey(null)
+                      setPairTarget(null)
+                      setDropIndicator(null)
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault()
+                      if (!draggingKey || draggingKey === firstLeaf) return
+                      setDropIndicator({ key: firstLeaf, position: 'above' })
+                      setPairTarget(null)
+                    }}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                        setDropIndicator(null)
+                      }
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      if (!draggingKey || !firstLeaf || draggingKey === firstLeaf) return
+                      const dragGroup = layoutGroups?.find(g => g.leaves.includes(draggingKey)) ?? null
+                      const targetGroup = group
+                      const keys = visibleSessions.map(sessionKey)
+                      const applyOrder = (newOrder: string[]) => {
+                        const full = orderedSessions.map(sessionKey)
+                        const s = new Set(newOrder); let i = 0
+                        setManualOrder(full.map(k => s.has(k) ? newOrder[i++] : k))
+                      }
+                      if (dragGroup) {
+                        const withoutDrag = keys.filter(k => !dragGroup.leaves.includes(k))
+                        const insertAt = targetGroup.leaves.map(k => withoutDrag.indexOf(k)).filter(i => i !== -1).reduce((a, b) => Math.min(a, b), Infinity)
+                        if (isFinite(insertAt)) { withoutDrag.splice(insertAt, 0, ...dragGroup.leaves); applyOrder(withoutDrag) }
+                      } else {
+                        const withoutDrag = keys.filter(k => k !== draggingKey)
+                        const insertAt = targetGroup.leaves.map(k => withoutDrag.indexOf(k)).filter(i => i !== -1).reduce((a, b) => Math.min(a, b), Infinity)
+                        if (isFinite(insertAt)) { withoutDrag.splice(insertAt, 0, draggingKey); applyOrder(withoutDrag) }
+                      }
+                      setDraggingKey(null); setDropIndicator(null)
+                    }}
+                  >
+                    <div className={cn(
+                      'w-0.5 rounded-full h-full min-h-[1rem] transition-colors',
+                      group.isActive ? 'bg-primary/40 group-hover:bg-primary/70' : 'bg-primary/20'
+                    )} />
+                  </div>
+                )}
+                {/* Sessions */}
+                <div className={cn('flex-1 min-w-0', !group.isActive && 'opacity-70')}>
                   <ul className="space-y-0.5">
                     {groupSessions.map((session, idx, arr) => {
                       const bc = !collapsed && arr.length > 1
