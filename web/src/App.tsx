@@ -114,6 +114,24 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     } catch {}
     return Math.random().toString(36).slice(2)
   })
+  const [groupOrder, setGroupOrder] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('guppi:group-order')
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed
+      }
+    } catch {}
+    // Seed from existing group IDs (migration / first run)
+    try {
+      const activeId = localStorage.getItem('guppi:active-group-id')
+      const savedStr = localStorage.getItem('guppi:saved-groups')
+      const saved: LayoutGroup[] = savedStr ? JSON.parse(savedStr) : []
+      const ids = [activeId, ...saved.map(g => g.id)].filter(Boolean) as string[]
+      return Array.from(new Set(ids))
+    } catch {}
+    return []
+  })
   const selectedSession = singleView ?? activeKey
   const hasMultipleHosts = hosts.length > 1
   const [serverVersion, setServerVersion] = useState<string | null>(null)
@@ -200,8 +218,9 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     try {
       localStorage.setItem('guppi:saved-groups', JSON.stringify(savedGroups))
       localStorage.setItem('guppi:active-group-id', activeGroupId)
+      localStorage.setItem('guppi:group-order', JSON.stringify(groupOrder))
     } catch {}
-  }, [savedGroups, activeGroupId])
+  }, [savedGroups, activeGroupId, groupOrder])
 
   // Sync URL -> state on popstate (back/forward)
   useEffect(() => {
@@ -305,12 +324,17 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   // Navigate back to overview when the tree becomes empty (but not if singleView is active)
   useEffect(() => {
     if (paneTree === null && !singleView && currentView === 'session') {
+      // Remove empty group from order
+      const newOrder = groupOrder.filter(id => id !== activeGroupId)
+      setGroupOrder(newOrder)
       if (savedGroups.length > 0) {
-        const [next, ...rest] = savedGroups
-        setSavedGroups(rest)
+        // Pick next in stable order
+        const nextId = newOrder.find(id => savedGroups.some(g => g.id === id)) ?? savedGroups[0].id
+        const next = savedGroups.find(g => g.id === nextId)!
+        setSavedGroups(prev => prev.filter(g => g.id !== nextId))
         setPaneTree(next.tree)
         setActiveKey(next.activeKey)
-        setActiveGroupId(next.id)
+        setActiveGroupId(nextId)
         const focusKey = next.activeKey ?? getLeaves(next.tree)[0] ?? null
         if (focusKey) {
           const { host, name } = parseSessionKey(focusKey)
@@ -323,7 +347,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         navigateTo(null)
       }
     }
-  }, [paneTree, singleView, currentView, savedGroups, navigateTo])
+  }, [paneTree, singleView, currentView, savedGroups, groupOrder, activeGroupId, navigateTo])
 
   const openNewSessionModal = useCallback(() => {
     setQuickSwitcherOpen(false)
@@ -514,8 +538,8 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   useEffect(() => {
     if (sessions.length === 0) return
     const validKeys = new Set(sessions.map(s => sessionKey(s)))
-    setSavedGroups(prev => {
-      const updated = prev.map(group => {
+    setSavedGroups(prev =>
+      prev.map(group => {
         const keysToRemove = getLeaves(group.tree).filter(k => !validKeys.has(k))
         if (keysToRemove.length === 0) return group
         let tree: PaneTree | null = group.tree
@@ -527,8 +551,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
           ? group.activeKey : getLeaves(tree)[0] ?? null
         return { ...group, tree, activeKey: newActiveKey }
       }).filter(Boolean) as LayoutGroup[]
-      return updated
-    })
+    )
   }, [sessions])
 
   const selectSession = useCallback((sk: string) => {
@@ -568,6 +591,11 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       setPaneTree(newTree)
       setActiveKey(draggedKey)
       setActiveGroupId(newId)
+      setGroupOrder(prev => {
+        // ensure current activeGroupId is in order, then append new group
+        const withCurrent = prev.includes(activeGroupId) ? prev : [...prev, activeGroupId]
+        return [...withCurrent, newId]
+      })
       setSingleView(null)
       const { host, name } = parseSessionKey(draggedKey)
       const path = host ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}` : `/session/${encodeURIComponent(name)}`
@@ -589,7 +617,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     const path = host ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}` : `/session/${encodeURIComponent(name)}`
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
     setCurrentView('session')
-  }, [paneTree, activeKey, activeGroupId])
+  }, [paneTree, activeKey, activeGroupId, groupOrder])
 
   const switchToGroup = useCallback((groupId: string) => {
     const targetGroup = savedGroups.find(g => g.id === groupId)
@@ -816,10 +844,16 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             getSessionEvents={getSessionEvents}
             sessionNeedsAttention={sessionNeedsAttention}
             getSessionActivity={getSessionActivity}
-            layoutGroups={[
-              ...(paneTree ? [{ id: activeGroupId, leaves: getLeaves(paneTree), isActive: true }] : []),
-              ...savedGroups.map(g => ({ id: g.id, leaves: getLeaves(g.tree), isActive: false }))
-            ]}
+            layoutGroups={groupOrder
+              .map(id => {
+                if (id === activeGroupId && paneTree)
+                  return { id, leaves: getLeaves(paneTree), isActive: true }
+                const g = savedGroups.find(g => g.id === id)
+                if (g) return { id, leaves: getLeaves(g.tree), isActive: false }
+                return null
+              })
+              .filter((g): g is { id: string; leaves: string[]; isActive: boolean } => g !== null)
+            }
             onSwitchGroup={switchToGroup}
             onPairSessions={handlePairSessions}
             onRemoveFromSplit={closePane}
