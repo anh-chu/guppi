@@ -12,9 +12,15 @@ type ShortcutItem = { section: string } | { keys: string[]; label: string }
 function getShortcuts(): ShortcutItem[] {
   return [
     { section: 'Navigation' },
+    { keys: [`${mod}+K`], label: 'Quick Switcher' },
+    { keys: [`${mod}+Shift+]`, `${mod}+Shift+[`], label: 'Next / Previous session' },
+    { keys: [`${mod}+Shift+O`], label: 'Overview / Dashboard' },
     { keys: [`${mod}+,`], label: 'Settings' },
     { keys: [`${mod}+/`], label: 'Help' },
     { keys: [`${mod}+\\`], label: 'Toggle sidebar' },
+
+    { section: 'Session' },
+    { keys: [`${mod}+Shift+\\`], label: 'Split pane' },
 
     { section: 'Terminal' },
     { keys: [`${mod}+Shift+F`], label: 'Toggle fullscreen' },

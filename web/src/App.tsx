@@ -9,6 +9,7 @@ import { PaneTree, getLeaves, findLeaf, splitLeaf, insertBesideLeaf, removeLeaf,
 import { StatusBar } from './components/StatusBar'
 import { Settings } from './components/Settings'
 import { HelpModal } from './components/HelpModal'
+import { QuickSwitcher } from './components/QuickSwitcher'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
 import { TrustCertificate } from './components/TrustCertificate'
@@ -143,6 +144,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   })
   const [terminalFullscreen, setTerminalFullscreen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
   const [dragNewSessionOver, setDragNewSessionOver] = useState(false)
   const pendingSessionRef = useRef<string | null>(null)
   const splitTargetRef = useRef<{ key: string; direction: 'h' | 'v'; newFirst?: boolean } | null>(null)
@@ -365,6 +367,18 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     if (window.location.pathname !== path) window.history.replaceState(null, '', path)
   }, [paneTree, activeGroupId])
 
+  // Refs for latest values used in keyboard shortcuts (avoids effect churn)
+
+  const sessionsRef = useRef(sessions)
+  sessionsRef.current = sessions
+  const selectedSessionRef = useRef(selectedSession)
+  selectedSessionRef.current = selectedSession
+  const savedGroupsRef = useRef(savedGroups)
+  savedGroupsRef.current = savedGroups
+  const setActiveKeyRef = useRef(setActiveKey)
+  setActiveKeyRef.current = setActiveKey
+  const switchToGroupRef = useRef<((id: string) => void) | null>(null)
+
   const openNewSessionModal = useCallback(() => {
     setNewSessionModalOpen(true)
   }, [])
@@ -401,6 +415,66 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         if (activeKey !== null) {
           splitTargetRef.current = { key: activeKey, direction: 'h' }
           openNewSessionModal()
+        }
+        return
+      }
+
+      // Quick Switcher: Cmd/Ctrl + K
+      if (mod && e.key === 'k') {
+        e.preventDefault()
+        setQuickSwitcherOpen(true)
+        return
+      }
+
+      // Overview: Cmd/Ctrl + Shift + O
+      if (mod && e.shiftKey && (e.key === 'O' || e.key === 'o')) {
+        e.preventDefault()
+        navigateTo(null)
+        return
+      }
+
+      const cycleTo = (targetKey: string) => {
+        // If target belongs to a saved group, switch to that group first
+        const group = savedGroupsRef.current.find(g => findLeaf(g.tree, targetKey))
+        if (group) {
+          switchToGroupRef.current?.(group.id)
+          setActiveKeyRef.current(targetKey)
+          const { host, name } = parseSessionKey(targetKey)
+          const path = host
+            ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
+            : `/session/${encodeURIComponent(name)}`
+          if (window.location.pathname !== path) window.history.pushState(null, '', path)
+        } else {
+          selectSessionRef.current?.(targetKey)
+        }
+      }
+
+      // Cycle sessions: Cmd/Ctrl + Shift + ]
+      if (mod && e.shiftKey && (e.key === ']' || e.code === 'BracketRight')) {
+        e.preventDefault()
+        const els = document.querySelectorAll('[data-session-key]')
+        const skeys: string[] = []
+        els.forEach(el => skeys.push(el.getAttribute('data-session-key')!))
+        if (skeys.length > 0) {
+          const current = selectedSessionRef.current
+          const idx = current ? skeys.indexOf(current) : -1
+          const nextIdx = idx >= 0 ? (idx + 1) % skeys.length : 0
+          cycleTo(skeys[nextIdx])
+        }
+        return
+      }
+
+      // Cycle sessions: Cmd/Ctrl + Shift + [
+      if (mod && e.shiftKey && (e.key === '[' || e.code === 'BracketLeft')) {
+        e.preventDefault()
+        const els = document.querySelectorAll('[data-session-key]')
+        const skeys: string[] = []
+        els.forEach(el => skeys.push(el.getAttribute('data-session-key')!))
+        if (skeys.length > 0) {
+          const current = selectedSessionRef.current
+          const idx = current ? skeys.indexOf(current) : -1
+          const prevIdx = idx > 0 ? idx - 1 : skeys.length - 1
+          cycleTo(skeys[prevIdx])
         }
         return
       }
@@ -481,6 +555,15 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     )
   }, [sessions])
 
+  const selectSessionRef = useRef<((sk: string) => void) | null>(null)
+
+  const refocusTerminal = useCallback(() => {
+    requestAnimationFrame(() => {
+      const textarea = terminalContainerRef.current?.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null
+      textarea?.focus()
+    })
+  }, [])
+
   const selectSession = useCallback((sk: string) => {
     const { host, name } = parseSessionKey(sk)
     const path = host
@@ -489,14 +572,16 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
     setCurrentView('session')
     if (paneTree && findLeaf(paneTree, sk)) {
-      // In the split — focus it, clear singleView to show split
       setSingleView(null)
       setActiveKey(sk)
     } else {
-      // Outside the split — show alone, don't touch paneTree or activeKey
       setSingleView(sk)
     }
-  }, [paneTree])
+    // Refocus even when activeKey didn't change — Terminal auto-focus
+    // on inactive panes may have stolen visual focus from the intended one.
+    setTimeout(refocusTerminal, 150)
+  }, [paneTree, refocusTerminal])
+  selectSessionRef.current = selectSession
 
   const handleSessionSelect = (session: Session) => {
     selectSession(sessionKey(session))
@@ -546,7 +631,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     setCurrentView('session')
   }, [paneTree, activeKey, activeGroupId, groupOrder])
 
-  const switchToGroup = useCallback((groupId: string) => {
+  const switchToGroup = useCallback((groupId: string, focusKey?: string) => {
     const targetGroup = savedGroups.find(g => g.id === groupId)
     if (!targetGroup) return
     // Save current active group if it has a tree
@@ -558,28 +643,33 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     } else {
       setSavedGroups(prev => prev.filter(g => g.id !== groupId))
     }
+    const targetKey = (focusKey && findLeaf(targetGroup.tree, focusKey))
+      ? focusKey
+      : (targetGroup.activeKey ?? getLeaves(targetGroup.tree)[0] ?? null)
     setPaneTree(targetGroup.tree)
-    setActiveKey(targetGroup.activeKey)
+    setActiveKey(targetKey)
     setActiveGroupId(groupId)
     setSingleView(null)
     setCurrentView('session')
-    // Navigate URL to the group's active (or first) leaf
-    const focusKey = targetGroup.activeKey ?? getLeaves(targetGroup.tree)[0] ?? null
-    if (focusKey) {
-      const { host, name } = parseSessionKey(focusKey)
+    // Navigate URL to the target leaf
+    if (targetKey) {
+      const { host, name } = parseSessionKey(targetKey)
       const path = host
         ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
         : `/session/${encodeURIComponent(name)}`
       if (window.location.pathname !== path) window.history.pushState(null, '', path)
     }
-  }, [savedGroups, activeGroupId, paneTree, activeKey])
+    setTimeout(refocusTerminal, 150)
+  }, [savedGroups, activeGroupId, paneTree, activeKey, refocusTerminal])
+  switchToGroupRef.current = switchToGroup
 
-  const refocusTerminal = useCallback(() => {
-    requestAnimationFrame(() => {
-      const textarea = terminalContainerRef.current?.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null
-      textarea?.focus()
-    })
-  }, [])
+  // Safety-net refocus when activeKey changes via paths that don't call
+  // selectSession (e.g. onActivate from clicking inside TiledView).
+  useEffect(() => {
+    if (currentView === 'session' && paneTree && activeKey) {
+      setTimeout(refocusTerminal, 150)
+    }
+  }, [activeKey, currentView, paneTree, refocusTerminal])
 
   const jumpToSession = useCallback(async (sessKey: string, windowIndex?: number, pane?: string) => {
     selectSession(sessKey)
@@ -708,6 +798,33 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   return (
     <div className="flex flex-col h-full w-full bg-background text-foreground relative">
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {quickSwitcherOpen && (
+        <QuickSwitcher
+          sessions={sessions}
+          waitingEvents={allToolEvents}
+          onSelect={(sessionName, windowIndex) => {
+            selectSession(sessionName)
+            setQuickSwitcherOpen(false)
+            if (windowIndex !== undefined) {
+              const { host, name } = parseSessionKey(sessionName)
+              fetch('/api/session/select-window', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ host: host || undefined, session: name, window: windowIndex }),
+              }).catch(err => console.error('Failed to select window:', err))
+            }
+          }}
+          onOverview={() => {
+            navigateTo(null)
+            setQuickSwitcherOpen(false)
+          }}
+          onCreateSession={() => {
+            openNewSessionModal()
+            setQuickSwitcherOpen(false)
+          }}
+          onClose={() => setQuickSwitcherOpen(false)}
+        />
+      )}
       {newSessionModalOpen && (
         <NewSessionModal
           hosts={hosts}

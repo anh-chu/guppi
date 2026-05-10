@@ -19,7 +19,7 @@ interface SidebarProps {
   sessionNeedsAttention: (session: string) => boolean
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
   layoutGroups?: { id: string; leaves: string[]; isActive: boolean }[]
-  onSwitchGroup?: (groupId: string) => void
+  onSwitchGroup?: (groupId: string, focusKey?: string) => void
   onPairSessions?: (keyA: string, keyB: string) => void
   onRemoveFromSplit?: (key: string) => void
 }
@@ -449,7 +449,7 @@ export function Sidebar({
     }
 
     return (
-      <li key={sk}>
+      <li key={sk} data-session-key={sk}>
         <div
           role="button"
           tabIndex={0}
@@ -827,7 +827,7 @@ export function Sidebar({
                         : null
                       return (
                         <div key={sessionKey(session)} onClick={() =>
-                          group.isActive ? onSessionSelect(session) : onSwitchGroup?.(group.id)
+                          group.isActive ? onSessionSelect(session) : onSwitchGroup?.(group.id, sessionKey(session))
                         }>
                           {renderSessionItem(session, false, bc)}
                         </div>

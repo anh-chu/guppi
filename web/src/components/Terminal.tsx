@@ -181,15 +181,22 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
   useEffect(() => {
     if (containerRef.current) {
       connect(containerRef.current)
-      requestAnimationFrame(() => focus())
-      setTimeout(() => focus(), 100)
     }
     return () => disconnect()
   }, [sessionName])
 
+  // Auto-focus on mount only for the active pane — the inactive pane's
+  // auto-focus would steal focus from the intended target.
+  useEffect(() => {
+    if (fullscreen && containerRef.current) {
+      requestAnimationFrame(() => focus())
+      setTimeout(() => focus(), 100)
+    }
+  }, [fullscreen, focus])
+
   // Refocus terminal when WebSocket reconnects (e.g. after iPad sleep)
   useEffect(() => {
-    if (termConnected && !document.hidden) {
+    if (termConnected && !document.hidden && fullscreen) {
       setTimeout(() => {
         fit()
         focus()
@@ -202,7 +209,7 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
   // Refocus terminal when returning to the app/tab
   useEffect(() => {
     const refocus = () => {
-      if (!document.hidden && containerRef.current) {
+      if (!document.hidden && containerRef.current && fullscreen) {
         setTimeout(() => {
           fit()
           focus()
@@ -350,6 +357,7 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
 
   // Refocus terminal after fullscreen toggle (especially needed on iPad where tapping the button steals focus)
   useEffect(() => {
+    if (!fullscreen) return
     setTimeout(() => {
       fit()
       focus()
