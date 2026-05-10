@@ -349,6 +349,24 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     }
   }, [paneTree, singleView, currentView, savedGroups, groupOrder, activeGroupId, navigateTo])
 
+  // Dissolve active group to standalone when only 1 session remains
+  useEffect(() => {
+    if (!paneTree) return
+    const leaves = getLeaves(paneTree)
+    if (leaves.length !== 1) return
+    if (splitTargetRef.current) return // split pending — don't dissolve yet
+    const lastLeaf = leaves[0]
+    setSingleView(lastLeaf)
+    setActiveKey(null)
+    setPaneTree(null)
+    setGroupOrder(prev => prev.filter(id => id !== activeGroupId))
+    const { host, name } = parseSessionKey(lastLeaf)
+    const path = host
+      ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
+      : `/session/${encodeURIComponent(name)}`
+    if (window.location.pathname !== path) window.history.replaceState(null, '', path)
+  }, [paneTree, activeGroupId])
+
   const openNewSessionModal = useCallback(() => {
     setQuickSwitcherOpen(false)
     setNewSessionModalOpen(true)
@@ -547,6 +565,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
           if (tree) tree = removeLeaf(tree, key)
         }
         if (!tree) return null
+        if (getLeaves(tree).length === 1) return null // dissolve to standalone
         const newActiveKey = group.activeKey && validKeys.has(group.activeKey)
           ? group.activeKey : getLeaves(tree)[0] ?? null
         return { ...group, tree, activeKey: newActiveKey }
