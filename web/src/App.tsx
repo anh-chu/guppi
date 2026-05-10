@@ -652,6 +652,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             getSessionEvents={getSessionEvents}
             sessionNeedsAttention={sessionNeedsAttention}
             getSessionActivity={getSessionActivity}
+            splitPanes={paneTree ? getLeaves(paneTree) : []}
           />
         )}
         <div className="flex-1 flex flex-col overflow-hidden">

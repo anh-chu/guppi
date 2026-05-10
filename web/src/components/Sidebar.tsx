@@ -18,6 +18,7 @@ interface SidebarProps {
   getSessionEvents: (session: string) => ToolEvent[]
   sessionNeedsAttention: (session: string) => boolean
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
+  splitPanes?: string[]
 }
 
 interface RenameState {
@@ -147,6 +148,7 @@ export function Sidebar({
   getSessionEvents,
   sessionNeedsAttention,
   getSessionActivity,
+  splitPanes,
 }: SidebarProps) {
   const { prefs } = usePreferences()
   const [hiddenSet, setHiddenSet] = useState<Set<string>>(() => new Set(readStoredList('guppi:hidden-sessions')))
@@ -342,19 +344,34 @@ export function Sidebar({
     setDropTargetKey(null)
   }
 
-  const groupedVisibleSessions = useMemo(() => {
+  const splitKeys = useMemo(() => {
+    if (!splitPanes || splitPanes.length <= 1) return []
+    const visibleKeys = new Set(visibleSessions.map(sessionKey))
+    return splitPanes.filter(key => visibleKeys.has(key))
+  }, [splitPanes, visibleSessions])
+
+  const splitSessions = useMemo(() => {
+    return splitKeys.map(key => visibleSessions.find(s => sessionKey(s) === key)!).filter(Boolean)
+  }, [splitKeys, visibleSessions])
+
+  const restSessions = useMemo(() => {
+    const splitKeySet = new Set(splitKeys)
+    return visibleSessions.filter(s => !splitKeySet.has(sessionKey(s)))
+  }, [visibleSessions, splitKeys])
+
+  const groupedRestSessions = useMemo(() => {
     if (!hasMultipleHosts) return []
     const groups: Array<{ label: string; sessions: Session[] }> = []
-    for (const session of visibleSessions) {
+    for (const session of restSessions) {
       const label = session.host_name || 'Local'
       const existing = groups.find(group => group.label === label)
       if (existing) existing.sessions.push(session)
       else groups.push({ label, sessions: [session] })
     }
     return groups
-  }, [hasMultipleHosts, visibleSessions])
+  }, [hasMultipleHosts, restSessions])
 
-  const renderSessionItem = (session: Session, isHiddenSection = false) => {
+  const renderSessionItem = (session: Session, isHiddenSection = false, bracketChar?: string | null) => {
     const sk = sessionKey(session)
     const isSelected = selectedSession === sk
     const needsAttention = sessionNeedsAttention(sk)
@@ -434,6 +451,11 @@ export function Sidebar({
           )}
         >
           <div className="flex items-center gap-2 w-full">
+            {!collapsed && bracketChar && (
+              <span className="text-[11px] font-mono text-mute/60 select-none w-3 shrink-0">
+                {bracketChar}
+              </span>
+            )}
             {!collapsed && <AgentMark agentType={agentType} className="h-4.5 min-w-8 px-1.5 shrink-0" />}
             {isRenaming ? (
               <input
@@ -574,8 +596,24 @@ export function Sidebar({
             </li>
           )}
 
+          {splitSessions.length > 0 && (
+            <li>
+              <ul className="space-y-0.5">
+                {splitSessions.map((session, index) => {
+                  const showBrackets = splitSessions.length > 1
+                  const bc = !collapsed && showBrackets
+                    ? index === 0 ? '┬' : index === splitSessions.length - 1 ? '└' : '├'
+                    : null
+                  return renderSessionItem(session, false, bc)
+                })}
+              </ul>
+            </li>
+          )}
+          {splitSessions.length > 0 && restSessions.length > 0 && (
+            <li className="h-2" />
+          )}
           {hasMultipleHosts ? (
-            groupedVisibleSessions.map(group => (
+            groupedRestSessions.map(group => (
               <li key={group.label}>
                 {!collapsed && (
                   <div className="px-3 pt-2 pb-1 text-xs uppercase tracking-wider text-mute font-semibold flex items-center gap-1.5">
@@ -592,7 +630,7 @@ export function Sidebar({
               </li>
             ))
           ) : (
-            visibleSessions.map(session => renderSessionItem(session))
+            restSessions.map(session => renderSessionItem(session))
           )}
 
           {hiddenSessions.length > 0 && !collapsed && (
