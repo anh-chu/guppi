@@ -58,13 +58,10 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const [paneTree, setPaneTree] = useState<PaneTree | null>(() => {
     const urlKey = getViewFromPath().sessionKey
     if (!urlKey) return null
-    // Try to restore full tree from localStorage
     try {
       const stored = localStorage.getItem('guppi:pane-tree')
       if (stored) {
-        const tree = JSON.parse(stored) as PaneTree
-        // Only restore if the URL's session key is in the stored tree
-        if (findLeaf(tree, urlKey)) return tree
+        return JSON.parse(stored) as PaneTree  // always restore full split
       }
     } catch {}
     return popOut(urlKey)
@@ -84,7 +81,20 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     } catch {}
     return urlKey
   })
-  const selectedSession = activeKey
+  const [singleView, setSingleView] = useState<string | null>(() => {
+    const urlKey = getViewFromPath().sessionKey
+    if (!urlKey) return null
+    try {
+      const stored = localStorage.getItem('guppi:pane-tree')
+      if (stored) {
+        const tree = JSON.parse(stored) as PaneTree
+        // If URL session is NOT in the stored split tree, it was a singleView
+        if (!findLeaf(tree, urlKey)) return urlKey
+      }
+    } catch {}
+    return null
+  })
+  const selectedSession = singleView ?? activeKey
   const hasMultipleHosts = hosts.length > 1
   const [serverVersion, setServerVersion] = useState<string | null>(null)
   const loadedVersionRef = useRef<string | null>(null)
@@ -204,15 +214,18 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     }
     setCurrentView(view || (sessKey ? 'session' : 'overview'))
     if (!sessKey) {
+      setSingleView(null)
       setPaneTree(null)
       setActiveKey(null)
       return
     }
+    setSingleView(null)
     setPaneTree(popOut(sessKey))
     setActiveKey(sessKey)
   }, [])
 
   const handleDropSession = useCallback((sessKey: string) => {
+    setSingleView(null)
     const currentActive = activeKeyRef.current
     setPaneTree(prev => {
       if (prev === null) return popOut(sessKey)
@@ -247,6 +260,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   }, [])
 
   const popOutPane = useCallback((sessKey: string) => {
+    setSingleView(null)
     setPaneTree(popOut(sessKey))
     setActiveKey(sessKey)
     const { host, name } = parseSessionKey(sessKey)
@@ -446,10 +460,10 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       }
       return tree
     })
-  }, [sessions, paneTree]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (singleView && !validKeys.has(singleView)) setSingleView(null)
+  }, [sessions, paneTree, singleView]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectSession = useCallback((sk: string) => {
-    const currentActive = activeKeyRef.current
     const { host, name } = parseSessionKey(sk)
     const path = host
       ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
@@ -457,15 +471,12 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
     setCurrentView('session')
     if (paneTree && findLeaf(paneTree, sk)) {
-      // Already in split — just focus
-      setActiveKey(sk)
-    } else if (paneTree && currentActive && findLeaf(paneTree, currentActive)) {
-      // In a split but session not in it — replace active pane, keep layout
-      setPaneTree(prev => prev ? replaceLeaf(prev, currentActive, sk) : popOut(sk))
+      // In the split — focus it, clear singleView to show split
+      setSingleView(null)
       setActiveKey(sk)
     } else {
-      setPaneTree(popOut(sk))
-      setActiveKey(sk)
+      // Outside the split — show alone, don't touch paneTree or activeKey
+      setSingleView(sk)
     }
   }, [paneTree])
 
@@ -665,7 +676,16 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             <Setup onComplete={() => navigateTo(null)} />
           ) : currentView === 'settings' ? (
             <Settings pushState={pushState} onPushSubscribe={pushSubscribe} onPushUnsubscribe={pushUnsubscribe} onLogout={onLogout} />
-          ) : paneTree ? (
+          ) : currentView === 'session' && singleView ? (
+            <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
+              <Terminal
+                sessionName={parseSessionKey(singleView).name}
+                hostId={parseSessionKey(singleView).host || undefined}
+                fullscreen={terminalFullscreen}
+                onToggleFullscreen={toggleFullscreen}
+              />
+            </div>
+          ) : currentView === 'session' && paneTree ? (
             <TiledView
               tree={paneTree}
               activeKey={activeKey}
