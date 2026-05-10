@@ -20,6 +20,7 @@ interface SidebarProps {
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
   splitPanes?: string[]
   onPairSessions?: (keyA: string, keyB: string) => void
+  onRemoveFromSplit?: (key: string) => void
 }
 
 interface RenameState {
@@ -35,6 +36,21 @@ function isSessionActive(session: Session): boolean {
   return session.windows.some(w =>
     w.panes?.some(p => p.current_command && !shellCommands.has(p.current_command))
   )
+}
+
+function getRunningCommands(session: Session): string[] {
+  if (!session.windows) return []
+  const seen = new Set<string>()
+  const cmds: string[] = []
+  for (const w of session.windows) {
+    for (const p of w.panes ?? []) {
+      if (p.current_command && !shellCommands.has(p.current_command) && !seen.has(p.current_command)) {
+        seen.add(p.current_command)
+        cmds.push(p.current_command)
+      }
+    }
+  }
+  return cmds
 }
 
 function ToolBadge({ event }: { event: ToolEvent }) {
@@ -151,9 +167,11 @@ export function Sidebar({
   getSessionActivity,
   splitPanes,
   onPairSessions,
+  onRemoveFromSplit,
 }: SidebarProps) {
   const { prefs } = usePreferences()
   const [hiddenSet, setHiddenSet] = useState<Set<string>>(() => new Set(readStoredList('guppi:hidden-sessions')))
+  const [backgroundSet, setBackgroundSet] = useState<Set<string>>(() => new Set(readStoredList('guppi:background-sessions')))
   const [manualOrder, setManualOrder] = useState<string[]>(() => readStoredList('guppi:session-order'))
   const [projectFilters, setProjectFilters] = useState<string[]>(() => readStoredList('guppi:project-filters'))
   const [hiddenExpanded, setHiddenExpanded] = useState(false)
@@ -200,6 +218,10 @@ export function Sidebar({
   }, [hiddenSet])
 
   useEffect(() => {
+    writeStoredList('guppi:background-sessions', [...backgroundSet])
+  }, [backgroundSet])
+
+  useEffect(() => {
     writeStoredList('guppi:session-order', manualOrder)
   }, [manualOrder])
 
@@ -221,7 +243,11 @@ export function Sidebar({
     if (nextHidden.length !== hiddenSet.size) {
       setHiddenSet(new Set(nextHidden))
     }
-  }, [sessions, manualOrder, hiddenSet])
+    const nextBackground = [...backgroundSet].filter(key => validKeys.has(key))
+    if (nextBackground.length !== backgroundSet.size) {
+      setBackgroundSet(new Set(nextBackground))
+    }
+  }, [sessions, manualOrder, hiddenSet, backgroundSet])
 
   const projects = useMemo(
     () => Array.from(new Set(sessions.map(s => s.project_path).filter((value): value is string => Boolean(value)))).sort(),
@@ -240,19 +266,33 @@ export function Sidebar({
   const orderedSessions = useMemo(() => orderSessions(sessions, manualOrder), [sessions, manualOrder])
 
   const visibleSessions = useMemo(() => {
-    const filtered = orderedSessions.filter(session => !hiddenSet.has(sessionKey(session)))
+    const filtered = orderedSessions.filter(session => !hiddenSet.has(sessionKey(session)) && !backgroundSet.has(sessionKey(session)))
     if (projectFilters.length === 0) return filtered
     const allowed = new Set(projectFilters)
     return filtered.filter(session => session.project_path && allowed.has(session.project_path))
-  }, [orderedSessions, hiddenSet, projectFilters])
+  }, [orderedSessions, hiddenSet, backgroundSet, projectFilters])
 
   const hiddenSessions = orderedSessions.filter(session => hiddenSet.has(sessionKey(session)))
+  const backgroundSessions = orderedSessions.filter(session => backgroundSet.has(sessionKey(session)))
 
   const toggleHide = (key: string) => {
     const next = new Set(hiddenSet)
     if (next.has(key)) next.delete(key)
     else next.add(key)
     setHiddenSet(next)
+    setContextMenu(null)
+  }
+
+  const toggleBackground = (key: string) => {
+    const next = new Set(backgroundSet)
+    if (next.has(key)) next.delete(key)
+    else {
+      next.add(key)
+      if (splitPanes?.includes(key)) {
+        onRemoveFromSplit?.(key)
+      }
+    }
+    setBackgroundSet(next)
     setContextMenu(null)
   }
 
@@ -699,8 +739,67 @@ export function Sidebar({
               {hiddenExpanded && hiddenSessions.map(session => renderSessionItem(session, true))}
             </>
           )}
+
         </ul>
       </nav>
+
+      {backgroundSessions.length > 0 && !collapsed && (
+        <div className="border-t border-hairline bg-canvas shrink-0">
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-widest font-semibold text-mute/60 select-none">
+            Background
+          </div>
+          <ul className="px-2 pb-2 space-y-0.5">
+            {backgroundSessions.map(session => {
+              const sk = sessionKey(session)
+              const isSelected = selectedSession === sk
+              const active = isSessionActive(session)
+              const cmds = getRunningCommands(session)
+              const cmdLabel = cmds.join(' · ')
+              return (
+                <li key={sk}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSessionSelect(session)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSessionSelect(session) } }}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setContextMenu({ key: sk, id: session.id, name: session.name, host: session.host, x: e.clientX, y: e.clientY })
+                    }}
+                    className={cn(
+                      'relative flex items-center gap-2 w-full px-2.5 py-1 rounded-sm transition-all duration-200 min-w-0',
+                      'hover:bg-surface cursor-pointer',
+                      isSelected && 'bg-surface text-primary border border-hairline',
+                      !isSelected && 'border border-transparent',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'w-1.5 h-1.5 rounded-full shrink-0 transition-colors',
+                        active
+                          ? 'bg-success animate-[pulse_1.5s_ease-in-out_infinite]'
+                          : 'bg-muted-foreground/40',
+                      )}
+                      title={active ? 'running' : 'idle'}
+                    />
+                    <span className="text-[12px] font-medium tracking-tight shrink-0 text-mute">
+                      {session.name}
+                    </span>
+                    {cmdLabel && (
+                      <span
+                        className="min-w-0 flex-1 truncate text-[11px] text-mute/50 font-mono"
+                        title={cmdLabel}
+                      >
+                        {cmdLabel}
+                      </span>
+                    )}
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
 
       {contextMenu && (
         <div
@@ -726,6 +825,12 @@ export function Sidebar({
             className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
           >
             {hiddenSet.has(contextMenu.key) ? 'Unhide' : 'Hide'}
+          </div>
+          <div
+            onClick={() => toggleBackground(contextMenu.key)}
+            className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
+          >
+            {backgroundSet.has(contextMenu.key) ? 'Foreground' : 'Background'}
           </div>
           <div className="my-1 border-t border-hairline" />
           <div
