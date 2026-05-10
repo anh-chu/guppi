@@ -166,7 +166,7 @@ export function TiledView({
       <div
         key={key}
         className={cn(
-          'flex flex-col overflow-hidden rounded-lg border',
+          'flex-1 flex flex-col overflow-hidden rounded-lg border min-h-0',
           isActive ? 'border-primary' : 'border-hairline',
         )}
         onClick={() => {
