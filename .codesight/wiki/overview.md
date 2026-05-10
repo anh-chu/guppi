@@ -6,7 +6,7 @@
 
 ## Scale
 
-72 API routes · 14 UI components · 56 library files · 1 middleware layers · 7 environment variables
+72 API routes · 14 UI components · 57 library files · 1 middleware layers · 7 environment variables
 
 ## Subsystems
 
@@ -37,13 +37,13 @@
 
 **UI:** 14 components (react) — see [ui.md](./ui.md)
 
-**Libraries:** 56 files — see [libraries.md](./libraries.md)
+**Libraries:** 57 files — see [libraries.md](./libraries.md)
 
 ## High-Impact Files
 
 Changes to these files have the widest blast radius across the codebase:
 
-- `path/filepath` — imported by **17** files
+- `path/filepath` — imported by **19** files
 - `encoding/json` — imported by **15** files
 - `web/src/hooks/usePreferences.ts` — imported by **10** files
 - `crypto/rand` — imported by **9** files

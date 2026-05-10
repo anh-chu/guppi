@@ -2,9 +2,9 @@
 
 > **Navigation aid.** Library inventory extracted via AST. Read the source files listed here before modifying exported functions.
 
-**56 library files** across 2 modules
+**57 library files** across 2 modules
 
-## Pkg (43 files)
+## Pkg (44 files)
 
 - `pkg/peer/protocol.go` — NewMessage, Message, AuthPayload, ChallengePayload, StateUpdatePayload, StateEventPayload, …
 - `pkg/auth/auth.go` — NewPasswordStore, NewSessionManager, Middleware, SetupHandler, LoginHandler, LogoutHandler, …
@@ -16,6 +16,7 @@
 - `pkg/identity/identity.go` — Generate, Verify, LoadOrCreate, Load, Identity
 - `pkg/toolevents/tracker.go` — NewTracker, Event, PaneKey, SessionMeta, Tracker
 - `pkg/activity/tracker.go` — NewTracker, SessionActivity, Snapshot, Tracker
+- `pkg/git/worktree.go` — IsWorktree, FindMainWorktreeRoot, RemoveWorktree, CreateWorktree
 - `pkg/peer/manager.go` — NewManager, HostState, PeerConnection, Manager
 - `pkg/state/manager.go` — NewManager, SessionMetadata, Manager, StateEvent
 - `pkg/tmux/types.go` — Session, Window, PaneDetailed, Pane
@@ -30,8 +31,7 @@
 - `pkg/tmux/client.go` — NewClient, ValidateSessionName, Client
 - `pkg/tmux/paste_image.go` — HandlePTYControlMessage, StorePastedImage, PTYControlMessage
 - `pkg/toolevents/silence.go` — NewSilenceMonitor, SilenceMonitor, TmuxClient
-- `pkg/webpush/sender.go` — NewSender, PushPayload, Sender
-- _…and 18 more files_
+- _…and 19 more files_
 
 ## Web (13 files)
 

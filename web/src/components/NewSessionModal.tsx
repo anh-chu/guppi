@@ -8,7 +8,7 @@ import { AgentMark } from './AgentMark'
 interface NewSessionModalProps {
   hosts: Host[]
   sessions: Session[]
-  onCreateSession: (name: string, path: string, command: string, hostId?: string) => void
+  onCreateSession: (name: string, path: string, command: string, hostId?: string, worktreeBranch?: string) => Promise<string | null>
   onClose: () => void
 }
 
@@ -36,11 +36,19 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   const [path, setPath] = useState('')
   const [preset, setPreset] = useState<string | null>(defaultAgent)
   const [command, setCommand] = useState(() => presets.find(p => p.id === defaultAgent)?.command || defaultAgent)
+  const [worktreeMode, setWorktreeMode] = useState(false)
+  const [worktreeBranch, setWorktreeBranch] = useState('')
+  const [worktreeError, setWorktreeError] = useState<string | null>(null)
   const onlineHosts = hosts.filter(h => h.online)
   const showHostSelect = onlineHosts.length > 1
   const localHost = onlineHosts.find(h => h.local)
   const [selectedHost, setSelectedHost] = useState<string>(localHost?.id || '')
   const pathInputRef = useRef<HTMLInputElement>(null)
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [highlightedIndex, setHighlightedIndex] = useState(-1)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const dropdownOpenRef = useRef(dropdownOpen)
+  dropdownOpenRef.current = dropdownOpen
   const resolvedCommand = command.trim()
   const existingNames = useMemo(() => {
     return new Set(
@@ -65,8 +73,34 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   const suggestedName = useMemo(() => {
     const leaf = basename(path || '~')
     if (!leaf) return ''
-    return uniqueSessionName(leaf)
-  }, [path, existingNames])
+    const branch = worktreeMode && worktreeBranch.trim()
+      ? worktreeBranch.trim().replace(/\//g, '-')
+      : ''
+    const base = branch ? `${leaf}-${branch}` : leaf
+    return uniqueSessionName(base)
+  }, [path, worktreeMode, worktreeBranch, existingNames])
+
+  const recentPaths = useMemo(() => {
+    const seen = new Set<string>()
+    const sorted = [...sessions]
+      .filter(s => s.project_path && s.project_path.trim())
+      .sort((a, b) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime())
+    const unique: string[] = []
+    for (const s of sorted) {
+      if (s.project_path && !seen.has(s.project_path)) {
+        seen.add(s.project_path)
+        unique.push(s.project_path)
+        if (unique.length >= 10) break
+      }
+    }
+    return unique
+  }, [sessions])
+
+  const filteredPaths = useMemo(() => {
+    if (!path) return recentPaths
+    const lower = path.toLowerCase()
+    return recentPaths.filter(p => p.toLowerCase().startsWith(lower))
+  }, [path, recentPaths])
 
   const handlePresetClick = (id: string) => {
     if (preset === id) {
@@ -78,6 +112,43 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
     }
   }
 
+  const handlePathKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (dropdownOpen && filteredPaths.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setHighlightedIndex(prev => (prev < filteredPaths.length - 1 ? prev + 1 : 0))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setHighlightedIndex(prev => (prev > 0 ? prev - 1 : filteredPaths.length - 1))
+        return
+      }
+      if (e.key === 'Enter' && highlightedIndex >= 0) {
+        e.preventDefault()
+        setPath(filteredPaths[highlightedIndex])
+        setDropdownOpen(false)
+        setHighlightedIndex(-1)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setDropdownOpen(false)
+        setHighlightedIndex(-1)
+        return
+      }
+      if (e.key === 'Tab') {
+        setDropdownOpen(false)
+        setHighlightedIndex(-1)
+        return
+      }
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      handleSubmit()
+    }
+  }
+
   useEffect(() => {
     pathInputRef.current?.focus()
   }, [])
@@ -85,6 +156,13 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (dropdownOpenRef.current) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          setDropdownOpen(false)
+          setHighlightedIndex(-1)
+          return
+        }
         e.preventDefault()
         e.stopImmediatePropagation()
         onClose()
@@ -94,11 +172,28 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
     return () => window.removeEventListener('keydown', handler, true)
   }, [onClose])
 
-  const handleSubmit = () => {
+  useEffect(() => {
+    if (!dropdownOpen) return
+    const handleMouseDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleMouseDown)
+    return () => document.removeEventListener('mousedown', handleMouseDown)
+  }, [dropdownOpen])
+
+  useEffect(() => {
+    setHighlightedIndex(-1)
+  }, [filteredPaths])
+
+  const handleSubmit = async () => {
     const trimmedPath = path.trim() || '~'
     const trimmedName = uniqueSessionName(name.trim() || suggestedName)
     if (!trimmedName) return
-    onCreateSession(trimmedName, trimmedPath, resolvedCommand, selectedHost || undefined)
+    setWorktreeError(null)
+    const err = await onCreateSession(trimmedName, trimmedPath, resolvedCommand, selectedHost || undefined, worktreeMode ? worktreeBranch.trim() || undefined : undefined)
+    if (err) setWorktreeError(err)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -122,14 +217,60 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
           <div className="space-y-4">
             <div>
               <div className="text-xs font-bold text-mute/60 uppercase tracking-wider mb-2 ml-1">Location</div>
-              <input
-                ref={pathInputRef}
-                value={path}
-                onChange={e => setPath(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="~"
-                className="w-full text-[14px] text-ink bg-surface-elevated border border-hairline rounded-sm px-3 py-2 outline-none font-sans font-medium placeholder:text-mute/40 focus:border-primary/60 transition-colors"
-              />
+              <div ref={containerRef} className="relative">
+                <input
+                  ref={pathInputRef}
+                  value={path}
+                  onChange={e => setPath(e.target.value)}
+                  onKeyDown={handlePathKeyDown}
+                  onFocus={() => setDropdownOpen(true)}
+                  placeholder="~"
+                  className="w-full text-[14px] text-ink bg-surface-elevated border border-hairline rounded-sm px-3 py-2 outline-none font-sans font-medium placeholder:text-mute/40 focus:border-primary/60 transition-colors"
+                />
+                {dropdownOpen && filteredPaths.length > 0 && (
+                  <div className="absolute left-0 right-0 top-full mt-0.5 bg-surface border border-hairline rounded-sm shadow-lg z-10 overflow-hidden">
+                    {filteredPaths.map((p, i) => (
+                      <div
+                        key={p}
+                        onMouseDown={() => {
+                          setPath(p)
+                          setDropdownOpen(false)
+                          setHighlightedIndex(-1)
+                        }}
+                        className={cn(
+                          'px-3 py-2 text-[13px] font-mono text-ink cursor-pointer',
+                          i === highlightedIndex && 'bg-primary/10 text-primary'
+                        )}
+                      >
+                        {p}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <label className="mt-2 flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={worktreeMode}
+                  onChange={e => setWorktreeMode(e.target.checked)}
+                  className="w-3.5 h-3.5 accent-primary"
+                />
+                <span className="text-xs font-bold text-mute/60 uppercase tracking-wider">Create as worktree</span>
+              </label>
+              {worktreeMode && (
+                <>
+                  <input
+                    value={worktreeBranch}
+                    onChange={e => { setWorktreeBranch(e.target.value); setWorktreeError(null) }}
+                    onKeyDown={handleKeyDown}
+                    placeholder="branch-name"
+                    className="mt-2 w-full text-[13px] text-ink bg-surface-elevated border border-hairline rounded-sm px-3 py-2 outline-none font-mono placeholder:text-mute/40 focus:border-primary/60 transition-colors"
+                  />
+                  {worktreeError && (
+                    <div className="mt-1.5 text-xs text-red-400 font-mono break-all">{worktreeError}</div>
+                  )}
+                </>
+              )}
             </div>
             <div>
               <div className="text-xs font-bold text-mute/60 uppercase tracking-wider mb-2 ml-1">Agent</div>
@@ -222,7 +363,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
           <div className="flex gap-3">
             <button
               onClick={handleSubmit}
-              disabled={!(name.trim() || suggestedName) || !resolvedCommand}
+              disabled={!(name.trim() || suggestedName) || !resolvedCommand || (worktreeMode && !worktreeBranch.trim())}
               className="px-6 py-2 rounded-full text-[13px] font-bold uppercase tracking-widest bg-primary text-primary-foreground hover:bg-white/90 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             >
               Create

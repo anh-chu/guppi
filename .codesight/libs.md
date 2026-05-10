@@ -23,6 +23,11 @@
 - `pkg/common/commands.go` — function RegisterCommand: (command *cli.Command), function GetCommands: () []*cli.Command
 - `pkg/common/global.go` — function Flags: () []cli.Flag, function Before: (ctx context.Context, c *cli.Command) (context.Context, error)
 - `pkg/common/version.go` — class AppVersionInfo
+- `pkg/git/worktree.go`
+  - function IsWorktree: (path string) (bool, error)
+  - function FindMainWorktreeRoot: (path string) (string, error)
+  - function RemoveWorktree: (path string) error
+  - function CreateWorktree: (repoPath, branch, destPath string) error
 - `pkg/identity/identity.go`
   - function Generate: (name string) (*Identity, error)
   - function Verify: (publicKeyB64 string, message, signature []byte) bool

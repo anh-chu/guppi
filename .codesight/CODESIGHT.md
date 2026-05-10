@@ -2,9 +2,9 @@
 
 > **Stack:** chi | none | react | go
 
-> 72 routes | 0 models | 14 components | 56 lib files | 7 env vars | 1 middleware | 0% test coverage
-> **Token savings:** this file is ~5,400 tokens. Without it, AI exploration would cost ~66,800 tokens. **Saves ~61,400 tokens per conversation.**
-> **Last scanned:** 2026-05-10 12:41 — re-run after significant changes
+> 72 routes | 0 models | 14 components | 57 lib files | 7 env vars | 1 middleware | 0% test coverage
+> **Token savings:** this file is ~5,500 tokens. Without it, AI exploration would cost ~67,100 tokens. **Saves ~61,600 tokens per conversation.**
+> **Last scanned:** 2026-05-10 13:22 — re-run after significant changes
 
 ---
 
@@ -129,6 +129,11 @@
 - `pkg/common/commands.go` — function RegisterCommand: (command *cli.Command), function GetCommands: () []*cli.Command
 - `pkg/common/global.go` — function Flags: () []cli.Flag, function Before: (ctx context.Context, c *cli.Command) (context.Context, error)
 - `pkg/common/version.go` — class AppVersionInfo
+- `pkg/git/worktree.go`
+  - function IsWorktree: (path string) (bool, error)
+  - function FindMainWorktreeRoot: (path string) (string, error)
+  - function RemoveWorktree: (path string) error
+  - function CreateWorktree: (repoPath, branch, destPath string) error
 - `pkg/identity/identity.go`
   - function Generate: (name string) (*Identity, error)
   - function Verify: (publicKeyB64 string, message, signature []byte) bool
@@ -330,15 +335,15 @@
 
 ## Most Imported Files (change these carefully)
 
-- `path/filepath` — imported by **17** files
+- `path/filepath` — imported by **19** files
 - `encoding/json` — imported by **15** files
 - `web/src/hooks/usePreferences.ts` — imported by **10** files
 - `crypto/rand` — imported by **9** files
 - `web/src/theme.ts` — imported by **9** files
 - `web/src/lib/utils.ts` — imported by **9** files
+- `os/exec` — imported by **8** files
 - `net/http` — imported by **8** files
 - `crypto/x509` — imported by **8** files
-- `os/exec` — imported by **7** files
 - `crypto/tls` — imported by **7** files
 - `encoding/pem` — imported by **7** files
 - `web/src/hooks/useSessions.ts` — imported by **7** files
@@ -353,15 +358,15 @@
 
 ## Import Map (who imports what)
 
-- `path/filepath` ← `pkg/agentcheck/agentcheck.go`, `pkg/auth/auth.go`, `pkg/commands/agent-setup/agent_setup.go`, `pkg/commands/install/install.go`, `pkg/identity/identity.go` +12 more
+- `path/filepath` ← `pkg/agentcheck/agentcheck.go`, `pkg/auth/auth.go`, `pkg/commands/agent-setup/agent_setup.go`, `pkg/commands/install/install.go`, `pkg/git/worktree.go` +14 more
 - `encoding/json` ← `pkg/auth/auth.go`, `pkg/commands/agent-setup/agent_setup.go`, `pkg/commands/notify/notify.go`, `pkg/commands/pair/pair.go`, `pkg/identity/identity.go` +10 more
 - `web/src/hooks/usePreferences.ts` ← `web/src/App.tsx`, `web/src/components/HelpModal.tsx`, `web/src/components/NewSessionModal.tsx`, `web/src/components/Overview.tsx`, `web/src/components/Settings.tsx` +5 more
 - `crypto/rand` ← `pkg/auth/auth.go`, `pkg/identity/identity.go`, `pkg/identity/pairing.go`, `pkg/peer/client_cert_test.go`, `pkg/peer/handler.go` +4 more
 - `web/src/theme.ts` ← `web/src/App.tsx`, `web/src/components/AgentMark.tsx`, `web/src/components/Overview.tsx`, `web/src/components/QuickSwitcher.tsx`, `web/src/components/Settings.tsx` +4 more
 - `web/src/lib/utils.ts` ← `web/src/components/AgentMark.tsx`, `web/src/components/NewSessionModal.tsx`, `web/src/components/QuickSwitcher.tsx`, `web/src/components/Settings.tsx`, `web/src/components/Setup.tsx` +4 more
+- `os/exec` ← `pkg/agentcheck/agentcheck.go`, `pkg/commands/agent-setup/agent_setup.go`, `pkg/commands/install/install.go`, `pkg/commands/notify/notify.go`, `pkg/git/worktree.go` +3 more
 - `net/http` ← `pkg/auth/auth.go`, `pkg/commands/notify/notify.go`, `pkg/commands/pair/pair.go`, `pkg/peer/handler.go`, `pkg/peer/pty_relay.go` +3 more
 - `crypto/x509` ← `pkg/commands/pair/pair.go`, `pkg/identity/peers.go`, `pkg/peer/client.go`, `pkg/peer/client_cert_test.go`, `pkg/tlscert/reloader.go` +3 more
-- `os/exec` ← `pkg/agentcheck/agentcheck.go`, `pkg/commands/agent-setup/agent_setup.go`, `pkg/commands/install/install.go`, `pkg/commands/notify/notify.go`, `pkg/tmux/client.go` +2 more
 - `crypto/tls` ← `pkg/commands/pair/pair.go`, `pkg/identity/peers.go`, `pkg/peer/client.go`, `pkg/peer/client_cert_test.go`, `pkg/server/server.go` +2 more
 
 ---
