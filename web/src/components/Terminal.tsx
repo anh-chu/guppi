@@ -441,7 +441,7 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
         >
           <div
             ref={containerRef}
-            className="absolute inset-0 overflow-hidden"
+            className="absolute inset-[3px] overflow-hidden"
           />
         {/* Fullscreen toggle */}
           {onToggleFullscreen && (
