@@ -425,17 +425,18 @@ export function TiledView({
     const dividerProps: React.HTMLAttributes<HTMLDivElement> & {
       style: React.CSSProperties
     } = {
-      className: 'relative shrink-0 flex items-center justify-center group',
+      className:
+        'relative shrink-0 bg-hairline hover:bg-primary/40 transition-colors',
       style: isH
-        ? { width: 8, cursor: 'col-resize' }
-        : { height: 8, cursor: 'row-resize' },
+        ? { width: 2, cursor: 'col-resize', zIndex: 1 }
+        : { height: 2, cursor: 'row-resize', zIndex: 1 },
       onPointerDown: (e: React.PointerEvent<HTMLDivElement>) =>
         handleDividerPointerDown(path, node.direction, node.ratio, e),
       children: (
-        <div
-          className="bg-hairline group-hover:bg-primary/40 transition-colors"
-          style={isH ? { width: 2, height: '100%' } : { height: 2, width: '100%' }}
-        />
+        <div style={isH
+          ? { position: 'absolute', top: 0, bottom: 0, left: -4, right: -4, cursor: 'col-resize' }
+          : { position: 'absolute', left: 0, right: 0, top: -4, bottom: -4, cursor: 'row-resize' }
+        } />
       ),
     }
 
