@@ -484,11 +484,22 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     selectSession(sessionKey(session))
   }
 
-  const handlePairSessions = useCallback((keyA: string, keyB: string) => {
+  const handlePairSessions = useCallback((draggedKey: string, targetKey: string) => {
     setSingleView(null)
-    setPaneTree({ type: 'split', direction: 'h', ratio: 0.5, first: { type: 'leaf', sessionKey: keyA }, second: { type: 'leaf', sessionKey: keyB } })
-    setActiveKey(keyA)
-    const { host, name } = parseSessionKey(keyA)
+    setPaneTree(prev => {
+      if (prev && findLeaf(prev, targetKey)) {
+        // Target already in layout — add dragged beside it
+        return splitLeaf(prev, targetKey, 'h', draggedKey)
+      }
+      if (prev && findLeaf(prev, draggedKey)) {
+        // Dragged already in layout — add target beside it
+        return splitLeaf(prev, draggedKey, 'h', targetKey)
+      }
+      // Neither in layout — fresh pair
+      return { type: 'split', direction: 'h', ratio: 0.5, first: { type: 'leaf', sessionKey: draggedKey }, second: { type: 'leaf', sessionKey: targetKey } }
+    })
+    setActiveKey(draggedKey)
+    const { host, name } = parseSessionKey(draggedKey)
     const path = host
       ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
       : `/session/${encodeURIComponent(name)}`
