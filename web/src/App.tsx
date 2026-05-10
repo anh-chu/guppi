@@ -107,6 +107,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   })
   const [terminalFullscreen, setTerminalFullscreen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [dragNewSessionOver, setDragNewSessionOver] = useState(false)
   const pendingSessionRef = useRef<string | null>(null)
   const splitTargetRef = useRef<{ key: string; direction: 'h' | 'v' } | null>(null)
   const activeKeyRef = useRef(activeKey)
@@ -597,6 +598,14 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     }
   }, [selectSession, refresh, refocusTerminal])
 
+  const handleDropNewSession = useCallback(() => {
+    if (activeKey !== null) {
+      splitTargetRef.current = { key: activeKey, direction: 'h' }
+    }
+    const { host } = activeKey ? parseSessionKey(activeKey) : { host: undefined }
+    handleCreateSession('shell', '~', '', host || undefined)
+  }, [activeKey, handleCreateSession])
+
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
   }, [])
@@ -694,7 +703,47 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             onRemoveFromSplit={closePane}
           />
         )}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div
+          className="flex-1 flex flex-col overflow-hidden relative"
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes('application/x-guppi-new-session')) {
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'copy'
+              setDragNewSessionOver(true)
+            }
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              setDragNewSessionOver(false)
+            }
+          }}
+        >
+          {dragNewSessionOver && (
+            <div
+              className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3"
+              style={{ background: 'color-mix(in oklch, var(--primary) 8%, var(--canvas))', border: '2px dashed color-mix(in oklch, var(--primary) 40%, transparent)' }}
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'copy'
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setDragNewSessionOver(false)
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                setDragNewSessionOver(false)
+                handleDropNewSession()
+              }}
+            >
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.8 }}>
+                <rect x="3" y="3" width="7" height="18" rx="1" />
+                <rect x="14" y="3" width="7" height="18" rx="1" />
+              </svg>
+              <span className="text-[11px] font-bold tracking-widest uppercase" style={{ color: 'var(--primary)', opacity: 0.9 }}>Drop to split</span>
+            </div>
+          )}
           {currentView === 'setup' ? (
             <Setup onComplete={() => navigateTo(null)} />
           ) : currentView === 'settings' ? (
@@ -729,6 +778,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
               onToggleFullscreen={toggleFullscreen}
               terminalContainerRef={terminalContainerRef}
               onDropSession={handleDropSession}
+              onDropNewSession={handleDropNewSession}
               onSwapPanes={(a, b) => setPaneTree(prev => prev ? swapLeaves(prev, a, b) : prev)}
               onMovePanes={(sourceKey, targetKey, edge) =>
                 setPaneTree(prev => prev ? movePane(prev, sourceKey, targetKey, edge) : prev)

@@ -16,6 +16,7 @@ interface TiledViewProps {
   onToggleFullscreen: () => void
   terminalContainerRef?: React.RefObject<HTMLDivElement | null>
   onDropSession?: (key: string) => void
+  onDropNewSession?: () => void
   onSwapPanes?: (keyA: string, keyB: string) => void
   onMovePanes?: (sourceKey: string, targetKey: string, edge: 'left'|'right'|'top'|'bottom') => void
 }
@@ -34,6 +35,7 @@ export function TiledView({
   onToggleFullscreen,
   terminalContainerRef,
   onDropSession,
+  onDropNewSession,
   onSwapPanes,
   onMovePanes,
 }: TiledViewProps) {
@@ -129,6 +131,10 @@ export function TiledView({
       e.preventDefault()
       e.stopPropagation()
       setDragOver(false)
+      if (e.dataTransfer.types.includes('application/x-guppi-new-session')) {
+        onDropNewSession?.()
+        return
+      }
       // Only handle sidebar drops (text/plain), not pane swaps
       if (e.dataTransfer.types.includes('application/x-guppi-pane')) return
       const sessKey = e.dataTransfer.getData('text/plain')
@@ -136,7 +142,7 @@ export function TiledView({
         onDropSession?.(sessKey)
       }
     },
-    [onDropSession],
+    [onDropSession, onDropNewSession],
   )
 
   // Safety net: clear overlay if drag is cancelled (Escape) or ends outside
@@ -202,6 +208,10 @@ export function TiledView({
           e.stopPropagation()
           const currentDropTarget = dropTarget
           setDropTarget(null)
+          if (e.dataTransfer.types.includes('application/x-guppi-new-session')) {
+            onDropNewSession?.()
+            return
+          }
           // Pane-to-pane swap/move
           const paneKey = e.dataTransfer.getData('application/x-guppi-pane')
           if (paneKey && paneKey !== sessionKey && totalLeaves > 1 && currentDropTarget?.key === sessionKey) {
