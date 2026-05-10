@@ -18,7 +18,8 @@ interface SidebarProps {
   getSessionEvents: (session: string) => ToolEvent[]
   sessionNeedsAttention: (session: string) => boolean
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
-  splitPanes?: string[]
+  layoutGroups?: { id: string; leaves: string[]; isActive: boolean }[]
+  onSwitchGroup?: (groupId: string) => void
   onPairSessions?: (keyA: string, keyB: string) => void
   onRemoveFromSplit?: (key: string) => void
 }
@@ -165,7 +166,8 @@ export function Sidebar({
   getSessionEvents,
   sessionNeedsAttention,
   getSessionActivity,
-  splitPanes,
+  layoutGroups,
+  onSwitchGroup,
   onPairSessions,
   onRemoveFromSplit,
 }: SidebarProps) {
@@ -288,7 +290,8 @@ export function Sidebar({
     if (next.has(key)) next.delete(key)
     else {
       next.add(key)
-      if (splitPanes?.includes(key)) {
+      const inAnyGroup = layoutGroups?.some(g => g.leaves.includes(key))
+      if (inAnyGroup) {
         onRemoveFromSplit?.(key)
       }
     }
@@ -353,29 +356,32 @@ export function Sidebar({
   }
 
 
-  const splitKeys = useMemo(() => {
-    if (!splitPanes || splitPanes.length <= 1) return []
-    const visibleKeys = new Set(visibleSessions.map(sessionKey))
-    return splitPanes.filter(key => visibleKeys.has(key))
-  }, [splitPanes, visibleSessions])
+  const allGroupedKeys = useMemo(() =>
+    new Set(layoutGroups?.flatMap(g => g.leaves) ?? []),
+    [layoutGroups]
+  )
 
-  const splitKeySet = useMemo(() => new Set(splitKeys), [splitKeys])
+  const allGroupLeaves = useMemo(() =>
+    layoutGroups?.flatMap(g => g.leaves) ?? [],
+    [layoutGroups]
+  )
 
-  const splitSessions = useMemo(() => {
-    return splitKeys.map(key => visibleSessions.find(s => sessionKey(s) === key)!).filter(Boolean)
-  }, [splitKeys, visibleSessions])
+  const ungroupedVisibleSessions = useMemo(() =>
+    visibleSessions.filter(s => !allGroupedKeys.has(sessionKey(s))),
+    [visibleSessions, allGroupedKeys]
+  )
 
   const groupedVisibleSessions = useMemo(() => {
     if (!hasMultipleHosts) return []
     const groups: Array<{ label: string; sessions: Session[] }> = []
-    for (const session of visibleSessions) {
+    for (const session of ungroupedVisibleSessions) {
       const label = session.host_name || 'Local'
       const existing = groups.find(g => g.label === label)
       if (existing) existing.sessions.push(session)
       else groups.push({ label, sessions: [session] })
     }
     return groups
-  }, [hasMultipleHosts, visibleSessions])
+  }, [hasMultipleHosts, ungroupedVisibleSessions])
 
   const renderSessionItem = (session: Session, isHiddenSection = false, bracketChar?: string | null) => {
     const sk = sessionKey(session)
@@ -456,8 +462,8 @@ export function Sidebar({
               onPairSessions?.(draggingKey, sk)
             } else {
               const position = ratio < 0.25 ? 'above' : 'below'
-              const dragInSplit = splitKeySet.has(draggingKey)
-              const targetInSplit = splitKeySet.has(sk)
+              const dragInSplit = allGroupedKeys.has(draggingKey)
+              const targetInSplit = allGroupedKeys.has(sk)
 
               const applyOrder = (newOrder: string[]) => {
                 const full = orderedSessions.map(sessionKey)
@@ -466,12 +472,12 @@ export function Sidebar({
               }
 
               if (dragInSplit && targetInSplit) {
-                // Both split: no reorder from sidebar — use the layout view drag instead
+                // Both in groups: no reorder from sidebar — use the layout view drag instead
               } else if (!dragInSplit && targetInSplit) {
-                // Rest onto split edge: move rest to before/after the whole group
+                // Rest onto group edge: move rest to before/after the whole group
                 const keys = visibleSessions.map(sessionKey)
                 const withoutDrag = keys.filter(k => k !== draggingKey)
-                const splitIdxs = splitKeys.map(k => withoutDrag.indexOf(k)).filter(i => i !== -1)
+                const splitIdxs = allGroupLeaves.map(k => withoutDrag.indexOf(k)).filter(i => i !== -1)
                 if (splitIdxs.length > 0) {
                   const insertAt = position === 'above'
                     ? Math.min(...splitIdxs)
@@ -480,13 +486,13 @@ export function Sidebar({
                   applyOrder(withoutDrag)
                 }
               } else if (dragInSplit && !targetInSplit) {
-                // Split onto rest edge: move whole group before/after target
+                // Group onto rest edge: move whole group before/after target
                 const keys = visibleSessions.map(sessionKey)
-                const withoutGroup = keys.filter(k => !splitKeySet.has(k))
+                const withoutGroup = keys.filter(k => !allGroupedKeys.has(k))
                 const targetIdx = withoutGroup.indexOf(sk)
                 if (targetIdx !== -1) {
                   const insertAt = position === 'above' ? targetIdx : targetIdx + 1
-                  withoutGroup.splice(Math.max(0, insertAt), 0, ...splitKeys)
+                  withoutGroup.splice(Math.max(0, insertAt), 0, ...allGroupLeaves)
                   applyOrder(withoutGroup)
                 }
               } else {
@@ -692,6 +698,53 @@ export function Sidebar({
             </li>
           )}
 
+          {/* Layout groups */}
+          {layoutGroups?.map(group => {
+            const groupSessions = group.leaves
+              .map(key => visibleSessions.find(s => sessionKey(s) === key))
+              .filter((s): s is Session => !!s)
+            if (groupSessions.length === 0) return null
+            return (
+              <li key={group.id}>
+                {!collapsed && (
+                  <div className="flex items-center gap-2 px-3 pt-2 pb-1">
+                    <span className="text-xs text-mute font-semibold uppercase tracking-wider">
+                      {group.isActive ? 'Active' : 'Group'}
+                    </span>
+                  </div>
+                )}
+                <div className={cn(
+                  !collapsed && 'ml-1 pl-2 border-l-2 rounded-l-md',
+                  group.isActive ? 'border-primary/40' : 'border-primary/20',
+                  !group.isActive && 'opacity-70'
+                )}>
+                  <ul className="space-y-0.5">
+                    {groupSessions.map((session, idx, arr) => {
+                      const bc = !collapsed && arr.length > 1
+                        ? (idx === 0 ? '┬' : idx === arr.length - 1 ? '└' : '├')
+                        : null
+                      return (
+                        <div
+                          key={sessionKey(session)}
+                          onClick={() => {
+                            if (!group.isActive) {
+                              onSwitchGroup?.(group.id)
+                            } else {
+                              onSessionSelect(session)
+                            }
+                          }}
+                        >
+                          {renderSessionItem(session, false, bc)}
+                        </div>
+                      )
+                    })}
+                  </ul>
+                </div>
+              </li>
+            )
+          })}
+
+          {/* Ungrouped sessions */}
           {hasMultipleHosts ? (
             groupedVisibleSessions.map(group => (
               <li key={group.label}>
@@ -710,16 +763,7 @@ export function Sidebar({
               </li>
             ))
           ) : (
-            visibleSessions.map((session, idx) => {
-              const sk = sessionKey(session)
-              let bc: string | null = null
-              if (!collapsed && splitKeySet.has(sk) && splitKeys.length > 1) {
-                const prevSplit = idx > 0 && splitKeySet.has(sessionKey(visibleSessions[idx - 1]))
-                const nextSplit = idx < visibleSessions.length - 1 && splitKeySet.has(sessionKey(visibleSessions[idx + 1]))
-                if (prevSplit || nextSplit) bc = !prevSplit ? '┬' : !nextSplit ? '└' : '├'
-              }
-              return renderSessionItem(session, false, bc)
-            })
+            ungroupedVisibleSessions.map(session => renderSessionItem(session, false, null))
           )}
 
           {hiddenSessions.length > 0 && !collapsed && (
