@@ -5,6 +5,7 @@ import { Overview } from './components/Overview'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { NewSessionModal } from './components/NewSessionModal'
 import { TopBar } from './components/TopBar'
+import { TiledView } from './components/TiledView'
 import { StatusBar } from './components/StatusBar'
 import { Settings } from './components/Settings'
 import { HelpModal } from './components/HelpModal'
@@ -53,7 +54,12 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const { hosts, refresh: refreshHosts } = useHosts()
   const [currentView, setCurrentView] = useState<View>(() => getViewFromPath().view)
-  const [selectedSession, setSelectedSession] = useState<string | null>(() => getViewFromPath().sessionKey)
+  const [panes, setPanes] = useState<string[]>(() => {
+    const sk = getViewFromPath().sessionKey
+    return sk ? [sk] : []
+  })
+  const [activePaneIndex, setActivePaneIndex] = useState(0)
+  const selectedSession = panes[activePaneIndex] ?? null
   const hasMultipleHosts = hosts.length > 1
   const [serverVersion, setServerVersion] = useState<string | null>(null)
   const loadedVersionRef = useRef<string | null>(null)
@@ -67,6 +73,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const [terminalFullscreen, setTerminalFullscreen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const pendingSessionRef = useRef<string | null>(null)
+  const addPaneModeRef = useRef(false)
   const { prefs } = usePreferences()
 
   // Auto-lock: idle detection + optional background accelerator
@@ -122,7 +129,8 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     const onPopState = () => {
       const { view, sessionKey } = getViewFromPath()
       setCurrentView(view)
-      setSelectedSession(sessionKey)
+      setPanes(sessionKey ? [sessionKey] : [])
+      setActivePaneIndex(0)
     }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
@@ -149,9 +157,52 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     if (window.location.pathname !== path) {
       window.history.pushState(null, '', path)
     }
-    setSelectedSession(sessKey)
     setCurrentView(view || (sessKey ? 'session' : 'overview'))
+    if (!sessKey) {
+      setPanes([])
+      setActivePaneIndex(0)
+      return
+    }
+    setPanes(prev => {
+      if (prev.length === 0) {
+        return [sessKey]
+      }
+      const next = [...prev]
+      next[activePaneIndex] = sessKey
+      return next
+    })
+  }, [activePaneIndex])
+
+  const addPane = useCallback((sessKey: string) => {
+    setPanes(prev => {
+      if (prev.length >= 4) return prev
+      return [...prev, sessKey]
+    })
+    setActivePaneIndex(panes.length)
+  }, [panes.length])
+
+  const closePane = useCallback((i: number) => {
+    setPanes(prev => prev.filter((_, idx) => idx !== i))
+    setActivePaneIndex(prev => {
+      if (i < prev) return prev - 1
+      if (i === prev) return Math.max(0, prev - 1)
+      return prev
+    })
   }, [])
+
+  // Navigate back to overview when all panes are closed
+  useEffect(() => {
+    if (panes.length === 0 && currentView === 'session') {
+      navigateTo(null)
+    }
+  }, [panes.length, currentView, navigateTo])
+
+  // Clamp activePaneIndex when panes shrink
+  useEffect(() => {
+    if (activePaneIndex >= panes.length && panes.length > 0) {
+      setActivePaneIndex(panes.length - 1)
+    }
+  }, [panes.length, activePaneIndex])
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -228,10 +279,47 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         }
         return
       }
+
+      // Split pane: Cmd/Ctrl + Shift + \
+      if (mod && e.shiftKey && e.key === '\\') {
+        e.preventDefault()
+        if (panes.length < 4) {
+          addPaneModeRef.current = true
+          setQuickSwitcherOpen(true)
+        }
+        return
+      }
+
+      // Close active pane: Cmd/Ctrl + Shift + W
+      if (mod && e.shiftKey && (e.key === 'w' || e.key === 'W')) {
+        e.preventDefault()
+        if (panes.length > 0) {
+          closePane(activePaneIndex)
+        }
+        return
+      }
+
+      // Previous pane: Cmd/Ctrl + Shift + [ or Cmd/Ctrl + Alt + Left
+      if (mod && ((e.shiftKey && e.key === '[') || (e.altKey && e.key === 'ArrowLeft'))) {
+        e.preventDefault()
+        if (panes.length > 1) {
+          setActivePaneIndex(prev => (prev - 1 + panes.length) % panes.length)
+        }
+        return
+      }
+
+      // Next pane: Cmd/Ctrl + Shift + ] or Cmd/Ctrl + Alt + Right
+      if (mod && ((e.shiftKey && e.key === ']') || (e.altKey && e.key === 'ArrowRight'))) {
+        e.preventDefault()
+        if (panes.length > 1) {
+          setActivePaneIndex(prev => (prev + 1) % panes.length)
+        }
+        return
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [prefs.quick_switcher_shortcut, navigateTo, onLogout, allToolEvents, selectedSession])
+  }, [prefs.quick_switcher_shortcut, navigateTo, onLogout, allToolEvents, selectedSession, panes.length, activePaneIndex, closePane, setActivePaneIndex])
 
   // Listen for state events via WebSocket
   const onEvent = useCallback((evt: any) => {
@@ -263,14 +351,15 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
 
   const { connected } = useWebSocket('/ws/events', onEvent)
 
-  // If selected session was removed, go back to overview
+  // If a pane's session was removed, remove that pane
   // (don't bounce if we're waiting for a newly created session to appear)
   useEffect(() => {
-    if (selectedSession && selectedSession === pendingSessionRef.current) return
-    if (selectedSession && sessions.length > 0 && !sessions.find(s => sessionKey(s) === selectedSession)) {
-      navigateTo(null)
-    }
-  }, [sessions, selectedSession, navigateTo])
+    if (sessions.length === 0) return
+    setPanes(prev => prev.filter(p => {
+      if (p === pendingSessionRef.current) return true
+      return sessions.some(s => sessionKey(s) === p)
+    }))
+  }, [sessions]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSessionSelect = (session: Session) => {
     navigateTo(sessionKey(session))
@@ -305,12 +394,31 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   }, [navigateTo])
 
   const closeQuickSwitcher = useCallback(() => {
+    addPaneModeRef.current = false
     setQuickSwitcherOpen(false)
     if (selectedSession) refocusTerminal()
   }, [selectedSession, refocusTerminal])
 
   const handleQuickSwitch = useCallback(async (sessKey: string, windowIndex?: number) => {
     setQuickSwitcherOpen(false)
+    if (addPaneModeRef.current) {
+      addPaneModeRef.current = false
+      addPane(sessKey)
+      if (windowIndex !== undefined) {
+        const { host, name } = parseSessionKey(sessKey)
+        try {
+          await fetch('/api/session/select-window', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host: host || undefined, session: name, window: windowIndex }),
+          })
+        } catch (err) {
+          console.error('Failed to select window:', err)
+        }
+      }
+      setTimeout(() => refocusTerminal(), 200)
+      return
+    }
     navigateTo(sessKey)
     if (windowIndex !== undefined) {
       const { host, name } = parseSessionKey(sessKey)
@@ -326,7 +434,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     }
     // Refocus after navigation and window switch settle
     setTimeout(() => refocusTerminal(), 200)
-  }, [navigateTo, refocusTerminal])
+  }, [navigateTo, refocusTerminal, addPane])
 
   const openNewSessionModal = useCallback(() => {
     setQuickSwitcherOpen(false)
@@ -413,6 +521,11 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
           onJumpToSession={jumpToSession}
           onDismiss={dismissEvent}
           onDismissAll={dismissAllEvents}
+          panesCount={panes.length}
+          onSplitPane={() => {
+            addPaneModeRef.current = true
+            setQuickSwitcherOpen(true)
+          }}
         />
       )}
       {/* Middle: Sidebar + Content */}
@@ -426,7 +539,14 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             hasMultipleHosts={hasMultipleHosts}
             onSessionSelect={handleSessionSelect}
             onSessionRenamed={(oldKey, newKey) => {
-              if (selectedSession === oldKey) navigateTo(newKey)
+              setPanes(prev => prev.map(p => p === oldKey ? newKey : p))
+              if (selectedSession === oldKey) {
+                const { host, name } = parseSessionKey(newKey)
+                const path = host
+                  ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
+                  : `/session/${encodeURIComponent(name)}`
+                window.history.replaceState(null, '', path)
+              }
             }}
             getSessionEvents={getSessionEvents}
             sessionNeedsAttention={sessionNeedsAttention}
@@ -438,15 +558,16 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             <Setup onComplete={() => navigateTo(null)} />
           ) : currentView === 'settings' ? (
             <Settings pushState={pushState} onPushSubscribe={pushSubscribe} onPushUnsubscribe={pushUnsubscribe} onLogout={onLogout} />
-          ) : selectedSession ? (
-            <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
-              <Terminal
-                sessionName={parseSessionKey(selectedSession).name}
-                hostId={parseSessionKey(selectedSession).host || undefined}
-                fullscreen={terminalFullscreen}
-                onToggleFullscreen={toggleFullscreen}
-              />
-            </div>
+          ) : panes.length > 0 ? (
+            <TiledView
+              panes={panes}
+              activePaneIndex={activePaneIndex}
+              onActivate={(i) => { setActivePaneIndex(i); refocusTerminal() }}
+              onClose={closePane}
+              fullscreen={terminalFullscreen}
+              onToggleFullscreen={toggleFullscreen}
+              terminalContainerRef={terminalContainerRef}
+            />
           ) : (
             <Overview
               sessions={sessions}

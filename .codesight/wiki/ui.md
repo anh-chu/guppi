@@ -2,7 +2,7 @@
 
 > **Navigation aid.** Component inventory and prop signatures extracted via AST. Read the source files before adding props or modifying component logic.
 
-**13 components** (react)
+**14 components** (react)
 
 ## Components
 
@@ -17,6 +17,7 @@
 - **AgentStatusList** — props: agents — `web/src/components/Setup.tsx`
 - **StatusBar** — props: sessionCount, connected, activeSession, waitingCount, pushState, version, updateAvailable, hosts, agentCount, onHelp — `web/src/components/StatusBar.tsx`
 - **Terminal** — props: sessionName, hostId, fullscreen, onToggleFullscreen — `web/src/components/Terminal.tsx`
+- **TiledView** — props: panes, activePaneIndex, onActivate, onClose, fullscreen, onToggleFullscreen, terminalContainerRef — `web/src/components/TiledView.tsx`
 - **TopBar** — props: currentView, sidebarCollapsed, onToggleCollapse, onOverview, onSettings, onNewSession, events, connected, onJumpToSession, onDismiss — `web/src/components/TopBar.tsx`
 - **TrustCertificate** — props: onBack — `web/src/components/TrustCertificate.tsx`
 

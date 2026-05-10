@@ -16,6 +16,8 @@ interface TopBarProps {
   onJumpToSession: (session: string, windowIndex?: number, pane?: string) => void
   onDismiss: (evt: ToolEvent) => void
   onDismissAll: () => void
+  panesCount?: number
+  onSplitPane?: () => void
 }
 
 function formatPane(pane?: string): string {
@@ -35,6 +37,8 @@ export function TopBar({
   onJumpToSession,
   onDismiss,
   onDismissAll,
+  panesCount,
+  onSplitPane,
 }: TopBarProps) {
   const actionable = events.filter(e => e.status === 'waiting' || e.status === 'error')
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -72,7 +76,7 @@ export function TopBar({
           <span className="text-[11px] font-bold tracking-[0.1em] text-ink">GUPPI</span>
         </div>
 
-        {/* New session + collapse sidebar */}
+        {/* New session + split pane + collapse sidebar */}
         <div className="flex items-center gap-0.5 shrink-0">
           <button
             onClick={() => onNewSession?.()}
@@ -83,6 +87,18 @@ export function TopBar({
               <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
             </svg>
           </button>
+          {currentView === 'session' && panesCount !== undefined && panesCount < 4 && (
+            <button
+              onClick={() => onSplitPane?.()}
+              title="Split pane (Cmd/Ctrl+Shift+\)"
+              className="p-1.5 rounded-sm hover:bg-surface-elevated text-ink transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="18" rx="1" />
+                <rect x="14" y="3" width="7" height="18" rx="1" />
+              </svg>
+            </button>
+          )}
           <button
             onClick={onToggleCollapse}
             title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
