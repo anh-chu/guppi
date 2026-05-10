@@ -17,6 +17,7 @@ interface TiledViewProps {
   terminalContainerRef?: React.RefObject<HTMLDivElement | null>
   onDropSession?: (key: string) => void
   onSwapPanes?: (keyA: string, keyB: string) => void
+  onMovePanes?: (sourceKey: string, targetKey: string, edge: 'left'|'right'|'top'|'bottom') => void
 }
 
 const MIN_PANE_SIZE = 200 // px
@@ -34,10 +35,11 @@ export function TiledView({
   terminalContainerRef,
   onDropSession,
   onSwapPanes,
+  onMovePanes,
 }: TiledViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dragOver, setDragOver] = useState(false)
-  const [swapTarget, setSwapTarget] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<{ key: string; zone: 'left'|'right'|'top'|'bottom'|'center' } | null>(null)
 
   const totalLeaves = tree ? getLeaves(tree).length : 0
 
@@ -147,7 +149,7 @@ export function TiledView({
   const renderPane = (sessionKey: string) => {
     const { host, name } = parseSessionKey(sessionKey)
     const isActive = sessionKey === activeKey
-    const isSwapTarget = swapTarget === sessionKey
+    const isDropTarget = dropTarget?.key === sessionKey
 
     return (
       <div
@@ -166,30 +168,67 @@ export function TiledView({
               const droppedKey = dt.getData('application/x-guppi-pane')
               if (droppedKey !== sessionKey) {
                 e.preventDefault()
-                setSwapTarget(sessionKey)
+                const rect = e.currentTarget.getBoundingClientRect()
+                const x = e.clientX - rect.left
+                const y = e.clientY - rect.top
+                const w = rect.width
+                const h = rect.height
+                let zone: 'left'|'right'|'top'|'bottom'|'center'
+                if (x < w * 0.25) zone = 'left'
+                else if (x > w * 0.75) zone = 'right'
+                else if (y < h * 0.25) zone = 'top'
+                else if (y > h * 0.75) zone = 'bottom'
+                else zone = 'center'
+                setDropTarget({ key: sessionKey, zone })
               }
             }
           }
         }}
         onDragLeave={(e) => {
           if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) {
-            setSwapTarget(null)
+            setDropTarget(null)
           }
         }}
         onDrop={(e) => {
           e.preventDefault()
           e.stopPropagation()
-          setSwapTarget(null)
+          const currentDropTarget = dropTarget
+          setDropTarget(null)
           const droppedKey = e.dataTransfer.getData('application/x-guppi-pane')
-          if (droppedKey && droppedKey !== sessionKey && totalLeaves > 1) {
-            onSwapPanes?.(droppedKey, sessionKey)
+          if (droppedKey && droppedKey !== sessionKey && totalLeaves > 1 && currentDropTarget?.key === sessionKey) {
+            if (currentDropTarget.zone === 'center') {
+              onSwapPanes?.(droppedKey, sessionKey)
+            } else {
+              onMovePanes?.(droppedKey, sessionKey, currentDropTarget.zone)
+            }
           }
         }}
       >
-        {/* Swap overlay */}
-        {isSwapTarget && totalLeaves > 1 && (
-          <div className="absolute inset-0 z-10 bg-primary/10 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
-            <span className="text-sm font-medium text-primary">Swap</span>
+        {/* Drop zone overlay */}
+        {isDropTarget && totalLeaves > 1 && (
+          <div className="absolute inset-0 z-10 pointer-events-none">
+            {/* Edge strip */}
+            <div className={cn(
+              'absolute bg-primary',
+              dropTarget!.zone === 'left' && 'left-0 top-0 bottom-0 w-1',
+              dropTarget!.zone === 'right' && 'right-0 top-0 bottom-0 w-1',
+              dropTarget!.zone === 'top' && 'top-0 left-0 right-0 h-1',
+              dropTarget!.zone === 'bottom' && 'bottom-0 left-0 right-0 h-1',
+            )} />
+            {/* Overlay area */}
+            {dropTarget!.zone === 'center' ? (
+              <div className="absolute inset-0 bg-primary/10 border-2 border-dashed border-primary rounded-lg flex items-center justify-center">
+                <span className="text-sm font-medium text-primary">⇄ Swap</span>
+              </div>
+            ) : (
+              <div className={cn(
+                'absolute bg-primary/10',
+                dropTarget!.zone === 'left' && 'left-0 top-0 bottom-0 w-1/2',
+                dropTarget!.zone === 'right' && 'right-0 top-0 bottom-0 w-1/2',
+                dropTarget!.zone === 'top' && 'top-0 left-0 right-0 h-1/2',
+                dropTarget!.zone === 'bottom' && 'bottom-0 left-0 right-0 h-1/2',
+              )} />
+            )}
           </div>
         )}
         {/* Header — only when more than one leaf */}

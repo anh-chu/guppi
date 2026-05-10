@@ -6,7 +6,7 @@ import { QuickSwitcher } from './components/QuickSwitcher'
 import { NewSessionModal } from './components/NewSessionModal'
 import { TopBar } from './components/TopBar'
 import { TiledView } from './components/TiledView'
-import { PaneTree, getLeaves, findLeaf, splitLeaf, removeLeaf, replaceLeaf, updateRatio, popOut, swapLeaves } from './lib/paneTree'
+import { PaneTree, getLeaves, findLeaf, splitLeaf, removeLeaf, replaceLeaf, updateRatio, popOut, swapLeaves, movePane } from './lib/paneTree'
 import { StatusBar } from './components/StatusBar'
 import { Settings } from './components/Settings'
 import { HelpModal } from './components/HelpModal'
@@ -672,6 +672,9 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
               terminalContainerRef={terminalContainerRef}
               onDropSession={handleDropSession}
               onSwapPanes={(a, b) => setPaneTree(prev => prev ? swapLeaves(prev, a, b) : prev)}
+              onMovePanes={(sourceKey, targetKey, edge) =>
+                setPaneTree(prev => prev ? movePane(prev, sourceKey, targetKey, edge) : prev)
+              }
             />
           ) : (
             <Overview

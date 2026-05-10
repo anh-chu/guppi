@@ -145,6 +145,52 @@ export function popOut(key: string): PaneTree {
  * Swaps the sessionKey values of two matching leaves.
  * Returns a new tree with the keys swapped.
  */
+function insertBesideLeaf(
+  tree: PaneTree,
+  targetKey: string,
+  direction: 'h' | 'v',
+  newKey: string,
+  newIsFirst: boolean
+): PaneTree {
+  if (tree.type === 'leaf') {
+    if (tree.sessionKey === targetKey) {
+      const incoming: LeafPane = { type: 'leaf', sessionKey: newKey }
+      return {
+        type: 'split',
+        direction,
+        ratio: 0.5,
+        first: newIsFirst ? incoming : tree,
+        second: newIsFirst ? tree : incoming,
+      }
+    }
+    return tree
+  }
+  return {
+    ...tree,
+    first: insertBesideLeaf(tree.first, targetKey, direction, newKey, newIsFirst),
+    second: insertBesideLeaf(tree.second, targetKey, direction, newKey, newIsFirst),
+  }
+}
+
+/**
+ * Move sourceKey beside targetKey. Edge determines split direction and position.
+ * 'left'/'right' → horizontal split; 'top'/'bottom' → vertical split.
+ * Center drop (no edge) → swap only (caller uses swapLeaves instead).
+ */
+export function movePane(
+  tree: PaneTree,
+  sourceKey: string,
+  targetKey: string,
+  edge: 'left' | 'right' | 'top' | 'bottom'
+): PaneTree {
+  if (sourceKey === targetKey) return tree
+  const pruned = removeLeaf(tree, sourceKey)
+  if (!pruned) return { type: 'leaf', sessionKey: sourceKey }
+  const direction: 'h' | 'v' = edge === 'left' || edge === 'right' ? 'h' : 'v'
+  const newIsFirst = edge === 'left' || edge === 'top'
+  return insertBesideLeaf(pruned, targetKey, direction, sourceKey, newIsFirst)
+}
+
 export function swapLeaves(tree: PaneTree, keyA: string, keyB: string): PaneTree {
   if (tree.type === 'leaf') {
     if (tree.sessionKey === keyA) return { type: 'leaf', sessionKey: keyB }
