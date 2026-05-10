@@ -434,14 +434,14 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
   }, [termRef])
 
   return (
-    <div className="flex-1 p-2 overflow-hidden relative group bg-canvas">
-      <div className="h-full w-full flex flex-col gap-2">
+    <div className="flex-1 overflow-hidden relative group bg-canvas">
+      <div className="h-full w-full flex flex-col">
         <div
-          className="min-h-0 flex-1 border border-hairline rounded-lg bg-canvas relative"
+          className="min-h-0 flex-1 relative"
         >
           <div
             ref={containerRef}
-            className="absolute inset-1 overflow-hidden rounded-md"
+            className="absolute inset-0 overflow-hidden"
           />
         {/* Fullscreen toggle */}
           {onToggleFullscreen && (
