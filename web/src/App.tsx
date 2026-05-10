@@ -742,7 +742,26 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   }, [selectSession, refresh, refocusTerminal])
 
   const handleDropNewSession = useCallback((targetKey: string, edge: 'left'|'right'|'top'|'bottom'|'center') => {
-    const key = targetKey || activeKey
+    let key = targetKey || activeKey
+
+    // Dropping onto a singleView session (standalone, not in any group):
+    // save current group to background and start a new group from singleView
+    if (!targetKey && singleView) {
+      key = singleView
+      const newGroupId = Math.random().toString(36).slice(2)
+      if (paneTree) {
+        setSavedGroups(prev => [...prev, { id: activeGroupId, tree: paneTree, activeKey }])
+      }
+      setGroupOrder(prev => {
+        const withCurrent = paneTree && !prev.includes(activeGroupId) ? [...prev, activeGroupId] : prev
+        return [...withCurrent, newGroupId]
+      })
+      setPaneTree(popOut(singleView))
+      setActiveKey(singleView)
+      setActiveGroupId(newGroupId)
+      setSingleView(null)
+    }
+
     if (key) {
       const direction: 'h' | 'v' = (edge === 'top' || edge === 'bottom') ? 'v' : 'h'
       const newFirst = edge === 'left' || edge === 'top'
@@ -750,7 +769,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     }
     const { host } = key ? parseSessionKey(key) : { host: undefined }
     handleCreateSession('shell', '~', '', host || undefined)
-  }, [activeKey, handleCreateSession])
+  }, [singleView, activeKey, activeGroupId, paneTree, handleCreateSession])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
