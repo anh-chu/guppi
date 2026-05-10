@@ -587,7 +587,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
           pendingSessionRef.current = null
           setTimeout(() => refocusTerminal(), 300)
         } else {
-          navigateTo(sessKey)
+          selectSession(sessKey)
           await refresh()
           pendingSessionRef.current = null
           setTimeout(() => refocusTerminal(), 300)
@@ -597,7 +597,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       console.error('Failed to create session:', err)
       pendingSessionRef.current = null
     }
-  }, [navigateTo, refresh, refocusTerminal])
+  }, [selectSession, refresh, refocusTerminal])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
