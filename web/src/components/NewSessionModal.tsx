@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Host } from '../hooks/useHosts'
 import { Session } from '../hooks/useSessions'
+import { usePreferences } from '../hooks/usePreferences'
 import { cn } from '../lib/utils'
 import { AgentMark } from './AgentMark'
 
@@ -28,10 +29,12 @@ function basename(value: string): string {
 }
 
 export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: NewSessionModalProps) {
+  const { prefs, updatePrefs } = usePreferences()
+  const defaultAgent = prefs.default_agent || 'claude'
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
-  const [preset, setPreset] = useState<string | null>('claude')
-  const [command, setCommand] = useState('claude')
+  const [preset, setPreset] = useState<string | null>(defaultAgent)
+  const [command, setCommand] = useState(() => presets.find(p => p.id === defaultAgent)?.command || defaultAgent)
   const onlineHosts = hosts.filter(h => h.online)
   const showHostSelect = onlineHosts.length > 1
   const localHost = onlineHosts.find(h => h.local)
@@ -131,18 +134,33 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
               <div className="grid grid-cols-3 gap-2">
                 {presets.map(option => {
                   const active = option.id === preset
+                  const isDefault = option.id === defaultAgent
                   return (
                     <button
                       key={option.id}
                       type="button"
                       onClick={() => handlePresetClick(option.id)}
                       className={cn(
-                        'flex flex-col items-center gap-2 rounded-lg border p-3 transition-all duration-200',
+                        'relative flex flex-col items-center gap-2 rounded-lg border p-3 transition-all duration-200 group',
                         active 
                           ? 'border-primary bg-primary/5' 
                           : 'border-hairline bg-surface-elevated/30 hover:border-hairline/60 grayscale opacity-70 hover:grayscale-0 hover:opacity-100'
                       )}
                     >
+                      <span
+                        role="button"
+                        aria-label={isDefault ? 'Default agent' : 'Set as default'}
+                        title={isDefault ? 'Default agent' : 'Set as default'}
+                        onClick={e => { e.stopPropagation(); updatePrefs({ default_agent: option.id }) }}
+                        className={cn(
+                          'absolute top-1.5 right-1.5 w-4 h-4 flex items-center justify-center transition-opacity cursor-pointer',
+                          isDefault ? 'opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'
+                        )}
+                      >
+                        <svg viewBox="0 0 16 16" className={cn('w-3 h-3', isDefault ? 'fill-amber-400 text-amber-400' : 'fill-none text-mute stroke-current')} strokeWidth={isDefault ? 0 : 1.5}>
+                          <polygon points="8,1.5 10,6 15,6.5 11.5,10 12.5,15 8,12.5 3.5,15 4.5,10 1,6.5 6,6" />
+                        </svg>
+                      </span>
                       <AgentMark agentType={option.id} className="h-6 min-w-10 px-2 shrink-0" />
                       <span className={cn(
                         'text-xs font-bold uppercase tracking-tight',

@@ -45,8 +45,8 @@ Changes to these files have the widest blast radius across the codebase:
 
 - `path/filepath` — imported by **17** files
 - `encoding/json` — imported by **15** files
+- `web/src/hooks/usePreferences.ts` — imported by **10** files
 - `crypto/rand` — imported by **9** files
-- `web/src/hooks/usePreferences.ts` — imported by **9** files
 - `web/src/theme.ts` — imported by **9** files
 - `net/http` — imported by **8** files
 
@@ -60,4 +60,4 @@ Changes to these files have the widest blast radius across the codebase:
 - `XDG_RUNTIME_DIR` — `pkg/socket/socket.go`
 
 ---
-_Back to [index.md](./index.md) · Generated 2026-05-09_
+_Back to [index.md](./index.md) · Generated 2026-05-10_

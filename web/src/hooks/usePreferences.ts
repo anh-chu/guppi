@@ -28,6 +28,7 @@ export interface Preferences {
   lock_background_faster: boolean
   lock_background_minutes: number
   fullscreen_hide_alerts: boolean
+  default_agent: string
 }
 
 export const defaultPreferences: Preferences = {
@@ -58,6 +59,7 @@ export const defaultPreferences: Preferences = {
   lock_background_faster: true,
   lock_background_minutes: 10,
   fullscreen_hide_alerts: true,
+  default_agent: 'claude',
 }
 
 interface PreferencesContextValue {
