@@ -596,7 +596,7 @@ export function Sidebar({
 
   return (
     <aside className={cn(
-      'flex flex-col h-full bg-canvas transition-all duration-300 font-sans text-sm font-medium',
+      'flex flex-col h-full bg-canvas transition-[width] duration-300 font-sans text-sm font-medium',
       collapsed
         ? collapseMode === 'hidden' ? 'w-0 overflow-hidden' : 'w-16'
         : 'w-72',

@@ -223,11 +223,13 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
 
   useEffect(() => {
     if (!containerRef.current) return
+    let fitTimer: number | null = null
     const observer = new ResizeObserver(() => {
-      requestAnimationFrame(() => fit())
+      if (fitTimer !== null) clearTimeout(fitTimer)
+      fitTimer = window.setTimeout(() => { fitTimer = null; fit() }, 50)
     })
     observer.observe(containerRef.current)
-    return () => observer.disconnect()
+    return () => { observer.disconnect(); if (fitTimer !== null) clearTimeout(fitTimer) }
   }, [fit])
 
   // Touch scroll -> wheel events for tmux mouse mode
