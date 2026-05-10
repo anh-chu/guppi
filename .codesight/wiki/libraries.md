@@ -27,10 +27,10 @@
 - `pkg/peer/pty_manager.go` — NewPTYManager, PTYManager, ActivePTY
 - `pkg/socket/socket.go` — DefaultPath, EnsureDir, Cleanup
 - `pkg/stats/stats.go` — SystemStats, ProcessCountsFromSessions, ProcessEntry
+- `pkg/tmux/client.go` — NewClient, ValidateSessionName, Client
 - `pkg/tmux/paste_image.go` — HandlePTYControlMessage, StorePastedImage, PTYControlMessage
 - `pkg/toolevents/silence.go` — NewSilenceMonitor, SilenceMonitor, TmuxClient
 - `pkg/webpush/sender.go` — NewSender, PushPayload, Sender
-- `pkg/common/commands.go` — RegisterCommand, GetCommands
 - _…and 18 more files_
 
 ## Web (12 files)

@@ -94,7 +94,10 @@
   - function LoadTLSConfig: (certPath, keyPath string) (*tls.Config, error)
   - function LoadTLSConfigWithReloader: (certPath, keyPath string) (*tls.Config, *CertReloader, error)
   - _...1 more_
-- `pkg/tmux/client.go` — function NewClient: () (*Client, error), class Client
+- `pkg/tmux/client.go`
+  - function NewClient: () (*Client, error)
+  - function ValidateSessionName: (name string) error
+  - class Client
 - `pkg/tmux/controlmode.go`
   - function ControlSessionName: () string
   - function WithRefreshDelay: (d time.Duration) ControlModeOption

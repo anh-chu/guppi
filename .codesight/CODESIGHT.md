@@ -2,9 +2,9 @@
 
 > **Stack:** chi | none | react | go
 
-> 72 routes | 0 models | 13 components | 55 lib files | 7 env vars | 1 middleware | 0% test coverage
-> **Token savings:** this file is ~5,300 tokens. Without it, AI exploration would cost ~66,200 tokens. **Saves ~60,900 tokens per conversation.**
-> **Last scanned:** 2026-05-10 06:15 — re-run after significant changes
+> 72 routes | 0 models | 14 components | 55 lib files | 7 env vars | 1 middleware | 0% test coverage
+> **Token savings:** this file is ~5,300 tokens. Without it, AI exploration would cost ~66,600 tokens. **Saves ~61,200 tokens per conversation.**
+> **Last scanned:** 2026-05-10 07:04 — re-run after significant changes
 
 ---
 
@@ -98,6 +98,7 @@
 - **AgentStatusList** — props: agents — `web/src/components/Setup.tsx`
 - **StatusBar** — props: sessionCount, connected, activeSession, waitingCount, pushState, version, updateAvailable, hosts, agentCount, onHelp — `web/src/components/StatusBar.tsx`
 - **Terminal** — props: sessionName, hostId, fullscreen, onToggleFullscreen — `web/src/components/Terminal.tsx`
+- **TiledView** — props: panes, activePaneIndex, onActivate, onClose, fullscreen, onToggleFullscreen, terminalContainerRef — `web/src/components/TiledView.tsx`
 - **TopBar** — props: currentView, sidebarCollapsed, onToggleCollapse, onOverview, onSettings, onNewSession, events, connected, onJumpToSession, onDismiss — `web/src/components/TopBar.tsx`
 - **TrustCertificate** — props: onBack — `web/src/components/TrustCertificate.tsx`
 
@@ -326,14 +327,14 @@
 - `web/src/hooks/usePreferences.ts` — imported by **10** files
 - `crypto/rand` — imported by **9** files
 - `web/src/theme.ts` — imported by **9** files
+- `web/src/lib/utils.ts` — imported by **9** files
 - `net/http` — imported by **8** files
 - `crypto/x509` — imported by **8** files
-- `web/src/lib/utils.ts` — imported by **8** files
 - `os/exec` — imported by **7** files
 - `crypto/tls` — imported by **7** files
 - `encoding/pem` — imported by **7** files
+- `web/src/hooks/useSessions.ts` — imported by **7** files
 - `encoding/hex` — imported by **6** files
-- `web/src/hooks/useSessions.ts` — imported by **6** files
 - `web/src/hooks/useToolEvents.ts` — imported by **6** files
 - `encoding/base64` — imported by **5** files
 - `net/url` — imported by **4** files
@@ -349,9 +350,9 @@
 - `web/src/hooks/usePreferences.ts` ← `web/src/App.tsx`, `web/src/components/HelpModal.tsx`, `web/src/components/NewSessionModal.tsx`, `web/src/components/Overview.tsx`, `web/src/components/Settings.tsx` +5 more
 - `crypto/rand` ← `pkg/auth/auth.go`, `pkg/identity/identity.go`, `pkg/identity/pairing.go`, `pkg/peer/client_cert_test.go`, `pkg/peer/handler.go` +4 more
 - `web/src/theme.ts` ← `web/src/App.tsx`, `web/src/components/AgentMark.tsx`, `web/src/components/Overview.tsx`, `web/src/components/QuickSwitcher.tsx`, `web/src/components/Settings.tsx` +4 more
+- `web/src/lib/utils.ts` ← `web/src/components/AgentMark.tsx`, `web/src/components/NewSessionModal.tsx`, `web/src/components/QuickSwitcher.tsx`, `web/src/components/Settings.tsx`, `web/src/components/Setup.tsx` +4 more
 - `net/http` ← `pkg/auth/auth.go`, `pkg/commands/notify/notify.go`, `pkg/commands/pair/pair.go`, `pkg/peer/handler.go`, `pkg/peer/pty_relay.go` +3 more
 - `crypto/x509` ← `pkg/commands/pair/pair.go`, `pkg/identity/peers.go`, `pkg/peer/client.go`, `pkg/peer/client_cert_test.go`, `pkg/tlscert/reloader.go` +3 more
-- `web/src/lib/utils.ts` ← `web/src/components/AgentMark.tsx`, `web/src/components/NewSessionModal.tsx`, `web/src/components/QuickSwitcher.tsx`, `web/src/components/Settings.tsx`, `web/src/components/Setup.tsx` +3 more
 - `os/exec` ← `pkg/agentcheck/agentcheck.go`, `pkg/commands/agent-setup/agent_setup.go`, `pkg/commands/install/install.go`, `pkg/commands/notify/notify.go`, `pkg/tmux/client.go` +2 more
 - `crypto/tls` ← `pkg/commands/pair/pair.go`, `pkg/identity/peers.go`, `pkg/peer/client.go`, `pkg/peer/client_cert_test.go`, `pkg/server/server.go` +2 more
 
