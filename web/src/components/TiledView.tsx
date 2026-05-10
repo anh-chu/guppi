@@ -194,14 +194,19 @@ export function TiledView({
           e.stopPropagation()
           const currentDropTarget = dropTarget
           setDropTarget(null)
-          const droppedKey = e.dataTransfer.getData('application/x-guppi-pane')
-          if (droppedKey && droppedKey !== sessionKey && totalLeaves > 1 && currentDropTarget?.key === sessionKey) {
+          // Pane-to-pane swap/move
+          const paneKey = e.dataTransfer.getData('application/x-guppi-pane')
+          if (paneKey && paneKey !== sessionKey && totalLeaves > 1 && currentDropTarget?.key === sessionKey) {
             if (currentDropTarget.zone === 'center') {
-              onSwapPanes?.(droppedKey, sessionKey)
+              onSwapPanes?.(paneKey, sessionKey)
             } else {
-              onMovePanes?.(droppedKey, sessionKey, currentDropTarget.zone)
+              onMovePanes?.(paneKey, sessionKey, currentDropTarget.zone)
             }
+            return
           }
+          // Sidebar session drop
+          const sidebarKey = e.dataTransfer.getData('text/plain')
+          if (sidebarKey) onDropSession?.(sidebarKey)
         }}
       >
         {/* Drop zone overlay */}
