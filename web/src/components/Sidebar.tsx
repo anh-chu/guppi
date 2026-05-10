@@ -163,8 +163,6 @@ export function Sidebar({
   const [confirmKillKey, setConfirmKillKey] = useState<string | null>(null)
   const [filterOpen, setFilterOpen] = useState(false)
   const [draggingKey, setDraggingKey] = useState<string | null>(null)
-  const [dropTargetKey, setDropTargetKey] = useState<string | null>(null)
-  const [dragIntent, setDragIntent] = useState<'pair' | 'reorder' | null>(null)
   const [pairTarget, setPairTarget] = useState<string | null>(null)
   const [, setUptimeTick] = useState(0)
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -313,40 +311,6 @@ export function Sidebar({
     setRenamingSession(null)
   }
 
-  const handleDrop = (targetKey: string) => {
-    if (!draggingKey || draggingKey === targetKey) {
-      setDraggingKey(null)
-      setDropTargetKey(null)
-      return
-    }
-
-    const visibleKeys = visibleSessions.map(sessionKey)
-    const oldIndex = visibleKeys.indexOf(draggingKey)
-    const newIndex = visibleKeys.indexOf(targetKey)
-    if (oldIndex === -1 || newIndex === -1) {
-      setDraggingKey(null)
-      setDropTargetKey(null)
-      return
-    }
-
-    const reorderedVisible = [...visibleKeys]
-    const [removed] = reorderedVisible.splice(oldIndex, 1)
-    reorderedVisible.splice(newIndex, 0, removed)
-
-    const fullOrder = orderedSessions.map(sessionKey)
-    const visibleSet = new Set(reorderedVisible)
-    let visibleIndex = 0
-    const nextOrder = fullOrder.map(key => {
-      if (!visibleSet.has(key)) return key
-      const next = reorderedVisible[visibleIndex]
-      visibleIndex += 1
-      return next
-    })
-
-    setManualOrder(nextOrder)
-    setDraggingKey(null)
-    setDropTargetKey(null)
-  }
 
   const splitKeys = useMemo(() => {
     if (!splitPanes || splitPanes.length <= 1) return []
@@ -415,33 +379,20 @@ export function Sidebar({
           onDragStart={(e) => {
             e.dataTransfer.setData('text/plain', sk)
             setDraggingKey(sk)
-            setDragIntent('pair')
           }}
           onDragEnd={() => {
             setDraggingKey(null)
-            setDropTargetKey(null)
-            setDragIntent(null)
             setPairTarget(null)
           }}
           onDragOver={(event) => {
             event.preventDefault()
-            if (!draggingKey || draggingKey === sk) return
-            if (dragIntent === 'reorder') {
-              setDropTargetKey(sk)
-              setPairTarget(null)
-            } else {
-              setPairTarget(sk)
-              setDropTargetKey(null)
-            }
+            if (draggingKey && draggingKey !== sk) setPairTarget(sk)
           }}
           onDrop={(event) => {
             event.preventDefault()
-            if (dragIntent === 'reorder') {
-              handleDrop(sk)
-            } else if (dragIntent === 'pair' && draggingKey && draggingKey !== sk) {
+            if (draggingKey && draggingKey !== sk) {
               onPairSessions?.(draggingKey, sk)
               setDraggingKey(null)
-              setDragIntent(null)
               setPairTarget(null)
             }
           }}
@@ -468,30 +419,9 @@ export function Sidebar({
             (isHiddenSection || isOffline) && 'opacity-60',
             isRenaming && 'cursor-default',
             draggingKey === sk && 'opacity-75 cursor-grab',
-            dropTargetKey === sk && 'ring-1 ring-primary/60',
           )}
         >
-          {!collapsed && (
-            <span
-              className="shrink-0 text-mute/40 hover:text-mute cursor-grab active:cursor-grabbing px-0.5 select-none text-xs"
-              draggable
-              onDragStart={(e) => {
-                e.stopPropagation()
-                e.dataTransfer.setData('text/plain', sk)
-                setDraggingKey(sk)
-                setDragIntent('reorder')
-              }}
-              onDragEnd={() => {
-                setDraggingKey(null)
-                setDropTargetKey(null)
-                setDragIntent(null)
-                setPairTarget(null)
-              }}
-              title="Drag to reorder"
-            >
-              ⠿
-            </span>
-          )}
+
           <div className="flex items-center gap-2 w-full">
             {!collapsed && bracketChar && (
               <span className="text-[11px] font-mono text-mute/60 select-none w-3 shrink-0">
@@ -568,7 +498,7 @@ export function Sidebar({
                 ))}
             </div>
           )}
-          {pairTarget === sk && dragIntent === 'pair' && (
+          {pairTarget === sk && (
             <div className="absolute inset-0 rounded-sm bg-primary/10 border border-primary/60 flex items-center justify-center pointer-events-none z-10">
               <span className="text-[10px] font-bold text-primary uppercase tracking-widest">⊞ Split</span>
             </div>
