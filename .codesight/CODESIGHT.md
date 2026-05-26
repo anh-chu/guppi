@@ -2,9 +2,9 @@
 
 > **Stack:** chi | none | react | go
 
-> 81 routes | 0 models | 15 components | 59 lib files | 7 env vars | 1 middleware | 0% test coverage
-> **Token savings:** this file is ~5,800 tokens. Without it, AI exploration would cost ~72,600 tokens. **Saves ~66,800 tokens per conversation.**
-> **Last scanned:** 2026-05-26 13:18 — re-run after significant changes
+> 83 routes | 0 models | 15 components | 59 lib files | 7 env vars | 1 middleware | 0% test coverage
+> **Token savings:** this file is ~5,800 tokens. Without it, AI exploration would cost ~73,600 tokens. **Saves ~67,900 tokens per conversation.**
+> **Last scanned:** 2026-05-26 13:25 — re-run after significant changes
 
 ---
 
@@ -49,6 +49,8 @@
 - `GET` `cols` params() [auth, db, queue, ai]
 - `GET` `rows` params() [auth, db, queue, ai]
 - `GET` `Upgrade` params() [auth, db, queue, ai]
+- `GET` `Content-Type` params() [auth, db, queue, ai]
+- `GET` `Content-Encoding` params() [auth, db, queue, ai]
 - `GET` `/auth/status` params() [auth, db, queue, ai]
 - `POST` `/auth/setup` params() [auth, db, queue, ai]
 - `POST` `/auth/login` params() [auth, db, queue, ai]

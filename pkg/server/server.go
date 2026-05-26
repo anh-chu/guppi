@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -15,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -142,6 +145,15 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 	}
 }
 
+// absPathRe matches HTML attribute values that begin with a single /
+// (absolute paths), excluding protocol-relative URLs (//) and fragments.
+// Group 1: the attribute prefix up through the opening quote.
+// Group 2: the slash plus the first non-slash character of the path.
+//
+// This is compiled once at package init so handleProxy doesn't pay the cost
+// of regexp compilation on every request.
+var absPathRe = regexp.MustCompile(`((?:href|src|action|srcset|data-src|data-href)=")(/[^/])`)
+
 // handleProxy reverse-proxies a request to a locally-bound port on the guppi
 // host. WebSocket upgrade requests are tunnelled over raw TCP so that
 // localhost-only dev servers remain accessible through the guppi URL.
@@ -191,7 +203,78 @@ func handleProxy(w http.ResponseWriter, r *http.Request, guppiPort int) {
 		logrus.WithError(err).WithField("port", port).Debug("port forward proxy error")
 		http.Error(w, "upstream unreachable", http.StatusBadGateway)
 	}
+	proxy.ModifyResponse = makeHTMLRewriter(port)
 	proxy.ServeHTTP(w, r)
+}
+
+// makeHTMLRewriter returns a ModifyResponse function that rewrites absolute
+// paths in HTML responses so browsers route asset requests back through the
+// guppi proxy rather than directly to the host root.
+//
+// For example, a Next.js app served at /proxy/8377/ generates:
+//
+//	<script src="/_next/static/chunks/main.js">
+//
+// which the browser resolves to devvm:7654/_next/... (a guppi 404). The
+// rewriter turns it into src="/proxy/8377/_next/...", which routes correctly.
+//
+// It also patches the assetPrefix/basePath fields in Next.js __NEXT_DATA__ so
+// that client-side navigation and code-splitting also use the proxy prefix.
+func makeHTMLRewriter(port int) func(*http.Response) error {
+	prefix := fmt.Sprintf("/proxy/%d", port)
+	// Replacement: group1 stays, prefix is inserted before the leading slash of group2.
+	// Example: href="/foo" → href="/proxy/8377/foo"
+	// Example: href="/"   → href="/proxy/8377/"
+	repl := []byte("${1}" + prefix + "${2}")
+
+	// Next.js embeds {"assetPrefix":"","basePath":""} in __NEXT_DATA__.
+	// Rewriting these makes the React runtime also use the proxy for all
+	// dynamically loaded chunks and API calls.
+	nextAssetReplace := []byte(`"assetPrefix":""`)
+	nextAssetWith := []byte(`"assetPrefix":"` + prefix + `"`)
+	nextBaseReplace := []byte(`"basePath":""`)
+	nextBaseWith := []byte(`"basePath":"` + prefix + `"`)
+
+	return func(resp *http.Response) error {
+		ct := resp.Header.Get("Content-Type")
+		if !strings.Contains(ct, "text/html") {
+			return nil
+		}
+
+		// Decompress gzip if needed so we can inspect the body bytes.
+		var reader io.Reader = resp.Body
+		encoded := strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip")
+		if encoded {
+			gr, err := gzip.NewReader(resp.Body)
+			if err != nil {
+				return nil // can't decompress — leave response untouched
+			}
+			defer gr.Close()
+			reader = gr
+		}
+
+		body, err := io.ReadAll(reader)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+
+		// Rewrite absolute-path attribute values.
+		body = absPathRe.ReplaceAll(body, repl)
+
+		// Patch Next.js runtime metadata.
+		body = bytes.Replace(body, nextAssetReplace, nextAssetWith, -1)
+		body = bytes.Replace(body, nextBaseReplace, nextBaseWith, -1)
+
+		if encoded {
+			// We decoded gzip; remove the header so the browser doesn't try to decode.
+			resp.Header.Del("Content-Encoding")
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		return nil
+	}
 }
 
 // proxyWebSocket tunnels a WebSocket upgrade through a raw TCP connection to

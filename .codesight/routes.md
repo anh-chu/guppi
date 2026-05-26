@@ -39,6 +39,8 @@
 - `GET` `cols` params() [auth, db, queue, ai]
 - `GET` `rows` params() [auth, db, queue, ai]
 - `GET` `Upgrade` params() [auth, db, queue, ai]
+- `GET` `Content-Type` params() [auth, db, queue, ai]
+- `GET` `Content-Encoding` params() [auth, db, queue, ai]
 - `GET` `/auth/status` params() [auth, db, queue, ai]
 - `POST` `/auth/setup` params() [auth, db, queue, ai]
 - `POST` `/auth/login` params() [auth, db, queue, ai]

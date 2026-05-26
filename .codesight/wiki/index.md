@@ -12,6 +12,8 @@ Structural map compiled from source code via AST. No LLM — deterministic, 200m
 - [Auth](./auth.md)
 - [Payments](./payments.md)
 - [Section](./section.md)
+- [Content-encoding](./content-encoding.md)
+- [Content-type](./content-type.md)
 - [Upgrade](./upgrade.md)
 - [Activity](./activity.md)
 - [Agent-status](./agent-status.md)
@@ -42,7 +44,7 @@ Structural map compiled from source code via AST. No LLM — deterministic, 200m
 
 ## Quick Stats
 
-- Routes: **81**
+- Routes: **83**
 - Models: **0**
 - Components: **15**
 - Env vars: **7** required, **0** with defaults
@@ -71,4 +73,4 @@ These exist in your codebase but are **not** reflected in wiki articles:
 When in doubt, search the source. The wiki is a starting point, not a complete inventory.
 
 ---
-_Last compiled: 2026-05-26 · 32 articles · [codesight](https://github.com/Houseofmvps/codesight)_
+_Last compiled: 2026-05-26 · 34 articles · [codesight](https://github.com/Houseofmvps/codesight)_

@@ -6,13 +6,15 @@
 
 ## Scale
 
-81 API routes · 15 UI components · 59 library files · 1 middleware layers · 7 environment variables
+83 API routes · 15 UI components · 59 library files · 1 middleware layers · 7 environment variables
 
 ## Subsystems
 
 - **[Auth](./auth.md)** — 10 routes — touches: auth, db, queue, ai
 - **[Payments](./payments.md)** — 2 routes — touches: auth, db, queue, ai
 - **[*](./section.md)** — 1 routes — touches: auth, db, queue, ai
+- **[Content-Encoding](./content-encoding.md)** — 1 routes — touches: auth, db, queue, ai
+- **[Content-Type](./content-type.md)** — 1 routes — touches: auth, db, queue, ai
 - **[Upgrade](./upgrade.md)** — 1 routes — touches: auth, db, queue, ai
 - **[Activity](./activity.md)** — 2 routes — touches: auth, db, queue, ai
 - **[Agent-status](./agent-status.md)** — 2 routes — touches: auth, db, queue, ai
