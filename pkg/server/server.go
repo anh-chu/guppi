@@ -901,9 +901,10 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				var req struct {
-					Port  int                  `json:"port"`
-					Label string               `json:"label"`
-					Mode  portforward.Mode     `json:"mode"`
+					Port         int                `json:"port"`
+					Label        string             `json:"label"`
+					Mode         portforward.Mode   `json:"mode"`
+					ExternalPort int                `json:"external_port"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Port < 1 || req.Port > 65535 {
 					http.Error(w, "port (1-65535) required", http.StatusBadRequest)
@@ -912,7 +913,7 @@ func Run(ctx context.Context, opts *Options) error {
 				if req.Mode == "" {
 					req.Mode = portforward.ModeProxy
 				}
-				if err := opts.PortForwardStore.Add(req.Port, req.Label, req.Mode); err != nil {
+				if err := opts.PortForwardStore.Add(req.Port, req.Label, req.Mode, req.ExternalPort); err != nil {
 					http.Error(w, err.Error(), http.StatusBadGateway)
 					return
 				}

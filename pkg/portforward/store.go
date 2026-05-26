@@ -19,9 +19,12 @@ const (
 
 // Forward is a single port-forwarding entry.
 type Forward struct {
-	Port  int    `json:"port"`
-	Label string `json:"label"`
-	Mode  Mode   `json:"mode"`
+	Port         int    `json:"port"`
+	Label        string `json:"label"`
+	Mode         Mode   `json:"mode"`
+	// ExternalPort is the port socat binds on 0.0.0.0 (socat mode only).
+	// Must differ from Port because the service already owns Port on 127.0.0.1.
+	ExternalPort int    `json:"external_port,omitempty"`
 
 	// socatPID is the PID of the socat child process, or 0 if not running.
 	// Not exported — callers use Store methods.
@@ -43,7 +46,11 @@ func NewStore() *Store {
 // Add registers a port forward. If mode is ModeSocat the socat process is
 // started immediately; any previously registered forward on that port is
 // replaced (stopping the old socat if necessary).
-func (s *Store) Add(port int, label string, mode Mode) error {
+//
+// For socat mode, externalPort is the port socat binds on 0.0.0.0. It must
+// be different from port because the service already owns port on 127.0.0.1.
+// Pass 0 to use the same value as port (only works if nothing else owns it).
+func (s *Store) Add(port int, label string, mode Mode, externalPort int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -54,10 +61,14 @@ func (s *Store) Add(port int, label string, mode Mode) error {
 		}
 	}
 
-	fwd := &Forward{Port: port, Label: label, Mode: mode}
+	if externalPort == 0 {
+		externalPort = port
+	}
+
+	fwd := &Forward{Port: port, Label: label, Mode: mode, ExternalPort: externalPort}
 
 	if mode == ModeSocat {
-		pid, err := startSocat(port)
+		pid, err := startSocat(externalPort, port)
 		if err != nil {
 			return err
 		}

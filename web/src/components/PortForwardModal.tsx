@@ -24,9 +24,21 @@ export function PortForwardModal({ onClose }: Props) {
   const [port, setPort] = useState('')
   const [label, setLabel] = useState('')
   const [mode, setMode] = useState<ForwardMode>('proxy')
+  const [externalPort, setExternalPort] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const portRef = useRef<HTMLInputElement>(null)
+
+  // Keep external port in sync with port unless user has overridden it
+  const [externalPortTouched, setExternalPortTouched] = useState(false)
+  useEffect(() => {
+    if (!externalPortTouched) setExternalPort(port)
+  }, [port, externalPortTouched])
+
+  // Reset external port touched state when mode changes away from socat
+  useEffect(() => {
+    if (mode !== 'socat') setExternalPortTouched(false)
+  }, [mode])
 
   useEffect(() => { portRef.current?.focus() }, [])
 
@@ -43,9 +55,14 @@ export function PortForwardModal({ onClose }: Props) {
       setError('Port must be 1–65535')
       return
     }
+    const extPortNum = mode === 'socat' ? parseInt(externalPort, 10) || portNum : 0
+    if (mode === 'socat' && (extPortNum < 1 || extPortNum > 65535)) {
+      setError('External port must be 1–65535')
+      return
+    }
     setAdding(true)
     setError(null)
-    const err = await add(portNum, label.trim(), mode)
+    const err = await add(portNum, label.trim(), mode, mode === 'socat' ? extPortNum : undefined)
     setAdding(false)
     if (err) {
       setError(err)
@@ -53,6 +70,8 @@ export function PortForwardModal({ onClose }: Props) {
     }
     setPort('')
     setLabel('')
+    setExternalPort('')
+    setExternalPortTouched(false)
   }
 
   return (
@@ -126,7 +145,9 @@ export function PortForwardModal({ onClose }: Props) {
                         className="shrink-0 text-[11px] text-mute/50 font-mono"
                         title="Direct TCP — connect with any client"
                       >
-                        0.0.0.0:{f.port}
+                        {f.external_port && f.external_port !== f.port
+                          ? `0.0.0.0:${f.external_port} → :${f.port}`
+                          : `0.0.0.0:${f.port}`}
                       </span>
                     )}
 
@@ -189,6 +210,19 @@ export function PortForwardModal({ onClose }: Props) {
               onKeyDown={e => { if (e.key === 'Enter') submit() }}
               className="w-24 shrink-0 rounded-lg border border-hairline bg-surface-elevated text-sm text-ink px-3 py-2 outline-none focus:border-primary font-mono placeholder:text-mute/40"
             />
+            {mode === 'socat' && (
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                placeholder="Ext. port"
+                title="Port socat will bind on 0.0.0.0 — must differ from the service port"
+                value={externalPort}
+                onChange={e => { setExternalPort(e.target.value); setExternalPortTouched(true) }}
+                onKeyDown={e => { if (e.key === 'Enter') submit() }}
+                className="w-28 shrink-0 rounded-lg border border-hairline bg-surface-elevated text-sm text-ink px-3 py-2 outline-none focus:border-primary font-mono placeholder:text-mute/40"
+              />
+            )}
             <input
               type="text"
               placeholder="Label (optional)"

@@ -6,6 +6,7 @@ export interface PortForward {
   port: number
   label: string
   mode: ForwardMode
+  external_port?: number
 }
 
 export function usePortForwards() {
@@ -30,12 +31,12 @@ export function usePortForwards() {
     refresh()
   }, [refresh])
 
-  const add = useCallback(async (port: number, label: string, mode: ForwardMode): Promise<string | null> => {
+  const add = useCallback(async (port: number, label: string, mode: ForwardMode, externalPort?: number): Promise<string | null> => {
     try {
       const res = await fetch('/api/portforwards', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ port, label, mode }),
+        body: JSON.stringify({ port, label, mode, external_port: externalPort || 0 }),
       })
       if (res.ok) {
         const data = await res.json()

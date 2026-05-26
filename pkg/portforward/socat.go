@@ -6,16 +6,20 @@ import (
 	"os/exec"
 )
 
-// startSocat spawns a socat process that re-binds a localhost port on all
-// interfaces:
+// startSocat spawns a socat process that listens on listenPort (0.0.0.0) and
+// forwards to targetPort on 127.0.0.1:
 //
-//	socat TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork TCP:127.0.0.1:{port}
+//	socat TCP-LISTEN:{listenPort},bind=0.0.0.0,reuseaddr,fork TCP:127.0.0.1:{targetPort}
+//
+// listenPort and targetPort may differ — they MUST differ when the service
+// already owns targetPort on 127.0.0.1, because Linux will not allow a
+// second listener on 0.0.0.0 for the same port number.
 //
 // The process runs in the background; callers must call stopSocat with the
 // returned PID when done.
-func startSocat(port int) (int, error) {
-	listen := fmt.Sprintf("TCP-LISTEN:%d,bind=0.0.0.0,reuseaddr,fork", port)
-	target := fmt.Sprintf("TCP:127.0.0.1:%d", port)
+func startSocat(listenPort, targetPort int) (int, error) {
+	listen := fmt.Sprintf("TCP-LISTEN:%d,bind=0.0.0.0,reuseaddr,fork", listenPort)
+	target := fmt.Sprintf("TCP:127.0.0.1:%d", targetPort)
 
 	cmd := exec.Command("socat", listen, target)
 	// Discard socat's own stdout/stderr to avoid noise; errors surface through
