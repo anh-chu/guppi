@@ -336,7 +336,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       await fetch('/api/session/kill', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: session.id }),
+        body: JSON.stringify({ id: session.id, name: session.name, host: session.host || undefined }),
       })
     } catch (err) {
       console.error('Failed to kill session:', err)
