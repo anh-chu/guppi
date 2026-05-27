@@ -635,7 +635,7 @@ export function Sidebar({
           onTouchMove={handleTouchEnd}
           className={cn(
             'relative flex flex-col w-full p-2.5 rounded-sm transition-all duration-200 text-ink',
-            'hover:bg-surface',
+            'hover:bg-white/[0.05]',
             isSelected && 'bg-white/[0.08] text-primary border border-white/20',
             needsAttention && !isSelected && 'border-l border-warning bg-warning/5',
             !isSelected && !needsAttention && 'border border-transparent',
@@ -732,7 +732,7 @@ export function Sidebar({
             </div>
           )}
           {dropIndicator?.key === sk && dropIndicator.position === 'above' && (
-            <div className="absolute top-0 left-2 right-2 h-0.5 bg-primary rounded-full pointer-events-none z-10" />
+            <div className="absolute top-0 left-0 right-0 h-1 bg-accent-green rounded-full pointer-events-none z-10 shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
           )}
           {showPanes && (
             <div className="mt-2 pt-1.5 border-t border-hairline">
@@ -769,7 +769,7 @@ export function Sidebar({
             </div>
           )}
           {dropIndicator?.key === sk && dropIndicator.position === 'below' && (
-            <div className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary rounded-full pointer-events-none z-10" />
+            <div className="absolute bottom-0 left-0 right-0 h-1 bg-accent-green rounded-full pointer-events-none z-10 shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
           )}
         </div>
       </li>
@@ -838,6 +838,49 @@ export function Sidebar({
           {visibleSessions.length === 0 && (
             <li className="p-3 text-mute text-sm">
               {collapsed ? '—' : 'No sessions'}
+            </li>
+          )}
+
+          {/* Drop target at start of list */}
+          {draggingKey && visibleSessions.length > 0 && (
+            <li
+              className="h-4 relative"
+              onDragOver={(e) => {
+                e.preventDefault()
+                setDropIndicator({ key: '__list-start__', position: 'above' })
+                setPairTarget(null)
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setDropIndicator(null)
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                if (!draggingKey) return
+                const dragGroup = layoutGroups?.find(g => g.leaves.includes(draggingKey)) ?? null
+                const keys = visibleSessions.map(sessionKey)
+                const applyOrder = (newOrder: string[]) => {
+                  const full = orderedSessions.map(sessionKey)
+                  const s = new Set(newOrder); let i = 0
+                  setManualOrder(full.map(k => s.has(k) ? newOrder[i++] : k))
+                }
+                if (dragGroup) {
+                  const without = keys.filter(k => !dragGroup.leaves.includes(k))
+                  without.unshift(...dragGroup.leaves)
+                  applyOrder(without)
+                } else {
+                  const without = keys.filter(k => k !== draggingKey)
+                  without.unshift(draggingKey)
+                  applyOrder(without)
+                }
+                setDraggingKey(null)
+                setDropIndicator(null)
+              }}
+            >
+              {dropIndicator?.key === '__list-start__' && (
+                <div className="absolute top-0 left-0 right-0 h-1 bg-accent-green rounded-full pointer-events-none z-10 shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
+              )}
             </li>
           )}
 
@@ -939,7 +982,7 @@ export function Sidebar({
                       }}
                       className={cn(
                         'relative flex flex-col w-full p-2.5 rounded-sm transition-all duration-200 text-ink cursor-pointer select-none',
-                        'hover:bg-surface',
+                        'hover:bg-white/[0.05]',
                         group.isActive ? 'bg-white/[0.08] border border-white/20' : 'border border-transparent',
                       )}
                     >
@@ -1064,6 +1107,49 @@ export function Sidebar({
             </>
           )}
 
+          {/* Drop target at end of list */}
+          {draggingKey && (
+            <li
+              className="h-4 relative"
+              onDragOver={(e) => {
+                e.preventDefault()
+                setDropIndicator({ key: '__list-end__', position: 'above' })
+                setPairTarget(null)
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setDropIndicator(null)
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                if (!draggingKey) return
+                const dragGroup = layoutGroups?.find(g => g.leaves.includes(draggingKey)) ?? null
+                const keys = visibleSessions.map(sessionKey)
+                const applyOrder = (newOrder: string[]) => {
+                  const full = orderedSessions.map(sessionKey)
+                  const s = new Set(newOrder); let i = 0
+                  setManualOrder(full.map(k => s.has(k) ? newOrder[i++] : k))
+                }
+                if (dragGroup) {
+                  const without = keys.filter(k => !dragGroup.leaves.includes(k))
+                  without.push(...dragGroup.leaves)
+                  applyOrder(without)
+                } else {
+                  const without = keys.filter(k => k !== draggingKey)
+                  without.push(draggingKey)
+                  applyOrder(without)
+                }
+                setDraggingKey(null)
+                setDropIndicator(null)
+              }}
+            >
+              {dropIndicator?.key === '__list-end__' && (
+                <div className="absolute top-0 left-0 right-0 h-1 bg-accent-green rounded-full pointer-events-none z-10 shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
+              )}
+            </li>
+          )}
+
         </ul>
       </nav>
 
@@ -1094,7 +1180,7 @@ export function Sidebar({
                     }}
                     className={cn(
                       'relative flex items-center gap-2 w-full px-2.5 py-1 rounded-sm transition-all duration-200 min-w-0',
-                      'hover:bg-surface cursor-pointer',
+                      'hover:bg-white/[0.05] cursor-pointer',
                       isSelected && 'bg-white/[0.08] text-primary border border-white/20',
                       !isSelected && 'border border-transparent',
                     )}
