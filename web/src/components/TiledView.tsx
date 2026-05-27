@@ -9,6 +9,7 @@ interface TiledViewProps {
   activeKey: string | null
   onActivate: (key: string) => void
   onClose: (key: string) => void
+  onKill?: (key: string) => void
   onPopOut: (key: string) => void
   onSplit: (key: string, direction: 'h' | 'v') => void
   onRatioChange: (path: string, ratio: number) => void
@@ -28,6 +29,7 @@ export function TiledView({
   activeKey,
   onActivate,
   onClose,
+  onKill,
   onPopOut,
   onSplit,
   onRatioChange,
@@ -43,6 +45,7 @@ export function TiledView({
   const [dragOver, setDragOver] = useState(false)
   const [dragType, setDragType] = useState<'pane' | 'new-session' | 'sidebar' | null>(null)
   const [dropTarget, setDropTarget] = useState<{ key: string; zone: 'left'|'right'|'top'|'bottom'|'center' } | null>(null)
+  const [confirmKillKey, setConfirmKillKey] = useState<string | null>(null)
 
   const totalLeaves = tree ? getLeaves(tree).length : 0
 
@@ -280,6 +283,7 @@ export function TiledView({
           <div
               className="flex items-center justify-between px-2.5 py-1 bg-surface border-b border-hairline shrink-0 cursor-grab active:cursor-grabbing"
               draggable={totalLeaves > 1}
+              onMouseLeave={() => { if (confirmKillKey === sessionKey) setConfirmKillKey(null) }}
               onDragStart={(e) => {
                 if ((e.target as HTMLElement).closest('button')) { e.preventDefault(); return }
                 e.dataTransfer.setData('application/x-guppi-pane', sessionKey)
@@ -367,16 +371,17 @@ export function TiledView({
                   <line x1="3" y1="21" x2="10" y2="14" />
                 </svg>
               </button>
-              {/* Close */}
+              {/* Detach from group — remove from split, keep session alive */}
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
+                  setConfirmKillKey(null)
                   onClose(sessionKey)
                 }}
                 className="text-mute hover:text-ink p-0.5 rounded shrink-0 hover:bg-surface-elevated transition-colors"
-                aria-label="Close pane"
-                title="Close"
+                aria-label="Detach from group"
+                title="Detach from group"
               >
                 <svg
                   width="12"
@@ -388,9 +393,47 @@ export function TiledView({
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                  <line x1="2" y1="2" x2="22" y2="22" />
                 </svg>
+              </button>
+              {/* Kill — destroys the session, with inline confirmation */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (confirmKillKey === sessionKey) {
+                    setConfirmKillKey(null)
+                    onKill?.(sessionKey)
+                  } else {
+                    setConfirmKillKey(sessionKey)
+                  }
+                }}
+                className={cn(
+                  'p-0.5 rounded shrink-0 transition-colors text-[11px] font-medium leading-none',
+                  confirmKillKey === sessionKey
+                    ? 'px-1.5 py-0.5 bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                    : 'text-mute hover:text-red-400 hover:bg-surface-elevated'
+                )}
+                aria-label="Kill session"
+                title={confirmKillKey === sessionKey ? 'Click again to confirm' : 'Kill session'}
+              >
+                {confirmKillKey === sessionKey ? 'kill?' : (
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                )}
               </button>
             </div>
           </div>

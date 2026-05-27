@@ -453,7 +453,7 @@ export function Sidebar({
     return items
   }, [visibleSessions, layoutGroups])
 
-  const renderSessionItem = (session: Session, isHiddenSection = false, bracketChar?: string | null, inGroup = false) => {
+  const renderSessionItem = (session: Session, isHiddenSection = false, bracketChar?: string | null) => {
     const sk = sessionKey(session)
     const isSelected = selectedSession === sk
     const needsAttention = sessionNeedsAttention(sk)
@@ -611,11 +611,9 @@ export function Sidebar({
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
           onTouchMove={handleTouchEnd}
-          onMouseLeave={() => { if (confirmKillKey === sk) setConfirmKillKey(null) }}
           className={cn(
             'relative flex flex-col w-full p-2.5 rounded-sm transition-all duration-200 text-ink',
             'hover:bg-surface',
-            inGroup && 'group/item',
             isSelected && 'bg-surface text-primary border border-hairline',
             needsAttention && !isSelected && 'border-l border-warning bg-warning/5',
             !isSelected && !needsAttention && 'border border-transparent',
@@ -717,45 +715,7 @@ export function Sidebar({
           {dropIndicator?.key === sk && dropIndicator.position === 'below' && (
             <div className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary rounded-full pointer-events-none z-10" />
           )}
-          {/* Group actions: detach + kill — only for sessions inside a group */}
-          {inGroup && !collapsed && (
-            <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover/item:opacity-100 transition-opacity z-20">
-              {/* Detach from group */}
-              <button
-                type="button"
-                title="Detach from group"
-                onClick={(e) => { e.stopPropagation(); onRemoveFromSplit?.(sk) }}
-                className="flex items-center justify-center w-5 h-5 rounded-xs hover:bg-surface-elevated text-mute/60 hover:text-ink transition-colors"
-              >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                  <line x1="2" y1="2" x2="22" y2="22" />
-                </svg>
-              </button>
-              {/* Kill with inline confirmation */}
-              <button
-                type="button"
-                title={confirmKillKey === sk ? 'Click again to confirm kill' : 'Kill session'}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (confirmKillKey === sk) {
-                    killSession(session.id, session.name, session.host)
-                  } else {
-                    setConfirmKillKey(sk)
-                  }
-                }}
-                className={cn(
-                  'flex items-center justify-center h-5 rounded-xs transition-colors text-xs font-medium',
-                  confirmKillKey === sk
-                    ? 'px-1.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 min-w-[2.5rem]'
-                    : 'w-5 hover:bg-surface-elevated text-mute/60 hover:text-red-400'
-                )}
-              >
-                {confirmKillKey === sk ? 'sure?' : '×'}
-              </button>
-            </div>
-          )}
+
         </div>
       </li>
     )
@@ -948,7 +908,7 @@ export function Sidebar({
                           <div key={sessionKey(session)} onClick={() =>
                             group.isActive ? onSessionSelect(session) : onSwitchGroup?.(group.id, sessionKey(session))
                           }>
-                            {renderSessionItem(session, false, bc, true)}
+                            {renderSessionItem(session, false, bc)}
                           </div>
                         )
                       })}

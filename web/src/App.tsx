@@ -323,6 +323,21 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     setCurrentView('session')
   }, [])
 
+  const killPane = useCallback(async (sessKey: string) => {
+    const session = sessionsRef.current.find(s => sessionKey(s) === sessKey)
+    if (!session) return
+    closePane(sessKey)
+    try {
+      await fetch('/api/session/kill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: session.id }),
+      })
+    } catch (err) {
+      console.error('Failed to kill session:', err)
+    }
+  }, [closePane])
+
   // Navigate back to overview when the tree becomes empty (but not if singleView is active)
   useEffect(() => {
     if (paneTree === null && !singleView && currentView === 'session') {
@@ -964,6 +979,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
               activeKey={activeKey}
               onActivate={(key) => { setActiveKey(key); refocusTerminal() }}
               onClose={closePane}
+              onKill={killPane}
               onPopOut={popOutPane}
               onSplit={(key, direction) => {
                 splitTargetRef.current = { key, direction }
