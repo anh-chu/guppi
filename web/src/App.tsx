@@ -151,7 +151,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const [helpOpen, setHelpOpen] = useState(false)
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
   const [portForwardsOpen, setPortForwardsOpen] = useState(false)
-  const [dragNewSessionOver, setDragNewSessionOver] = useState(false)
+  const [mainDragOver, setMainDragOver] = useState<{ type: 'new-session' | 'sidebar'; zone: 'left' | 'right' | 'top' | 'bottom' | 'center' } | null>(null)
   const pendingSessionRef = useRef<string | null>(null)
   const splitTargetRef = useRef<{ key: string; direction: 'h' | 'v'; newFirst?: boolean } | null>(null)
   const activeKeyRef = useRef(activeKey)
@@ -283,7 +283,18 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     setSingleView(null)
     const currentActive = activeKeyRef.current
     setPaneTree(prev => {
-      if (prev === null) return popOut(sessKey)
+      // Standalone session: create pane tree from targetKey, insert beside
+      if (prev === null) {
+        if (targetKey) {
+          const direction: 'h' | 'v' = (edge === 'top' || edge === 'bottom') ? 'v' : 'h'
+          const newFirst = edge === 'left' || edge === 'top'
+          const base = popOut(targetKey)
+          return newFirst
+            ? insertBesideLeaf(base, targetKey, direction, sessKey, true)
+            : splitLeaf(base, targetKey, direction, sessKey)
+        }
+        return popOut(sessKey)
+      }
       // Already in the layout — just focus, don't duplicate
       if (findLeaf(prev, sessKey)) { setActiveKey(sessKey); return prev }
       const key = (targetKey && findLeaf(prev, targetKey)) ? targetKey
@@ -956,42 +967,76 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         <div
           className="flex-1 flex flex-col overflow-hidden relative"
           onDragOver={(e) => {
-            if (e.dataTransfer.types.includes('application/x-guppi-new-session')) {
+            const dt = e.dataTransfer
+            const getZone = (): 'left'|'right'|'top'|'bottom'|'center' => {
+              const rect = e.currentTarget.getBoundingClientRect()
+              const x = e.clientX - rect.left
+              const y = e.clientY - rect.top
+              const w = rect.width
+              const h = rect.height
+              if (x < w * 0.25) return 'left'
+              if (x > w * 0.75) return 'right'
+              if (y < h * 0.25) return 'top'
+              if (y > h * 0.75) return 'bottom'
+              return 'center'
+            }
+            if (dt.types.includes('application/x-guppi-new-session')) {
               e.preventDefault()
               e.dataTransfer.dropEffect = 'copy'
-              setDragNewSessionOver(true)
+              setMainDragOver({ type: 'new-session', zone: getZone() })
+              return
+            }
+            if (dt.types.includes('text/plain') && !dt.types.includes('application/x-guppi-pane')) {
+              e.preventDefault()
+              setMainDragOver({ type: 'sidebar', zone: getZone() })
             }
           }}
           onDragLeave={(e) => {
             if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-              setDragNewSessionOver(false)
+              setMainDragOver(null)
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault()
+            const zone = mainDragOver?.zone ?? 'center'
+            setMainDragOver(null)
+            if (e.dataTransfer.types.includes('application/x-guppi-new-session')) {
+              handleDropNewSession('', zone)
+              return
+            }
+            const sessKey = e.dataTransfer.getData('text/plain')
+            if (sessKey && !e.dataTransfer.types.includes('application/x-guppi-pane')) {
+              handleDropSession(sessKey, singleView ?? '', zone)
             }
           }}
         >
-          {dragNewSessionOver && (
-            <div
-              className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3"
-              style={{ background: 'color-mix(in oklch, var(--primary) 8%, var(--canvas))', border: '2px dashed color-mix(in oklch, var(--primary) 40%, transparent)' }}
-              onDragOver={(e) => {
-                e.preventDefault()
-                e.dataTransfer.dropEffect = 'copy'
-              }}
-              onDragLeave={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                  setDragNewSessionOver(false)
-                }
-              }}
-              onDrop={(e) => {
-                e.preventDefault()
-                setDragNewSessionOver(false)
-                handleDropNewSession('', 'center')
-              }}
-            >
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.8 }}>
-                <rect x="3" y="3" width="7" height="18" rx="1" />
-                <rect x="14" y="3" width="7" height="18" rx="1" />
-              </svg>
-              <span className="text-[11px] font-bold tracking-widest uppercase" style={{ color: 'var(--primary)', opacity: 0.9 }}>Drop to split</span>
+          {mainDragOver && (
+            <div className="absolute inset-0 z-50 pointer-events-none">
+              {/* Edge strip */}
+              <div
+                className="absolute bg-primary"
+                style={{
+                  ...(mainDragOver.zone === 'left' && { left: 0, top: 0, bottom: 0, width: 1 }),
+                  ...(mainDragOver.zone === 'right' && { right: 0, top: 0, bottom: 0, width: 1 }),
+                  ...(mainDragOver.zone === 'top' && { top: 0, left: 0, right: 0, height: 1 }),
+                  ...(mainDragOver.zone === 'bottom' && { bottom: 0, left: 0, right: 0, height: 1 }),
+                }}
+              />
+              {mainDragOver.zone === 'center' ? (
+                <div className="absolute inset-0 bg-primary/10 border-2 border-dashed border-primary rounded-lg flex items-center justify-center">
+                  <span className="text-sm font-medium text-primary">+ Split</span>
+                </div>
+              ) : (
+                <div
+                  className="absolute bg-primary/10"
+                  style={{
+                    ...(mainDragOver.zone === 'left' && { left: 0, top: 0, bottom: 0, width: '50%' }),
+                    ...(mainDragOver.zone === 'right' && { right: 0, top: 0, bottom: 0, width: '50%' }),
+                    ...(mainDragOver.zone === 'top' && { top: 0, left: 0, right: 0, height: '50%' }),
+                    ...(mainDragOver.zone === 'bottom' && { bottom: 0, left: 0, right: 0, height: '50%' }),
+                  }}
+                />
+              )}
             </div>
           )}
           {currentView === 'setup' ? (
