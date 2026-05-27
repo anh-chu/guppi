@@ -656,6 +656,22 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   }, [paneTree, activeKey, activeGroupId, groupOrder])
 
   const switchToGroup = useCallback((groupId: string, focusKey?: string) => {
+    // If re-selecting the already-active group (e.g. after navigating to a standalone session),
+    // just clear singleView to restore the pane tree view.
+    if (groupId === activeGroupId && paneTree) {
+      setSingleView(null)
+      setCurrentView('session')
+      const targetKey = focusKey ?? activeKey
+      if (targetKey) {
+        const { host, name } = parseSessionKey(targetKey)
+        const path = host
+          ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
+          : `/session/${encodeURIComponent(name)}`
+        if (window.location.pathname !== path) window.history.pushState(null, '', path)
+      }
+      setTimeout(refocusTerminal, 150)
+      return
+    }
     const targetGroup = savedGroups.find(g => g.id === groupId)
     if (!targetGroup) return
     // Save current active group if it has a tree
@@ -924,7 +940,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             layoutGroups={groupOrder
               .map(id => {
                 if (id === activeGroupId && paneTree)
-                  return { id, leaves: getLeaves(paneTree), isActive: true, activeKey, name: activeGroupName || undefined }
+                  return { id, leaves: getLeaves(paneTree), isActive: currentView === 'session' && singleView === null, activeKey, name: activeGroupName || undefined }
                 const g = savedGroups.find(g => g.id === id)
                 if (g) return { id, leaves: getLeaves(g.tree), isActive: false, activeKey: g.activeKey, name: g.name }
                 return null
