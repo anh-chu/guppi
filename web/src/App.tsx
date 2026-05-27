@@ -152,6 +152,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
   const [portForwardsOpen, setPortForwardsOpen] = useState(false)
   const [mainDragOver, setMainDragOver] = useState<{ type: 'new-session' | 'sidebar'; zone: 'left' | 'right' | 'top' | 'bottom' | 'center' } | null>(null)
+  const mainDragOverRef = useRef<{ type: 'new-session' | 'sidebar'; zone: 'left' | 'right' | 'top' | 'bottom' | 'center' } | null>(null)
   const pendingSessionRef = useRef<string | null>(null)
   const splitTargetRef = useRef<{ key: string; direction: 'h' | 'v'; newFirst?: boolean } | null>(null)
   const activeKeyRef = useRef(activeKey)
@@ -283,15 +284,12 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
     setSingleView(null)
     const currentActive = activeKeyRef.current
     setPaneTree(prev => {
-      // Standalone session: create pane tree from targetKey, insert beside
+      // Standalone session: target is the anchor, dragged session always second
       if (prev === null) {
         if (targetKey) {
           const direction: 'h' | 'v' = (edge === 'top' || edge === 'bottom') ? 'v' : 'h'
-          const newFirst = edge === 'left' || edge === 'top'
           const base = popOut(targetKey)
-          return newFirst
-            ? insertBesideLeaf(base, targetKey, direction, sessKey, true)
-            : splitLeaf(base, targetKey, direction, sessKey)
+          return splitLeaf(base, targetKey, direction, sessKey)
         }
         return popOut(sessKey)
       }
@@ -628,8 +626,8 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       // Neither session is in the active group — create a new background group
       const newId = Math.random().toString(36).slice(2)
       const newTree: PaneTree = { type: 'split', direction: 'h', ratio: 0.5,
-        first: { type: 'leaf', sessionKey: draggedKey },
-        second: { type: 'leaf', sessionKey: targetKey } }
+        first: { type: 'leaf', sessionKey: targetKey },
+        second: { type: 'leaf', sessionKey: draggedKey } }
       // Save current group if it has a tree
       if (paneTree) {
         setSavedGroups(prev => [...prev, { id: activeGroupId, tree: paneTree, activeKey, name: activeGroupName || undefined }])
@@ -656,8 +654,8 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       if (prev && findLeaf(prev, targetKey)) return splitLeaf(prev, targetKey, 'h', draggedKey)
       if (prev && findLeaf(prev, draggedKey)) return splitLeaf(prev, draggedKey, 'h', targetKey)
       return { type: 'split', direction: 'h', ratio: 0.5,
-        first: { type: 'leaf', sessionKey: draggedKey },
-        second: { type: 'leaf', sessionKey: targetKey } }
+        first: { type: 'leaf', sessionKey: targetKey },
+        second: { type: 'leaf', sessionKey: draggedKey } }
     })
     setActiveKey(draggedKey)
     const { host, name } = parseSessionKey(draggedKey)
@@ -983,22 +981,28 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
             if (dt.types.includes('application/x-guppi-new-session')) {
               e.preventDefault()
               e.dataTransfer.dropEffect = 'copy'
-              setMainDragOver({ type: 'new-session', zone: getZone() })
+              const val = { type: 'new-session' as const, zone: getZone() }
+              mainDragOverRef.current = val
+              setMainDragOver(val)
               return
             }
             if (dt.types.includes('text/plain') && !dt.types.includes('application/x-guppi-pane')) {
               e.preventDefault()
-              setMainDragOver({ type: 'sidebar', zone: getZone() })
+              const val = { type: 'sidebar' as const, zone: getZone() }
+              mainDragOverRef.current = val
+              setMainDragOver(val)
             }
           }}
           onDragLeave={(e) => {
             if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              mainDragOverRef.current = null
               setMainDragOver(null)
             }
           }}
           onDrop={(e) => {
             e.preventDefault()
-            const zone = mainDragOver?.zone ?? 'center'
+            const zone = mainDragOverRef.current?.zone ?? 'center'
+            mainDragOverRef.current = null
             setMainDragOver(null)
             if (e.dataTransfer.types.includes('application/x-guppi-new-session')) {
               handleDropNewSession('', zone)
