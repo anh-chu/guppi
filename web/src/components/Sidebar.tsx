@@ -892,6 +892,17 @@ export function Sidebar({
             const { group, sessions: groupSessions } = item
             const firstLeaf = group.leaves[0]
             const isGroupCollapsed = !collapsed && collapsedGroups.has(group.id)
+            const collapsedAgentTypes = (() => {
+              const seen = new Set<string>()
+              return groupSessions
+                .map(s => s.agent_type)
+                .filter((t): t is string => !!t && (seen.has(t) ? false : (seen.add(t), true)))
+                .slice(0, 3)
+            })()
+            const collapsedNewest = groupSessions.reduce((a, b) =>
+              (a.created || '') > (b.created || '') ? a : b
+            , groupSessions[0])
+            const collapsedProject = pathLeaf(groupSessions.find(s => s.project_path)?.project_path)
             return (
               <li key={group.id} className="flex items-stretch">
                 {/* Bracket: drag to reorder, click to collapse/expand */}
@@ -990,6 +1001,9 @@ export function Sidebar({
                     >
                       <div className="flex items-center gap-2 w-full group/collname">
                         <span className="text-[10px] font-mono text-mute/50 shrink-0 w-3">{groupSessions.length}</span>
+                        {collapsedAgentTypes.map((t, i) => (
+                          <AgentMark key={i} agentType={t} className="h-3.5 min-w-5 px-0.5 shrink-0" />
+                        ))}
                         {renamingGroupId === group.id ? (
                           <input
                             ref={groupRenameInputRef}
@@ -1007,6 +1021,11 @@ export function Sidebar({
                         ) : (
                           <span className="flex-1 text-sm font-medium text-ink truncate">
                             {group.name || groupSessions.map(s => s.name).join(' · ')}
+                          </span>
+                        )}
+                        {formatUptime(collapsedNewest?.created) && !renamingGroupId && (
+                          <span className="shrink-0 rounded-xs border border-hairline px-1.5 py-0.5 text-xs text-mute font-medium">
+                            {formatUptime(collapsedNewest.created)}
                           </span>
                         )}
                         {/* Rename pencil */}
@@ -1027,6 +1046,11 @@ export function Sidebar({
                           <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
                         )}
                       </div>
+                      {collapsedProject && (
+                        <div className="mt-1 flex items-center gap-2 text-xs text-mute font-medium">
+                          <span className="truncate">{collapsedProject}</span>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <>
