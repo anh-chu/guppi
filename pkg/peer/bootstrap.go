@@ -23,6 +23,11 @@ type BootstrapRequest struct {
 	Name        string `json:"name"`
 	PublicKey   string `json:"public_key"`
 	Fingerprint string `json:"fingerprint"`
+	// ListenPort is the dialer's HTTP listening port. The listener stores it
+	// as the dialer's address (combined with the request's remote host) so
+	// later PTY back-dials reach the dialer's actual server, not the
+	// ephemeral source port of this bootstrap request.
+	ListenPort int `json:"listen_port,omitempty"`
 }
 
 // BootstrapResponse is what the listener returns on success.

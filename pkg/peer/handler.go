@@ -118,7 +118,11 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 
 	// runSession does atomic TryRegisterPeer; residual race window closes
 	// there (returns immediately if a connection already exists).
-	_ = runSession(r.Context(), RoleListener, conn, *peer, r.RemoteAddr, h.deps)
+	//
+	// We pass peer.Address (the dialer's listening host:port stored from
+	// bootstrap), NOT r.RemoteAddr — the latter is the dialer's ephemeral
+	// source port, which is useless for PTY back-dial.
+	_ = runSession(r.Context(), RoleListener, conn, *peer, peer.Address, h.deps)
 }
 
 func sendAuthFail(conn *websocket.Conn, reason string) {

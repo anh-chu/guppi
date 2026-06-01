@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -71,6 +72,7 @@ func handlePostPeers(w http.ResponseWriter, r *http.Request, opts *Options) {
 		Name:        opts.Identity.Name,
 		PublicKey:   opts.Identity.PublicKey,
 		Fingerprint: opts.Identity.Fingerprint(),
+		ListenPort:  opts.Port,
 	}
 	resp, err := peer.SendBootstrap(ctx, addr, bootstrapReq)
 	if err != nil {
@@ -200,13 +202,18 @@ func handlePeersBootstrap(w http.ResponseWriter, r *http.Request, opts *Options)
 		return
 	}
 
-	// Derive remote address from RemoteAddr host + DefaultPort (we don't know
-	// their actual port from the inbound TCP source).
+	// Combine the inbound request host with the dialer's listening port to
+	// derive a back-reachable address. r.RemoteAddr's port is the ephemeral
+	// source port, not the dialer's server, so we ignore it.
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	remoteAddr := net.JoinHostPort(host, peer.DefaultPort)
+	port := peer.DefaultPort
+	if req.ListenPort > 0 {
+		port = strconv.Itoa(req.ListenPort)
+	}
+	remoteAddr := net.JoinHostPort(host, port)
 
 	// Idempotent: if already known, refresh address; otherwise add.
 	existing := opts.PeerStore.GetByPublicKey(req.PublicKey)
