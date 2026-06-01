@@ -4,7 +4,7 @@ package common
 var NAME = "guppi"
 
 // SUMMARY of the Version
-var SUMMARY = "v0.1.1-beta.2" // x-release-please-version
+var SUMMARY = "v0.2.0-beta.1" // x-release-please-version
 
 // BRANCH of the Version
 var BRANCH = "dev"
