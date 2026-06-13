@@ -2,6 +2,16 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type (major, minor, patch)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
   push:
     branches:
       - master
@@ -25,20 +35,96 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read version
-        id: version
+      - name: Configure Git
         run: |
-          version=$(grep -oP 'var VERSION = "\K[^"]+' pkg/common/version.go)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
-          echo "Detected version: v${version}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Auto-bump version
+        if: github.event_name == 'push'
+        id: autobump
+        run: |
+          # Read current version
+          current_version=$(grep -oP 'var VERSION = "\K[^"]+' pkg/common/version.go)
+          echo "Current version: $current_version"
+          
+          # Parse version components
+          IFS='.' read -r major minor patch <<< "$current_version"
+          
+          # Bump patch version
+          patch=$((patch + 1))
+          new_version="${major}.${minor}.${patch}"
+          
+          echo "New version: $new_version"
+          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "tag=v${new_version}" >> "$GITHUB_OUTPUT"
+          
+          # Update version.go
+          sed -i "s/var SUMMARY = \"v${current_version}\"/var SUMMARY = \"v${new_version}\"/" pkg/common/version.go
+          sed -i "s/var VERSION = \"${current_version}\"/var VERSION = \"${new_version}\"/" pkg/common/version.go
+          
+          # Commit and push
+          git add pkg/common/version.go
+          git commit -m "chore(release): ${new_version}"
+          git push origin master
+          
+      - name: Manual version bump
+        if: github.event_name == 'workflow_dispatch'
+        id: manual
+        run: |
+          current_version=$(grep -oP 'var VERSION = "\K[^"]+' pkg/common/version.go)
+          echo "Current version: $current_version"
+          
+          IFS='.' read -r major minor patch <<< "$current_version"
+          
+          case "${{ github.event.inputs.version_bump }}" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+          esac
+          
+          new_version="${major}.${minor}.${patch}"
+          echo "New version: $new_version"
+          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "tag=v${new_version}" >> "$GITHUB_OUTPUT"
+          
+          # Update version.go
+          sed -i "s/var SUMMARY = \"v${current_version}\"/var SUMMARY = \"v${new_version}\"/" pkg/common/version.go
+          sed -i "s/var VERSION = \"${current_version}\"/var VERSION = \"${new_version}\"/" pkg/common/version.go
+          
+          # Also update web/package.json
+          if [ -f web/package.json ]; then
+            sed -i "s/\"version\": \"${current_version}\"/\"version\": \"${new_version}\"/" web/package.json
+            git add web/package.json
+          fi
+          
+          # Update release manifest
+          if [ -f .release-please-manifest.json ]; then
+            echo "{\".\":\"${new_version}\"}" > .release-please-manifest.json
+            git add .release-please-manifest.json
+          fi
+          
+          # Commit and push
+          git add pkg/common/version.go
+          git commit -m "chore(release): ${new_version}"
+          git push origin master
 
       - name: Check tag does not exist
         id: check
         run: |
-          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
-            echo "Tag ${{ steps.version.outputs.tag }} already exists, skipping release."
+          if git rev-parse "${{ steps.autobump.outputs.tag || steps.manual.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag already exists, skipping release."
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -61,10 +147,8 @@ jobs:
       - name: Create and push tag
         if: steps.check.outputs.exists == 'false'
         env:
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ steps.autobump.outputs.tag || steps.manual.outputs.tag }}
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
 
@@ -76,4 +160,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}
+          GORELEASER_CURRENT_TAG: ${{ steps.autobump.outputs.tag || steps.manual.outputs.tag }}
