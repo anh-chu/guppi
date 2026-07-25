@@ -336,6 +336,36 @@ describe('TerminalPool', () => {
     expect(socketOpenCount).toBe(1)
   })
 
+  // Registration-timing guard. Terminal.tsx registers the file-link provider in
+  // a useLayoutEffect immediately after connect(), reading termRef.current —
+  // which useTerminal assigns from getTerminalForPaste(lease) during checkout.
+  // If checkout ever became async, that ref would be null on the cold path and
+  // the provider would silently never register. Pin the synchronous contract.
+  it('cold checkout exposes the terminal synchronously (link-provider timing)', () => {
+    const container = fakeEl()
+    const lease = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
+    const term = pool.getTerminalForPaste(lease)
+    // Non-null the moment checkout returns: this is the property the
+    // link-provider registration depends on. (The fake factory does not model
+    // registerLinkProvider, so the method itself is not asserted here.)
+    expect(term).not.toBeNull()
+    expect(term).toBeDefined()
+  })
+
+  it('warm re-checkout also exposes the terminal synchronously', () => {
+    const c1 = fakeEl()
+    const l1 = pool.checkout(defId('s1'), defPrefs(), c1, noopCbs())
+    const first = pool.getTerminalForPaste(l1)
+    pool.checkin(l1)
+
+    const c2 = fakeEl()
+    const l2 = pool.checkout(defId('s1'), defPrefs(), c2, noopCbs())
+    const second = pool.getTerminalForPaste(l2)
+    expect(second).not.toBeNull()
+    // Same underlying terminal: a re-registered provider must target this one.
+    expect(second).toBe(first)
+  })
+
   it('cold checkout loads WebGL when prefs specify webgl', () => {
     const container = fakeEl()
     pool.checkout(defId('s1'), defPrefs({ renderer: 'webgl' }), container, noopCbs())

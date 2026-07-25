@@ -124,48 +124,55 @@ function findSpanInBuffer(
 class FileLinkProviderImpl implements ILinkProvider {
   constructor(private terminal: Terminal, private onOpen: OpenFileHandler) {}
 
-  provideLinks(row: number, callback: (links: ILink[] | undefined) => void): void {
+  provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void): void {
+    // xterm passes a 1-based buffer line number, while Buffer.getLine() is
+    // 0-based. WebLinksAddon does the same conversion (computeLink calls
+    // _getWindowedLineStrings(y - 1)). Without it we scan the line BELOW the
+    // one the pointer is on, so links land on the wrong row and paths appear
+    // unclickable.
+    const row = bufferLineNumber - 1
+    if (row < 0) { callback(undefined); return }
     const { text: lineText } = collectWrappedLine(this.terminal, row)
     if (!lineText.trim()) { callback(undefined); return }
 
     const links: ILink[] = []
     const tokens = lineText.split(/\s+/)
-    let pos = 0
+    let searchFrom = 0
 
     for (const token of tokens) {
+      if (!token) { searchFrom++; continue }
+      const tokenPos = lineText.indexOf(token, searchFrom)
+      if (tokenPos === -1) break
+      searchFrom = tokenPos + token.length
+
       const analysis = analyzeToken(token)
-      if (analysis) {
-        const globalStart = pos + analysis.start
-        const span = findSpanInBuffer(this.terminal, row, globalStart, analysis.length)
-        if (span) {
-          const match = analysis.match
-          links.push({
-            range: {
-              start: { x: span.startX + 1, y: span.startY + 1 },
-              end:   { x: span.endX + 1,   y: span.endY + 1 },
-            },
-            text: token.slice(analysis.start, analysis.start + analysis.length),
-            activate: () => this.onOpen(match),
-            hover: (event, text) => {
-              if (event?.target instanceof HTMLElement) {
-                event.target.style.cursor = 'pointer'
-                event.target.style.textDecoration = 'underline'
-              }
-            },
-            leave: (event) => {
-              if (event?.target instanceof HTMLElement) {
-                event.target.style.cursor = ''
-                event.target.style.textDecoration = ''
-              }
-            },
-          })
-        }
+      if (!analysis) continue
+
+      const globalStart = tokenPos + analysis.start
+      const span = findSpanInBuffer(this.terminal, row, globalStart, analysis.length)
+      if (span) {
+        const match = analysis.match
+        links.push({
+          range: {
+            start: { x: span.startX + 1, y: span.startY + 1 },
+            end:   { x: span.endX + 1,   y: span.endY + 1 },
+          },
+          text: token.slice(analysis.start, analysis.start + analysis.length),
+          activate: () => this.onOpen(match),
+          hover: (event) => {
+            if (event?.target instanceof HTMLElement) {
+              event.target.style.cursor = 'pointer'
+              event.target.style.textDecoration = 'underline'
+            }
+          },
+          leave: (event) => {
+            if (event?.target instanceof HTMLElement) {
+              event.target.style.cursor = ''
+              event.target.style.textDecoration = ''
+            }
+          },
+        })
       }
-      // advance past token + whitespace separator
-      pos += token.length
-      const nextNonSpace = lineText.slice(pos).search(/\S/)
-      if (nextNonSpace === -1) break
-      pos += nextNonSpace + 1
     }
     callback(links.length ? links : undefined)
   }
