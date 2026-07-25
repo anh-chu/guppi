@@ -4,6 +4,7 @@ export type WikiPanelStatus = 'checking' | 'ready' | 'unconfigured' | 'offline'
 
 interface WikiPanelProps {
   wikiUrl: string
+  apiKey?: string
   filePath: string | null
   sessionCwd?: string
   onClose: () => void
@@ -19,21 +20,11 @@ function resolveFilePath(path: string, cwd?: string): string {
   return path
 }
 
-export function WikiPanel({ wikiUrl, filePath, sessionCwd, onClose }: WikiPanelProps) {
+export function WikiPanel({ wikiUrl, apiKey, filePath, sessionCwd, onClose }: WikiPanelProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [status, setStatus] = useState<WikiPanelStatus>('checking')
   const [width, setWidth] = useState(480)
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
-  const [apiKey, setApiKey] = useState<string | null>(null)
-
-  // Fetch the wiki-viewer API key from the local file via Go backend
-  useEffect(() => {
-    fetch('/api/wiki/key')
-      .then(r => r.ok ? r.json() : null)
-      .then((data: { key?: string } | null) => setApiKey(data?.key ?? null))
-      .catch(() => setApiKey(null))
-  }, [])
-
   // Health check on mount and when wikiUrl/apiKey changes
   useEffect(() => {
     setStatus('checking')
@@ -47,7 +38,7 @@ export function WikiPanel({ wikiUrl, filePath, sessionCwd, onClose }: WikiPanelP
       })
       .catch(() => setStatus('offline'))
     return () => controller.abort()
-  }, [wikiUrl, apiKey])
+  }, [wikiUrl, apiKey])  // apiKey from props
 
   // Queue and send postMessage — handle the race where path is clicked before iframe loads
   const [iframeLoaded, setIframeLoaded] = useState(false)

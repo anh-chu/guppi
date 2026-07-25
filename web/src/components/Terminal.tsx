@@ -1031,6 +1031,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
       {wikiFilePath !== null && (
         <WikiPanel
           wikiUrl={wikiUrl}
+          apiKey={allPrefs.wiki_api_key || undefined}
           filePath={wikiFilePath}
           sessionCwd={sessionCwd}
           onClose={() => setWikiFilePath(null)}

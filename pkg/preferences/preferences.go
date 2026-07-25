@@ -58,6 +58,7 @@ type Preferences struct {
 	DefaultAgent            string        `json:"default_agent"`
 	AINaming                AINaming      `json:"ai_naming"`
 	WikiViewerURL           string        `json:"wiki_viewer_url"`
+	WikiAPIKey              string        `json:"wiki_api_key"`
 }
 
 func Default() *Preferences {

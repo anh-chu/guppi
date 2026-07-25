@@ -351,10 +351,14 @@ function PeersSection() {
 function WikiViewerSection() {
   const { prefs, updatePrefs } = usePreferences()
   const [url, setUrl] = useState(prefs.wiki_viewer_url ?? 'http://localhost:3000')
+  const [apiKey, setApiKey] = useState(prefs.wiki_api_key ?? '')
   const [saved, setSaved] = useState(false)
 
   const save = async () => {
-    await updatePrefs({ wiki_viewer_url: url.trim() || 'http://localhost:3000' })
+    await updatePrefs({
+      wiki_viewer_url: url.trim() || 'http://localhost:3000',
+      wiki_api_key: apiKey.trim(),
+    })
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -371,6 +375,21 @@ function WikiViewerSection() {
             value={url}
             onChange={e => setUrl(e.target.value)}
             placeholder="http://localhost:3000"
+            className="flex-1 rounded-md border border-hairline bg-canvas px-3 py-1.5 text-[13px] font-mono text-ink focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        </div>
+      </Row>
+      <Row
+        label="API Key"
+        description="Paste the key shown in wiki-viewer Settings → API Access."
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="password"
+            value={apiKey}
+            onChange={e => setApiKey(e.target.value)}
+            placeholder="Paste API key…"
+            autoComplete="off"
             className="flex-1 rounded-md border border-hairline bg-canvas px-3 py-1.5 text-[13px] font-mono text-ink focus:outline-none focus:ring-1 focus:ring-primary"
           />
           <button
@@ -390,7 +409,7 @@ function WikiViewerSection() {
         <span>npx wiki-viewer</span>
       </div>
       <p className="text-[11px] text-mute/60">
-        The API key is auto-discovered from <code className="font-mono bg-surface px-1 rounded">~/.wiki-viewer/api-key</code> — no manual configuration needed.
+        Generate and manage your API key in wiki-viewer Settings → API Access.
       </p>
     </div>
   )
