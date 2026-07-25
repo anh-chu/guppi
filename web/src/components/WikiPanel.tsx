@@ -1,46 +1,135 @@
 import { useEffect, useRef, useState } from 'react'
 
-export type WikiPanelStatus = 'checking' | 'ready' | 'unconfigured' | 'offline'
+export type WikiPanelStatus =
+  | 'checking'
+  | 'ready'
+  | 'offline'
+  | 'no-key'
+  | 'bad-key'
+  | 'bad-root'
+  | 'unconfigured'
 
 interface WikiPanelProps {
   wikiUrl: string
-  apiKey?: string
   filePath: string | null
+  /** Session cwd. Sent as wiki-viewer's ephemeral root so the file resolves
+   *  regardless of which workspace wiki-viewer has active. */
   sessionCwd?: string
   onClose: () => void
 }
 
 function resolveFilePath(path: string, cwd?: string): string {
   if (path.startsWith('/')) return path
-  if (path.startsWith('~/')) return path // wiki-viewer handles ~
+  if (path.startsWith('~/')) return path
   if ((path.startsWith('./') || path.startsWith('../')) && cwd) {
-    // Simple resolution: join cwd + relative path, let wiki-viewer handle the rest
     return cwd.replace(/\/$/, '') + '/' + path.replace(/^\.?\//, '')
   }
   return path
 }
 
-export function WikiPanel({ wikiUrl, apiKey, filePath, sessionCwd, onClose }: WikiPanelProps) {
+export function WikiPanel({ wikiUrl, filePath, sessionCwd, onClose }: WikiPanelProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [status, setStatus] = useState<WikiPanelStatus>('checking')
+  const [embedSrc, setEmbedSrc] = useState<string | null>(null)
   const [width, setWidth] = useState(480)
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
-  // Health check on mount and when wikiUrl/apiKey changes
-  useEffect(() => {
-    setStatus('checking')
-    const controller = new AbortController()
-    const headers: Record<string, string> = {}
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-    fetch(`${wikiUrl}/api/system/root-status`, { signal: controller.signal, headers })
-      .then(r => r.ok ? r.json() : Promise.reject(r.status))
-      .then((data: { configured?: boolean }) => {
-        setStatus(data.configured ? 'ready' : 'unconfigured')
-      })
-      .catch(() => setStatus('offline'))
-    return () => controller.abort()
-  }, [wikiUrl, apiKey])  // apiKey from props
 
-  // Queue and send postMessage — handle the race where path is clicked before iframe loads
+  const resolvedPath = filePath ? resolveFilePath(filePath, sessionCwd) : null
+
+  // The root we hand wiki-viewer. Normally the session cwd, but some views
+  // render Terminal without one (Overview). Falling back to the file's own
+  // directory matters for more than tree scope: wiki-viewer grants a non-loopback
+  // parent postMessage trust only when it supplied ?root= (key-derived trust).
+  // With no root, open-file is rejected from any non-loopback origin — and
+  // termyard's documented deployment is behind Tailscale or a reverse proxy.
+  // A narrow root is a small tree; no root is a panel where only the first
+  // file of each session works.
+  const effectiveRoot =
+    sessionCwd ??
+    (resolvedPath && resolvedPath.startsWith('/') && resolvedPath.lastIndexOf('/') > 0
+      ? resolvedPath.slice(0, resolvedPath.lastIndexOf('/'))
+      : undefined)
+
+  // Latest resolved path, read by the embed-url effect without making it a
+  // dependency. Changing the file must NOT rebuild the iframe URL — that would
+  // reload the iframe on every click. Subsequent files go over postMessage.
+  const resolvedPathRef = useRef<string | null>(resolvedPath)
+  resolvedPathRef.current = resolvedPath
+
+  // The file baked into the current embed URL, consumed once on first load.
+  const bakedPathRef = useRef<string | null>(null)
+
+  // Resolve status and build the embed URL. Keyed on the root only: the root is
+  // what determines which wiki-viewer instance scope we need.
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    setStatus('checking')
+    setEmbedSrc(null)
+
+    ;(async () => {
+      try {
+        const hres = await fetch('/api/wiki/health', { signal: controller.signal })
+        if (!hres.ok) throw new Error('health')
+        const health: {
+          reachable?: boolean
+          has_key?: boolean
+          auth_ok?: boolean
+          configured?: boolean
+        } = await hres.json()
+        if (cancelled) return
+
+        if (!health.reachable) { setStatus('offline'); return }
+        if (!health.has_key) { setStatus('no-key'); return }
+        if (!health.auth_ok) { setStatus('bad-key'); return }
+        // wiki-viewer's own root config only matters when we are NOT supplying a
+        // root. With a root, its workspace state is irrelevant by design.
+        if (!effectiveRoot && !health.configured) { setStatus('unconfigured'); return }
+
+        const params = new URLSearchParams()
+        if (effectiveRoot) params.set('root', effectiveRoot)
+        if (resolvedPathRef.current) params.set('file', resolvedPathRef.current)
+
+        const eres = await fetch('/api/wiki/embed-url?' + params.toString(), {
+          signal: controller.signal,
+        })
+        if (cancelled) return
+
+        if (!eres.ok) {
+          const body: { error?: string } = await eres.json().catch(() => ({}))
+          switch (body.error) {
+            case 'root_requires_api_key': setStatus('no-key'); break
+            case 'key_rejected': setStatus('bad-key'); break
+            case 'root_not_found':
+            case 'root_not_a_directory':
+            // Any other rejection of the root from wiki-viewer, passed through
+            // verbatim so a new code on their side degrades to the right shape
+            // rather than the wrong one.
+            case 'root_rejected': setStatus('bad-root'); break
+            case 'wiki_unreachable': setStatus('offline'); break
+            default: setStatus('unconfigured')
+          }
+          return
+        }
+
+        const { url } = (await eres.json()) as { url: string }
+        if (cancelled) return
+        // wiki-viewer resolves file= during the initial load, so the first paint
+        // already shows this file. Remember it so we don't immediately postMessage
+        // a navigation to the file that is already open.
+        bakedPathRef.current = resolvedPathRef.current
+        // Deliberately not logged: this URL carries the API key.
+        setEmbedSrc(url)
+        setStatus('ready')
+      } catch {
+        if (!cancelled) setStatus('offline')
+      }
+    })()
+
+    return () => { cancelled = true; controller.abort() }
+  }, [effectiveRoot])
+
+  // Send the open-file message, queueing if the iframe has not loaded yet.
   const [iframeLoaded, setIframeLoaded] = useState(false)
   const pendingPathRef = useRef<string | null>(null)
 
@@ -50,28 +139,27 @@ export function WikiPanel({ wikiUrl, apiKey, filePath, sessionCwd, onClose }: Wi
     win.postMessage({ type: 'open-file', path: resolved }, wikiUrl)
   }
 
-  // When filePath changes: send immediately if loaded, otherwise queue
   useEffect(() => {
-    if (!filePath) return
-    const resolved = resolveFilePath(filePath, sessionCwd)
-    if (iframeLoaded) {
-      sendOpenFile(resolved)
-    } else {
-      pendingPathRef.current = resolved
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filePath, sessionCwd, wikiUrl])
+    if (!resolvedPath || status !== 'ready') return
+    if (iframeLoaded) sendOpenFile(resolvedPath)
+    else pendingPathRef.current = resolvedPath
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedPath, status, iframeLoaded, wikiUrl])
 
-  // On iframe load: flush any queued path
   const handleIframeLoad = () => {
     setIframeLoaded(true)
-    if (pendingPathRef.current) {
-      sendOpenFile(pendingPathRef.current)
-      pendingPathRef.current = null
-    }
+    const pending = pendingPathRef.current
+    pendingPathRef.current = null
+    // Consume the baked path exactly once: a later click on the same file must
+    // still send, since by then the user has navigated away from it.
+    const baked = bakedPathRef.current
+    bakedPathRef.current = null
+    if (pending && pending !== baked) sendOpenFile(pending)
   }
 
-  // Drag-to-resize handle
+  // A new embed URL means a fresh document; the load gate must reset with it.
+  useEffect(() => { setIframeLoaded(false) }, [embedSrc])
+
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       const drag = dragRef.current
@@ -88,18 +176,8 @@ export function WikiPanel({ wikiUrl, apiKey, filePath, sessionCwd, onClose }: Wi
     }
   }, [])
 
-  const resolvedPath = filePath ? resolveFilePath(filePath, sessionCwd) : null
-  const apiKeyParam = apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : ''
-  const iframeSrc = resolvedPath
-    ? `${wikiUrl}/?embed=1${apiKeyParam}&path=${encodeURIComponent(resolvedPath)}`
-    : `${wikiUrl}/?embed=1${apiKeyParam}`
-
   return (
-    <div
-      className="flex flex-row h-full shrink-0 border-l border-hairline"
-      style={{ width }}
-    >
-      {/* Drag handle */}
+    <div className="flex flex-row h-full shrink-0 border-l border-hairline" style={{ width }}>
       <div
         className="w-1 cursor-col-resize bg-transparent hover:bg-primary/30 transition-colors shrink-0"
         onMouseDown={e => {
@@ -109,15 +187,14 @@ export function WikiPanel({ wikiUrl, apiKey, filePath, sessionCwd, onClose }: Wi
       />
 
       <div className="flex flex-col flex-1 min-w-0 bg-canvas">
-        {/* Header */}
         <div className="flex items-center justify-between px-3 py-1.5 border-b border-hairline shrink-0">
-          <span className="text-[11px] font-bold uppercase tracking-widest text-mute">
+          <span className="text-[11px] font-bold uppercase tracking-widest text-mute truncate">
             {resolvedPath ? resolvedPath.split('/').pop() : 'Files'}
           </span>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {resolvedPath && (
               <a
-                href={`${wikiUrl}/?path=${encodeURIComponent(resolvedPath)}`}
+                href={`${wikiUrl}/?file=${encodeURIComponent(resolvedPath)}`}
                 target="_blank"
                 rel="noreferrer"
                 title="Open in wiki-viewer"
@@ -140,14 +217,55 @@ export function WikiPanel({ wikiUrl, apiKey, filePath, sessionCwd, onClose }: Wi
           </div>
         </div>
 
-        {/* Body */}
         {status === 'offline' && (
           <div className="flex flex-col items-center justify-center flex-1 gap-3 px-6 text-center">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-mute/50">
               <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
             <p className="text-[12px] text-mute">wiki-viewer is not running</p>
-            <p className="text-[11px] text-mute/60">Start it with <code className="font-mono bg-surface px-1 py-0.5 rounded text-[10px]">npx wiki-viewer</code></p>
+            <p className="text-[11px] text-mute/60">
+              Start it with <code className="font-mono bg-surface px-1 py-0.5 rounded text-[10px]">npx wiki-viewer</code>
+            </p>
+          </div>
+        )}
+
+        {status === 'no-key' && (
+          <div className="flex flex-col items-center justify-center flex-1 gap-3 px-6 text-center">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-mute/50">
+              <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+            </svg>
+            <p className="text-[12px] text-mute">API key required</p>
+            <p className="text-[11px] text-mute/60">
+              Viewing files from this session needs wiki-viewer's API key. Copy it from
+              wiki-viewer's Settings → API Access, then paste it into Settings → Integrations.
+            </p>
+            <a href={`${wikiUrl}/settings`} target="_blank" rel="noreferrer" className="text-[11px] text-primary hover:underline">
+              Open wiki-viewer Settings →
+            </a>
+          </div>
+        )}
+
+        {status === 'bad-key' && (
+          <div className="flex flex-col items-center justify-center flex-1 gap-3 px-6 text-center">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-mute/50">
+              <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+            </svg>
+            <p className="text-[12px] text-mute">API key rejected</p>
+            <p className="text-[11px] text-mute/60">
+              wiki-viewer did not accept the stored key. It may have been rotated — copy the
+              current one and update Settings → Integrations.
+            </p>
+          </div>
+        )}
+
+        {status === 'bad-root' && (
+          <div className="flex flex-col items-center justify-center flex-1 gap-3 px-6 text-center">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-mute/50">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><line x1="12" y1="11" x2="12" y2="14"/>
+            </svg>
+            <p className="text-[12px] text-mute">Session directory unavailable</p>
+            <p className="text-[11px] text-mute/60 font-mono break-all">{effectiveRoot}</p>
+            <p className="text-[11px] text-mute/60">It no longer exists, or is not a directory.</p>
           </div>
         )}
 
@@ -170,12 +288,13 @@ export function WikiPanel({ wikiUrl, apiKey, filePath, sessionCwd, onClose }: Wi
           </div>
         )}
 
-        {status === 'ready' && (
+        {status === 'ready' && embedSrc && (
           <iframe
             ref={iframeRef}
-            src={iframeSrc}
+            src={embedSrc}
             className="flex-1 w-full border-none min-h-0"
             title="wiki-viewer"
+            referrerPolicy="no-referrer"
             onLoad={handleIframeLoad}
           />
         )}

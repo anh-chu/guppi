@@ -756,7 +756,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                           type="button"
                           onMouseDown={(e) => e.preventDefault()}
                           onClick={() => {
-                            openFilePath(art.path)
+                            setWikiFilePath(art.path)
                             setArtifactsOpen(false)
                           }}
                           className="min-w-0 flex-1 text-left text-xs font-mono"
@@ -1031,7 +1031,6 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
       {wikiFilePath !== null && (
         <WikiPanel
           wikiUrl={wikiUrl}
-          apiKey={allPrefs.wiki_api_key || undefined}
           filePath={wikiFilePath}
           sessionCwd={sessionCwd}
           onClose={() => setWikiFilePath(null)}
