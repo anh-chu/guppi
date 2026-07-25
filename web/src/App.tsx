@@ -1504,6 +1504,10 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
                 setPaneTree(prev => prev ? movePane(prev, sourceKey, targetKey, edge) : prev)
               }
               getBackend={(key) => sessions.find(s => sessionKey(s) === key)?.backend}
+              getCwd={(key) => {
+                const s = sessions.find(s => sessionKey(s) === key)
+                return s?.windows.flatMap(w => w.panes).find(p => p.active)?.current_path ?? s?.project_path
+              }}
             />
           ) : (
             <Overview

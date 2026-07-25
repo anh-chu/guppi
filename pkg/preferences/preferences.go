@@ -57,6 +57,7 @@ type Preferences struct {
 	FullscreenHideAlerts    bool          `json:"fullscreen_hide_alerts"`
 	DefaultAgent            string        `json:"default_agent"`
 	AINaming                AINaming      `json:"ai_naming"`
+	WikiViewerURL           string        `json:"wiki_viewer_url"`
 }
 
 func Default() *Preferences {
@@ -88,6 +89,7 @@ func Default() *Preferences {
 			Enabled: false,
 			Model:   "gpt-4o-mini",
 		},
+		WikiViewerURL: "http://localhost:3000",
 	}
 }
 

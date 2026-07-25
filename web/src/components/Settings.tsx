@@ -47,7 +47,7 @@ const notifStatuses = [
   { value: 'completed', label: 'Completed' },
 ]
 
-const sectionIds = ['appearance', 'terminal', 'interface', 'naming', 'shortcuts', 'notifications', 'agents', 'peers', 'security'] as const
+const sectionIds = ['appearance', 'terminal', 'interface', 'naming', 'shortcuts', 'notifications', 'agents', 'peers', 'integrations', 'security'] as const
 
 type SectionId = (typeof sectionIds)[number]
 
@@ -55,7 +55,7 @@ const bucketSections: Record<'look' | 'yard' | 'alerts' | 'network', readonly Se
   look: ['appearance', 'terminal'],
   yard: ['interface', 'naming', 'shortcuts'],
   alerts: ['notifications', 'agents'],
-  network: ['peers', 'security'],
+  network: ['peers', 'integrations', 'security'],
 }
 
 function Section({ id, title, description, children, hidden }: { id: string; title: string; description?: string; children: React.ReactNode; hidden?: boolean }) {
@@ -177,6 +177,7 @@ const sectionLabels: Record<typeof sectionIds[number], string> = {
   notifications: 'Notifications',
   agents: 'Agents',
   peers: 'Machines',
+  integrations: 'Integrations',
   security: 'Security',
 }
 
@@ -346,6 +347,55 @@ function PeersSection() {
     </>
   )
 }
+
+function WikiViewerSection() {
+  const { prefs, updatePrefs } = usePreferences()
+  const [url, setUrl] = useState(prefs.wiki_viewer_url ?? 'http://localhost:3000')
+  const [saved, setSaved] = useState(false)
+
+  const save = async () => {
+    await updatePrefs({ wiki_viewer_url: url.trim() || 'http://localhost:3000' })
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Row
+        label="wiki-viewer URL"
+        description="URL of a running wiki-viewer instance."
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="url"
+            value={url}
+            onChange={e => setUrl(e.target.value)}
+            placeholder="http://localhost:3000"
+            className="flex-1 rounded-md border border-hairline bg-canvas px-3 py-1.5 text-[13px] font-mono text-ink focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <button
+            onClick={save}
+            className="px-3 py-1.5 rounded-md bg-primary text-white text-[12px] font-medium hover:bg-primary/90 transition-colors"
+          >
+            {saved ? 'Saved!' : 'Save'}
+          </button>
+        </div>
+      </Row>
+      <p className="text-[12px] text-mute">
+        When configured, clicking a file path in terminal output opens it in a side panel powered by wiki-viewer.
+        The wiki-viewer root directory should cover the files your agents work with.
+      </p>
+      <div className="rounded-md bg-surface border border-hairline px-3 py-2.5 text-[11px] font-mono text-mute flex flex-col gap-1">
+        <span className="text-[10px] uppercase tracking-widest font-bold text-mute/60 font-sans">Launch command</span>
+        <span>npx wiki-viewer</span>
+      </div>
+      <p className="text-[11px] text-mute/60">
+        The API key is auto-discovered from <code className="font-mono bg-surface px-1 rounded">~/.wiki-viewer/api-key</code> — no manual configuration needed.
+      </p>
+    </div>
+  )
+}
+
 
 export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogout, bucket, version, updateAvailable, binaryUpdate, onApplyUpdate, updateApplying, updateRestartMode, updateError, updateChecking, onCheckUpdate }: {
   pushState: string
@@ -702,6 +752,11 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
           {/* ── Machines / Peers ── */}
           <Section hidden={!showSection('peers')} id="peers" title="Machines" description="Connect other termyard machines to share sessions across hosts">
             <PeersSection />
+          </Section>
+
+          {/* ── Integrations ── */}
+          <Section hidden={!showSection('integrations')} id="integrations" title="Integrations" description="Connect external tools to termyard">
+            <WikiViewerSection />
           </Section>
 
           {/* ── Security ── */}

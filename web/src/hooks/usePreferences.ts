@@ -24,6 +24,7 @@ export interface Preferences {
   lock_timeout_minutes: number
   fullscreen_hide_alerts: boolean
   default_agent: string
+  wiki_viewer_url: string
   ai_naming: {
     enabled: boolean
     endpoint: string
@@ -56,6 +57,7 @@ export const defaultPreferences: Preferences = {
   lock_timeout_minutes: 30,
   fullscreen_hide_alerts: true,
   default_agent: 'claude',
+  wiki_viewer_url: 'http://localhost:3000',
   ai_naming: {
     enabled: false,
     endpoint: '',

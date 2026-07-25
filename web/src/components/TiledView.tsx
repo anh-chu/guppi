@@ -21,6 +21,7 @@ interface TiledViewProps {
   onSwapPanes?: (keyA: string, keyB: string) => void
   onMovePanes?: (sourceKey: string, targetKey: string, edge: 'left'|'right'|'top'|'bottom') => void
   getBackend?: (key: string) => string | undefined
+  getCwd?: (key: string) => string | undefined
 }
 
 const MIN_PANE_SIZE = 200 // px
@@ -42,6 +43,7 @@ export function TiledView({
   onSwapPanes,
   onMovePanes,
   getBackend,
+  getCwd,
 }: TiledViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -464,6 +466,7 @@ export function TiledView({
             sessionName={name}
             hostId={host || undefined}
             backend={getBackend?.(sessionKey)}
+            sessionCwd={getCwd?.(sessionKey)}
             fullscreen={isActive ? fullscreen : false}
             onToggleFullscreen={isActive ? onToggleFullscreen : undefined}
             keyBarEnabled={isActive}

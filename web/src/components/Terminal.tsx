@@ -10,6 +10,9 @@ import { cn } from '../lib/utils'
 import { popOut, pipUnavailableReason } from '../lib/pip'
 import { grantArtifactToken, getArtifactKind } from '../lib/artifactPreview'
 import { ArtifactPreview } from './ArtifactPreview'
+import { WikiPanel } from './WikiPanel'
+import { createFileLinkProvider } from '../lib/fileLinkProvider'
+import type { IDisposable } from '@xterm/xterm'
 
 interface TerminalProps {
   sessionName: string
@@ -19,6 +22,10 @@ interface TerminalProps {
   onToggleFullscreen?: () => void
   // In split view, only the active pane shows the mobile key bar to avoid duplicates.
   keyBarEnabled?: boolean
+  /** CWD of the active session, used to resolve relative file paths. */
+  sessionCwd?: string
+  /** URL of a running wiki-viewer instance. Falls back to http://localhost:3000. */
+  wikiViewerUrl?: string
 }
 
 type GestureDirection = 'up' | 'down' | 'left' | 'right'
@@ -151,8 +158,12 @@ function HoldableKey({
   )
 }
 
-export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFullscreen, keyBarEnabled = true }: TerminalProps) {
+export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFullscreen, keyBarEnabled = true, sessionCwd, wikiViewerUrl }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const [wikiFilePath, setWikiFilePath] = useState<string | null>(null)
+  const { prefs: allPrefs } = usePreferences()
+  const wikiUrl = wikiViewerUrl ?? allPrefs.wiki_viewer_url ?? 'http://localhost:3000'
+  const fileLinkDisposableRef = useRef<IDisposable | null>(null)
   const {
     termRef,
     connect,
@@ -280,7 +291,19 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     const container = containerRef.current
     if (!container) return
     connect(container)
-    return () => disconnect()
+    // Register FileLinkProvider — makes file paths in terminal output clickable
+    const term = termRef.current
+    if (term) {
+      fileLinkDisposableRef.current?.dispose()
+      fileLinkDisposableRef.current = term.registerLinkProvider(
+        createFileLinkProvider(term, ({ path }) => setWikiFilePath(path))
+      )
+    }
+    return () => {
+      disconnect()
+      fileLinkDisposableRef.current?.dispose()
+      fileLinkDisposableRef.current = null
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionName, hostId, backend])
 
@@ -650,7 +673,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
   }, [termRef])
 
   return (
-    <div className="flex-1 overflow-hidden relative group bg-canvas">
+    <div className="flex-1 overflow-hidden flex flex-row bg-canvas">
       <div className="h-full w-full flex flex-col p-[3px]">
         <div ref={popHomeRef} className="min-h-0 flex-1 relative">
         <div
@@ -1004,6 +1027,14 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
             )}
           </div>
         </>
+      )}
+      {wikiFilePath !== null && (
+        <WikiPanel
+          wikiUrl={wikiUrl}
+          filePath={wikiFilePath}
+          sessionCwd={sessionCwd}
+          onClose={() => setWikiFilePath(null)}
+        />
       )}
     </div>
   )
