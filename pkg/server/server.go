@@ -1921,6 +1921,181 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 			})
 
 
+			// Wiki integration: server-side proxy for wiki-viewer.
+			//
+			// Two reasons this must live in Go rather than the browser:
+			//  1. CORS — a cross-origin fetch carrying an Authorization header
+			//     triggers a preflight that wiki-viewer does not answer, so the
+			//     browser blocks it and the panel misreads it as "offline".
+			//  2. The stored API key is masked in the preferences GET, so the
+			//     frontend cannot construct an authenticated embed URL itself.
+			//
+			// has_key is reported because wiki-viewer gates its ephemeral-root
+			// feature on api-key auth: with no key, ?root= is rejected outright.
+			r.Get("/wiki/health", func(w http.ResponseWriter, r *http.Request) {
+				if opts.PrefStore == nil {
+					http.Error(w, "preferences not available", http.StatusServiceUnavailable)
+					return
+				}
+				prefs := opts.PrefStore.Get()
+				wikiURL := strings.TrimRight(prefs.WikiViewerURL, "/")
+				apiKey := prefs.WikiAPIKey
+
+				out := map[string]any{
+					"reachable":  false,
+					"has_key":    apiKey != "",
+					"auth_ok":    false,
+					"configured": false,
+				}
+				writeOut := func() {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(out)
+				}
+
+				if wikiURL == "" {
+					writeOut()
+					return
+				}
+
+				req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, wikiURL+"/api/system/root-status", nil)
+				if err != nil {
+					writeOut()
+					return
+				}
+				if apiKey != "" {
+					req.Header.Set("Authorization", "Bearer "+apiKey)
+				}
+
+				client := &http.Client{Timeout: 4 * time.Second}
+				resp, err := client.Do(req)
+				if err != nil {
+					writeOut()
+					return
+				}
+				defer resp.Body.Close()
+
+				out["reachable"] = true
+				out["auth_ok"] = resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden
+
+				// root-status reports wiki-viewer's legacy process-global root. It is
+				// NOT the effective per-request root once ?root= is in play, so it is
+				// used here only as a liveness/configuration signal and never
+				// compared against a requested path.
+				var body struct {
+					Configured bool `json:"configured"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+					out["configured"] = body.Configured
+				}
+				writeOut()
+			})
+
+			// Build the wiki-viewer embed URL server-side, injecting the real API
+			// key. Error codes mirror wiki-viewer's own vocabulary so the panel has
+			// a single set of codes to branch on.
+			r.Get("/wiki/embed-url", func(w http.ResponseWriter, r *http.Request) {
+				if opts.PrefStore == nil {
+					http.Error(w, "preferences not available", http.StatusServiceUnavailable)
+					return
+				}
+				writeErr := func(code string, status int) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(status)
+					json.NewEncoder(w).Encode(map[string]string{"error": code})
+				}
+
+				prefs := opts.PrefStore.Get()
+				wikiURL := strings.TrimRight(prefs.WikiViewerURL, "/")
+				apiKey := prefs.WikiAPIKey
+				if wikiURL == "" {
+					writeErr("wiki_url_not_configured", http.StatusNotFound)
+					return
+				}
+
+				root := r.URL.Query().Get("root")
+				file := r.URL.Query().Get("file")
+
+				// wiki-viewer honors ?root= only for api-key-authenticated requests.
+				// Fail loudly here instead of letting it fall back to whatever
+				// workspace happens to be most recent, which would render a
+				// confidently wrong tree with no signal to the user.
+				if root != "" && apiKey == "" {
+					writeErr("root_requires_api_key", http.StatusBadRequest)
+					return
+				}
+
+				// Validate the root by asking wiki-viewer, which is the only real
+				// authority — and, for a remote instance, the only one that can see
+				// the path at all.
+				//
+				// This probe is necessary because wiki-viewer validates ?root= in its
+				// API routes, NOT in the page navigation. Loading the embed URL with a
+				// bad root returns 200 and renders the normal shell; only a subsequent
+				// in-iframe API call produces the 400. Without probing first we would
+				// show a confidently-broken panel and never learn why, which is the
+				// exact silent failure this design exists to eliminate.
+				//
+				// /api/wiki lists a single directory level, so this is cheap, and it
+				// runs on root change rather than per file click.
+				if root != "" {
+					probe, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
+						wikiURL+"/api/wiki?root="+url.QueryEscape(root), nil)
+					if err != nil {
+						writeErr("wiki_unreachable", http.StatusBadGateway)
+						return
+					}
+					probe.Header.Set("Authorization", "Bearer "+apiKey)
+
+					presp, err := (&http.Client{Timeout: 5 * time.Second}).Do(probe)
+					if err != nil {
+						writeErr("wiki_unreachable", http.StatusBadGateway)
+						return
+					}
+					defer presp.Body.Close()
+
+					switch {
+					case presp.StatusCode == http.StatusUnauthorized,
+						presp.StatusCode == http.StatusForbidden:
+						// A key is definitely present — the empty case returned above —
+						// so this means wiki-viewer rejected it, most likely rotated.
+						// Distinct from a missing key so the panel says the right thing.
+						writeErr("key_rejected", http.StatusBadRequest)
+						return
+					case presp.StatusCode >= 400:
+						// Pass wiki-viewer's own code through so the panel branches on
+						// one vocabulary regardless of which side rejected.
+						var perr struct {
+							Error string `json:"error"`
+						}
+						code := "root_rejected"
+						if json.NewDecoder(presp.Body).Decode(&perr) == nil && perr.Error != "" {
+							code = perr.Error
+						}
+						writeErr(code, http.StatusBadRequest)
+						return
+					}
+				}
+
+				q := url.Values{}
+				q.Set("embed", "1")
+				if apiKey != "" {
+					q.Set("api_key", apiKey)
+				}
+				if root != "" {
+					q.Set("root", root)
+				}
+				if file != "" {
+					q.Set("file", file)
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				// This response carries the API key. Keep it out of every cache.
+				w.Header().Set("Cache-Control", "no-store")
+				json.NewEncoder(w).Encode(map[string]string{
+					"url": wikiURL + "/?" + q.Encode(),
+				})
+			})
+
 			// Session-attribute endpoints — server-authoritative, mesh-wide shared
 			// per-session UI bits (backgrounded / hidden). Keys are global and
 			// host-qualified ("<owner-fp>/<name>"), identical to the frontend's
