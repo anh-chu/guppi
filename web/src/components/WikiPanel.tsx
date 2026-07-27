@@ -143,8 +143,13 @@ export function WikiPanel({ wikiUrl, filePath, sessionCwd, onClose }: WikiPanelP
   // only inside `if (isEmbed)`, so dropping embed=1 makes the key (and the
   // embed cookie) ignored and the navigation 307s to /signin. Verified: with
   // embed=1 it is 200, without it is 307 even with a valid key and cookie.
-  // The cost is that embed mode hides wiki-viewer's sidebar, so the tab shows
-  // the file without the tree.
+  // That coupling is intentional on their side — the api-key identity is
+  // synthetic and honoring it outside embed mode would expose Settings, which
+  // displays the API key itself.
+  //
+  // chrome=1 opts the sidebar back in, which embed mode otherwise hides. It is
+  // what makes this a genuine "open the full app" link rather than a bare file
+  // view in a full tab. Auth stays gated on embed=1; only the chrome moved.
   //
   // Only file= is re-pointed, at the currently shown path: embedSrc carries the
   // file baked in at load time, which goes stale after postMessage navigation.
@@ -152,6 +157,7 @@ export function WikiPanel({ wikiUrl, filePath, sessionCwd, onClose }: WikiPanelP
     if (!embedSrc) return null
     try {
       const u = new URL(embedSrc, window.location.origin)
+      u.searchParams.set('chrome', '1')
       if (resolvedPath) u.searchParams.set('file', resolvedPath)
       return u.toString()
     } catch {
