@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { pickEmbedRoot, resolveFilePath } from '../components/WikiPanel'
+import { wikiCanServeFiles } from '../hooks/useWikiHealth'
 
 // wiki-viewer relativizes ?file= against ?root= and answers {"error":"Invalid
 // path"} when the file falls outside, which the panel can only show as its empty
@@ -149,6 +150,31 @@ describe('resolveFilePath: relative terminal paths', () => {
       expect(root, `root for ${raw}`).toBeDefined()
       expect(resolved.startsWith(root! + '/'), `${resolved} inside ${root}`).toBe(true)
     }
+  })
+})
+
+describe('wikiCanServeFiles', () => {
+  const ok = { reachable: true, has_key: true, auth_ok: true, configured: true }
+
+  it('accepts a healthy wiki-viewer', () => {
+    expect(wikiCanServeFiles(ok)).toBe(true)
+  })
+
+  // configured describes wiki-viewer's OWN workspace root, which is irrelevant
+  // when we supply a root, and every file open supplies one. Gating on it would
+  // send files to the token tab for a wiki-viewer that serves them fine.
+  it('accepts a wiki-viewer with no workspace of its own', () => {
+    expect(wikiCanServeFiles({ ...ok, configured: false })).toBe(true)
+  })
+
+  it('rejects offline, keyless and rejected-key instances', () => {
+    expect(wikiCanServeFiles({ ...ok, reachable: false })).toBe(false)
+    expect(wikiCanServeFiles({ ...ok, has_key: false })).toBe(false)
+    expect(wikiCanServeFiles({ ...ok, auth_ok: false })).toBe(false)
+  })
+
+  it('rejects an empty response rather than assuming health', () => {
+    expect(wikiCanServeFiles({})).toBe(false)
   })
 })
 

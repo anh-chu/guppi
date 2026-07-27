@@ -16,6 +16,7 @@ import { QuickSwitcher } from './components/QuickSwitcher'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
 import { useSessions, Session, sessionKey, parseSessionKey, optimisticSession, sessionCwd } from './hooks/useSessions'
+import { useWikiHealth } from './hooks/useWikiHealth'
 import { useHosts } from './hooks/useHosts'
 import { useToolEvents } from './hooks/useToolEvents'
 import { useActivity } from './hooks/useActivity'
@@ -146,6 +147,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // focus moved and discard wiki-viewer's state, including unsaved edits.
   const [wikiTarget, setWikiTarget] = useState<WikiTarget | null>(null)
   const wikiOpenSeqRef = useRef(0)
+  // Gates file opens only. Toggling the panel by hand is never gated: someone
+  // who asked for it should see why it is unavailable, not nothing.
+  const wikiUsable = useWikiHealth(authenticated)
   const cwdForKey = useCallback((key: string) => {
     const s = sessions.find(x => sessionKey(x) === key)
     return s ? sessionCwd(s) : undefined
@@ -158,10 +162,15 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const openWikiFile = useCallback((path: string, cwd?: string, hostId?: string): boolean => {
     const isLocal = !hostId || hosts.find(h => h.id === hostId)?.local === true
     if (!isLocal) return false
+    // wiki-viewer is down, keyless, or rejecting our key: hand the path back so
+    // Terminal opens the token tab, which is what worked before the panel
+    // existed. Declining here rather than after opening matters, because the
+    // panel's error card replaces whatever it was showing.
+    if (wikiUsable === false) return false
     // Monotonic, so re-opening the same path from another pane still sends.
     setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current })
     return true
-  }, [hosts])
+  }, [hosts, wikiUsable])
 
   // Open the panel with no file, rooted at the focused session's directory, so
   // it can be used as a file browser instead of only opening what was clicked
