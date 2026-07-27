@@ -366,6 +366,15 @@ function WikiViewerSection() {
   return (
     <div className="flex flex-col gap-4">
       <Row
+        label="File panel"
+        description="Open file paths in a side panel. When off, they open in a new tab instead."
+      >
+        <Toggle
+          checked={!prefs.wiki_disabled}
+          onChange={v => updatePrefs({ wiki_disabled: !v })}
+        />
+      </Row>
+      <Row
         label="wiki-viewer URL"
         description="URL of a running wiki-viewer instance."
       >

@@ -59,6 +59,12 @@ type Preferences struct {
 	AINaming                AINaming      `json:"ai_naming"`
 	WikiViewerURL           string        `json:"wiki_viewer_url"`
 	WikiAPIKey              string        `json:"wiki_api_key"`
+	// Inverted so the zero value means enabled. PUT /api/preferences decodes
+	// the body into a zero-valued Preferences and replaces the store wholesale,
+	// so any client that omits this key would persist it as false. A default-true
+	// field would therefore be switched off for good by a single save from a tab
+	// running a bundle older than this field, with no way back but the toggle.
+	WikiDisabled            bool          `json:"wiki_disabled"`
 }
 
 func Default() *Preferences {

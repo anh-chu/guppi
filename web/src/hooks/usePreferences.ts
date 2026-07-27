@@ -26,6 +26,8 @@ export interface Preferences {
   default_agent: string
   wiki_viewer_url: string
   wiki_api_key: string
+  // Inverted: absent or false means the wiki panel is on. See preferences.go.
+  wiki_disabled: boolean
   ai_naming: {
     enabled: boolean
     endpoint: string
@@ -60,6 +62,7 @@ export const defaultPreferences: Preferences = {
   default_agent: 'claude',
   wiki_viewer_url: 'http://localhost:3000',
   wiki_api_key: '',
+  wiki_disabled: false,
   ai_naming: {
     enabled: false,
     endpoint: '',

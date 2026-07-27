@@ -136,6 +136,20 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   })
   const migrationStartedRef = useRef(false)
   const selectedSession = singleView ?? activeKey
+  // Read here rather than further down because the wiki callbacks below close
+  // over it.
+  const { prefs } = usePreferences()
+  const wikiEnabled = !prefs.wiki_disabled
+  // The tinykeys effect must not re-register on a preference change: it is
+  // rebuilt wholesale and rebinding every shortcut to toggle one of them is
+  // needless churn.
+  const wikiEnabledRef = useRef(wikiEnabled)
+  wikiEnabledRef.current = wikiEnabled
+  // Turning it off closes the panel. Leaving it up would strand a surface the
+  // user just said they did not want, with no menu entry left to dismiss it.
+  useEffect(() => {
+    if (!wikiEnabled) setWikiTarget(null)
+  }, [wikiEnabled])
 
   // Wiki panel state — hoisted from per-Terminal to a single app-level panel, so
   // a tiled layout mounts one iframe instead of one per pane, and wiki-viewer
@@ -149,7 +163,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const wikiOpenSeqRef = useRef(0)
   // Gates file opens only. Toggling the panel by hand is never gated: someone
   // who asked for it should see why it is unavailable, not nothing.
-  const wikiUsable = useWikiHealth(authenticated)
+  const wikiUsable = useWikiHealth(authenticated && wikiEnabled)
   const cwdForKey = useCallback((key: string) => {
     const s = sessions.find(x => sessionKey(x) === key)
     return s ? sessionCwd(s) : undefined
@@ -160,6 +174,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // panel's iframe. Returning false lets Terminal fall back to the artifact-token
   // viewer, which does work off-machine.
   const openWikiFile = useCallback((path: string, cwd?: string, hostId?: string): boolean => {
+    // Turned off in settings: every path goes to the token tab, which is what
+    // "off" has to mean for the file to still open at all.
+    if (!wikiEnabled) return false
     const isLocal = !hostId || hosts.find(h => h.id === hostId)?.local === true
     if (!isLocal) return false
     // wiki-viewer is down, keyless, or rejecting our key: hand the path back so
@@ -170,7 +187,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     // Monotonic, so re-opening the same path from another pane still sends.
     setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current })
     return true
-  }, [hosts, wikiUsable])
+  }, [hosts, wikiUsable, wikiEnabled])
 
   // Open the panel with no file, rooted at the focused session's directory, so
   // it can be used as a file browser instead of only opening what was clicked
@@ -246,7 +263,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // Pruning of missing sessions is suspended until recovery finishes, so a
   // not-yet-rebuilt session is never mistaken for a deliberate kill.
   const [recovering, setRecovering] = useState(false)
-  const { prefs } = usePreferences()
 
   // Shared session attributes (background / hidden) — server-authoritative,
   // mirrored across the mesh. Viewport state (pane-tree, active-key,
@@ -649,7 +665,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       // keys are all taken by the browser: Shift+W closes the window, Shift+E
       // opens Firefox's network monitor, Shift+D bookmarks every tab, and
       // Shift+F is already terminal fullscreen here.
-      '$mod+Shift+g': handler(() => toggleWikiPanel()),
+      '$mod+Shift+g': handler(() => { if (wikiEnabledRef.current) toggleWikiPanel() }),
       // Cycle sessions: Cmd/Ctrl + Shift + Arrow (Shift+[ / ] switches browser tabs)
       '$mod+Shift+ArrowRight': handler(() => cycle(1)),
       '$mod+Shift+ArrowLeft': handler(() => cycle(-1)),
@@ -1396,7 +1412,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
           onDismissUpdate={selfUpdate.dismiss}
           onOverview={() => navigateTo(null)}
           onSettings={openSettings}
-          onWiki={toggleWikiPanel}
+          onWiki={wikiEnabled ? toggleWikiPanel : undefined}
           onHelp={() => setHelpOpen(true)}
           onNewSession={openNewSessionModal}
           onPortForwards={() => setPortForwardsOpen(true)}

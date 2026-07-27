@@ -109,3 +109,48 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// TestWikiStaysEnabledForClientsThatOmitTheField pins down why the wiki panel
+// preference is stored inverted as wiki_disabled instead of wiki_enabled.
+//
+// PUT /api/preferences decodes the request body into a zero-valued Preferences
+// and replaces the store wholesale, and the frontend PUTs the entire object it
+// is holding. A browser tab left open across a deploy therefore saves a body
+// with no wiki key in it at all. Under a wiki_enabled field defaulting to true,
+// that save would persist false and switch the feature off for good.
+//
+// Inverted, the same body means "not disabled", which is the safe reading.
+func TestWikiStaysEnabledForClientsThatOmitTheField(t *testing.T) {
+	legacyBody := []byte(`{"theme":"dark","wiki_viewer_url":"http://localhost:3000"}`)
+
+	var prefs Preferences
+	if err := json.Unmarshal(legacyBody, &prefs); err != nil {
+		t.Fatalf("decode legacy body: %v", err)
+	}
+	if prefs.WikiDisabled {
+		t.Fatal("a client that never heard of the field disabled the wiki panel")
+	}
+
+	dir := t.TempDir()
+	s := &Store{path: filepath.Join(dir, "preferences.json"), data: Default()}
+	if err := s.Update(&prefs); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if s.Get().WikiDisabled {
+		t.Fatal("wiki panel disabled after a save from a client that omits the field")
+	}
+
+	// And the round trip: an explicit disable must survive a reload, otherwise
+	// the toggle would silently reset itself.
+	prefs.WikiDisabled = true
+	if err := s.Update(&prefs); err != nil {
+		t.Fatalf("update disabled: %v", err)
+	}
+	reloaded := &Store{path: s.path, data: Default()}
+	if err := reloaded.load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reloaded.Get().WikiDisabled {
+		t.Fatal("explicit disable did not survive a reload")
+	}
+}
