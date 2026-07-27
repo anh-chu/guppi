@@ -8,6 +8,7 @@ export type WikiPanelStatus =
   | 'bad-key'
   | 'bad-root'
   | 'unconfigured'
+  | 'unresolved-path'
 
 interface WikiPanelProps {
   wikiUrl: string
@@ -25,12 +26,42 @@ interface WikiPanelProps {
   onClose: () => void
 }
 
-export function resolveFilePath(path: string, cwd?: string): string {
-  if (path.startsWith('/')) return path
-  if (path.startsWith('~/')) return path
-  if ((path.startsWith('./') || path.startsWith('../')) && cwd) {
-    return cwd.replace(/\/$/, '') + '/' + path.replace(/^\.?\//, '')
+/** Collapse . and .. segments. wiki-viewer normalizes too, but a path we hand
+ *  out has to be comparable against the one we sent last. */
+function normalizePath(path: string): string {
+  const absolute = path.startsWith('/')
+  const out: string[] = []
+  for (const seg of path.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') {
+      // A leading .. on a relative path has nothing to pop and must be kept.
+      if (out.length && out[out.length - 1] !== '..') out.pop()
+      else if (!absolute) out.push('..')
+      continue
+    }
+    out.push(seg)
   }
+  return (absolute ? '/' : '') + out.join('/')
+}
+
+/**
+ * Make a path from terminal output absolute, which is what wiki-viewer needs:
+ * its navigateToPath treats a NON-absolute path as already root-relative, so a
+ * relative path is silently reinterpreted against whatever root we happened to
+ * send, and a relative path with no root at all is looked up inside
+ * wiki-viewer's own configured workspace and reported as File not found.
+ *
+ * Every non-absolute form is joined against the cwd, not just ./ and ../ .
+ * Bare relative paths like app/(public)/sign-in.tsx are the common shape in
+ * terminal output and were previously passed through untouched.
+ *
+ * ~/ is left alone: only a shell can expand it, and guessing $HOME from the cwd
+ * would be wrong for any session outside the user's home.
+ */
+export function resolveFilePath(path: string, cwd?: string): string {
+  if (path.startsWith('/')) return normalizePath(path)
+  if (path.startsWith('~/')) return path
+  if (cwd && cwd.startsWith('/')) return normalizePath(cwd + '/' + path)
   return path
 }
 
@@ -99,6 +130,15 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
     const controller = new AbortController()
     setStatus('checking')
     setEmbedSrc(null)
+
+    // A path we could not make absolute means no reliable root either, and
+    // loading rootless is the wrong kind of failure: wiki-viewer resolves the
+    // path inside its OWN configured workspace and renders its empty state, so
+    // the panel looks like it simply ignored the click. Say so instead.
+    if (resolvedPathRef.current && !resolvedPathRef.current.startsWith('/')) {
+      setStatus('unresolved-path')
+      return
+    }
 
     ;(async () => {
       try {
@@ -337,6 +377,20 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
             <p className="text-[12px] text-mute">Session directory unavailable</p>
             <p className="text-[11px] text-mute/60 font-mono break-all">{effectiveRoot}</p>
             <p className="text-[11px] text-mute/60">It no longer exists, or is not a directory.</p>
+          </div>
+        )}
+
+        {status === 'unresolved-path' && (
+          <div className="flex flex-col items-center justify-center flex-1 gap-3 px-6 text-center">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-mute/50">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <p className="text-[12px] text-mute">Cannot locate this file</p>
+            <p className="text-[11px] text-mute/60 font-mono break-all">{filePath}</p>
+            <p className="text-[11px] text-mute/60">
+              The path is relative and this session reports no working directory, so there is
+              nothing to resolve it against. Opening it in a new tab still works.
+            </p>
           </div>
         )}
 

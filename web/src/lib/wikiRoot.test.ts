@@ -84,3 +84,71 @@ describe('resolveFilePath', () => {
     expect(pickEmbedRoot(resolved, cwd)).toBe(cwd)
   })
 })
+
+// Terminal output is full of relative paths; wiki-viewer's navigateToPath treats
+// a non-absolute path as ALREADY root-relative, so an unresolved relative path is
+// reinterpreted against whatever root we sent. Measured against a live instance:
+//   relative + no root         -> {"error":"File not found"}  (searched its own workspace)
+//   relative + correct root    -> content
+//   absolute + dirname root    -> content
+// This is why the detected-files list worked while terminal clicks did not: those
+// paths come from the server and are always absolute, so a root was always
+// derivable from the dirname.
+describe('resolveFilePath: relative terminal paths', () => {
+  const cwd = '/home/sil/seedwise/app'
+
+  it('joins a BARE relative path against the cwd (the reported bug)', () => {
+    expect(resolveFilePath('app/(public)/sign-in.tsx', cwd))
+      .toBe('/home/sil/seedwise/app/app/(public)/sign-in.tsx')
+  })
+
+  it('joins a bare single-segment path', () => {
+    expect(resolveFilePath('README.md', cwd)).toBe('/home/sil/seedwise/app/README.md')
+  })
+
+  it('normalizes ./ and ../ rather than passing the segments through', () => {
+    expect(resolveFilePath('./src/a.ts', cwd)).toBe('/home/sil/seedwise/app/src/a.ts')
+    expect(resolveFilePath('../other/b.ts', cwd)).toBe('/home/sil/seedwise/other/b.ts')
+    expect(resolveFilePath('../../x.ts', cwd)).toBe('/home/sil/x.ts')
+  })
+
+  it('normalizes redundant segments inside an absolute path', () => {
+    expect(resolveFilePath('/home/sil//guppi/./web/../README.md'))
+      .toBe('/home/sil/guppi/README.md')
+  })
+
+  it('leaves a relative path alone when there is no cwd to resolve against', () => {
+    // The panel turns this into an explicit 'unresolved-path' state rather than
+    // loading rootless and letting wiki-viewer search the wrong workspace.
+    expect(resolveFilePath('app/sign-in.tsx', undefined)).toBe('app/sign-in.tsx')
+    expect(resolveFilePath('app/sign-in.tsx', '')).toBe('app/sign-in.tsx')
+  })
+
+  it('does not resolve against a cwd that is itself relative', () => {
+    expect(resolveFilePath('a.ts', 'relative/cwd')).toBe('a.ts')
+  })
+
+  it('still refuses to invent $HOME for ~/', () => {
+    expect(resolveFilePath('~/notes/a.md', cwd)).toBe('~/notes/a.md')
+  })
+
+  // The end-to-end invariant: given a cwd, a terminal path becomes absolute AND
+  // the chosen root contains it. Both halves are needed for the panel to work.
+  it('yields an absolute path inside the chosen root, for every terminal shape', () => {
+    for (const raw of [
+      'app/(public)/sign-in.tsx',
+      './web/src/App.tsx',
+      '../other/b.ts',
+      '/home/sil/seedwise/app/app/x.tsx',
+      '/home/sil/elsewhere/y.ts',
+      'README.md',
+    ]) {
+      const resolved = resolveFilePath(raw, cwd)
+      expect(resolved.startsWith('/'), `${raw} -> absolute`).toBe(true)
+      const root = pickEmbedRoot(resolved, cwd)
+      expect(root, `root for ${raw}`).toBeDefined()
+      expect(resolved.startsWith(root! + '/'), `${resolved} inside ${root}`).toBe(true)
+    }
+  })
+})
+
