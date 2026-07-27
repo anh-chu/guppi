@@ -10,7 +10,6 @@ import { cn } from '../lib/utils'
 import { popOut, pipUnavailableReason } from '../lib/pip'
 import { grantArtifactToken, getArtifactKind } from '../lib/artifactPreview'
 import { ArtifactPreview } from './ArtifactPreview'
-import { WikiPanel } from './WikiPanel'
 import { createFileLinkProvider } from '../lib/fileLinkProvider'
 import type { IDisposable } from '@xterm/xterm'
 
@@ -22,10 +21,13 @@ interface TerminalProps {
   onToggleFullscreen?: () => void
   // In split view, only the active pane shows the mobile key bar to avoid duplicates.
   keyBarEnabled?: boolean
-  /** CWD of the active session, used to resolve relative file paths. */
-  sessionCwd?: string
-  /** URL of a running wiki-viewer instance. Falls back to http://localhost:3000. */
-  wikiViewerUrl?: string
+  /**
+   * Open a file in the app-level wiki panel. Terminal no longer owns one.
+   * Returns false when the host declines (e.g. a remote-host session, which
+   * wiki-viewer cannot read), in which case we fall back to the artifact-token
+   * new-tab viewer that does work off-machine.
+   */
+  onOpenFile?: (path: string) => boolean
 }
 
 type GestureDirection = 'up' | 'down' | 'left' | 'right'
@@ -158,11 +160,10 @@ function HoldableKey({
   )
 }
 
-export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFullscreen, keyBarEnabled = true, sessionCwd, wikiViewerUrl }: TerminalProps) {
+export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFullscreen, keyBarEnabled = true, onOpenFile }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [wikiFilePath, setWikiFilePath] = useState<string | null>(null)
-  const { prefs: allPrefs } = usePreferences()
-  const wikiUrl = wikiViewerUrl ?? allPrefs.wiki_viewer_url ?? 'http://localhost:3000'
+  const onOpenFileRef = useRef(onOpenFile)
+  onOpenFileRef.current = onOpenFile
   const fileLinkDisposableRef = useRef<IDisposable | null>(null)
   const {
     termRef,
@@ -201,6 +202,10 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
       })
       .catch(() => tab?.close())
   }, [sessionName, hostId])
+  // Read by the file-link provider, which is registered in a layout effect that
+  // must not list this in its deps (that would re-acquire the terminal lease).
+  const openFilePathRef = useRef(openFilePath)
+  openFilePathRef.current = openFilePath
   const downloadArtifact = useCallback((path: string, name: string) => {
     grantArtifactToken(path, sessionName, undefined, hostId)
       .then((token) => {
@@ -296,7 +301,13 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     if (term) {
       fileLinkDisposableRef.current?.dispose()
       fileLinkDisposableRef.current = term.registerLinkProvider(
-        createFileLinkProvider(term, ({ path }) => setWikiFilePath(path))
+        createFileLinkProvider(term, ({ path }) => {
+          // Fall back when there is no handler, or the handler declines because
+          // this session lives on another host and wiki-viewer only sees its own
+          // filesystem. Without the fallback a remote pane would clobber the
+          // shared panel and then fail to resolve the path.
+          if (!onOpenFileRef.current?.(path)) openFilePathRef.current(path)
+        })
       )
     }
     return () => {
@@ -756,7 +767,9 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                           type="button"
                           onMouseDown={(e) => e.preventDefault()}
                           onClick={() => {
-                            setWikiFilePath(art.path)
+                            // Same fallback as the terminal link path: a remote
+                            // session declines, and the token viewer handles it.
+                            if (!onOpenFile?.(art.path)) openFilePath(art.path)
                             setArtifactsOpen(false)
                           }}
                           className="min-w-0 flex-1 text-left text-xs font-mono"
@@ -1028,14 +1041,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
           </div>
         </>
       )}
-      {wikiFilePath !== null && (
-        <WikiPanel
-          wikiUrl={wikiUrl}
-          filePath={wikiFilePath}
-          sessionCwd={sessionCwd}
-          onClose={() => setWikiFilePath(null)}
-        />
-      )}
+
     </div>
   )
 }

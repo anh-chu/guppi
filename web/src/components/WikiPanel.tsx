@@ -36,9 +36,10 @@ export function WikiPanel({ wikiUrl, filePath, sessionCwd, onClose }: WikiPanelP
 
   const resolvedPath = filePath ? resolveFilePath(filePath, sessionCwd) : null
 
-  // The root we hand wiki-viewer. Normally the session cwd, but some views
-  // render Terminal without one (Overview). Falling back to the file's own
-  // directory matters for more than tree scope: wiki-viewer grants a non-loopback
+  // The root we hand wiki-viewer. Normally the requesting session's cwd; every
+  // call site supplies one now, so the fallback only fires for a session with no
+  // path data at all. Falling back to the file's own directory matters for more
+  // than tree scope: wiki-viewer grants a non-loopback
   // parent postMessage trust only when it supplied ?root= (key-derived trust).
   // With no root, open-file is rejected from any non-loopback origin — and
   // termyard's documented deployment is behind Tailscale or a reverse proxy.

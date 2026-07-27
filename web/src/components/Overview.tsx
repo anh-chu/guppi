@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type DOMAttributes } from 'react'
-import { Session, sessionKey, sessionScheduleID } from '../hooks/useSessions'
+import { Session, sessionKey, sessionScheduleID, sessionCwd } from '../hooks/useSessions'
 import { Host } from '../hooks/useHosts'
 import { ToolEvent } from '../hooks/useToolEvents'
 import { ActivitySnapshot } from '../hooks/useActivity'
@@ -27,6 +27,7 @@ interface OverviewProps {
   onDismissAlert: (evt: ToolEvent) => void
   setSessionAttr: (key: string, next: { background?: boolean; hidden?: boolean }) => void
   onSessionKilled?: (key: string) => void
+  onOpenFile?: (path: string, cwd?: string, hostId?: string) => boolean
   // Tiled layout groups (sessionKeys per group). Used to fold non-agent
   // "tool" panes (build/dev terminals) into the agent card they were tiled with.
   layoutGroups?: { leaves: string[]; activeKey: string | null }[]
@@ -253,7 +254,7 @@ function SessionCard({
   )
 }
 
-export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, layoutGroups }: OverviewProps) {
+export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, onOpenFile, layoutGroups }: OverviewProps) {
   const { schedules } = useSchedules()
   const scheduleById = useMemo(() => new Map(schedules.map(s => [s.id, s])), [schedules])
   const scheduleIdFor = useCallback((session: Session) => (
@@ -577,7 +578,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
             </svg>
           </button>
         </div>
-        <div className="min-h-0 flex-1 flex flex-col overflow-hidden"><Terminal sessionName={selected.name} hostId={selected.host} backend={selected.backend} /></div>
+        <div className="min-h-0 flex-1 flex flex-col overflow-hidden"><Terminal sessionName={selected.name} hostId={selected.host} backend={selected.backend} onOpenFile={(path) => onOpenFile?.(path, sessionCwd(selected), selected.host) ?? false} /></div>
       </div>
       </>
     )}

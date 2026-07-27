@@ -64,6 +64,12 @@ export function sessionScheduleID(session: Session): string {
   return session.scheduleID || session.schedule_id || ''
 }
 
+// Effective cwd of a session: the active pane's path, else the project root.
+export function sessionCwd(session: Session): string | undefined {
+  return session.windows.flatMap(w => w.panes).find(p => p.active)?.current_path
+    ?? session.project_path
+}
+
 // Parse a session key back into host + name
 export function parseSessionKey(key: string): { host: string; name: string } {
   const idx = key.indexOf('/')

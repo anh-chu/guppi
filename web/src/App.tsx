@@ -8,13 +8,14 @@ import { PortForwardModal } from './components/PortForwardModal'
 import { ScheduleModal } from './components/ScheduleModal'
 import { TopBar } from './components/TopBar'
 import { TiledView } from './components/TiledView'
+import { WikiPanel } from './components/WikiPanel'
 import { PaneTree, getLeaves, findLeaf, splitLeaf, insertBesideLeaf, removeLeaf, replaceLeaf, updateRatio, popOut, swapLeaves, movePane } from './lib/paneTree'
 import { SettingsDrawer } from './components/SettingsDrawer'
 import { HelpModal } from './components/HelpModal'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
-import { useSessions, Session, sessionKey, parseSessionKey, optimisticSession } from './hooks/useSessions'
+import { useSessions, Session, sessionKey, parseSessionKey, optimisticSession, sessionCwd } from './hooks/useSessions'
 import { useHosts } from './hooks/useHosts'
 import { useToolEvents } from './hooks/useToolEvents'
 import { useActivity } from './hooks/useActivity'
@@ -66,6 +67,9 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
   }
   return { view: 'overview', sessionKey: null }
 }
+
+/** File open in the app-level wiki panel, with the root captured at click time. */
+type WikiTarget = { path: string; cwd?: string }
 
 function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
   const { sessions, loading: sessionsLoading, refresh, upsertSession, removeSession } = useSessions()
@@ -129,6 +133,32 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   })
   const migrationStartedRef = useRef(false)
   const selectedSession = singleView ?? activeKey
+
+  // Wiki panel state — hoisted from per-Terminal to a single app-level panel, so
+  // a tiled layout mounts one iframe instead of one per pane, and wiki-viewer
+  // sees one ephemeral workspace root at a time instead of N.
+  //
+  // cwd is captured HERE, at click time, from the session that asked. It is
+  // deliberately not read live from whichever pane has focus: the panel's embed
+  // URL is keyed on the root, so a live read would rebuild the iframe whenever
+  // focus moved and discard wiki-viewer's state, including unsaved edits.
+  const [wikiTarget, setWikiTarget] = useState<WikiTarget | null>(null)
+  const cwdForKey = useCallback((key: string) => {
+    const s = sessions.find(x => sessionKey(x) === key)
+    return s ? sessionCwd(s) : undefined
+  }, [sessions])
+  // Declines non-local sessions: wiki-viewer can only read the filesystem of the
+  // machine it runs on, so a remote pane's path would either resolve to the wrong
+  // file or come back bad-root — after having already torn down the shared
+  // panel's iframe. Returning false lets Terminal fall back to the artifact-token
+  // viewer, which does work off-machine.
+  const openWikiFile = useCallback((path: string, cwd?: string, hostId?: string): boolean => {
+    const isLocal = !hostId || hosts.find(h => h.id === hostId)?.local === true
+    if (!isLocal) return false
+    setWikiTarget({ path, cwd })
+    return true
+  }, [hosts])
+
   const activeGroup = syncedGroups[activeGroupId]
   const activeGroupName = activeGroup?.name ?? ''
 
@@ -1344,7 +1374,10 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
           glance={glance}
         />
       )}
-      {/* Middle: Sidebar + Content */}
+      {/* Middle: Sidebar + Content + Wiki panel.
+          Three fixed child slots. Keep them static: React reconciles by index,
+          and a falsy slot still holds its index, so toggling fullscreen hides the
+          sidebar without shifting the wiki panel and remounting its iframe. */}
       <div className="flex-1 flex overflow-hidden">
         {!terminalFullscreen && (
           <Sidebar
@@ -1474,6 +1507,11 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
                 backend={sessions.find(s => sessionKey(s) === singleView)?.backend}
                 fullscreen={terminalFullscreen}
                 onToggleFullscreen={toggleFullscreen}
+                onOpenFile={(path) => openWikiFile(
+                  path,
+                  singleView ? cwdForKey(singleView) : undefined,
+                  sessions.find(s => sessionKey(s) === singleView)?.host,
+                )}
               />
             </div>
           ) : currentView === 'session' && paneTree ? (
@@ -1504,14 +1542,13 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
                 setPaneTree(prev => prev ? movePane(prev, sourceKey, targetKey, edge) : prev)
               }
               getBackend={(key) => sessions.find(s => sessionKey(s) === key)?.backend}
-              getCwd={(key) => {
-                const s = sessions.find(s => sessionKey(s) === key)
-                return s?.windows.flatMap(w => w.panes).find(p => p.active)?.current_path ?? s?.project_path
-              }}
+              getCwd={cwdForKey}
+              onOpenFile={openWikiFile}
             />
           ) : (
             <Overview
               sessions={sessions}
+              onOpenFile={openWikiFile}
               hosts={hosts}
               hiddenSet={sessionAttrs.hidden}
               backgroundSet={sessionAttrs.background}
@@ -1548,6 +1585,14 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             onCheckUpdate={selfUpdate.checkNow}
           />
         </div>
+        {wikiTarget && (
+          <WikiPanel
+            wikiUrl={prefs.wiki_viewer_url ?? 'http://localhost:3000'}
+            filePath={wikiTarget.path}
+            sessionCwd={wikiTarget.cwd}
+            onClose={() => setWikiTarget(null)}
+          />
+        )}
       </div>
     </div>
   )
