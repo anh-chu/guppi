@@ -2078,6 +2078,12 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 
 				q := url.Values{}
 				q.Set("embed", "1")
+				// Show wiki-viewer's file tree in the panel so it is a browser, not
+				// just a single-file view. Embed mode hides the sidebar by default;
+				// chrome=1 opts it back in. Their sidebar is collapsible, but the
+				// collapse does not persist, so it reappears whenever the root
+				// changes and the iframe reloads.
+				q.Set("chrome", "1")
 				if apiKey != "" {
 					q.Set("api_key", apiKey)
 				}

@@ -219,9 +219,10 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
   // synthetic and honoring it outside embed mode would expose Settings, which
   // displays the API key itself.
   //
-  // chrome=1 opts the sidebar back in, which embed mode otherwise hides. It is
-  // what makes this a genuine "open the full app" link rather than a bare file
-  // view in a full tab. Auth stays gated on embed=1; only the chrome moved.
+  // chrome=1 is set again here rather than inherited: a full tab must show the
+  // sidebar regardless of what the panel currently asks for, so this link does
+  // not silently lose the chrome if the embed default changes.
+  // Auth stays gated on embed=1; only the chrome moved.
   //
   // Only file= is re-pointed, at the currently shown path: embedSrc carries the
   // file baked in at load time, which goes stale after postMessage navigation.
