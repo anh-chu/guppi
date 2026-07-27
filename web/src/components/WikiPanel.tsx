@@ -25,13 +25,51 @@ interface WikiPanelProps {
   onClose: () => void
 }
 
-function resolveFilePath(path: string, cwd?: string): string {
+export function resolveFilePath(path: string, cwd?: string): string {
   if (path.startsWith('/')) return path
   if (path.startsWith('~/')) return path
   if ((path.startsWith('./') || path.startsWith('../')) && cwd) {
     return cwd.replace(/\/$/, '') + '/' + path.replace(/^\.?\//, '')
   }
   return path
+}
+
+/** True when `abs` is `dir` itself or sits beneath it. */
+function isInside(dir: string, abs: string): boolean {
+  const d = dir.replace(/\/+$/, '')
+  if (!d.startsWith('/')) return false
+  // The trailing slash is load-bearing: a bare startsWith would treat
+  // /home/sil/guppi-secrets as living inside /home/sil/guppi.
+  return abs === d || abs.startsWith(d + '/')
+}
+
+/**
+ * The root handed to wiki-viewer. It MUST contain the file: wiki-viewer
+ * relativizes the path against the root and answers "Invalid path" when the
+ * file falls outside, which the panel can only render as its empty
+ * "select a file to view or edit" screen.
+ *
+ * The session cwd is preferred because it yields a useful tree, but it is only
+ * used when it actually contains the file. A terminal sitting in one repo
+ * routinely prints paths belonging to another, and passing that cwd anyway is
+ * what produced the empty panel. The file's own directory is, by construction,
+ * a root that contains it.
+ *
+ * A root also has to be present at all: wiki-viewer grants a non-loopback parent
+ * postMessage trust only when the host supplied one, and termyard's documented
+ * deployment sits behind Tailscale or a reverse proxy. A narrow root is a small
+ * tree; no root is a panel where only the first file of a session works.
+ */
+export function pickEmbedRoot(resolvedPath: string | null, sessionCwd?: string): string | undefined {
+  // Non-absolute (a bare name, or ~/ which only the shell can expand): nothing
+  // reliable to derive, so keep the cwd.
+  if (!resolvedPath || !resolvedPath.startsWith('/')) return sessionCwd
+  if (sessionCwd && isInside(sessionCwd, resolvedPath)) return sessionCwd
+  const cut = resolvedPath.lastIndexOf('/')
+  // cut === 0 means a file directly in /. Rooting there would hand wiki-viewer
+  // the whole filesystem to walk, so prefer the cwd even though it will not
+  // resolve; an unbounded root is the worse failure.
+  return cut > 0 ? resolvedPath.slice(0, cut) : sessionCwd
 }
 
 export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }: WikiPanelProps) {
@@ -43,20 +81,7 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
 
   const resolvedPath = filePath ? resolveFilePath(filePath, sessionCwd) : null
 
-  // The root we hand wiki-viewer. Normally the requesting session's cwd; every
-  // call site supplies one now, so the fallback only fires for a session with no
-  // path data at all. Falling back to the file's own directory matters for more
-  // than tree scope: wiki-viewer grants a non-loopback
-  // parent postMessage trust only when it supplied ?root= (key-derived trust).
-  // With no root, open-file is rejected from any non-loopback origin — and
-  // termyard's documented deployment is behind Tailscale or a reverse proxy.
-  // A narrow root is a small tree; no root is a panel where only the first
-  // file of each session works.
-  const effectiveRoot =
-    sessionCwd ??
-    (resolvedPath && resolvedPath.startsWith('/') && resolvedPath.lastIndexOf('/') > 0
-      ? resolvedPath.slice(0, resolvedPath.lastIndexOf('/'))
-      : undefined)
+  const effectiveRoot = pickEmbedRoot(resolvedPath, sessionCwd)
 
   // Latest resolved path, read by the embed-url effect without making it a
   // dependency. Changing the file must NOT rebuild the iframe URL — that would
