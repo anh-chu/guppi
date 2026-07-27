@@ -15,6 +15,7 @@ interface TopBarProps {
   onDismissUpdate?: () => void
   onOverview: () => void
   onSettings: () => void
+  onWiki?: () => void
   onNewSession?: () => void
   onHelp?: () => void
   onPortForwards?: () => void
@@ -113,6 +114,7 @@ export function TopBar({
   selfUpdateAvailable,
   onOverview,
   onSettings,
+  onWiki,
   onNewSession,
   onHelp,
   onPortForwards,
@@ -361,6 +363,7 @@ export function TopBar({
         <HeaderOverflow
           onPortForwards={onPortForwards}
           onSchedules={onSchedules}
+          onWiki={onWiki}
           onHelp={onHelp}
         />
 

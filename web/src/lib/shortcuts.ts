@@ -19,6 +19,7 @@ export function getShortcuts(): ShortcutItem[] {
     { keys: [`${mod}+,`], label: 'Settings' },
     { keys: [`${mod}+/`], label: 'Help' },
     { keys: [`${mod}+\\`], label: 'Toggle sidebar' },
+    { keys: [`${mod}+Shift+G`], label: 'Toggle wiki panel' },
 
     { section: 'Session' },
     { keys: [`${mod}+Shift+\\`], label: 'Split pane' },

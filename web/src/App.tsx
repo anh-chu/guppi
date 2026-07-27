@@ -69,7 +69,9 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
 }
 
 /** File open in the app-level wiki panel, with the root captured at click time. */
-type WikiTarget = { path: string; cwd?: string; nonce: number }
+// path is null when the panel is opened on demand rather than by clicking a
+// file: wiki-viewer then shows its tree with nothing selected.
+type WikiTarget = { path: string | null; cwd?: string; nonce: number }
 
 function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
   const { sessions, loading: sessionsLoading, refresh, upsertSession, removeSession } = useSessions()
@@ -160,6 +162,29 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current })
     return true
   }, [hosts])
+
+  // Open the panel with no file, rooted at the focused session's directory, so
+  // it can be used as a file browser instead of only opening what was clicked
+  // in a terminal. With no session focused there is no root, and wiki-viewer
+  // falls back to its own configured workspace, which is the sane default for
+  // "just show me the wiki".
+  const toggleWikiPanel = useCallback(() => {
+    setWikiTarget(prev => {
+      if (prev) return null
+      // Only a local session's cwd means anything here: wiki-viewer reads the
+      // filesystem of the machine it runs on, so a remote session's path would
+      // silently browse the same-named directory on the wrong machine. Same
+      // reason openWikiFile declines non-local panes, except there we can fall
+      // back to the artifact viewer and here we just drop the root.
+      const host = selectedSession ? parseSessionKey(selectedSession).host : ''
+      const isLocal = !host || hosts.find(h => h.id === host)?.local === true
+      return {
+        path: null,
+        cwd: selectedSession && isLocal ? cwdForKey(selectedSession) : undefined,
+        nonce: ++wikiOpenSeqRef.current,
+      }
+    })
+  }, [selectedSession, cwdForKey, hosts])
 
   const activeGroup = syncedGroups[activeGroupId]
   const activeGroupName = activeGroup?.name ?? ''
@@ -611,11 +636,16 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       '$mod+Shift+Enter': handler(() => openNewSessionPlain()),
       // Overview: Cmd/Ctrl + Shift + H (Shift+O collides w/ Firefox bookmarks)
       '$mod+Shift+h': handler(() => navigateTo(null)),
+      // Wiki panel: Cmd/Ctrl + Shift + G. G is not mnemonic, but the mnemonic
+      // keys are all taken by the browser: Shift+W closes the window, Shift+E
+      // opens Firefox's network monitor, Shift+D bookmarks every tab, and
+      // Shift+F is already terminal fullscreen here.
+      '$mod+Shift+g': handler(() => toggleWikiPanel()),
       // Cycle sessions: Cmd/Ctrl + Shift + Arrow (Shift+[ / ] switches browser tabs)
       '$mod+Shift+ArrowRight': handler(() => cycle(1)),
       '$mod+Shift+ArrowLeft': handler(() => cycle(-1)),
     }, { ignore })
-  }, [navigateTo, activeKey, openNewSessionModal, openNewSessionPlain])
+  }, [navigateTo, activeKey, openNewSessionModal, openNewSessionPlain, toggleWikiPanel])
 
   // Backend notices (silent failures surfaced to the UI as toasts)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -1357,6 +1387,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
           onDismissUpdate={selfUpdate.dismiss}
           onOverview={() => navigateTo(null)}
           onSettings={openSettings}
+          onWiki={toggleWikiPanel}
           onHelp={() => setHelpOpen(true)}
           onNewSession={openNewSessionModal}
           onPortForwards={() => setPortForwardsOpen(true)}

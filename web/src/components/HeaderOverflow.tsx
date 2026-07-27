@@ -5,6 +5,7 @@ import { cn } from '../lib/utils'
 type HeaderOverflowProps = {
   onPortForwards?: () => void
   onSchedules?: () => void
+  onWiki?: () => void
   onHelp?: () => void
 }
 
@@ -12,7 +13,7 @@ function Icon({ children }: { children: ReactNode }) {
   return <span className="inline-flex w-4 h-4 items-center justify-center">{children}</span>
 }
 
-export function HeaderOverflow({ onPortForwards, onSchedules, onHelp }: HeaderOverflowProps) {
+export function HeaderOverflow({ onPortForwards, onSchedules, onWiki, onHelp }: HeaderOverflowProps) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -41,6 +42,11 @@ export function HeaderOverflow({ onPortForwards, onSchedules, onHelp }: HeaderOv
       key: 'schedules',
       label: 'Schedules',
       action: onSchedules,
+    },
+    onWiki && {
+      key: 'wiki',
+      label: 'Wiki panel',
+      action: onWiki,
     },
     onHelp && {
       key: 'help',
