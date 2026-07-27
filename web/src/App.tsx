@@ -69,7 +69,7 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
 }
 
 /** File open in the app-level wiki panel, with the root captured at click time. */
-type WikiTarget = { path: string; cwd?: string }
+type WikiTarget = { path: string; cwd?: string; nonce: number }
 
 function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
   const { sessions, loading: sessionsLoading, refresh, upsertSession, removeSession } = useSessions()
@@ -143,6 +143,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // URL is keyed on the root, so a live read would rebuild the iframe whenever
   // focus moved and discard wiki-viewer's state, including unsaved edits.
   const [wikiTarget, setWikiTarget] = useState<WikiTarget | null>(null)
+  const wikiOpenSeqRef = useRef(0)
   const cwdForKey = useCallback((key: string) => {
     const s = sessions.find(x => sessionKey(x) === key)
     return s ? sessionCwd(s) : undefined
@@ -155,7 +156,8 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const openWikiFile = useCallback((path: string, cwd?: string, hostId?: string): boolean => {
     const isLocal = !hostId || hosts.find(h => h.id === hostId)?.local === true
     if (!isLocal) return false
-    setWikiTarget({ path, cwd })
+    // Monotonic, so re-opening the same path from another pane still sends.
+    setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current })
     return true
   }, [hosts])
 
@@ -1589,6 +1591,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
           <WikiPanel
             wikiUrl={prefs.wiki_viewer_url ?? 'http://localhost:3000'}
             filePath={wikiTarget.path}
+            openNonce={wikiTarget.nonce}
             sessionCwd={wikiTarget.cwd}
             onClose={() => setWikiTarget(null)}
           />

@@ -12,6 +12,13 @@ export type WikiPanelStatus =
 interface WikiPanelProps {
   wikiUrl: string
   filePath: string | null
+  /**
+   * Bumped on every open request, even when the path is unchanged. Without it a
+   * second open of the same file is a no-op, because the send effect keys on the
+   * resolved path. That is easy to hit now that one panel serves every pane:
+   * open A from one pane, then A from another, and nothing would happen.
+   */
+  openNonce?: number
   /** Session cwd. Sent as wiki-viewer's ephemeral root so the file resolves
    *  regardless of which workspace wiki-viewer has active. */
   sessionCwd?: string
@@ -27,7 +34,7 @@ function resolveFilePath(path: string, cwd?: string): string {
   return path
 }
 
-export function WikiPanel({ wikiUrl, filePath, sessionCwd, onClose }: WikiPanelProps) {
+export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }: WikiPanelProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [status, setStatus] = useState<WikiPanelStatus>('checking')
   const [embedSrc, setEmbedSrc] = useState<string | null>(null)
@@ -179,8 +186,11 @@ export function WikiPanel({ wikiUrl, filePath, sessionCwd, onClose }: WikiPanelP
     if (!resolvedPath || status !== 'ready') return
     if (iframeLoaded) sendOpenFile(resolvedPath)
     else pendingPathRef.current = resolvedPath
+    // openNonce belongs HERE and must never reach the embed-url effect's
+    // [effectiveRoot] deps: this one re-sends a message, that one would rebuild
+    // the iframe on every click and defeat the whole point of the shared panel.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedPath, status, iframeLoaded, wikiUrl])
+  }, [resolvedPath, openNonce, status, iframeLoaded, wikiUrl])
 
   const handleIframeLoad = () => {
     setIframeLoaded(true)
