@@ -1029,7 +1029,11 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
-                  openFilePath(selectionMenu.text.trim())
+                  // Same two-step as the file links and the artifacts list: try
+                  // the wiki panel, fall back to the token tab when it declines
+                  // (remote session, where wiki-viewer cannot read the file).
+                  const path = selectionMenu.text.trim()
+                  if (!onOpenFile?.(path)) openFilePath(path)
                   termRef.current?.clearSelection()
                   setSelectionMenu(null)
                 }}
