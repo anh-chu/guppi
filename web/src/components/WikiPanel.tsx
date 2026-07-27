@@ -129,6 +129,35 @@ export function WikiPanel({ wikiUrl, filePath, sessionCwd, onClose }: WikiPanelP
     return () => { cancelled = true; controller.abort() }
   }, [effectiveRoot])
 
+  // "Open in wiki-viewer" (new tab) must reuse the server-built URL, because that
+  // is the only thing carrying ?root= and the API key — the frontend cannot
+  // rebuild either, since the key is masked in the preferences GET.
+  //
+  // This link used to hand-build `${wikiUrl}/?file=<abs path>`, which dropped
+  // both. wiki-viewer then fell back to the most-recent registered workspace,
+  // could not relativize an absolute path outside it, and rendered its empty
+  // "select a file to view or edit" screen. Unauthenticated it 307s to /signin.
+  //
+  // embed=1 is deliberately KEPT. wiki-viewer's middleware validates ?api_key=
+  // only inside `if (isEmbed)`, so dropping embed=1 makes the key (and the
+  // embed cookie) ignored and the navigation 307s to /signin. Verified: with
+  // embed=1 it is 200, without it is 307 even with a valid key and cookie.
+  // The cost is that embed mode hides wiki-viewer's sidebar, so the tab shows
+  // the file without the tree.
+  //
+  // Only file= is re-pointed, at the currently shown path: embedSrc carries the
+  // file baked in at load time, which goes stale after postMessage navigation.
+  const externalHref = (() => {
+    if (!embedSrc) return null
+    try {
+      const u = new URL(embedSrc, window.location.origin)
+      if (resolvedPath) u.searchParams.set('file', resolvedPath)
+      return u.toString()
+    } catch {
+      return null
+    }
+  })()
+
   // Send the open-file message, queueing if the iframe has not loaded yet.
   const [iframeLoaded, setIframeLoaded] = useState(false)
   const pendingPathRef = useRef<string | null>(null)
@@ -192,9 +221,9 @@ export function WikiPanel({ wikiUrl, filePath, sessionCwd, onClose }: WikiPanelP
             {resolvedPath ? resolvedPath.split('/').pop() : 'Files'}
           </span>
           <div className="flex items-center gap-2 shrink-0">
-            {resolvedPath && (
+            {externalHref && (
               <a
-                href={`${wikiUrl}/?file=${encodeURIComponent(resolvedPath)}`}
+                href={externalHref}
                 target="_blank"
                 rel="noreferrer"
                 title="Open in wiki-viewer"
