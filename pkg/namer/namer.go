@@ -149,11 +149,16 @@ type chatMessage struct {
 }
 
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens"`
-	Stream      bool          `json:"stream"`
+	Model          string             `json:"model"`
+	Messages       []chatMessage      `json:"messages"`
+	Temperature    float64            `json:"temperature"`
+	MaxTokens      int                `json:"max_tokens"`
+	Stream         bool               `json:"stream"`
+	ResponseFormat *chatResponseFormat `json:"response_format,omitempty"`
+}
+
+type chatResponseFormat struct {
+	Type string `json:"type"`
 }
 
 // chatResponse covers both the non-streaming shape (choices[].message.content)
@@ -168,13 +173,13 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
-const systemPrompt = `You name terminal sessions. Think briefly if you need to, but your reply's FINAL LINE must be ONLY the label: 2-4 words, kebab-case, lowercase, ASCII letters/digits/hyphens only, no quotes or trailing punctuation. Example final lines: fix-auth-token, db-migration, docker-logs-debug, rebase-feature-branch.
+const systemPrompt = `You name terminal sessions. Reply with ONLY a single JSON object of the form {"name": "label"} and nothing else — no markdown, no code fences, no prose, no explanation. The "name" value must be 2-4 words, kebab-case, lowercase, ASCII letters/digits/hyphens only, no quotes or trailing punctuation. Example reply: {"name": "fix-auth-token"}.
 
 Capture this session's specific purpose, not a single transient command. When several sessions share a project, branch, or agent, do NOT name by that shared context — name by what makes THIS session's task different from the others. When both a user request and an agent reply are given, weight the user's request most heavily: the name should describe what the user asked for; treat the agent's reply as secondary supporting context only.
 
-If existing session names are listed, your label MUST be distinct from every one of them: use different words, never just a numeric suffix.
+If existing session names are listed, your "name" MUST be distinct from every one of them: use different words, never just a numeric suffix.
 
-If a current name is provided and it still accurately and distinctively describes the work, reply with that exact name unchanged. Only rename when the work has clearly moved on.`
+If a current name is provided and it still accurately and distinctively describes the work, put that exact name in "name" unchanged. Only rename when the work has clearly moved on.`
 
 // Generate synthesizes a sanitized session name from ctx. Returns ErrDisabled
 // if no endpoint is configured. On any network/parse error returns ("", err);
@@ -195,9 +200,10 @@ func (n *Namer) Generate(ctx context.Context, nc Context) (string, error) {
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: user},
 		},
-		Temperature: 0.6,
-		MaxTokens:   512, // headroom so reasoning models aren't cut off; we take the final line
-		Stream:      false,
+		Temperature:    0.6,
+		MaxTokens:      512, // headroom so reasoning models aren't cut off; we take the final line
+		Stream:         false,
+		ResponseFormat: &chatResponseFormat{Type: "json_object"},
 	}
 	buf, err := json.Marshal(reqBody)
 	if err != nil {
@@ -233,9 +239,9 @@ func (n *Namer) Generate(ctx context.Context, nc Context) (string, error) {
 		return "", err
 	}
 
-	name := Sanitize(lastLine(content))
+	name := nameFromContent(content)
 	if name == "" {
-		return "", fmt.Errorf("namer: model returned unusable name")
+		return "", fmt.Errorf("namer: model returned unusable name (content: %q)", truncate(content, 200))
 	}
 	return name, nil
 }
@@ -368,6 +374,73 @@ func lastLine(s string) string {
 		}
 	}
 	return strings.TrimSpace(s)
+}
+
+// extractLabel picks the final label from a model reply. Models are asked to
+// end with the bare label, but reasoning/markdown models often trail a closing
+// code fence, a thinking tag, or other punctuation-only line whose sanitized
+// form is empty — lastLine alone would return that and then Sanitize to "",
+// dropping the real label sitting on the line above. Scan bottom-up and return
+// the last non-empty line that sanitizes to a name; fall back to sanitizing
+// the whole reply so a label embedded in prose still yields something usable.
+func extractLabel(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		t := strings.TrimSpace(lines[i])
+		if t == "" {
+			continue
+		}
+		if name := Sanitize(t); name != "" {
+			return name
+		}
+	}
+	return Sanitize(strings.TrimSpace(s))
+}
+
+// nameFromContent extracts the label from a model reply. Structured-output
+// models/gateways return JSON {"name":"..."}; non-structured ones ignore the
+// JSON ask and emit a bare label, prose, or a code-fenced reply. Try JSON
+// first (strict, then any embedded {...} object), then fall back to the
+// label-line scanner so both shapes work.
+func nameFromContent(content string) string {
+	if name := jsonName(content); name != "" {
+		return name
+	}
+	return extractLabel(content)
+}
+
+// jsonName decodes {"name":"..."} from a strict JSON reply, then tries the
+// last {...} object embedded in prose/fences for replies that wrap or prefix
+// the JSON with text (common when response_format is ignored).
+func jsonName(content string) string {
+	if name := decodeJSONName(strings.TrimSpace(content)); name != "" {
+		return name
+	}
+	for i := len(content); i > 0; {
+		end := strings.LastIndex(content[:i], "}")
+		if end < 0 {
+			break
+		}
+		start := strings.LastIndex(content[:end], "{")
+		if start < 0 {
+			break
+		}
+		if name := decodeJSONName(content[start : end+1]); name != "" {
+			return name
+		}
+		i = start
+	}
+	return ""
+}
+
+func decodeJSONName(s string) string {
+	var v struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return ""
+	}
+	return Sanitize(v.Name)
 }
 
 func truncate(s string, max int) string {
