@@ -48,6 +48,29 @@ type LayoutGroup = {
   name: string | undefined
 }
 
+// ─── DEBUG: reload-surviving trace ring buffer for grouping breakouts ───
+// ponytail: temporary diagnostic. Remove once the breakout root cause is
+// confirmed and fixed. Keeps the last 200 state-transition events in
+// localStorage under termyard:debug-group-trace so we can read what
+// actually happened across the reload that lost the split.
+const DEBUG_TRACE_KEY = 'termyard:debug-group-trace'
+const DEBUG_TRACE_MAX = 200
+interface DebugTraceEntry { t: string; src: string; activeGroupId?: string; paneTreeLeaves?: string[] | null; singleView?: string | null; view?: string; syncedGroupIds?: string[]; syncedGroupLeafCounts?: Record<string, number>; validKeysCount?: number; activeGroupLeaves?: string[] | null; extra?: Record<string, unknown> }
+function tracePush(src: string, fields: Omit<DebugTraceEntry, 't' | 'src'> = {}) {
+  try {
+    const raw = localStorage.getItem(DEBUG_TRACE_KEY)
+    const entries: DebugTraceEntry[] = raw ? JSON.parse(raw) : []
+    entries.push({ t: new Date().toISOString(), src, ...fields })
+    while (entries.length > DEBUG_TRACE_MAX) entries.shift()
+    localStorage.setItem(DEBUG_TRACE_KEY, JSON.stringify(entries))
+  } catch { /* ignore */ }
+}
+// expose for console inspection: (window as any).termyardDumpTrace()
+;(window as unknown as { termyardDumpTrace?: () => DebugTraceEntry[] }).termyardDumpTrace = () => {
+  try { return JSON.parse(localStorage.getItem(DEBUG_TRACE_KEY) || '[]') } catch { return [] }
+}
+// ─── /DEBUG ───
+
 function getViewFromPath(): { view: View; sessionKey: string | null } {
   if (window.location.pathname === '/settings') {
     return { view: 'settings', sessionKey: null }
@@ -223,6 +246,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (!authenticated || !groupsLoaded || !activeGroup || !paneTree || currentView !== 'session' || singleView) return
     const id = window.setTimeout(() => {
       if (JSON.stringify(activeGroup.tree) === JSON.stringify(paneTree)) return
+      tracePush('sync-back: overwrite server tree with paneTree', { activeGroupId: activeGroupIdRef.current, paneTreeLeaves: paneTree ? getLeaves(paneTree) : null, activeGroupLeaves: activeGroup.tree ? getLeaves(activeGroup.tree) : null, extra: { sameAsServer: false } })
       void setGroupTree(activeGroupId, paneTree)
     }, 250)
     return () => window.clearTimeout(id)
@@ -509,6 +533,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (paneTree === null && !singleView && currentView === 'session') {
       // The active group just emptied (last session removed); delete its server
       // record before promoting the next group, so it does not linger.
+      tracePush('promote: empty active group -> deleteGroup', { activeGroupId: activeGroupIdRef.current, paneTreeLeaves: paneTree ? getLeaves(paneTree) : null })
       if (syncedGroupsRef.current[activeGroupId]) void deleteGroup(activeGroupId)
       const next = Object.entries(syncedGroups)
         .sort(([idA, a], [idB, b]) => {
@@ -555,6 +580,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     // The active layout is no longer a group; drop its server record so the
     // dissolved (broken-out) session stops re-rendering as grouped. Guard on a
     // real record to avoid tombstoning ids that were never persisted.
+    tracePush('dissolve: 1-leaf -> deleteGroup', { activeGroupId: activeGroupIdRef.current, paneTreeLeaves: paneTree ? getLeaves(paneTree) : null, extra: { lastLeaf } })
     if (syncedGroupsRef.current[activeGroupId]) void deleteGroup(activeGroupId)
     const { host, name } = parseSessionKey(lastLeaf)
     const path = host
@@ -714,7 +740,11 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       if (prev === null || !findLeaf(prev, oldKey)) return prev
       // newKey already present: replacing would create a duplicate leaf, so
       // drop the stale optimistic leaf instead of renaming onto it.
-      if (findLeaf(prev, newKey)) return removeLeaf(prev, oldKey) ?? prev
+      if (findLeaf(prev, newKey)) {
+        tracePush('migrateSessionKey: drop stale leaf (newKey present)', { extra: { oldKey, newKey } })
+        return removeLeaf(prev, oldKey) ?? prev
+      }
+      tracePush('migrateSessionKey: replaceLeaf', { extra: { oldKey, newKey } })
       return replaceLeaf(prev, oldKey, newKey)
     })
     setActiveKey(prev => (prev === oldKey ? newKey : prev))
@@ -895,6 +925,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         else streaks.set(key, next)
       }
       if (toRemove.length > 0) {
+        tracePush('prune: removing leaves', { activeGroupId: activeGroupIdRef.current, paneTreeLeaves: paneTree ? getLeaves(paneTree) : null, extra: { toRemove, validKeys: [...validKeys] } })
         setPaneTree(prev => {
           if (prev === null) return null
           let tree: PaneTree | null = prev
@@ -913,6 +944,39 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     setSingleView(prev => (prev && !validKeys.has(prev)) ? null : prev)
 
   }, [sessions, sessionsLoading, paneTree, singleView, pruningSuspended])
+
+  // ─── DEBUG: log every state transition that can collapse a group ───
+  // ponytail: temporary diagnostic for grouping breakouts. Single observer of
+  // the states that matter, so setters stay untouched. Runs after the prune
+  // effect so the trace reflects post-prune snapshots.
+  useEffect(() => {
+    const leafCounts: Record<string, number> = {}
+    const ids: string[] = []
+    for (const [id, g] of Object.entries(syncedGroups)) {
+      ids.push(id)
+      leafCounts[id] = g && g.tree ? getLeaves(g.tree).length : 0
+    }
+    tracePush('state-change', {
+      activeGroupId: activeGroupIdRef.current,
+      paneTreeLeaves: paneTree ? getLeaves(paneTree) : null,
+      singleView,
+      view: currentView,
+      syncedGroupIds: ids,
+      syncedGroupLeafCounts: leafCounts,
+      validKeysCount: sessionsRef.current.length,
+      extra: {
+        connected,
+        recovering,
+        pruningSuspended,
+        groupsLoaded,
+        hasActiveGroup: !!syncedGroups[activeGroupIdRef.current],
+        activeGroupLeaves: syncedGroups[activeGroupIdRef.current]?.tree ? getLeaves(syncedGroups[activeGroupIdRef.current]!.tree) : null,
+        hasStoredPaneTree: (() => { try { return !!localStorage.getItem('termyard:pane-tree') } catch { return null } })(),
+        storedActiveGroupId: (() => { try { return localStorage.getItem('termyard:active-group-id') } catch { return null } })(),
+      },
+    })
+  }, [paneTree, singleView, syncedGroups, activeGroupId, currentView, sessions, connected, recovering, pruningSuspended, groupsLoaded])
+  // ─── /DEBUG ───
 
   // Release the pending-session guard once the freshly created session shows
   // up in state (remote creates arrive via a delayed peer broadcast).
