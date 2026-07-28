@@ -23,6 +23,9 @@ interface WikiPanelProps {
   /** Session cwd. Sent as wiki-viewer's ephemeral root so the file resolves
    *  regardless of which workspace wiki-viewer has active. */
   sessionCwd?: string
+  /** Peer host ID. Threaded through to the grant call so remote files are
+   *  relayed through the mesh control link. */
+  hostId?: string
   onClose: () => void
 }
 
@@ -103,16 +106,20 @@ export function pickEmbedRoot(resolvedPath: string | null, sessionCwd?: string):
   return cut > 0 ? resolvedPath.slice(0, cut) : sessionCwd
 }
 
-export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }: WikiPanelProps) {
+export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, hostId, onClose }: WikiPanelProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [status, setStatus] = useState<WikiPanelStatus>('checking')
   const [embedSrc, setEmbedSrc] = useState<string | null>(null)
   const [width, setWidth] = useState(480)
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
 
-  const resolvedPath = filePath ? resolveFilePath(filePath, sessionCwd) : null
+  // Content mode flag — read once per mount so flipping it mid-flight does not
+  // produce a half-initialized panel. Default (unset) is the legacy path.
+  const contentMode = typeof localStorage !== 'undefined' && localStorage.getItem('termyard.wikiContentMode') === '1'
 
-  const effectiveRoot = pickEmbedRoot(resolvedPath, sessionCwd)
+  const resolvedPath = contentMode ? null : (filePath ? resolveFilePath(filePath, sessionCwd) : null)
+
+  const effectiveRoot = contentMode ? undefined : pickEmbedRoot(resolvedPath, sessionCwd)
 
   // Latest resolved path, read by the embed-url effect without making it a
   // dependency. Changing the file must NOT rebuild the iframe URL — that would
@@ -123,6 +130,24 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
   // The file baked into the current embed URL, consumed once on first load.
   const bakedPathRef = useRef<string | null>(null)
 
+  // In content mode the path is never baked into the URL; the iframe loads a
+  // stub. All files arrive via postMessage, including the first.
+  const bakedPath = contentMode ? null : bakedPathRef.current
+
+  // The origin the embed URL resolves to, derived from the loaded iframe so it
+  // is always the real wiki-viewer origin regardless of redirects. Used for
+  // origin-verifying postMessage and for sendOpenFile's targetOrigin.
+  const wikiOriginRef = useRef<string>(wikiUrl)
+
+  // ---- Content-mode state ----
+  const contentReadyRef = useRef(false)
+  const pendingContentRef = useRef<{ path: string; nonce: number } | null>(null)
+  // A failed fetch is about ONE file, not about the panel. Keeping it out of
+  // `status` is what lets the iframe stay mounted: status drives whether the
+  // iframe renders at all, so routing errors through it unmounted the stub,
+  // dropped the pushed content, and left every later file unable to open.
+  const [contentError, setContentError] = useState<{ title: string; detail: string } | null>(null)
+
   // Resolve status and build the embed URL. Keyed on the root only: the root is
   // what determines which wiki-viewer instance scope we need.
   useEffect(() => {
@@ -130,12 +155,13 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
     const controller = new AbortController()
     setStatus('checking')
     setEmbedSrc(null)
+    contentReadyRef.current = false
 
     // A path we could not make absolute means no reliable root either, and
     // loading rootless is the wrong kind of failure: wiki-viewer resolves the
     // path inside its OWN configured workspace and renders its empty state, so
     // the panel looks like it simply ignored the click. Say so instead.
-    if (resolvedPathRef.current && !resolvedPathRef.current.startsWith('/')) {
+    if (!contentMode && resolvedPathRef.current && !resolvedPathRef.current.startsWith('/')) {
       setStatus('unresolved-path')
       return
     }
@@ -157,11 +183,15 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
         if (!health.auth_ok) { setStatus('bad-key'); return }
         // wiki-viewer's own root config only matters when we are NOT supplying a
         // root. With a root, its workspace state is irrelevant by design.
-        if (!effectiveRoot && !health.configured) { setStatus('unconfigured'); return }
+        if (!contentMode && !effectiveRoot && !health.configured) { setStatus('unconfigured'); return }
 
         const params = new URLSearchParams()
-        if (effectiveRoot) params.set('root', effectiveRoot)
-        if (resolvedPathRef.current) params.set('file', resolvedPathRef.current)
+        if (contentMode) {
+          params.set('mode', 'content')
+        } else {
+          if (effectiveRoot) params.set('root', effectiveRoot)
+          if (resolvedPathRef.current) params.set('file', resolvedPathRef.current)
+        }
 
         const eres = await fetch('/api/wiki/embed-url?' + params.toString(), {
           signal: controller.signal,
@@ -171,6 +201,7 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
         if (!eres.ok) {
           const body: { error?: string } = await eres.json().catch(() => ({}))
           switch (body.error) {
+            case 'api_key_required': setStatus('no-key'); break
             case 'root_requires_api_key': setStatus('no-key'); break
             case 'key_rejected': setStatus('bad-key'); break
             case 'root_not_found':
@@ -190,7 +221,11 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
         // wiki-viewer resolves file= during the initial load, so the first paint
         // already shows this file. Remember it so we don't immediately postMessage
         // a navigation to the file that is already open.
-        bakedPathRef.current = resolvedPathRef.current
+        if (!contentMode) {
+          bakedPathRef.current = resolvedPathRef.current
+        }
+        // Capture the origin from the returned URL for postMessage verification.
+        try { wikiOriginRef.current = new URL(url).origin } catch { /* keep the raw wikiUrl fallback */ }
         // Deliberately not logged: this URL carries the API key.
         setEmbedSrc(url)
         setStatus('ready')
@@ -200,7 +235,10 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
     })()
 
     return () => { cancelled = true; controller.abort() }
-  }, [effectiveRoot])
+    // In content mode the embed URL has no root dependency — it is always the
+    // stub. Rebuild only when the mode or wikiUrl changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentMode ? wikiUrl : effectiveRoot])
 
   // "Open in wiki-viewer" (new tab) must reuse the server-built URL, because that
   // is the only thing carrying ?root= and the API key — the frontend cannot
@@ -226,7 +264,8 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
   //
   // Only file= is re-pointed, at the currently shown path: embedSrc carries the
   // file baked in at load time, which goes stale after postMessage navigation.
-  const externalHref = (() => {
+  // In content mode this link is hidden — the stub page has no sidebar to show.
+  const externalHref = contentMode ? null : (() => {
     if (!embedSrc) return null
     try {
       const u = new URL(embedSrc, window.location.origin)
@@ -238,6 +277,115 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
     }
   })()
 
+  // ---- Content-mode file fetch ----
+  const fetchAndSendContent = (file: string) => {
+    const origin = wikiOriginRef.current
+    ;(async () => {
+      try {
+        // Grant a short-lived capability token for this path.
+        let grantQS = `path=${encodeURIComponent(file)}`
+        if (hostId) grantQS += `&host=${encodeURIComponent(hostId)}`
+        const grantRes = await fetch(`/file/grant?${grantQS}`, { method: 'POST' })
+        if (!grantRes.ok) {
+          setContentError({ title: 'Could not open file', detail: `Grant returned HTTP ${grantRes.status}` })
+          return
+        }
+        const grantData: { token?: string; error?: string } = await grantRes.json().catch(() => ({}))
+        if (!grantData.token) {
+          setContentError({ title: 'Could not open file', detail: 'Grant response missing token' })
+          return
+        }
+
+        // Fetch the file through the capability token.
+        const ac = new AbortController()
+        const timer = setTimeout(() => ac.abort(), 10_000)
+        let fileRes: Response
+        try {
+          fileRes = await fetch(`/file?token=${encodeURIComponent(grantData.token)}`, { signal: ac.signal })
+        } finally {
+          clearTimeout(timer)
+        }
+        if (ac.signal.aborted) {
+          setContentError({ title: 'File read timed out', detail: 'No response within 10s' })
+          return
+        }
+        if (!fileRes.ok) {
+          setContentError({ title: 'File read failed', detail: `HTTP ${fileRes.status}` })
+          return
+        }
+
+        const text = await fileRes.text()
+        // Mirror the server's remote-read cap so the user gets a message instead
+        // of a wedged tab. Measured in bytes, not string length, because a
+        // multi-byte file is larger on the wire than its character count.
+        const bytes = new TextEncoder().encode(text).length
+        if (bytes > 10 * 1024 * 1024) {
+          setContentError({
+            title: 'File too large',
+            detail: `${(bytes / (1024 * 1024)).toFixed(1)} MB exceeds the 10 MB limit`,
+          })
+          return
+        }
+
+        // Push to the embedded stub page.
+        const win = iframeRef.current?.contentWindow
+        if (!win) {
+          setContentError({ title: 'Viewer not ready', detail: 'The embedded viewer went away before content arrived' })
+          return
+        }
+        win.postMessage({ type: 'render-content', path: file, content: text }, origin)
+        setContentError(null)
+      } catch {
+        setContentError({ title: 'File read failed', detail: 'Network error while fetching contents' })
+      }
+    })()
+  }
+
+  // ---- Message listener ----
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      // Reject messages from origins we do not trust. wikiOriginRef is set from
+      // the embed URL response before the iframe loads, so by the time the stub
+      // posts embed-doc-ready the origin is known.
+      const trusted = wikiOriginRef.current
+      if (e.origin !== new URL(trusted, window.location.origin).origin) return
+
+      if (e.data?.type === 'embed-doc-ready') {
+        contentReadyRef.current = true
+        const pending = pendingContentRef.current
+        pendingContentRef.current = null
+        if (pending) fetchAndSendContent(pending.path)
+      }
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+    // Re-bind if the embed URL changes (new wikiOrigin). Deliberately narrow:
+    // the listener itself has no state deps, only the trusted origin changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedSrc])
+
+  // ---- Content-mode: flush pending target on ready, handle new files ----
+  // In content mode every file open (including the first) goes through
+  // fetchAndSendContent. If the iframe has not signalled embed-doc-ready yet,
+  // queue it. If it already has, send immediately.
+  // openNonce gates the effect, so the same file clicked twice still sends.
+  useEffect(() => {
+    if (!contentMode) return
+    // Gated on embedSrc rather than status: an error opening one file must not
+    // stop the next one from opening.
+    if (!filePath || !embedSrc) return
+    if (contentReadyRef.current) {
+      fetchAndSendContent(filePath)
+    } else {
+      pendingContentRef.current = { path: filePath, nonce: openNonce ?? 0 }
+    }
+    // openNonce triggers re-send of the same path. filePath alone is not enough
+    // because the same file from two different panes has the same path.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filePath, openNonce, embedSrc, contentMode])
+
+  // ---- Legacy-mode send, iframe load, and drag handlers ----
+
   // Send the open-file message, queueing if the iframe has not loaded yet.
   const [iframeLoaded, setIframeLoaded] = useState(false)
   const pendingPathRef = useRef<string | null>(null)
@@ -245,10 +393,12 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
   const sendOpenFile = (resolved: string) => {
     const win = iframeRef.current?.contentWindow
     if (!win) return
-    win.postMessage({ type: 'open-file', path: resolved }, wikiUrl)
+    win.postMessage({ type: 'open-file', path: resolved }, wikiOriginRef.current)
   }
 
+  // Legacy effect: when the file changes, send it to the already-loaded iframe.
   useEffect(() => {
+    if (contentMode) return
     if (!resolvedPath || status !== 'ready') return
     if (iframeLoaded) sendOpenFile(resolvedPath)
     else pendingPathRef.current = resolvedPath
@@ -301,7 +451,7 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
       <div className="flex flex-col flex-1 min-w-0 bg-canvas">
         <div className="flex items-center justify-between px-3 py-1.5 border-b border-hairline shrink-0">
           <span className="text-[11px] font-bold uppercase tracking-widest text-mute truncate">
-            {resolvedPath ? resolvedPath.split('/').pop() : 'Files'}
+            {resolvedPath ? resolvedPath.split('/').pop() : filePath ? filePath.split('/').pop() : 'Files'}
           </span>
           <div className="flex items-center gap-2 shrink-0">
             {externalHref && (
@@ -411,6 +561,16 @@ export function WikiPanel({ wikiUrl, filePath, openNonce, sessionCwd, onClose }:
           <div className="flex items-center justify-center flex-1 gap-2 text-mute/50">
             <span className="inline-block h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin" />
             <span className="text-[11px]">Connecting…</span>
+          </div>
+        )}
+
+        {/* Sits above the iframe rather than replacing it, so a file that fails
+            to load does not throw away the file the user is already reading. */}
+        {contentError && (
+          <div className="shrink-0 border-b border-hairline bg-warning/10 px-3 py-2">
+            <p className="text-[11px] text-mute">{contentError.title}</p>
+            <p className="text-[11px] text-mute/60 font-mono break-all">{filePath}</p>
+            <p className="text-[11px] text-mute/60">{contentError.detail}</p>
           </div>
         )}
 

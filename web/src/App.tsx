@@ -72,7 +72,7 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
 /** File open in the app-level wiki panel, with the root captured at click time. */
 // path is null when the panel is opened on demand rather than by clicking a
 // file: wiki-viewer then shows its tree with nothing selected.
-type WikiTarget = { path: string | null; cwd?: string; nonce: number }
+type WikiTarget = { path: string | null; cwd?: string; nonce: number; hostId?: string }
 
 function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
   const { sessions, loading: sessionsLoading, refresh, upsertSession, removeSession } = useSessions()
@@ -177,15 +177,19 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     // Turned off in settings: every path goes to the token tab, which is what
     // "off" has to mean for the file to still open at all.
     if (!wikiEnabled) return false
+    const contentMode = typeof localStorage !== 'undefined' && localStorage.getItem('termyard.wikiContentMode') === '1'
     const isLocal = !hostId || hosts.find(h => h.id === hostId)?.local === true
-    if (!isLocal) return false
+    // Legacy path: wiki-viewer reads its own filesystem, so a non-local pane
+    // would resolve the wrong file. Content mode fetches through the mesh, so
+    // remote files are the entire point.
+    if (!contentMode && !isLocal) return false
     // wiki-viewer is down, keyless, or rejecting our key: hand the path back so
     // Terminal opens the token tab, which is what worked before the panel
     // existed. Declining here rather than after opening matters, because the
     // panel's error card replaces whatever it was showing.
     if (wikiUsable === false) return false
     // Monotonic, so re-opening the same path from another pane still sends.
-    setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current })
+    setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current, hostId })
     return true
   }, [hosts, wikiUsable, wikiEnabled])
 
@@ -569,6 +573,17 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   syncedGroupsRef.current = syncedGroups
   const activeGroupIdRef = useRef(activeGroupId)
   activeGroupIdRef.current = activeGroupId
+  // Evidence gate for pruning: never trust an empty/partial /api/sessions
+  // snapshot unless we have already seen a non-empty one since page load.
+  // On a reload (binary update) the list starts empty and only fills once the
+  // server's discovery loop catches up; treating that transient empty as
+  // authoritative collapses grouped splits permanently (prune → dissolve →
+  // deleteGroup tombstone). The time-based 12s grace was not enough.
+  const sawNonEmptySnapshotRef = useRef(false)
+  // Counts consecutive snapshots in which a paneTree leaf was missing from the
+  // live list. A leaf is only pruned after 2 consecutive misses, so a single
+  // partial list during discovery ramp-up cannot collapse a split.
+  const missingStreakRef = useRef<Map<string, number>>(new Map())
   const setActiveKeyRef = useRef(setActiveKey)
   setActiveKeyRef.current = setActiveKey
   const switchToGroupRef = useRef<((id: string) => void) | null>(null)
@@ -847,17 +862,38 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // sitting on "disconnected — reconnecting" forever. Transient empties are
   // already handled server-side (the state manager refuses to clear confirmed-
   // alive sessions) and by pruningSuspended during the reconnect grace window.
+  // Evidence-based pruning gates the destructive path: the first non-empty
+  // snapshot opens the gate, and a leaf must be missing across 2 consecutive
+  // snapshots before it is pruned. This is the upgrade from the prior
+  // time-based 12s grace (the TODO at the old line 838).
   useEffect(() => {
     if (sessionsLoading || pruningSuspended) return
     const validKeys = new Set(sessions.map(s => sessionKey(s)))
     if (pendingSessionRef.current) validKeys.add(pendingSessionRef.current)
+
+    // Never prune or sweep from a session list we've never seen populated since
+    // page load. After a binary-update reload the list starts empty and fills
+    // asynchronously; trusting that empty list destroys live grouped splits.
+    if (validKeys.size === 0 && !sawNonEmptySnapshotRef.current) return
+    if (validKeys.size > 0) sawNonEmptySnapshotRef.current = true
 
     // Authoritative sweep: dispose pool entries for sessions gone from the
     // server list. Only runs when NOT in recovery / reconnect-grace window.
     terminalPool.disposeAbsent(validKeys)
 
     if (paneTree) {
-      const toRemove = getLeaves(paneTree).filter(k => !validKeys.has(k))
+      // Require a leaf to be missing across 2 consecutive non-empty snapshots
+      // before pruning — a single partial list during discovery ramp-up must
+      // not collapse a split. Streaks reset and clear the moment a key reappears.
+      const streaks = missingStreakRef.current
+      const leaves = getLeaves(paneTree)
+      const toRemove: string[] = []
+      for (const key of leaves) {
+        if (validKeys.has(key)) { streaks.delete(key); continue }
+        const next = (streaks.get(key) ?? 0) + 1
+        if (next >= 2) { toRemove.push(key); streaks.delete(key) }
+        else streaks.set(key, next)
+      }
       if (toRemove.length > 0) {
         setPaneTree(prev => {
           if (prev === null) return null
@@ -1649,6 +1685,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             filePath={wikiTarget.path}
             openNonce={wikiTarget.nonce}
             sessionCwd={wikiTarget.cwd}
+            hostId={wikiTarget.hostId}
             onClose={() => setWikiTarget(null)}
           />
         )}
