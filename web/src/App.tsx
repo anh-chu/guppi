@@ -16,7 +16,6 @@ import { QuickSwitcher } from './components/QuickSwitcher'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
 import { useSessions, Session, sessionKey, parseSessionKey, optimisticSession, sessionCwd } from './hooks/useSessions'
-import { useWikiHealth } from './hooks/useWikiHealth'
 import { useHosts } from './hooks/useHosts'
 import { useToolEvents } from './hooks/useToolEvents'
 import { useActivity } from './hooks/useActivity'
@@ -184,37 +183,33 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // focus moved and discard wiki-viewer's state, including unsaved edits.
   const [wikiTarget, setWikiTarget] = useState<WikiTarget | null>(null)
   const wikiOpenSeqRef = useRef(0)
-  // Gates file opens only. Toggling the panel by hand is never gated: someone
-  // who asked for it should see why it is unavailable, not nothing.
-  const wikiUsable = useWikiHealth(authenticated && wikiEnabled)
   const cwdForKey = useCallback((key: string) => {
     const s = sessions.find(x => sessionKey(x) === key)
     return s ? sessionCwd(s) : undefined
   }, [sessions])
-  // Declines non-local sessions: wiki-viewer can only read the filesystem of the
-  // machine it runs on, so a remote pane's path would either resolve to the wrong
-  // file or come back bad-root — after having already torn down the shared
-  // panel's iframe. Returning false lets Terminal fall back to the artifact-token
-  // viewer, which does work off-machine.
+  /**
+   * Route a clicked file path into the side panel.
+   *
+   * Accepts everything now. The panel renders files itself, on termyard's own
+   * origin, through /file/grant, so none of the old refusals apply any more:
+   *  - a remote pane is fine, because the grant relays over the mesh control link
+   *  - wiki-viewer being down or keyless is irrelevant, because it is not involved
+   * Only the user's own "off" switch still sends a path to the token tab, which
+   * is what off has to mean for the file to open at all.
+   */
   const openWikiFile = useCallback((path: string, cwd?: string, hostId?: string): boolean => {
-    // Turned off in settings: every path goes to the token tab, which is what
-    // "off" has to mean for the file to still open at all.
     if (!wikiEnabled) return false
-    const contentMode = typeof localStorage !== 'undefined' && localStorage.getItem('termyard.wikiContentMode') === '1'
+    // A local session still carries this machine's own fingerprint in its host
+    // field, so forwarding it unchanged makes every local file look remote: the
+    // grant gets a pointless &host=, and failures are worded as if another
+    // machine had answered ("The host answered: not found", or blaming a 10 MB
+    // relay cap that was never involved). Normalise it away, the same way
+    // toggleWikiPanel already does for its browse root.
     const isLocal = !hostId || hosts.find(h => h.id === hostId)?.local === true
-    // Legacy path: wiki-viewer reads its own filesystem, so a non-local pane
-    // would resolve the wrong file. Content mode fetches through the mesh, so
-    // remote files are the entire point.
-    if (!contentMode && !isLocal) return false
-    // wiki-viewer is down, keyless, or rejecting our key: hand the path back so
-    // Terminal opens the token tab, which is what worked before the panel
-    // existed. Declining here rather than after opening matters, because the
-    // panel's error card replaces whatever it was showing.
-    if (wikiUsable === false) return false
     // Monotonic, so re-opening the same path from another pane still sends.
-    setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current, hostId })
+    setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current, hostId: isLocal ? undefined : hostId })
     return true
-  }, [hosts, wikiUsable, wikiEnabled])
+  }, [wikiEnabled, hosts])
 
   // Open the panel with no file, rooted at the focused session's directory, so
   // it can be used as a file browser instead of only opening what was clicked

@@ -2012,46 +2012,6 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 					return
 				}
 
-				mode := r.URL.Query().Get("mode")
-
-				// Content mode: termyard fetches the bytes itself and pushes them
-				// over postMessage. wiki-viewer loads /embed-doc (a stub page that
-				// listens for render-content), not the full app. No root, file, or
-				// chrome — the content is the only surface.
-				if mode == "content" {
-					if apiKey == "" {
-						writeErr("api_key_required", http.StatusBadRequest)
-						return
-					}
-					// Derive termyard's own origin so wiki-viewer can verify the
-					// postMessage source. Prefer proxy-forwarded headers, then
-					// infer from the incoming request.
-					scheme := "http"
-					if r.TLS != nil {
-						scheme = "https"
-					}
-					if fwdProto := r.Header.Get("X-Forwarded-Proto"); fwdProto != "" {
-						scheme = fwdProto
-					}
-					host := r.Host
-					if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
-						host = fwdHost
-					}
-					parent := scheme + "://" + host
-
-					q := url.Values{}
-					q.Set("embed", "1")
-					q.Set("api_key", apiKey)
-					q.Set("parent", parent)
-
-					w.Header().Set("Content-Type", "application/json")
-					w.Header().Set("Cache-Control", "no-store")
-					json.NewEncoder(w).Encode(map[string]string{
-						"url": wikiURL + "/embed-doc?" + q.Encode(),
-					})
-					return
-				}
-
 				root := r.URL.Query().Get("root")
 				file := r.URL.Query().Get("file")
 
