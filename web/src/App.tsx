@@ -16,7 +16,6 @@ import { QuickSwitcher } from './components/QuickSwitcher'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
 import { useSessions, Session, sessionKey, parseSessionKey, optimisticSession, sessionCwd } from './hooks/useSessions'
-import { useWikiHealth } from './hooks/useWikiHealth'
 import { useHosts } from './hooks/useHosts'
 import { useToolEvents } from './hooks/useToolEvents'
 import { useActivity } from './hooks/useActivity'
@@ -95,7 +94,7 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
 /** File open in the app-level wiki panel, with the root captured at click time. */
 // path is null when the panel is opened on demand rather than by clicking a
 // file: wiki-viewer then shows its tree with nothing selected.
-type WikiTarget = { path: string | null; cwd?: string; nonce: number; hostId?: string }
+type WikiTarget = { path: string | null; cwd?: string; nonce: number; hostId?: string; session?: string }
 
 function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
   const { sessions, loading: sessionsLoading, refresh, upsertSession, removeSession } = useSessions()
@@ -184,60 +183,32 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // focus moved and discard wiki-viewer's state, including unsaved edits.
   const [wikiTarget, setWikiTarget] = useState<WikiTarget | null>(null)
   const wikiOpenSeqRef = useRef(0)
-  // Gates file opens only. Toggling the panel by hand is never gated: someone
-  // who asked for it should see why it is unavailable, not nothing.
-  const wikiUsable = useWikiHealth(authenticated && wikiEnabled)
+
   const cwdForKey = useCallback((key: string) => {
     const s = sessions.find(x => sessionKey(x) === key)
     return s ? sessionCwd(s) : undefined
   }, [sessions])
-  // Declines non-local sessions: wiki-viewer can only read the filesystem of the
-  // machine it runs on, so a remote pane's path would either resolve to the wrong
-  // file or come back bad-root — after having already torn down the shared
-  // panel's iframe. Returning false lets Terminal fall back to the artifact-token
-  // viewer, which does work off-machine.
-  const openWikiFile = useCallback((path: string, cwd?: string, hostId?: string): boolean => {
+  const openWikiFile = useCallback((path: string, cwd?: string, hostId?: string, sessionName?: string): boolean => {
     // Turned off in settings: every path goes to the token tab, which is what
     // "off" has to mean for the file to still open at all.
     if (!wikiEnabled) return false
-    const contentMode = typeof localStorage !== 'undefined' && localStorage.getItem('termyard.wikiContentMode') === '1'
-    const isLocal = !hostId || hosts.find(h => h.id === hostId)?.local === true
-    // Legacy path: wiki-viewer reads its own filesystem, so a non-local pane
-    // would resolve the wrong file. Content mode fetches through the mesh, so
-    // remote files are the entire point.
-    if (!contentMode && !isLocal) return false
-    // wiki-viewer is down, keyless, or rejecting our key: hand the path back so
-    // Terminal opens the token tab, which is what worked before the panel
-    // existed. Declining here rather than after opening matters, because the
-    // panel's error card replaces whatever it was showing.
-    if (wikiUsable === false) return false
     // Monotonic, so re-opening the same path from another pane still sends.
-    setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current, hostId })
+    setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current, hostId, session: sessionName })
     return true
-  }, [hosts, wikiUsable, wikiEnabled])
+  }, [wikiEnabled])
 
-  // Open the panel with no file, rooted at the focused session's directory, so
-  // it can be used as a file browser instead of only opening what was clicked
-  // in a terminal. With no session focused there is no root, and wiki-viewer
-  // falls back to its own configured workspace, which is the sane default for
-  // "just show me the wiki".
+  // Open the panel with no file. With no session focused there is no cwd and
+  // the panel falls back to wiki-viewer's default_root.
   const toggleWikiPanel = useCallback(() => {
     setWikiTarget(prev => {
       if (prev) return null
-      // Only a local session's cwd means anything here: wiki-viewer reads the
-      // filesystem of the machine it runs on, so a remote session's path would
-      // silently browse the same-named directory on the wrong machine. Same
-      // reason openWikiFile declines non-local panes, except there we can fall
-      // back to the artifact viewer and here we just drop the root.
-      const host = selectedSession ? parseSessionKey(selectedSession).host : ''
-      const isLocal = !host || hosts.find(h => h.id === host)?.local === true
       return {
         path: null,
-        cwd: selectedSession && isLocal ? cwdForKey(selectedSession) : undefined,
+        cwd: selectedSession ? cwdForKey(selectedSession) : undefined,
         nonce: ++wikiOpenSeqRef.current,
       }
     })
-  }, [selectedSession, cwdForKey, hosts])
+  }, [selectedSession, cwdForKey])
 
   const activeGroup = syncedGroups[activeGroupId]
   const activeGroupName = activeGroup?.name ?? ''
@@ -1669,6 +1640,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
                   path,
                   singleView ? cwdForKey(singleView) : undefined,
                   sessions.find(s => sessionKey(s) === singleView)?.host,
+                  singleView ? parseSessionKey(singleView).name : undefined,
                 )}
               />
             </div>
@@ -1745,11 +1717,11 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         </div>
         {wikiTarget && (
           <WikiPanel
-            wikiUrl={prefs.wiki_viewer_url ?? 'http://localhost:3000'}
             filePath={wikiTarget.path}
             openNonce={wikiTarget.nonce}
             sessionCwd={wikiTarget.cwd}
             hostId={wikiTarget.hostId}
+            session={wikiTarget.session}
             onClose={() => setWikiTarget(null)}
           />
         )}

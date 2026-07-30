@@ -55,6 +55,7 @@ import (
 	"github.com/anh-chu/termyard/pkg/stats"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 	"github.com/anh-chu/termyard/pkg/webpush"
+	"github.com/anh-chu/termyard/pkg/wikilite"
 	"github.com/anh-chu/termyard/pkg/ws"
 )
 
@@ -90,6 +91,7 @@ type Options struct {
 	PortForwardStore *portforward.Store
 	SchedulerStore   *scheduler.Store
 	SchedulerRunner  *scheduler.Runner
+	WikiLite         *wikilite.Supervisor
 	DaemonReg        *pty.Registry
 	CWDResolver      toolevents.CWDResolver
 	RefreshSessions  func()              // triggers daemon state refresh
@@ -377,7 +379,7 @@ func CreateSession(opts *Options, req scheduler.CreateSessionReq) error {
 		return err
 	}
 
-	// Remote host — forward via peer connection. The peer handles worktree
+	// Remote host -- forward via peer connection. The peer handles worktree
 	// creation locally so the worktree lands on the peer's filesystem, not ours.
 	if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
 		peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
@@ -505,7 +507,7 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 	}
 
 	if !peerConn.HasCapability(peer.CapPerStream) {
-		http.Error(w, "peer does not support per-stream terminal connections — upgrade the peer first", http.StatusUpgradeRequired)
+		http.Error(w, "peer does not support per-stream terminal connections -- upgrade the peer first", http.StatusUpgradeRequired)
 		return
 	}
 
@@ -679,7 +681,7 @@ func makeHTMLRewriter(port int) func(*http.Response) error {
 		if encoded {
 			gr, err := gzip.NewReader(resp.Body)
 			if err != nil {
-				return nil // can't decompress — leave response untouched
+				return nil // can't decompress -- leave response untouched
 			}
 			defer gr.Close()
 			reader = gr
@@ -777,6 +779,7 @@ func Run(ctx context.Context, opts *Options) error {
 
 	registerWSRoutes(r, opts, hub)
 	registerProxyRoutes(r, opts)
+	registerWikiRoutes(r, opts)
 	if err := registerFrontendRoutes(r); err != nil {
 		return err
 	}
@@ -901,13 +904,13 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 			r.Get("/auth/check", auth.CheckHandler(opts.SessionMgr))
 		}
 
-		// Peer bootstrap endpoint — password-authenticated (no session cookie).
+		// Peer bootstrap endpoint -- password-authenticated (no session cookie).
 		// Lets two nodes establish mutual trust via the dashboard password.
 		r.Post("/peers/bootstrap", func(w http.ResponseWriter, r *http.Request) {
 			handlePeersBootstrap(w, r, opts)
 		})
 
-		// Version endpoint — public, no auth required
+		// Version endpoint -- public, no auth required
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{
@@ -915,7 +918,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				"commit":  common.COMMIT,
 			})
 		})
-		// Tool event ingest — no auth required (used by local CLI via unix socket)
+		// Tool event ingest -- no auth required (used by local CLI via unix socket)
 		r.Post("/tool-event", func(w http.ResponseWriter, r *http.Request) {
 			body, err := io.ReadAll(io.LimitReader(r.Body, 16384))
 			if err != nil {
@@ -973,7 +976,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				r.Use(auth.Middleware(opts.SessionMgr))
 			}
 
-			// Agent status — check which agents are installed/configured
+			// Agent status -- check which agents are installed/configured
 			r.Get("/agent-status", func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(agentcheck.CheckAgents())
@@ -1028,7 +1031,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				}
 				host := r.URL.Query().Get("host")
 
-				// Remote peer — request capture over the control link.
+				// Remote peer -- request capture over the control link.
 				if host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(host) {
 					if opts.CaptureReg == nil {
 						http.Error(w, "capture unavailable", http.StatusInternalServerError)
@@ -1068,7 +1071,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 					return
 				}
 
-				// Local session — capture from daemon registry.
+				// Local session -- capture from daemon registry.
 				if opts.DaemonReg == nil {
 					http.Error(w, "daemon registry unavailable", http.StatusInternalServerError)
 					return
@@ -1101,7 +1104,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				req.Path = strings.TrimSpace(req.Path)
 				req.Command = strings.TrimSpace(req.Command)
 
-				// Remote host — always forward via peer.
+				// Remote host -- always forward via peer.
 				if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
 					req.Name = resolveNewSessionName(opts, req.Host, req.Name, req.Command, req.Path)
 					if req.Name == "" {
@@ -1131,7 +1134,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				}
 
 				// Daemon backend (default for all local sessions).
-				// Always deduplicate — even when the caller supplies a name
+				// Always deduplicate -- even when the caller supplies a name
 				// (e.g. drag-to-split sends "shell" every time).
 				req.Name = resolveNewSessionName(opts, "", req.Name, req.Command, req.Path)
 				if req.Name == "" {
@@ -1215,7 +1218,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 					return
 				}
 
-				// Remote host — forward via peer connection. The new label propagates
+				// Remote host -- forward via peer connection. The new label propagates
 				// back through the peer's state update broadcast.
 				if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
 					peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
@@ -1261,7 +1264,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 					return
 				}
 
-				// Remote host — name it here (the peer process may have no namer
+				// Remote host -- name it here (the peer process may have no namer
 				// configured) and forward the chosen name to the peer to apply. The
 				// applied name propagates back via the peer's state update.
 				if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
@@ -1380,7 +1383,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 					return
 				}
 
-				// Remote host — forward via peer connection
+				// Remote host -- forward via peer connection
 				if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
 					peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
 					if peerConn == nil {
@@ -1423,7 +1426,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 					return
 				}
 
-				// Remote host — forward via peer connection
+				// Remote host -- forward via peer connection
 				if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
 					peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
 					if peerConn == nil {
@@ -1463,7 +1466,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 					return
 				}
 
-				// Remote host — forward via peer connection
+				// Remote host -- forward via peer connection
 				if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
 					peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
 					if peerConn == nil {
@@ -1504,7 +1507,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 					opts.StateMgr.RemoveSession(req.Name)
 				}
 
-				// Remove the linked worktree if requested. Non-fatal — session is
+				// Remove the linked worktree if requested. Non-fatal -- session is
 				// already gone; log and continue.
 				if req.RemoveWorktree && worktreePath != "" {
 					if err := git.RemoveWorktree(worktreePath); err != nil {
@@ -1655,7 +1658,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				json.NewEncoder(w).Encode(map[string]any{"artifacts": artifacts})
 			})
 
-			// Dedicated file upload — streams a browser-supplied file into
+			// Dedicated file upload -- streams a browser-supplied file into
 			// private temp storage on the session's host and returns the
 			// shell-quoted path for PTY injection. No product size cap.
 			// Route: POST /api/upload?session=<name>&host=<id>&filename=<name>
@@ -1700,7 +1703,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				w.WriteHeader(http.StatusNoContent)
 			})
 
-			// Stats endpoint — aggregate overview data
+			// Stats endpoint -- aggregate overview data
 			r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
 				sessions := opts.StateMgr.GetSessions()
 				// Enumerate panes from daemon registry.
@@ -1870,9 +1873,6 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				if prefs.AINaming.APIKey != "" {
 					prefs.AINaming.APIKey = preferences.APIKeyMask
 				}
-				if prefs.WikiAPIKey != "" {
-					prefs.WikiAPIKey = preferences.APIKeyMask
-				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(prefs)
 			})
@@ -1892,9 +1892,6 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				if prefs.AINaming.APIKey == preferences.APIKeyMask {
 					prefs.AINaming.APIKey = opts.PrefStore.Get().AINaming.APIKey
 				}
-				if prefs.WikiAPIKey == preferences.APIKeyMask {
-					prefs.WikiAPIKey = opts.PrefStore.Get().WikiAPIKey
-				}
 				// Defensive: never persist the mask itself, even if the store was
 				// previously corrupted with it.
 				if prefs.AINaming.APIKey == preferences.APIKeyMask {
@@ -1913,236 +1910,54 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				if echo.AINaming.APIKey != "" {
 					echo.AINaming.APIKey = preferences.APIKeyMask
 				}
-				if echo.WikiAPIKey != "" {
-					echo.WikiAPIKey = preferences.APIKeyMask
-				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(&echo)
 			})
 
-
-			// Wiki integration: server-side proxy for wiki-viewer.
-			//
-			// Two reasons this must live in Go rather than the browser:
-			//  1. CORS — a cross-origin fetch carrying an Authorization header
-			//     triggers a preflight that wiki-viewer does not answer, so the
-			//     browser blocks it and the panel misreads it as "offline".
-			//  2. The stored API key is masked in the preferences GET, so the
-			//     frontend cannot construct an authenticated embed URL itself.
-			//
-			// has_key is reported because wiki-viewer gates its ephemeral-root
-			// feature on api-key auth: with no key, ?root= is rejected outright.
-			r.Get("/wiki/health", func(w http.ResponseWriter, r *http.Request) {
-				if opts.PrefStore == nil {
-					http.Error(w, "preferences not available", http.StatusServiceUnavailable)
-					return
-				}
-				prefs := opts.PrefStore.Get()
-				wikiURL := strings.TrimRight(prefs.WikiViewerURL, "/")
-				apiKey := prefs.WikiAPIKey
-
-				out := map[string]any{
-					"reachable":  false,
-					"has_key":    apiKey != "",
-					"auth_ok":    false,
-					"configured": false,
-				}
-				writeOut := func() {
+			// Wiki status and install endpoints
+			r.Get("/wiki/status", func(w http.ResponseWriter, r *http.Request) {
+				if opts.WikiLite == nil {
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(out)
-				}
-
-				if wikiURL == "" {
-					writeOut()
+					w.WriteHeader(http.StatusServiceUnavailable)
+					json.NewEncoder(w).Encode(map[string]string{"error": "wiki not enabled"})
 					return
 				}
-
-				req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, wikiURL+"/api/system/root-status", nil)
-				if err != nil {
-					writeOut()
-					return
-				}
-				if apiKey != "" {
-					req.Header.Set("Authorization", "Bearer "+apiKey)
-				}
-
-				client := &http.Client{Timeout: 4 * time.Second}
-				resp, err := client.Do(req)
-				if err != nil {
-					writeOut()
-					return
-				}
-				defer resp.Body.Close()
-
-				out["reachable"] = true
-				out["auth_ok"] = resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden
-
-				// root-status reports wiki-viewer's legacy process-global root. It is
-				// NOT the effective per-request root once ?root= is in play, so it is
-				// used here only as a liveness/configuration signal and never
-				// compared against a requested path.
-				var body struct {
-					Configured bool `json:"configured"`
-				}
-				if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
-					out["configured"] = body.Configured
-				}
-				writeOut()
-			})
-
-			// Build the wiki-viewer embed URL server-side, injecting the real API
-			// key. Error codes mirror wiki-viewer's own vocabulary so the panel has
-			// a single set of codes to branch on.
-			r.Get("/wiki/embed-url", func(w http.ResponseWriter, r *http.Request) {
-				if opts.PrefStore == nil {
-					http.Error(w, "preferences not available", http.StatusServiceUnavailable)
-					return
-				}
-				writeErr := func(code string, status int) {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(status)
-					json.NewEncoder(w).Encode(map[string]string{"error": code})
-				}
-
-				prefs := opts.PrefStore.Get()
-				wikiURL := strings.TrimRight(prefs.WikiViewerURL, "/")
-				apiKey := prefs.WikiAPIKey
-				if wikiURL == "" {
-					writeErr("wiki_url_not_configured", http.StatusNotFound)
-					return
-				}
-
-				mode := r.URL.Query().Get("mode")
-
-				// Content mode: termyard fetches the bytes itself and pushes them
-				// over postMessage. wiki-viewer loads /embed-doc (a stub page that
-				// listens for render-content), not the full app. No root, file, or
-				// chrome — the content is the only surface.
-				if mode == "content" {
-					if apiKey == "" {
-						writeErr("api_key_required", http.StatusBadRequest)
-						return
-					}
-					// Derive termyard's own origin so wiki-viewer can verify the
-					// postMessage source. Prefer proxy-forwarded headers, then
-					// infer from the incoming request.
-					scheme := "http"
-					if r.TLS != nil {
-						scheme = "https"
-					}
-					if fwdProto := r.Header.Get("X-Forwarded-Proto"); fwdProto != "" {
-						scheme = fwdProto
-					}
-					host := r.Host
-					if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
-						host = fwdHost
-					}
-					parent := scheme + "://" + host
-
-					q := url.Values{}
-					q.Set("embed", "1")
-					q.Set("api_key", apiKey)
-					q.Set("parent", parent)
-
-					w.Header().Set("Content-Type", "application/json")
-					w.Header().Set("Cache-Control", "no-store")
-					json.NewEncoder(w).Encode(map[string]string{
-						"url": wikiURL + "/embed-doc?" + q.Encode(),
-					})
-					return
-				}
-
-				root := r.URL.Query().Get("root")
-				file := r.URL.Query().Get("file")
-
-				// wiki-viewer honors ?root= only for api-key-authenticated requests.
-				// Fail loudly here instead of letting it fall back to whatever
-				// workspace happens to be most recent, which would render a
-				// confidently wrong tree with no signal to the user.
-				if root != "" && apiKey == "" {
-					writeErr("root_requires_api_key", http.StatusBadRequest)
-					return
-				}
-
-				// Validate the root by asking wiki-viewer, which is the only real
-				// authority — and, for a remote instance, the only one that can see
-				// the path at all.
-				//
-				// This probe is necessary because wiki-viewer validates ?root= in its
-				// API routes, NOT in the page navigation. Loading the embed URL with a
-				// bad root returns 200 and renders the normal shell; only a subsequent
-				// in-iframe API call produces the 400. Without probing first we would
-				// show a confidently-broken panel and never learn why, which is the
-				// exact silent failure this design exists to eliminate.
-				//
-				// /api/wiki lists a single directory level, so this is cheap, and it
-				// runs on root change rather than per file click.
-				if root != "" {
-					probe, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
-						wikiURL+"/api/wiki?root="+url.QueryEscape(root), nil)
-					if err != nil {
-						writeErr("wiki_unreachable", http.StatusBadGateway)
-						return
-					}
-					probe.Header.Set("Authorization", "Bearer "+apiKey)
-
-					presp, err := (&http.Client{Timeout: 5 * time.Second}).Do(probe)
-					if err != nil {
-						writeErr("wiki_unreachable", http.StatusBadGateway)
-						return
-					}
-					defer presp.Body.Close()
-
-					switch {
-					case presp.StatusCode == http.StatusUnauthorized,
-						presp.StatusCode == http.StatusForbidden:
-						// A key is definitely present — the empty case returned above —
-						// so this means wiki-viewer rejected it, most likely rotated.
-						// Distinct from a missing key so the panel says the right thing.
-						writeErr("key_rejected", http.StatusBadRequest)
-						return
-					case presp.StatusCode >= 400:
-						// Pass wiki-viewer's own code through so the panel branches on
-						// one vocabulary regardless of which side rejected.
-						var perr struct {
-							Error string `json:"error"`
-						}
-						code := "root_rejected"
-						if json.NewDecoder(presp.Body).Decode(&perr) == nil && perr.Error != "" {
-							code = perr.Error
-						}
-						writeErr(code, http.StatusBadRequest)
-						return
-					}
-				}
-
-				q := url.Values{}
-				q.Set("embed", "1")
-				// Show wiki-viewer's file tree in the panel so it is a browser, not
-				// just a single-file view. Embed mode hides the sidebar by default;
-				// chrome=1 opts it back in. Their sidebar is collapsible, but the
-				// collapse does not persist, so it reappears whenever the root
-				// changes and the iframe reloads.
-				q.Set("chrome", "1")
-				if apiKey != "" {
-					q.Set("api_key", apiKey)
-				}
-				if root != "" {
-					q.Set("root", root)
-				}
-				if file != "" {
-					q.Set("file", file)
-				}
-
+				st := opts.WikiLite.Status()
+				st.DefaultRoot, _ = os.UserHomeDir()
 				w.Header().Set("Content-Type", "application/json")
-				// This response carries the API key. Keep it out of every cache.
-				w.Header().Set("Cache-Control", "no-store")
-				json.NewEncoder(w).Encode(map[string]string{
-					"url": wikiURL + "/?" + q.Encode(),
-				})
+				json.NewEncoder(w).Encode(st)
 			})
 
-			// Session-attribute endpoints — server-authoritative, mesh-wide shared
+			r.Post("/wiki/install", func(w http.ResponseWriter, r *http.Request) {
+				if opts.WikiLite == nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					json.NewEncoder(w).Encode(map[string]string{"error": "wiki not enabled"})
+					return
+				}
+				// StartInstall reserves the installing state and returns at
+				// once, so a 40MB fetch plus extract is never bound to this
+				// request's lifetime and cannot be cancelled mid-swap.
+				err := opts.WikiLite.StartInstall()
+				if err != nil {
+					code := http.StatusInternalServerError
+					if strings.Contains(err.Error(), "not found on PATH") {
+						code = http.StatusServiceUnavailable
+					}
+					if err.Error() == "already installing" {
+						code = http.StatusConflict
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(code)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(map[string]bool{"installing": true})
+			})
+
+			// Session-attribute endpoints -- server-authoritative, mesh-wide shared
 			// per-session UI bits (backgrounded / hidden). Keys are global and
 			// host-qualified ("<owner-fp>/<name>"), identical to the frontend's
 			// sessionKey(). No localStorage source of truth, no namespace
@@ -2187,7 +2002,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				json.NewEncoder(w).Encode(opts.AttrsStore.Sets())
 			})
 
-			// Session-order endpoints — server-authoritative, per-session rank map.
+			// Session-order endpoints -- server-authoritative, per-session rank map.
 			r.Get("/session-order", func(w http.ResponseWriter, r *http.Request) {
 				if opts.OrderStore == nil {
 					http.Error(w, "session order not available", http.StatusServiceUnavailable)
@@ -2222,7 +2037,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				json.NewEncoder(w).Encode(opts.OrderStore.Ranks())
 			})
 
-			// Group endpoints — server-authoritative, durable field-LWW records.
+			// Group endpoints -- server-authoritative, durable field-LWW records.
 			r.Get("/groups", func(w http.ResponseWriter, r *http.Request) {
 				if opts.GroupStore == nil {
 					http.Error(w, "groups not available", http.StatusServiceUnavailable)
@@ -2534,16 +2349,12 @@ func registerWSRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 		r.Get("/ws/daemon-session", daemonWS)
 	}
 
-	// Peer WebSocket routes (no browser auth — peers use their own challenge-response)
+	// Peer WebSocket routes (no browser auth -- peers use their own challenge-response)
 	if opts.PeerHandler != nil {
 		r.Get("/ws/peer", opts.PeerHandler.HandlePeer)
 		r.Get("/ws/peer-stream", opts.PeerHandler.HandlePeerStream)
 	}
 }
-
-// activePaneCwd returns the CurrentPath of the active pane among panes, or ""
-// if none — no fallback to inactive panes, so a relative file open resolves
-// against exactly the pane shown in the terminal.
 
 // fileGrantTTL bounds how long an opened file stays fetchable. A grant is
 // minted per explicit "Open file" click; the browser has this long to fetch
@@ -2552,7 +2363,7 @@ func registerWSRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 const fileGrantTTL = 5 * time.Minute
 
 // fileGrants is an in-memory capability store: a token maps to one absolute
-// path with an expiry. It replaces open-ended whole-FS read — the serve
+// path with an expiry. It replaces open-ended whole-FS read -- the serve
 // endpoint can only return paths that were explicitly granted and not expired.
 // Eviction is lazy (on access); no background goroutine.
 type fileGrants struct {
@@ -2596,7 +2407,7 @@ func (g *fileGrants) resolve(tok string) (string, bool) {
 
 // resolveFilePath turns a user-selected path into an absolute, existing file
 // path. Relative paths resolve against the active pane's cwd (see
-// toolevents.ResolveSessionCWD) — no fallback to other panes. Returns an HTTP
+// toolevents.ResolveSessionCWD) -- no fallback to other panes. Returns an HTTP
 // status + message on failure.
 func resolveFilePath(p string, opts *Options, r *http.Request) (string, int, string) {
 	if p == "" {
@@ -2634,7 +2445,7 @@ func resolveFilePath(p string, opts *Options, r *http.Request) (string, int, str
 func handleFileGrant(w http.ResponseWriter, r *http.Request, opts *Options, grants *fileGrants) {
 	hostID := r.URL.Query().Get("host")
 
-	// Remote peer — relay file read through the control link.
+	// Remote peer -- relay file read through the control link.
 	if hostID != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(hostID) {
 		handleRemoteFileGrant(w, r, opts, grants, hostID)
 		return
@@ -2646,7 +2457,7 @@ func handleFileGrant(w http.ResponseWriter, r *http.Request, opts *Options, gran
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"token": grants.grant(p)})
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": grants.grant(p), "path": p})
 }
 
 // handleRemoteFileGrant fetches a file from a remote peer, writes it to a
@@ -2697,27 +2508,29 @@ func handleRemoteFileGrant(w http.ResponseWriter, r *http.Request, opts *Options
 			http.Error(w, "decode error", http.StatusInternalServerError)
 			return
 		}
-		// Write to temp file so handleFile can serve it.
-		ext := filepath.Ext(res.FileName)
-		tmp, err := os.CreateTemp("", "guppi-remote-*"+ext)
+		// Write to a private directory so callers get a safe root.
+		dir, err := os.MkdirTemp("", "termyard-remote-*")
 		if err != nil {
-			http.Error(w, "temp file error", http.StatusInternalServerError)
+			http.Error(w, "temp dir error", http.StatusInternalServerError)
 			return
 		}
-		if _, err := tmp.Write(data); err != nil {
-			tmp.Close()
-			os.Remove(tmp.Name())
+		fp := filepath.Join(dir, res.FileName)
+		if err := os.WriteFile(fp, data, 0o644); err != nil {
+			os.RemoveAll(dir)
 			http.Error(w, "write error", http.StatusInternalServerError)
 			return
 		}
-		tmp.Close()
-		// Schedule cleanup after grant TTL.
+		// Schedule cleanup after grant TTL plus a grace minute.
 		go func() {
 			time.Sleep(fileGrantTTL + time.Minute)
-			os.Remove(tmp.Name())
+			os.RemoveAll(dir)
 		}()
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": grants.grant(tmp.Name())})
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"token": grants.grant(fp),
+			"path":  fp,
+			"root":  dir,
+		})
 	case <-time.After(10 * time.Second):
 		http.Error(w, "peer file read timed out", http.StatusGatewayTimeout)
 	}
@@ -2725,7 +2538,7 @@ func handleRemoteFileGrant(w http.ResponseWriter, r *http.Request, opts *Options
 
 // handleFile serves a previously granted, non-expired file to the browser,
 // which renders it by content-type. It can ONLY serve paths minted by
-// handleFileGrant — there is no arbitrary-path read.
+// handleFileGrant -- there is no arbitrary-path read.
 //
 // Route: GET /file?token=<token>
 func handleFile(w http.ResponseWriter, r *http.Request, grants *fileGrants) {
@@ -2800,7 +2613,7 @@ func handleRemoteUpload(w http.ResponseWriter, r *http.Request, opts *Options, h
 		return
 	}
 	if !peerConn.HasCapability(peer.CapUpload) {
-		http.Error(w, "peer does not support uploads — upgrade the peer first", http.StatusUpgradeRequired)
+		http.Error(w, "peer does not support uploads -- upgrade the peer first", http.StatusUpgradeRequired)
 		return
 	}
 	if opts.Identity == nil || opts.StreamReg == nil {
@@ -2841,7 +2654,7 @@ func handleRemoteUpload(w http.ResponseWriter, r *http.Request, opts *Options, h
 			http.Error(w, "peer send queue full", http.StatusBadGateway)
 			return
 		}
-		// Context-aware setup wait — honour browser cancellation (xhr.abort).
+		// Context-aware setup wait -- honour browser cancellation (xhr.abort).
 		resolvedCh := make(chan struct {
 			conn *websocket.Conn
 			ok   bool
@@ -2946,7 +2759,7 @@ func handleRemoteUpload(w http.ResponseWriter, r *http.Request, opts *Options, h
 }
 
 func registerProxyRoutes(r chi.Router, opts *Options) {
-	// Port-forward proxy — exposes localhost-bound services through termyard's URL.
+	// Port-forward proxy -- exposes localhost-bound services through termyard's URL.
 	// Requires auth (same rule as other protected routes) so remote users can't
 	// reach internal services without a valid session.
 	if opts.PortForwardStore != nil {
@@ -2962,7 +2775,7 @@ func registerProxyRoutes(r chi.Router, opts *Options) {
 			r.Get("/proxy/{port}/*", proxyHandler)
 		}
 	}
-	// File open — capability-based: POST /file/grant mints a short-lived token
+	// File open -- capability-based: POST /file/grant mints a short-lived token
 	// for one explicitly-opened path; GET /file?token=... serves it. Same auth as
 	// the proxy above; not gated on PortForwardStore since it needs no port config.
 	grants := newFileGrants()
@@ -3105,6 +2918,10 @@ func serveAndWait(ctx context.Context, opts *Options, logger *logrus.Entry, hand
 		opts.PortForwardStore.StopAll()
 	}
 
+	if opts.WikiLite != nil {
+		opts.WikiLite.Stop()
+	}
+
 	return nil
 }
 
@@ -3151,7 +2968,7 @@ func enrichSessionsFromTracker(sessions []*model.Session, tracker *toolevents.Tr
 // LOCAL sessions whose agent process is still running: if the process is gone
 // the identity is stale (agent exited, pane reverted to a shell or a command
 // like a dev server) and must not be resurrected. REMOTE (peer) sessions are
-// never resurrected here — the origin host is authoritative and relays the
+// never resurrected here -- the origin host is authoritative and relays the
 // correct state; this host's tracker is only a mirror and may hold a stale tool
 // entry that would otherwise revive a tag the origin already cleared.
 func shouldResurrectAgentMeta(session *model.Session, localHost string) bool {

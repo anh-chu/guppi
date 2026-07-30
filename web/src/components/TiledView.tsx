@@ -22,7 +22,7 @@ interface TiledViewProps {
   onMovePanes?: (sourceKey: string, targetKey: string, edge: 'left'|'right'|'top'|'bottom') => void
   getBackend?: (key: string) => string | undefined
   getCwd?: (key: string) => string | undefined
-  onOpenFile?: (path: string, cwd?: string, hostId?: string) => boolean
+  onOpenFile?: (path: string, cwd?: string, hostId?: string, sessionName?: string) => boolean
 }
 
 const MIN_PANE_SIZE = 200 // px
@@ -469,7 +469,7 @@ export function TiledView({
             hostId={host || undefined}
             backend={getBackend?.(sessionKey)}
             fullscreen={isActive ? fullscreen : false}
-            onOpenFile={(path) => onOpenFile?.(path, getCwd?.(sessionKey), host || undefined) ?? false}
+            onOpenFile={(path) => onOpenFile?.(path, getCwd?.(sessionKey), host || undefined, name) ?? false}
             onToggleFullscreen={isActive ? onToggleFullscreen : undefined}
             keyBarEnabled={isActive}
           />

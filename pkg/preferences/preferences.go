@@ -57,8 +57,6 @@ type Preferences struct {
 	FullscreenHideAlerts    bool          `json:"fullscreen_hide_alerts"`
 	DefaultAgent            string        `json:"default_agent"`
 	AINaming                AINaming      `json:"ai_naming"`
-	WikiViewerURL           string        `json:"wiki_viewer_url"`
-	WikiAPIKey              string        `json:"wiki_api_key"`
 	// Inverted so the zero value means enabled. PUT /api/preferences decodes
 	// the body into a zero-valued Preferences and replaces the store wholesale,
 	// so any client that omits this key would persist it as false. A default-true
@@ -96,7 +94,6 @@ func Default() *Preferences {
 			Enabled: false,
 			Model:   "gpt-4o-mini",
 		},
-		WikiViewerURL: "http://localhost:3000",
 	}
 }
 

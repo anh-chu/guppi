@@ -24,8 +24,6 @@ export interface Preferences {
   lock_timeout_minutes: number
   fullscreen_hide_alerts: boolean
   default_agent: string
-  wiki_viewer_url: string
-  wiki_api_key: string
   // Inverted: absent or false means the wiki panel is on. See preferences.go.
   wiki_disabled: boolean
   ai_naming: {
@@ -60,8 +58,6 @@ export const defaultPreferences: Preferences = {
   lock_timeout_minutes: 30,
   fullscreen_hide_alerts: true,
   default_agent: 'claude',
-  wiki_viewer_url: 'http://localhost:3000',
-  wiki_api_key: '',
   wiki_disabled: false,
   ai_naming: {
     enabled: false,

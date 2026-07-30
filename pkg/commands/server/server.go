@@ -28,6 +28,7 @@ import (
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 	"github.com/anh-chu/termyard/pkg/webpush"
+	"github.com/anh-chu/termyard/pkg/wikilite"
 )
 
 func Execute(ctx context.Context, c *cli.Command) error {
@@ -36,12 +37,12 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	tracker.EnablePersistence()
 	actTracker := activity.NewTracker()
 
-	// Session daemon registry — the only session backend.
+	// Session daemon registry -- the only session backend.
 	daemonReg := pty.NewRegistry(defaultSessionDir())
 
 	// Wire up durable lifecycle store for crash detection and recovery.
 	if lcStore, err := pty.NewLifecycleStore(pty.DefaultStateDir()); err != nil {
-		logrus.WithError(err).Warn("failed to create lifecycle store — crash recovery disabled")
+		logrus.WithError(err).Warn("failed to create lifecycle store -- crash recovery disabled")
 	} else {
 		daemonReg.SetLifecycleStore(lcStore)
 		// Detect any sessions that crashed while the server was down.
@@ -229,7 +230,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		authEnabled = true
 
 		if !passwordStore.HasPassword() {
-			logrus.Info("no password set — open the dashboard in your browser to complete setup")
+			logrus.Info("no password set -- open the dashboard in your browser to complete setup")
 		}
 	}
 
@@ -274,6 +275,9 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	supervisor := peer.NewLinkSupervisor(deps)
 	supervisor.Start(ctx)
 
+	wikiSup := wikilite.NewSupervisor()
+	wikiSup.Start(ctx)
+
 	opts := &server.Options{
 		Port:             int(c.Int("port")),
 		SocketPath:       c.String("socket"),
@@ -303,6 +307,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		Detector:         detector,
 		PortForwardStore: portforward.NewStore(),
 		SchedulerStore:   schedulerStore,
+		WikiLite:         wikiSup,
 		DaemonReg:        daemonReg,
 		CWDResolver:      &daemonCWDResolver{reg: daemonReg},
 		OnDaemonOutput: func(paneID string) {
@@ -411,7 +416,7 @@ var shellNames = map[string]bool{
 }
 
 // trivialCmds are short-lived navigation/inspection commands that should never
-// drive a session rename on their own — they say nothing durable about the
+// drive a session rename on their own -- they say nothing durable about the
 // session's purpose.
 var trivialCmds = map[string]bool{
 	"ls": true, "cd": true, "pwd": true, "cat": true, "less": true,

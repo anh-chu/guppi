@@ -27,7 +27,7 @@ interface OverviewProps {
   onDismissAlert: (evt: ToolEvent) => void
   setSessionAttr: (key: string, next: { background?: boolean; hidden?: boolean }) => void
   onSessionKilled?: (key: string) => void
-  onOpenFile?: (path: string, cwd?: string, hostId?: string) => boolean
+  onOpenFile?: (path: string, cwd?: string, hostId?: string, sessionName?: string) => boolean
   // Tiled layout groups (sessionKeys per group). Used to fold non-agent
   // "tool" panes (build/dev terminals) into the agent card they were tiled with.
   layoutGroups?: { leaves: string[]; activeKey: string | null }[]
@@ -578,7 +578,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
             </svg>
           </button>
         </div>
-        <div className="min-h-0 flex-1 flex flex-col overflow-hidden"><Terminal sessionName={selected.name} hostId={selected.host} backend={selected.backend} onOpenFile={(path) => onOpenFile?.(path, sessionCwd(selected), selected.host) ?? false} /></div>
+        <div className="min-h-0 flex-1 flex flex-col overflow-hidden"><Terminal sessionName={selected.name} hostId={selected.host} backend={selected.backend} onOpenFile={(path) => onOpenFile?.(path, sessionCwd(selected), selected.host, selected.name) ?? false} /></div>
       </div>
       </>
     )}

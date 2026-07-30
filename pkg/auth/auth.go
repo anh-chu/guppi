@@ -189,7 +189,9 @@ func (sm *SessionManager) Cleanup() {
 	sm.save()
 }
 
-const cookieName = "termyard_session"
+// CookieName is termyard's session cookie. Exported so the wiki proxy can
+// strip it before forwarding a request to the wiki-viewer-lite child.
+const CookieName = "termyard_session"
 const cookieMaxAge = 86400 // 24h, matches SessionManager TTL
 
 // writeSessionCookie sets the session cookie with the standard attributes.
@@ -197,7 +199,7 @@ const cookieMaxAge = 86400 // 24h, matches SessionManager TTL
 // server-side sliding-window expiry instead of expiring 24h after login.
 func writeSessionCookie(w http.ResponseWriter, token string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
+		Name:     CookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
@@ -227,7 +229,7 @@ func Middleware(sm *SessionManager) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			cookie, err := r.Cookie(cookieName)
+			cookie, err := r.Cookie(CookieName)
 			if err != nil || !sm.Validate(cookie.Value) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
@@ -311,11 +313,11 @@ func LoginHandler(ps *PasswordStore, sm *SessionManager, secureCookies bool) htt
 // LogoutHandler returns a handler for POST /api/auth/logout.
 func LogoutHandler(sm *SessionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if cookie, err := r.Cookie(cookieName); err == nil {
+		if cookie, err := r.Cookie(CookieName); err == nil {
 			sm.Revoke(cookie.Value)
 		}
 		http.SetCookie(w, &http.Cookie{
-			Name:     cookieName,
+			Name:     CookieName,
 			Value:    "",
 			Path:     "/",
 			HttpOnly: true,
@@ -328,7 +330,7 @@ func LogoutHandler(sm *SessionManager) http.HandlerFunc {
 // CheckHandler returns a handler for GET /api/auth/check.
 func CheckHandler(sm *SessionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(cookieName)
+		cookie, err := r.Cookie(CookieName)
 		if err != nil || !sm.Validate(cookie.Value) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)

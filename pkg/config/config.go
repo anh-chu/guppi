@@ -17,6 +17,19 @@ func Dir() (string, error) {
 	return filepath.Join(home, ".config", "termyard"), nil
 }
 
+// DataDir returns the termyard data directory. The path respects
+// $XDG_DATA_HOME when set; otherwise it falls back to ~/.local/share/termyard.
+func DataDir() (string, error) {
+	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
+		return filepath.Join(dir, "termyard"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "share", "termyard"), nil
+}
+
 // WriteJSON marshals v with indentation and writes it to path with perm.
 // It preserves existing non-atomic MarshalIndent + os.WriteFile behavior.
 func WriteJSON(path string, v any, perm os.FileMode) error {

@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { pickEmbedRoot, resolveFilePath } from '../components/WikiPanel'
-import { wikiCanServeFiles } from '../hooks/useWikiHealth'
+import { pickEmbedRoot, resolveFilePath, buildWikiSrc } from '../components/WikiPanel'
 
 // wiki-viewer relativizes ?file= against ?root= and answers {"error":"Invalid
 // path"} when the file falls outside, which the panel can only show as its empty
@@ -153,28 +152,36 @@ describe('resolveFilePath: relative terminal paths', () => {
   })
 })
 
-describe('wikiCanServeFiles', () => {
-  const ok = { reachable: true, has_key: true, auth_ok: true, configured: true }
-
-  it('accepts a healthy wiki-viewer', () => {
-    expect(wikiCanServeFiles(ok)).toBe(true)
+describe('buildWikiSrc', () => {
+  it('always sets embed=1 and chrome=1', () => {
+    const src = buildWikiSrc({ root: '/home/sil/guppi' })
+    expect(src).toContain('embed=1')
+    expect(src).toContain('chrome=1')
   })
 
-  // configured describes wiki-viewer's OWN workspace root, which is irrelevant
-  // when we supply a root, and every file open supplies one. Gating on it would
-  // send files to the token tab for a wiki-viewer that serves them fine.
-  it('accepts a wiki-viewer with no workspace of its own', () => {
-    expect(wikiCanServeFiles({ ...ok, configured: false })).toBe(true)
+  it('always includes root', () => {
+    expect(buildWikiSrc({ root: '/home/sil/guppi' })).toContain('root=%2Fhome%2Fsil%2Fguppi')
   })
 
-  it('rejects offline, keyless and rejected-key instances', () => {
-    expect(wikiCanServeFiles({ ...ok, reachable: false })).toBe(false)
-    expect(wikiCanServeFiles({ ...ok, has_key: false })).toBe(false)
-    expect(wikiCanServeFiles({ ...ok, auth_ok: false })).toBe(false)
+  it('omits file when null', () => {
+    const src = buildWikiSrc({ root: '/tmp', file: null })
+    expect(src).not.toContain('file=')
   })
 
-  it('rejects an empty response rather than assuming health', () => {
-    expect(wikiCanServeFiles({})).toBe(false)
+  it('omits file when undefined', () => {
+    const src = buildWikiSrc({ root: '/tmp' })
+    expect(src).not.toContain('file=')
+  })
+
+  it('includes file when present', () => {
+    const src = buildWikiSrc({ root: '/tmp', file: '/tmp/readme.md' })
+    expect(src).toContain('file=%2Ftmp%2Freadme.md')
+  })
+
+  it('URL-encodes path components', () => {
+    const src = buildWikiSrc({ root: '/home/sil/my files', file: '/home/sil/my files/doc.txt' })
+    expect(src).toContain('root=%2Fhome%2Fsil%2Fmy+files')
+    expect(src).toContain('file=%2Fhome%2Fsil%2Fmy+files%2Fdoc.txt')
   })
 })
 
