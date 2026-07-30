@@ -241,17 +241,6 @@ func (m *Manager) broadcast(evt StateEvent) {
 	}
 }
 
-// SetRecovering broadcasts whether recovery (full-server rebuild) is in
-// progress. Frontends suspend pruning of missing sessions while recovering so a
-// not-yet-rebuilt session is not mistaken for a deliberate kill.
-func (m *Manager) SetRecovering(recovering bool) {
-	if recovering {
-		m.broadcast(StateEvent{Type: "recovery-started"})
-	} else {
-		m.broadcast(StateEvent{Type: "recovery-finished"})
-	}
-}
-
 // Notice carries a human-readable backend message to the frontend so silent
 // background failures (AI naming, session rename, etc.) are visible in the UI
 // instead of only in server logs.
@@ -755,42 +744,6 @@ func (m *Manager) GenerateGroupName(members []namer.GroupMember, current string)
 	})
 }
 
-func (m *Manager) ApplyRename(oldName, newName string) {
-	if oldName == "" || newName == "" || oldName == newName {
-		return
-	}
-
-	m.mu.Lock()
-	changed := false
-	if meta, ok := m.meta[oldName]; ok {
-		meta.Renamed = true
-		delete(m.meta, oldName)
-		m.meta[newName] = meta
-		changed = true
-	}
-	if sess, ok := m.sessions[oldName]; ok {
-		delete(m.sessions, oldName)
-		sess.Name = newName
-		m.sessions[newName] = sess
-		changed = true
-	}
-	m.mu.Unlock()
-
-	if !changed {
-		return
-	}
-
-	m.saveNames()
-	m.broadcast(StateEvent{Type: "session-renamed", Session: oldName, Data: map[string]string{"new_name": newName}})
-
-	m.mu.RLock()
-	hook := m.onRename
-	m.mu.RUnlock()
-	if hook != nil {
-		hook(oldName, newName)
-	}
-}
-
 // SetRenameHook installs an optional callback fired after a session rename is
 // applied. Used to migrate external per-session stores (e.g. shared session
 // attributes) keyed by session name.
@@ -1085,23 +1038,6 @@ func (m *Manager) GetSessionProjectPath(name string) string {
 	}
 	if meta, ok := m.meta[name]; ok {
 		return meta.ProjectPath
-	}
-	return ""
-}
-
-// SessionForPane returns the session name for a given pane ID (e.g. "%42").
-// Returns empty string if not found.
-func (m *Manager) SessionForPane(paneID string) string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, sess := range m.sessions {
-		for _, win := range sess.Windows {
-			for _, pane := range win.Panes {
-				if pane.ID == paneID {
-					return sess.Name
-				}
-			}
-		}
 	}
 	return ""
 }

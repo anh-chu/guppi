@@ -1727,9 +1727,5 @@ export class TerminalPool {
 // Singleton
 export const terminalPool = new TerminalPool()
 
-export function getTerminalPool(): TerminalPool {
-  return terminalPool
-}
-
 // Re-export keyFor as standalone function
 export const keyFor = TerminalPool.keyFor.bind(TerminalPool)

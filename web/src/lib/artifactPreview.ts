@@ -24,10 +24,6 @@ export function getArtifactKind(path: string, name?: string): ArtifactKind {
   return 'other'
 }
 
-export function isPreviewableArtifact(path: string, name?: string): boolean {
-  return getArtifactKind(path, name) !== 'other'
-}
-
 export async function grantArtifactToken(path: string, session: string, signal?: AbortSignal, host?: string): Promise<string> {
   let qs = `path=${encodeURIComponent(path)}&session=${encodeURIComponent(session)}`
   if (host) qs += `&host=${encodeURIComponent(host)}`
