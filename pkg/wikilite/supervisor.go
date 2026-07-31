@@ -219,11 +219,11 @@ func (s *Supervisor) Start(ctx context.Context) {
 // Stop terminates the child process group and waits for the supervision loop
 // to exit.
 //
-// Signalling is not optional. Pdeathsig is set on the child, but on Linux it
-// fires when the creating THREAD dies, and the Go runtime moves goroutines
-// between threads freely, so it cannot be relied on to reap the child when
-// termyard exits. Without an explicit kill here a Node process survives
-// shutdown holding its port.
+// Signalling is not optional. Pdeathsig is set on Linux, but it fires when the
+// creating THREAD dies, and the Go runtime moves goroutines between threads
+// freely, so it cannot be relied on to reap the child when termyard exits.
+// Darwin has no Pdeathsig. Without an explicit kill here a Node process
+// survives shutdown holding its port.
 func (s *Supervisor) Stop() {
 	s.stopping.Store(true)
 	if s.loopCancel != nil {
@@ -316,10 +316,7 @@ func (s *Supervisor) loop() {
 
 		cmd := exec.Command("node", bp)
 		cmd.Env = append(cmd.Environ(), "WIKI_LITE_PREFIX=/wiki")
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Setpgid:   true,
-			Pdeathsig: syscall.SIGTERM,
-		}
+		cmd.SysProcAttr = childSysProcAttr()
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
