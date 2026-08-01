@@ -580,7 +580,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // Counts consecutive snapshots in which a paneTree leaf was missing from the
   // live list. A leaf is only pruned after 2 consecutive misses, so a single
   // partial list during discovery ramp-up cannot collapse a split.
-  const missingStreakRef = useRef<Map<string, number>>(new Map())
+  const missingStreakRef = useRef<Map<string, { count: number; last: number }>>(new Map())
   const setActiveKeyRef = useRef(setActiveKey)
   setActiveKeyRef.current = setActiveKey
   const switchToGroupRef = useRef<((id: string) => void) | null>(null)
@@ -868,7 +868,10 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // snapshots before it is pruned. This is the upgrade from the prior
   // time-based 12s grace (the TODO at the old line 838).
   useEffect(() => {
-    if (sessionsLoading || pruningSuspended) return
+    // Never prune while disconnected: WS teardown can deliver a final empty or
+    // partial sessions snapshot before reconnectGrace re-arms (grace only sets
+    // on the connected=true transition), and that snapshot is not evidence.
+    if (sessionsLoading || pruningSuspended || connected !== true) return
     const validKeys = new Set(sessions.map(s => sessionKey(s)))
     if (pendingSessionRef.current) validKeys.add(pendingSessionRef.current)
 
@@ -886,14 +889,20 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       // Require a leaf to be missing across 2 consecutive non-empty snapshots
       // before pruning — a single partial list during discovery ramp-up must
       // not collapse a split. Streaks reset and clear the moment a key reappears.
+      // Consecutive snapshots must also be spaced in time: WS diff bursts can
+      // deliver two identical partial lists within milliseconds, which is one
+      // observation, not two.
       const streaks = missingStreakRef.current
+      const now = Date.now()
       const leaves = getLeaves(paneTree)
       const toRemove: string[] = []
       for (const key of leaves) {
         if (validKeys.has(key)) { streaks.delete(key); continue }
-        const next = (streaks.get(key) ?? 0) + 1
-        if (next >= 2) { toRemove.push(key); streaks.delete(key) }
-        else streaks.set(key, next)
+        const prev = streaks.get(key)
+        if (!prev) { streaks.set(key, { count: 1, last: now }); continue }
+        if (now - prev.last < 1000) continue
+        if (prev.count + 1 >= 2) { toRemove.push(key); streaks.delete(key) }
+        else streaks.set(key, { count: prev.count + 1, last: now })
       }
       if (toRemove.length > 0) {
         tracePush('prune: removing leaves', { activeGroupId: activeGroupIdRef.current, paneTreeLeaves: paneTree ? getLeaves(paneTree) : null, extra: { toRemove, validKeys: [...validKeys] } })
@@ -914,7 +923,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
 
     setSingleView(prev => (prev && !validKeys.has(prev)) ? null : prev)
 
-  }, [sessions, sessionsLoading, paneTree, singleView, pruningSuspended])
+  }, [sessions, sessionsLoading, paneTree, singleView, pruningSuspended, connected])
 
   // ─── DEBUG: log every state transition that can collapse a group ───
   // ponytail: temporary diagnostic for grouping breakouts. Single observer of
