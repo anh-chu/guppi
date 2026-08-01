@@ -1548,7 +1548,30 @@ export class TerminalPool {
     const onPaste = (e: ClipboardEvent) => {
       const items = Array.from(e.clipboardData?.items ?? [])
       const imageItem = items.find(item => item.type.startsWith('image/'))
-      if (!imageItem) return
+      if (!imageItem) {
+        // Chrome 150+ strips file/image data from paste events whose target is
+        // a hidden editable (xterm's helper textarea sits at z-index:-5), so an
+        // image-only clipboard arrives here with an empty DataTransfer. Fall
+        // back to the async Clipboard API, which is not subject to that gating.
+        // Text clipboards still carry text/plain and are handled by xterm.
+        if (items.length === 0 && navigator.clipboard?.read) {
+          const currentWs = entry.ws
+          if (!currentWs || currentWs.readyState !== WebSocket.OPEN) return
+          const gen = entry.generation
+          navigator.clipboard.read().then(async (clipItems) => {
+            for (const item of clipItems) {
+              const imageType = item.types.find(t => t.startsWith('image/'))
+              if (!imageType) continue
+              const blob = await item.getType(imageType)
+              const ext = imageType.split('/')[1]?.split('+')[0] || 'png'
+              const file = new File([blob], `pasted-image.${ext}`, { type: imageType })
+              await sendPastedImage(currentWs, file, imageType, entry, gen)
+              return
+            }
+          }).catch(() => { /* no permission or no image — nothing to paste */ })
+        }
+        return
+      }
       const file = imageItem.getAsFile()
       const currentWs = entry.ws
       if (!file || !currentWs || currentWs.readyState !== WebSocket.OPEN) return
