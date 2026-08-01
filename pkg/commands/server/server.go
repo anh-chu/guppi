@@ -630,6 +630,10 @@ func (a *daemonRegAdapter) Capture(name string) (string, error) {
 	return a.reg.Capture(name)
 }
 
+func (a *daemonRegAdapter) CaptureTail(name string, maxBytes int) (string, error) {
+	return a.reg.CaptureTail(name, maxBytes)
+}
+
 func (a *daemonRegAdapter) IsSessionDead(name string) bool {
 	return a.reg.IsSessionDead(name)
 }

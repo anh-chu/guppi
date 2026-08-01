@@ -259,30 +259,137 @@ func newRingBuffer(capacity int) *ringBuffer {
 }
 
 // Write appends data to the ring buffer, overwriting oldest data if full.
+// Uses at most two slice copies instead of per-byte modulo.
 func (r *ringBuffer) Write(data []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, b := range data {
-		r.buf[r.head] = b
-		r.head = (r.head + 1) % len(r.buf)
-		if r.size < len(r.buf) {
-			r.size++
-		} else {
-			r.tail = (r.tail + 1) % len(r.buf)
-		}
+
+	if len(data) == 0 {
+		return
 	}
+
+	n := len(r.buf)
+	if n == 0 {
+		return
+	}
+
+	m := len(data)
+	if m > n {
+		data = data[m-n:]
+		m = n
+	}
+
+	// Number of free bytes before we must overwrite.
+	free := n - r.size
+	// How much of the write is new capacity vs overwrite.
+	used := min(m, free)
+	over := m - used
+
+	// (a) Fill any remaining capacity first.
+	if used > 0 {
+		dest := r.head
+		availToEnd := n - dest
+		if used <= availToEnd {
+			copy(r.buf[dest:], data[:used])
+			dest += used
+		} else {
+			copy(r.buf[dest:], data[:availToEnd])
+			copy(r.buf[0:], data[availToEnd:used])
+			dest = used - availToEnd
+		}
+		if dest >= n {
+			dest -= n
+		}
+		r.head = dest
+		r.size += used
+	}
+
+	if over <= 0 {
+		return
+	}
+
+	// (b) Overwrite the oldest region. The per-byte loop advances both head
+	// and tail together, so after overwriting m bytes the new tail equals the
+	// new head.
+	data = data[used:]
+	dest := r.head
+	availToEnd := n - dest
+	if over <= availToEnd {
+		copy(r.buf[dest:], data)
+		dest += over
+	} else {
+		copy(r.buf[dest:], data[:availToEnd])
+		copy(r.buf[0:], data[availToEnd:])
+		dest = over - availToEnd
+	}
+	if dest >= n {
+		dest -= n
+	}
+	r.head = dest
+	r.tail = dest
 }
 
 // Snapshot returns a copy of all buffered bytes in order (oldest first).
+// Uses at most two copies instead of per-byte modulo.
 func (r *ringBuffer) Snapshot() []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.size == 0 {
 		return nil
 	}
+	if r.size == len(r.buf) {
+		// Full buffer: [tail..end] + [0..head].
+		first := len(r.buf) - r.tail
+		out := make([]byte, len(r.buf))
+		copy(out, r.buf[r.tail:])
+		copy(out[first:], r.buf[:r.head])
+		return out
+	}
+	// Partial buffer is always contiguous from tail.
 	out := make([]byte, r.size)
-	for i := 0; i < r.size; i++ {
-		out[i] = r.buf[(r.tail+i)%len(r.buf)]
+	copy(out, r.buf[r.tail:r.tail+r.size])
+	return out
+}
+
+// SnapshotTail returns the trailing maxBytes of the buffer in chronological
+// order (oldest first among the tail). Uses at most two copies.
+func (r *ringBuffer) SnapshotTail(maxBytes int) []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.size == 0 {
+		return nil
+	}
+	if maxBytes <= 0 {
+		return nil
+	}
+
+	if r.size <= maxBytes {
+		if r.size == len(r.buf) {
+			// Full buffer: [tail..end] + [0..head].
+			first := len(r.buf) - r.tail
+			out := make([]byte, len(r.buf))
+			copy(out, r.buf[r.tail:])
+			copy(out[first:], r.buf[:r.head])
+			return out
+		}
+		out := make([]byte, r.size)
+		copy(out, r.buf[r.tail:r.tail+r.size])
+		return out
+	}
+
+	// Return only the last maxBytes. Logical index i maps to
+	// physical buf[(tail+i)%n].
+	n := len(r.buf)
+	out := make([]byte, maxBytes)
+	start := r.size - maxBytes
+	startIdx := (r.tail + start) % n
+	first := n - startIdx
+	if first >= maxBytes {
+		copy(out, r.buf[startIdx:startIdx+maxBytes])
+	} else {
+		copy(out, r.buf[startIdx:])
+		copy(out[first:], r.buf[:maxBytes-first])
 	}
 	return out
 }
@@ -469,14 +576,22 @@ func (d *daemon) handleClient(conn net.Conn) {
 				_ = pty.Setsize(d.ptyFd, &pty.Winsize{Cols: cols, Rows: rows})
 			}
 		case FrameQueryBuffer:
-			// Send current ring buffer contents without disconnecting.
-			replay := d.ring.Snapshot()
-			if len(replay) > 0 {
-				frame := encodeFrame(FrameReplay, replay)
-				select {
-				case writeCh <- frame:
-				default:
-				}
+			// Send current ring buffer contents. A 4-byte big-endian uint32
+			// payload requests at most that many trailing bytes; an empty
+			// payload requests the full snapshot. New clients always receive
+			// a FrameReplay, including an empty one, so they never have to
+			// wait for a reply that will never come.
+			var replay []byte
+			if len(payload) == 4 {
+				maxBytes := int(binary.BigEndian.Uint32(payload))
+				replay = d.ring.SnapshotTail(maxBytes)
+			} else {
+				replay = d.ring.Snapshot()
+			}
+			frame := encodeFrame(FrameReplay, replay)
+			select {
+			case writeCh <- frame:
+			default:
 			}
 		case FrameClose:
 			d.shutdown()

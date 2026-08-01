@@ -1,8 +1,10 @@
 package pty
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -514,51 +516,212 @@ func (r *Registry) Kill(name string) error {
 	return nil
 }
 
+// Capture limits.
+const (
+	captureMaxPayload  = 10 * 1024 * 1024 // sanity: max 10 MiB
+	captureDialTimeout = 1 * time.Second
+	captureReadTimeout = 10 * time.Second
+	captureTailTimeout = 2 * time.Second
+)
+
+// ErrCaptureTimeout is returned when a capture or tail capture exceeds its
+// read deadline.
+var ErrCaptureTimeout = errors.New("capture timeout")
+
 // Capture connects to the daemon, sends FrameQueryBuffer, reads the
 // FrameReplay response, and returns the text content.
+// It preserves legacy byte-compatible output semantics.
 func (r *Registry) Capture(name string) (string, error) {
 	socketPath := r.SocketPath(name)
-	conn, err := net.DialTimeout("unix", socketPath, 1*time.Second)
+	conn, err := net.DialTimeout("unix", socketPath, captureDialTimeout)
 	if err != nil {
 		return "", fmt.Errorf("dial daemon socket %s: %w", socketPath, err)
 	}
 	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(captureReadTimeout)); err != nil {
+		return "", fmt.Errorf("set read deadline: %w", err)
+	}
 
-	// Send query.
-	frame := encodeFrame(FrameQueryBuffer, nil)
+	payload, err := r.capturePayload(conn)
+	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return r.legacyCleanCapture(payload), ErrCaptureTimeout
+		}
+		return "", fmt.Errorf("capture %s: %w", name, err)
+	}
+	return r.legacyCleanCapture(payload), nil
+}
+
+// CaptureTail connects to the daemon and returns at most maxBytes of the
+// trailing buffer content. It shares framing and cleaning logic with Capture
+// but avoids reading (and duplicating) the full payload for bounded previews.
+// The returned text is cleaned of ANSI sequences and control characters; the
+// first line is stripped when it would start mid-line, and partial leading
+// UTF-8 continuation bytes are removed.
+func (r *Registry) CaptureTail(name string, maxBytes int) (string, error) {
+	if maxBytes <= 0 {
+		return "", nil
+	}
+
+	socketPath := r.SocketPath(name)
+	conn, err := net.DialTimeout("unix", socketPath, captureDialTimeout)
+	if err != nil {
+		return "", fmt.Errorf("dial daemon socket %s: %w", socketPath, err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(captureTailTimeout)); err != nil {
+		return "", fmt.Errorf("set read deadline: %w", err)
+	}
+
+	// Send bounded query so the daemon replies with at most maxBytes.
+	payload := make([]byte, 4)
+	binary.BigEndian.PutUint32(payload, uint32(maxBytes))
+	frame := encodeFrame(FrameQueryBuffer, payload)
 	if _, err := conn.Write(frame); err != nil {
 		return "", fmt.Errorf("send query buffer frame: %w", err)
 	}
 
-	// Read the response header.
+	// Read response header to validate length and frame type.
 	header := make([]byte, 5)
 	if _, err := io.ReadFull(conn, header); err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return "", ErrCaptureTimeout
+		}
 		return "", fmt.Errorf("read response header: %w", err)
 	}
 
 	ftype := header[0]
 	plen := binary.BigEndian.Uint32(header[1:5])
 
-	if plen > 10*1024*1024 { // sanity: max 10 MiB
+	if plen > captureMaxPayload {
 		return "", fmt.Errorf("response too large: %d bytes", plen)
-	}
-
-	payload := make([]byte, plen)
-	if plen > 0 {
-		if _, err := io.ReadFull(conn, payload); err != nil {
-			return "", fmt.Errorf("read response payload: %w", err)
-		}
 	}
 
 	if ftype != FrameReplay {
 		return "", fmt.Errorf("unexpected frame type: %02x", ftype)
 	}
 
-	// Strip ANSI escape sequences and control chars so callers get clean text
-	// (like capture-pane).
+	if plen == 0 {
+		return "", nil
+	}
+
+	// The daemon may be older and ignore the bounded query payload. If it
+	// returns a full replay, discard its head and retain only the tail.
+	readLen := int(plen)
+	if readLen > maxBytes {
+		if _, err := io.CopyN(io.Discard, conn, int64(readLen-maxBytes)); err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				return "", ErrCaptureTimeout
+			}
+			return "", fmt.Errorf("skip replay head: %w", err)
+		}
+		readLen = maxBytes
+	}
+
+	buf := make([]byte, readLen)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return "", ErrCaptureTimeout
+		}
+		return "", fmt.Errorf("read response payload: %w", err)
+	}
+
+	// A response shorter than the requested window is complete. A response
+	// equal to the window may be either a bounded tail or an old full replay.
+	if plen < uint32(maxBytes) {
+		return r.legacyCleanCapture(buf), nil
+	}
+	return r.cleanCapture(buf), nil
+}
+
+// capturePayload sends FrameQueryBuffer and reads the full FrameReplay payload.
+// It returns the raw payload (not cleaned). On read-deadline timeout the
+// captured bytes read so far are returned along with a timeout error so that
+// callers can still use partial data if they choose.
+func (r *Registry) capturePayload(conn net.Conn) ([]byte, error) {
+	// Send query.
+	frame := encodeFrame(FrameQueryBuffer, nil)
+	if _, err := conn.Write(frame); err != nil {
+		return nil, fmt.Errorf("send query buffer frame: %w", err)
+	}
+
+	// Read the response header.
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return nil, fmt.Errorf("read response header: %w", err)
+	}
+
+	ftype := header[0]
+	plen := binary.BigEndian.Uint32(header[1:5])
+
+	if plen > captureMaxPayload {
+		return nil, fmt.Errorf("response too large: %d bytes", plen)
+	}
+
+	if ftype != FrameReplay {
+		return nil, fmt.Errorf("unexpected frame type: %02x", ftype)
+	}
+
+	payload := make([]byte, plen)
+	if plen > 0 {
+		if _, err := io.ReadFull(conn, payload); err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				// Return what we managed to read before the deadline.
+				return payload, err
+			}
+			return nil, fmt.Errorf("read response payload: %w", err)
+		}
+	}
+
+	return payload, nil
+}
+
+// cleanCapture strips ANSI escape sequences and control chars so callers get
+// clean text (like capture-pane). It also trims a partial leading UTF-8
+// continuation byte and drops the first line when it starts mid-line.
+func (r *Registry) cleanCapture(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+
+	// Strip any partial leading UTF-8 continuation byte; the prior bytes were
+	// discarded by tail capture or ended mid-run on the wire.
+	start := 0
+	for start < len(payload) && payload[start]&0xc0 == 0x80 {
+		start++
+	}
+	payload = payload[start:]
+
+	if len(payload) == 0 {
+		return ""
+	}
+
+	// Drop a leading partial line only when the bounded payload was
+	// actually truncated and starts with non-newline content that contains a
+	// newline. If payload starts with '\n', retain it. If no newline exists,
+	// retain content instead of returning empty.
+	if payload[0] != '\n' {
+		if nl := bytes.IndexByte(payload, '\n'); nl >= 0 {
+			payload = payload[nl+1:]
+		}
+	}
+
+	if len(payload) == 0 {
+		return ""
+	}
+
+	// Strip ANSI escape sequences and control chars.
 	clean := ansiRe.ReplaceAllString(string(payload), "")
 	clean = ctrlRe.ReplaceAllString(clean, "")
-	return clean, nil
+	return clean
+}
+
+// legacyCleanCapture is the original Capture cleaning behavior, kept for
+// compatibility. It does not strip partial leading bytes/lines.
+func (r *Registry) legacyCleanCapture(payload []byte) string {
+	clean := ansiRe.ReplaceAllString(string(payload), "")
+	clean = ctrlRe.ReplaceAllString(clean, "")
+	return clean
 }
 
 // CrashedSessions returns lifecycle records for all sessions that crashed
