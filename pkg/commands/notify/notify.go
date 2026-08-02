@@ -18,6 +18,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v3"
 
+	"github.com/anh-chu/termyard/pkg/auth"
 	"github.com/anh-chu/termyard/pkg/common"
 	"github.com/anh-chu/termyard/pkg/socket"
 	"github.com/anh-chu/termyard/pkg/toolevents"
@@ -506,22 +507,18 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	log := logrus.WithField("component", "notify")
 
 	log.WithFields(logrus.Fields{
-		"tool": tool, "status": status, "message": message,
+		"tool": tool, "status": status,
 		"event-data-set": c.IsSet("event-data"), "stdin-set": c.Bool("stdin"),
 	}).Trace("notify command invoked")
 
 	// If --event-data is set, parse the JSON blob (passed as argv by agents like Codex)
 	if c.IsSet("event-data") {
 		rawData := c.String("event-data")
-		log.WithField("raw_event_data", rawData).Trace("parsing --event-data")
 
 		evtStatus, evtMessage, evtAgentMsg, err := parseEventData(tool, rawData)
 		if err != nil {
 			return fmt.Errorf("event-data parse: %w", err)
 		}
-		log.WithFields(logrus.Fields{
-			"parsed_status": evtStatus, "parsed_message": evtMessage,
-		}).Trace("event-data parsed")
 
 		if !c.IsSet("status") {
 			status = evtStatus
@@ -551,12 +548,6 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		if err != nil {
 			return fmt.Errorf("stdin parse: %w", err)
 		}
-		log.WithFields(logrus.Fields{
-			"parsed_tool": res.Tool, "parsed_status": res.Status,
-			"parsed_message":     res.Message,
-			"parsed_user_prompt": res.UserPrompt != "", "parsed_agent_message": res.AgentMessage != "",
-		}).Trace("stdin event parsed")
-
 		tool = res.Tool
 		stdinFiles = res.Files
 		if !c.IsSet("status") {
@@ -622,7 +613,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 
 	log.WithFields(logrus.Fields{
 		"tool": tool, "status": status, "session": session,
-		"window": window, "pane": pane, "message": message,
+		"window": window, "pane": pane,
 	}).Trace("sending event")
 
 	socketPath := c.String("socket")
@@ -647,8 +638,16 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	if resp == nil {
 		url := fmt.Sprintf("%s/api/tool-event", serverURL)
 		log.WithField("url", url).Trace("sending via HTTP")
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("failed to build notify request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if token, err := auth.ReadNotifyToken(); err == nil && token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		httpClient := &http.Client{Timeout: 1 * time.Second}
-		resp, err = httpClient.Post(url, "application/json", bytes.NewReader(body))
+		resp, err = httpClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("failed to notify termyard: %w", err)
 		}

@@ -220,6 +220,8 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		authEnabled   bool
 		passwordStore *auth.PasswordStore
 		sessionMgr    *auth.SessionManager
+		authLimiter   *auth.Limiter
+		notifyToken   string
 	)
 	if !c.Bool("no-auth") {
 		passwordStore, err = auth.NewPasswordStore()
@@ -228,6 +230,25 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		}
 		sessionMgr = auth.NewSessionManager(24 * time.Hour)
 		authEnabled = true
+		authLimiter = auth.NewLimiter()
+
+		notifyToken, err = auth.LoadOrCreateNotifyToken()
+		if err != nil {
+			logrus.WithError(err).Warn("failed to load notify token; TCP notify fallback unavailable")
+		}
+
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sessionMgr.Cleanup()
+				}
+			}
+		}()
 
 		if !passwordStore.HasPassword() {
 			logrus.Info("no password set -- open the dashboard in your browser to complete setup")
@@ -294,8 +315,11 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		OrderStore:       orderStore,
 		GroupStore:       groupStore,
 		AuthEnabled:      authEnabled,
+		DebugPprof:       c.Bool("debug-pprof"),
 		PasswordStore:    passwordStore,
 		SessionMgr:       sessionMgr,
+		AuthLimiter:      authLimiter,
+		NotifyToken:      notifyToken,
 		Identity:         nodeIdentity,
 		PeerStore:        peerStore,
 		PeerMgr:          peerMgr,
@@ -395,6 +419,11 @@ func init() {
 			Name:    "tls-key",
 			Usage:   "Path to a TLS private key file (PEM); pair with --tls-cert",
 			Sources: cli.EnvVars("TERMYARD_TLS_KEY"),
+		},
+		&cli.BoolFlag{
+			Name:    "debug-pprof",
+			Usage:   "Mount /debug/pprof behind auth and loopback (off by default)",
+			Sources: cli.EnvVars("TERMYARD_DEBUG_PPROF"),
 		},
 	}
 
