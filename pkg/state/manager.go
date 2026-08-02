@@ -24,7 +24,17 @@ type SessionMetadata struct {
 	UserSetName      bool      // user manually set DisplayName; AI must not overwrite
 	NameAssigned     bool      // AI naming has run at least once (informational/persisted)
 	Renamed          bool      // underlying session was renamed; one-shot to avoid key churn
-	LastNamedAt      time.Time // last AI naming attempt; debounces continuous refresh (not persisted)
+	LastNamedAt      time.Time // last time a generated name was successfully applied (not persisted)
+
+	// LastNamingAttemptAt records the most recent start of an automatic naming
+	// attempt, whether it succeeded or failed. It drives the debounce/backoff
+	// timer for automatic naming and is not persisted.
+	LastNamingAttemptAt time.Time `json:"-"`
+
+	// NamingFailureCount tracks consecutive automatic naming failures for this
+	// session. It resets to zero when an automatic naming attempt succeeds.
+	// It is not persisted and does not affect manual/explicit renames.
+	NamingFailureCount int `json:"-"`
 }
 
 // Manager holds the central state tree.

@@ -332,7 +332,6 @@ func (m *Manager) UpdateSessionMetadataFromEvent(evt *toolevents.Event) {
 			if !firstPrompt && !meta.UserSetName &&
 				time.Since(meta.LastNamedAt) > nameRefreshInterval {
 				nameRefresh = true
-				meta.LastNamedAt = time.Now()
 			}
 		}
 	}
@@ -344,7 +343,6 @@ func (m *Manager) UpdateSessionMetadataFromEvent(evt *toolevents.Event) {
 		if !firstPrompt && !nameRefresh && !meta.UserSetName && evt.Status == toolevents.StatusCompleted &&
 			time.Since(meta.LastNamedAt) > nameRefreshInterval {
 			nameRefresh = true
-			meta.LastNamedAt = time.Now()
 		}
 	}
 

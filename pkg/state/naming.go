@@ -112,6 +112,68 @@ func (m *Manager) SetRenameHook(fn func(oldName, newName string)) {
 	m.mu.Unlock()
 }
 
+// automaticNamingBackoff returns the cooldown before the next automatic naming
+// attempt. failureCount is the number of consecutive failures since the last
+// success. Count 0 means normal cadence; higher counts increase delay up to a
+// 15-minute ceiling.
+func automaticNamingBackoff(failureCount int) time.Duration {
+	switch {
+	case failureCount <= 0:
+		return nameRefreshInterval
+	case failureCount == 1:
+		return time.Minute
+	default:
+		d := time.Duration(1<<(failureCount-1)) * time.Minute
+		if d > 15*time.Minute {
+			d = 15 * time.Minute
+		}
+		return d
+	}
+}
+
+// beginAutomaticNamingAttempt checks whether an automatic naming attempt is
+// eligible for sessionName and, if so, records LastNamingAttemptAt under the
+// manager write lock. It also enforces the normal 45-second successful-refresh
+// debounce via LastNamedAt. Manual/explicit renames bypass this entirely.
+func (m *Manager) beginAutomaticNamingAttempt(sessionName string, now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	meta := m.meta[sessionName]
+
+	interval := automaticNamingBackoff(meta.NamingFailureCount)
+	if !meta.LastNamingAttemptAt.IsZero() && now.Before(meta.LastNamingAttemptAt.Add(interval)) {
+		return false
+	}
+	if !meta.LastNamedAt.IsZero() && now.Before(meta.LastNamedAt.Add(nameRefreshInterval)) {
+		return false
+	}
+
+	meta.LastNamingAttemptAt = now
+	m.meta[sessionName] = meta
+	return true
+}
+
+// recordAutomaticNamingFailure increments the consecutive failure count for a
+// session and logs the failure silently (no frontend notice). Callers must have
+// already passed beginAutomaticNamingAttempt so that LastNamingAttemptAt is set.
+func (m *Manager) recordAutomaticNamingFailure(sessionName, kind string, err error) {
+	m.mu.Lock()
+	meta := m.meta[sessionName]
+	meta.NamingFailureCount++
+	count := meta.NamingFailureCount
+	attemptAt := meta.LastNamingAttemptAt
+	m.meta[sessionName] = meta
+	m.mu.Unlock()
+
+	nextEligible := attemptAt.Add(automaticNamingBackoff(count))
+	logrus.WithFields(logrus.Fields{
+		"session":        sessionName,
+		"kind":           kind,
+		"failure_count":  count,
+		"next_eligible":  nextEligible,
+	}).WithError(err).Warn("automatic session naming failed")
+}
+
 // triggerAgentNaming runs the AI namer for an agent session, on its first user
 // prompt and on later completed turns as the work evolves. It refreshes the
 // DisplayName each time; the underlying rename stays one-shot (guarded by
@@ -150,11 +212,15 @@ func (m *Manager) triggerAgentNaming(sessionName string) {
 		}
 	}
 
+	if !m.beginAutomaticNamingAttempt(sessionName, time.Now()) {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	name, err := n.Generate(ctx, nc)
 	if err != nil {
-		m.notice("warn", "ai-naming", sessionName, fmt.Sprintf("agent session naming failed: %v", err))
+		m.recordAutomaticNamingFailure(sessionName, "agent", err)
 		return
 	}
 	logrus.WithFields(logrus.Fields{"session": sessionName, "name": name}).Info("agent session named")
@@ -180,6 +246,7 @@ func (m *Manager) applyGeneratedName(sessionName, displayName string) {
 		return
 	}
 	meta.LastNamedAt = time.Now()
+	meta.NamingFailureCount = 0
 	nameChanged := meta.DisplayName != displayName
 	meta.DisplayName = displayName
 	meta.NameAssigned = true
@@ -232,33 +299,20 @@ func (m *Manager) TriggerShellNaming(sessionName string, commands []string) {
 		}
 	}
 
+	if !m.beginAutomaticNamingAttempt(sessionName, time.Now()) {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	name, err := n.Generate(ctx, nc)
 	if err != nil {
-		m.notice("warn", "ai-naming", sessionName, fmt.Sprintf("shell session naming failed: %v", err))
+		m.recordAutomaticNamingFailure(sessionName, "shell", err)
 		return
 	}
 	logrus.WithFields(logrus.Fields{"session": sessionName, "name": name}).Info("shell session named")
 
-	m.mu.Lock()
-	meta = m.meta[sessionName]
-	if meta.UserSetName {
-		m.mu.Unlock()
-		return
-	}
-	if meta.DisplayName == name {
-		m.mu.Unlock()
-		return
-	}
-	meta.DisplayName = name
-	m.meta[sessionName] = meta
-	if s := m.sessions[sessionName]; s != nil {
-		s.DisplayName = name
-	}
-	m.mu.Unlock()
-	m.saveNames()
-	m.broadcast(StateEvent{Type: "sessions-changed"})
+	m.applyGeneratedName(sessionName, name)
 }
 
 // SetDisplayName stores a manual display name for a session and flags it so the
