@@ -1,7 +1,6 @@
 package recovery
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,10 +10,9 @@ import (
 	"github.com/anh-chu/termyard/pkg/config"
 )
 
-const CurrentVersion = 1
+const currentVersion = 1
 
-// PaneSnapshot is manifest view of one pane.
-type PaneSnapshot struct {
+type paneSnapshot struct {
 	ID             string `json:"id"`
 	Index          int    `json:"index"`
 	Active         bool   `json:"active"`
@@ -24,77 +22,69 @@ type PaneSnapshot struct {
 	AgentType      string `json:"agent_type,omitempty"`
 }
 
-// WindowSnapshot is manifest view of one window.
-type WindowSnapshot struct {
+type windowSnapshot struct {
 	Index  int            `json:"index"`
 	Name   string         `json:"name"`
 	Active bool           `json:"active"`
 	Layout string         `json:"layout"`
-	Panes  []PaneSnapshot `json:"panes"`
+	Panes  []paneSnapshot `json:"panes"`
 }
 
-// SessionSnapshot is manifest view of one session.
-type SessionSnapshot struct {
+type sessionSnapshot struct {
 	Name           string           `json:"name"`
 	ProjectPath    string           `json:"project_path,omitempty"`
 	AgentType      string           `json:"agent_type,omitempty"`
 	AgentSessionID string           `json:"agent_session_id,omitempty"`
 	ScheduleID     string           `json:"schedule_id,omitempty"`
-	Windows        []WindowSnapshot `json:"windows"`
+	Windows        []windowSnapshot `json:"windows"`
 }
 
-// Manifest stores crash-recovery snapshot data.
-type Manifest struct {
+// manifest stores crash-recovery snapshot data.
+type manifest struct {
 	Version    int               `json:"version"`
 	UpdatedAt  time.Time         `json:"updated_at"`
 	Generation uint64            `json:"generation"`
-	Sessions   []SessionSnapshot `json:"sessions"`
+	Sessions   []sessionSnapshot `json:"sessions"`
 }
 
-// ManifestPath returns manifest file path.
-func ManifestPath() (string, error) {
+func manifestPath() (string, error) {
 	dir, err := config.Dir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "session-manifest.json"), nil
+	return filepath.Join(dir, "recovery-manifest.json"), nil
 }
 
-// Load reads manifest from disk.
-func Load() (*Manifest, error) {
-	path, err := ManifestPath()
+func load() (*manifest, error) {
+	path, err := manifestPath()
 	if err != nil {
 		return nil, err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Manifest{Version: CurrentVersion}, nil
+			return &manifest{Version: currentVersion}, nil
 		}
 		return nil, err
 	}
-	var m Manifest
+	var m manifest
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 	if m.Version == 0 {
-		m.Version = CurrentVersion
+		m.Version = currentVersion
 	}
 	return &m, nil
 }
 
-// ForgetSession removes a session from the persisted manifest synchronously.
+// ForgetSession removes a session from the persisted recovery manifest synchronously.
 //
-// Call this on an intentional kill so the crash-recovery rebuilder cannot
-// resurrect it. The periodic Snapshotter would eventually drop it (~8s), but a
-// faster recovery probe (or a last-session kill that takes the server down
-// with it) can rebuild from a stale manifest before that. Removing it here
-// closes that race.
+// Call this on an intentional kill so crash recovery cannot resurrect it.
 func ForgetSession(name string) error {
 	if name == "" {
 		return nil
 	}
-	m, err := Load()
+	m, err := load()
 	if err != nil {
 		return err
 	}
@@ -116,15 +106,14 @@ func ForgetSession(name string) error {
 	m.Sessions = filtered
 	m.Generation++
 	m.UpdatedAt = time.Now()
-	return m.Save()
+	return m.save()
 }
 
-// Save writes manifest atomically.
-func (m *Manifest) Save() error {
+func (m *manifest) save() error {
 	if m.Version == 0 {
-		m.Version = CurrentVersion
+		m.Version = currentVersion
 	}
-	path, err := ManifestPath()
+	path, err := manifestPath()
 	if err != nil {
 		return err
 	}
@@ -148,22 +137,4 @@ func (m *Manifest) Save() error {
 		return err
 	}
 	return nil
-}
-
-type manifestFingerprint struct {
-	Version  int               `json:"version"`
-	Sessions []SessionSnapshot `json:"sessions"`
-}
-
-func (m *Manifest) fingerprint() string {
-	if m == nil {
-		return ""
-	}
-	view := manifestFingerprint{Version: m.Version, Sessions: m.Sessions}
-	data, err := json.Marshal(view)
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%x", sum[:])
 }
