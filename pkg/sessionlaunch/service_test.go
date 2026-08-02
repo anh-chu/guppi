@@ -175,7 +175,7 @@ func TestCreateRemoteSuccess(t *testing.T) {
 	s.Remote = remote.Launch
 	s.Fanout = (&fanoutSpy{}).Fanout
 
-	res, err := s.Create(context.Background(), Request{Host: "peer-1", Name: "foo", ScheduleID: "sched-1"})
+	res, err := s.Create(context.Background(), Request{Host: "peer-1", LocalHost: "local-fingerprint", Name: "foo", ScheduleID: "sched-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,6 +192,57 @@ func TestCreateRemoteSuccess(t *testing.T) {
 		t.Fatalf("unexpected attr calls: %+v", a.calls)
 	}
 	if len(h.broadcasts) != 1 || h.broadcasts[0]["key"] != "peer-1/foo" {
+		t.Fatalf("unexpected broadcasts: %+v", h.broadcasts)
+	}
+}
+
+func TestCreateLocalHostQualifiedRequestUsesLocalDaemon(t *testing.T) {
+	s, d, _, a, h := newService()
+
+	var namesHost string
+	s.Names = func(host string) []string {
+		namesHost = host
+		return nil
+	}
+	var remoteCalled int
+	s.Remote = func(ctx context.Context, req Request) (Result, error) {
+		remoteCalled++
+		t.Fatalf("remote launch should not be called for local host, got req=%+v", req)
+		return Result{}, nil
+	}
+
+	res, err := s.Create(context.Background(), Request{
+		Name:       "shell",
+		Host:       "local-fingerprint",
+		LocalHost:  "local-fingerprint",
+		ScheduleID: "sched-1",
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if remoteCalled != 0 {
+		t.Fatalf("remote launch called %d times", remoteCalled)
+	}
+	if len(d.created) != 1 {
+		t.Fatalf("expected one local daemon create, got %d", len(d.created))
+	}
+	if d.created[0].name != res.Name {
+		t.Fatalf("resolved name mismatch: result %q, daemon created %q", res.Name, d.created[0].name)
+	}
+	if res.Remote {
+		t.Fatalf("expected local result")
+	}
+	if res.Host != "" {
+		t.Fatalf("result.Host = %q, want empty", res.Host)
+	}
+	if namesHost != "" {
+		t.Fatalf("Names called with %q, want empty host", namesHost)
+	}
+	wantKey := "local-fingerprint/" + res.Name
+	if len(a.calls) != 1 || a.calls[0].key != wantKey || a.calls[0].scheduleID != "sched-1" {
+		t.Fatalf("unexpected attr calls: %+v", a.calls)
+	}
+	if len(h.broadcasts) != 1 || h.broadcasts[0]["key"] != wantKey {
 		t.Fatalf("unexpected broadcasts: %+v", h.broadcasts)
 	}
 }
