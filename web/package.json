@@ -14,7 +14,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:ci": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@xterm/addon-clipboard": "^0.2.0",
