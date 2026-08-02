@@ -101,6 +101,7 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"GET /api/update",
 		"GET /api/version",
 		"GET /api/wiki/status",
+		"GET /debug/*",
 		"GET /file",
 		"GET /proxy/{port}",
 		"GET /proxy/{port}/*",

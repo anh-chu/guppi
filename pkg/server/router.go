@@ -34,7 +34,8 @@ func BuildRouter(ctx context.Context, opts *Options) (chi.Router, *ws.Hub, error
 	r.Use(chimiddleware.RequestID)
 
 	// /debug/pprof is off by default; when enabled it requires session auth
-	// (if auth is on) and a loopback source.
+	// (if auth is on) and a loopback source. When disabled, block /debug so the
+	// SPA catch-all does not serve index.html for pprof URLs.
 	if opts.DebugPprof {
 		debugRouter := chi.NewRouter()
 		debugRouter.Use(func(next http.Handler) http.Handler {
@@ -51,6 +52,8 @@ func BuildRouter(ctx context.Context, opts *Options) (chi.Router, *ws.Hub, error
 		}
 		debugRouter.Mount("/", chimiddleware.Profiler())
 		r.Mount("/debug", debugRouter)
+	} else {
+		r.Get("/debug/*", http.NotFound)
 	}
 
 	// Start background goroutines exactly where Run used to start them.
