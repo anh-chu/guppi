@@ -43,7 +43,7 @@ dist install anh-chu/termyard
 
 ### From source
 
-Requires [Go](https://go.dev/) 1.25+ and [Node.js](https://nodejs.org/) 18+.
+Requires [Go](https://go.dev/) 1.25+ and [Node.js](https://nodejs.org/) 24+ / npm 11+.
 
 ```bash
 git clone https://github.com/anh-chu/termyard.git
@@ -62,7 +62,7 @@ termyard server
 
 Open `http://localhost:7654`. On first launch you set a password, then Termyard walks you through agent setup.
 
-Termyard serves plain HTTP. For remote access, put it behind a reverse proxy (Caddy, nginx) or an overlay network like [Tailscale](https://tailscale.com/) or WireGuard. Those layers also give you encryption. See the [FAQ](#faq) below.
+By default Termyard serves plain HTTP. For LAN or trusted local use you can enable built-in TLS with `--tls` (self-signed) or `--tls-cert` / `--tls-key` (your own certificate). For production remote access, put it behind a reverse proxy (Caddy, nginx) or an overlay network like [Tailscale](https://tailscale.com/) or WireGuard. See the [FAQ](#faq) below.
 
 ### 2. Wire up your agents
 
@@ -146,20 +146,27 @@ Alerts are live server state. They always reflect the current status and survive
 | ----------------------------- | ----------------------- | ---------------------------------- |
 | `TERMYARD_PORT`               | `7654`                  | HTTP server port                   |
 | `TERMYARD_SOCKET`             | auto                    | Unix socket path for local CLI     |
-| `TERMYARD_DISCOVERY_INTERVAL` | `2`                     | Session polling interval (seconds) |
 | `TERMYARD_URL`                | `http://localhost:7654` | Server URL for notify/agent-setup  |
 | `TERMYARD_NO_AUTH`            | `false`                 | Disable authentication             |
+| `TERMYARD_TLS`                | `false`                 | Serve HTTPS with a self-signed cert |
+| `TERMYARD_TLS_CERT`           |                         | Path to a TLS certificate (PEM)    |
+| `TERMYARD_TLS_KEY`            |                         | Path to a TLS private key (PEM)    |
+
+Session discovery polls the daemon registry every 2 seconds; this interval is not currently configurable.
 
 ### CLI flags
 
 ```
 termyard server [flags]
   -p, --port int                  HTTP server port (default 7654)
-      --socket string             Unix socket path (auto-detected if omitted)
+      --socket string             Unix socket path for local notify CLI (auto-detected if omitted)
       --no-auth                   Disable authentication (not recommended for remote access)
+      --tls                       Serve HTTPS with a self-signed cert
+      --tls-cert string           Path to a TLS certificate file (PEM)
+      --tls-key string            Path to a TLS private key file (PEM)
 ```
 
-Multi-host peering is configured in the dashboard (**Settings → Machines**). Peer records live in `~/.config/termyard/peers.json` and are managed entirely by the UI. There are no `--hub` or `--tls-*` flags and no `termyard pair` or `termyard peers` commands. See [docs/multi-host.md](docs/multi-host.md).
+Multi-host peering is configured in the dashboard (**Settings → Machines**). Peer records live in `~/.config/termyard/peers.json` and are managed entirely by the UI. There are no `--hub` or peering CLI commands. See [docs/multi-host.md](docs/multi-host.md).
 
 ### Run as a service
 
@@ -177,6 +184,8 @@ termyard update                 # update to the latest release
 termyard update --check         # check without installing
 termyard update --version v0.2.0
 ```
+
+Stable releases are published by the `v*` tag-triggered GoReleaser workflow. To cut a release, update `pkg/common/version.go` and `web/package.json`, run `./scripts/release.sh` to validate the files, commit, tag `vX.Y.Z`, and push the tag.
 
 ### Keyboard shortcuts
 
@@ -202,7 +211,7 @@ termyard notify -t codex -s active
 termyard notify -t claude -s completed
 ```
 
-More flags carry session context for hooks: `--user-prompt` (the user's first message, set once, becomes the task label), `--agent-message` (the agent's latest reply), `--stdin` and `--event-data` (read a hook payload as JSON), `--agent-session-id`, plus `--session` / `--window` / `--pane` to override auto-detection.
+`termyard notify` prefers the local Unix socket and falls back to HTTP only when the socket is unreachable. More flags carry session context for hooks: `--user-prompt` (the user's first message, set once, becomes the task label), `--agent-message` (the agent's latest reply), `--stdin` and `--event-data` (read a hook payload as JSON), `--agent-session-id`, plus `--session` / `--window` / `--pane` to override auto-detection.
 
 ### Copying text from the terminal
 
@@ -224,12 +233,10 @@ Click the lock in the status bar (or `Ctrl+L`) to sign out. Auto-lock after idle
 
 ### How do I get HTTPS or remote access?
 
-Termyard serves plain HTTP and the peer link runs over plain WebSocket. For encryption or cross-network reach, put one of these in front of it:
+For LAN or trusted local use, start the server with `--tls` to use a self-signed certificate, or `--tls-cert` / `--tls-key` to use your own. For production remote access, put one of these in front of it:
 
 - **Tailscale / WireGuard**: stable hostnames, end-to-end encryption, no proxy config. Recommended.
 - **Reverse proxy**: Caddy or nginx terminating TLS in front of `localhost:7654`.
-
-There is no built-in TLS termination or certificate generation.
 
 ### Can I run Termyard without a password?
 
@@ -253,7 +260,7 @@ Open **Settings → Machines**, find the machine, and click **Forget**. The forg
 
 ```bash
 # Frontend dev server (hot reload)
-cd web && npm install && npm run dev
+cd web && npm ci && npm run dev
 
 # Go server
 go run . server

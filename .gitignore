@@ -1,6 +1,7 @@
+# IDE / build artifacts
 .idea/
 dist/
-public/
+/public/
 .env*
 *.key
 tmp/
@@ -11,22 +12,23 @@ pkg/server/dist/*
 .dmux/
 testing
 node_modules
-.claude
 logo.jpg
 build.sh
 notes/
 
-# codesight generated AI context
+# Generated agent/tooling state
+.claude/
 .codesight/
+.omc/
+.omc/sessions/
+.omx/
+.omx/logs/
+.omx/state/
+.omx/metrics.json
+.pi/
+.handoffs/
+.proof/
+graphify-out/
 
 # compiled binary
 /termyard
-
-# agent artifacts
-.handoffs/
-.pi/tasks/
-
-# agent/tooling scratch
-.pi/
-.proof/
-graphify-out/

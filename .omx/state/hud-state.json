@@ -1,6 +1,0 @@
-{
-  "last_turn_at": "2026-04-09T15:42:32.591Z",
-  "turn_count": 56,
-  "last_progress_at": "2026-04-09T15:42:32.591Z",
-  "last_agent_output": "Fixed the guppi session launcher in [pkg/tmux/client.go](/home/sil/guppi/pkg/tmux/client.go) and upd"
-}
