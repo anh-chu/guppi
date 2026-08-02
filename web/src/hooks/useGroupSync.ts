@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
+import type { WorkspaceAction } from '../state/workspaceReducer'
 import type { PaneTree } from '../lib/paneTree'
 
 export type GroupRecord = {
@@ -14,19 +15,27 @@ function toGroups(body: unknown): GroupRecordMap {
   return body && typeof body === 'object' ? (body as GroupRecordMap) : {}
 }
 
-export function useGroupSync(authenticated: boolean) {
-  const [groups, setGroups] = useState<GroupRecordMap>({})
-  const [loaded, setLoaded] = useState(false)
+export function useGroupSync(
+  authenticated: boolean,
+  dispatch: React.Dispatch<WorkspaceAction>,
+) {
+  const abortRef = useRef<AbortController | null>(null)
 
   const refresh = useCallback(async () => {
+    if (!authenticated) return
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
     try {
-      const res = await fetch('/api/groups')
+      const res = await fetch('/api/groups', { signal: controller.signal })
       if (!res.ok) return
       const body = await res.json()
-      setGroups(toGroups(body))
-      setLoaded(true)
-    } catch {}
-  }, [])
+      if (controller.signal.aborted) return
+      dispatch({ type: 'groups/snapshot', groups: toGroups(body) })
+    } catch {
+      // Ignore network errors; groups will be refreshed on reconnect.
+    }
+  }, [authenticated, dispatch])
 
   useEffect(() => {
     if (!authenticated) return
@@ -34,17 +43,6 @@ export function useGroupSync(authenticated: boolean) {
   }, [authenticated, refresh])
 
   const mutate = useCallback(async (body: Record<string, unknown>) => {
-    const id = String(body.id)
-    const op = String(body.op)
-    setGroups(prev => {
-      if (op === 'delete') {
-        const next = { ...prev }
-        delete next[id]
-        return next
-      }
-      const current = prev[id] ?? { tree: { type: 'leaf', sessionKey: '' } as PaneTree }
-      return { ...prev, [id]: { ...current, ...(body.tree !== undefined ? { tree: body.tree as PaneTree } : {}), ...(body.name !== undefined ? { name: body.name as string } : {}), ...(body.rank !== undefined ? { rank: body.rank as string } : {}) } }
-    })
     try {
       const res = await fetch('/api/groups', {
         method: 'POST',
@@ -53,17 +51,16 @@ export function useGroupSync(authenticated: boolean) {
       })
       if (!res.ok) return
       const next = await res.json()
-      setGroups(toGroups(next))
-      setLoaded(true)
+      dispatch({ type: 'groups/snapshot', groups: toGroups(next) })
     } catch {
       refresh()
     }
-  }, [refresh])
+  }, [dispatch, refresh])
 
   const setTree = useCallback((id: string, tree: PaneTree) => mutate({ id, op: 'tree', tree }), [mutate])
   const setName = useCallback((id: string, name: string) => mutate({ id, op: 'name', name }), [mutate])
   const setRank = useCallback((id: string, rank: string) => mutate({ id, op: 'rank', rank }), [mutate])
   const deleteGroup = useCallback((id: string) => mutate({ id, op: 'delete' }), [mutate])
 
-  return { groups, loaded, refresh, setTree, setName, setRank, deleteGroup }
+  return { refresh, setTree, setName, setRank, deleteGroup }
 }

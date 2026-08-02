@@ -15,7 +15,8 @@ import { HelpModal } from './components/HelpModal'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
-import { useSessions, Session, sessionKey, parseSessionKey, optimisticSession, sessionCwd } from './hooks/useSessions'
+import { Session, sessionKey, parseSessionKey, optimisticSession, sessionCwd } from './hooks/useSessions'
+import { useWorkspace } from './hooks/useWorkspace'
 import { useHosts } from './hooks/useHosts'
 import { useToolEvents } from './hooks/useToolEvents'
 import { useActivity } from './hooks/useActivity'
@@ -26,7 +27,6 @@ import { usePreferencesProvider, usePreferences, PreferencesContext } from './ho
 import { useAuth } from './hooks/useAuth'
 import { useSessionAttrs } from './hooks/useSessionAttrs'
 import { useSessionOrder } from './hooks/useSessionOrder'
-import { useGroupSync } from './hooks/useGroupSync'
 import { Toasts, Toast } from './components/Toasts'
 import { RecoveryPanel } from './components/RecoveryPanel'
 import { useCrashedSessions } from './hooks/useCrashedSessions'
@@ -46,29 +46,6 @@ type LayoutGroup = {
   activeKey: string | null
   name: string | undefined
 }
-
-// ─── DEBUG: reload-surviving trace ring buffer for grouping breakouts ───
-// ponytail: temporary diagnostic. Remove once the breakout root cause is
-// confirmed and fixed. Keeps the last 200 state-transition events in
-// localStorage under termyard:debug-group-trace so we can read what
-// actually happened across the reload that lost the split.
-const DEBUG_TRACE_KEY = 'termyard:debug-group-trace'
-const DEBUG_TRACE_MAX = 200
-interface DebugTraceEntry { t: string; src: string; activeGroupId?: string; paneTreeLeaves?: string[] | null; singleView?: string | null; view?: string; syncedGroupIds?: string[]; syncedGroupLeafCounts?: Record<string, number>; validKeysCount?: number; activeGroupLeaves?: string[] | null; extra?: Record<string, unknown> }
-function tracePush(src: string, fields: Omit<DebugTraceEntry, 't' | 'src'> = {}) {
-  try {
-    const raw = localStorage.getItem(DEBUG_TRACE_KEY)
-    const entries: DebugTraceEntry[] = raw ? JSON.parse(raw) : []
-    entries.push({ t: new Date().toISOString(), src, ...fields })
-    while (entries.length > DEBUG_TRACE_MAX) entries.shift()
-    localStorage.setItem(DEBUG_TRACE_KEY, JSON.stringify(entries))
-  } catch { /* ignore */ }
-}
-// expose for console inspection: (window as any).termyardDumpTrace()
-;(window as unknown as { termyardDumpTrace?: () => DebugTraceEntry[] }).termyardDumpTrace = () => {
-  try { return JSON.parse(localStorage.getItem(DEBUG_TRACE_KEY) || '[]') } catch { return [] }
-}
-// ─── /DEBUG ───
 
 function getViewFromPath(): { view: View; sessionKey: string | null } {
   if (window.location.pathname === '/settings') {
@@ -97,65 +74,37 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
 type WikiTarget = { path: string | null; cwd?: string; nonce: number; hostId?: string; session?: string }
 
 function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
-  const { sessions, loading: sessionsLoading, refresh, upsertSession, removeSession } = useSessions()
+  const workspace = useWorkspace(authenticated)
+  const { state: workspaceState, actions: workspaceActions, groupSync } = workspace
+  const { sessions, loading: sessionsLoading, groups: syncedGroups, groupsLoaded, view, wiki } = workspaceState
+  const { currentView, settingsOpen, paneTree, activeKey, singleView, activeGroupId } = view
+  const { target: wikiTarget } = wiki
+
+  // Thin wrappers keep the rest of the file using the old variable names.
+  const setPaneTree = useCallback((tree: PaneTree | null | ((prev: PaneTree | null) => PaneTree | null)) => {
+    const next = typeof tree === 'function' ? tree(workspaceState.view.paneTree) : tree
+    workspaceActions.setPaneTree(next)
+  }, [workspaceActions, workspaceState.view.paneTree])
+  const setActiveKey = useCallback((key: string | null) => workspaceActions.setActiveKey(key), [workspaceActions])
+  const setSingleView = useCallback((key: string | null) => workspaceActions.setSingleView(key), [workspaceActions])
+  const setCurrentView = useCallback((viewArg: View) => workspaceActions.setCurrentView(viewArg as any), [workspaceActions])
+  const setSettingsOpen = useCallback((open: boolean) => workspaceActions.openSettings(open), [workspaceActions])
+  const setActiveGroupId = useCallback((groupId: string) => workspaceActions.setActiveGroup(groupId), [workspaceActions])
+  const setWikiTarget = useCallback((target: WikiTarget | null) => {
+    if (target) workspaceActions.openWiki(target)
+    else workspaceActions.closeWiki()
+  }, [workspaceActions])
+
+  const refresh = workspaceActions.refresh
+  const refreshGroups = groupSync.refresh
+  const { setTree: setGroupTree, setName: setGroupName, setRank: setGroupRank, deleteGroup } = groupSync
+
   const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
   const { getSessionActivity, handleActivityEvent } = useActivity()
   const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications()
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const { hosts, refresh: refreshHosts } = useHosts()
-  const [currentView, setCurrentView] = useState<View>(() => {
-    const v = getViewFromPath().view
-    return v === 'settings' ? 'overview' : v
-  })
-  const [settingsOpen, setSettingsOpen] = useState(() => getViewFromPath().view === 'settings')
-  const [paneTree, setPaneTree] = useState<PaneTree | null>(() => {
-    const urlKey = getViewFromPath().sessionKey
-    if (!urlKey) return null
-    try {
-      const stored = localStorage.getItem('termyard:pane-tree')
-      if (stored) {
-        return JSON.parse(stored) as PaneTree  // always restore full split
-      }
-    } catch {}
-    return popOut(urlKey)
-  })
-  const [activeKey, setActiveKey] = useState<string | null>(() => {
-    const urlKey = getViewFromPath().sessionKey
-    if (!urlKey) return null
-    try {
-      const stored = localStorage.getItem('termyard:pane-tree')
-      const storedActiveKey = localStorage.getItem('termyard:active-key')
-      if (stored && storedActiveKey) {
-        const tree = JSON.parse(stored) as PaneTree
-        if (findLeaf(tree, urlKey) && findLeaf(tree, storedActiveKey)) {
-          return storedActiveKey
-        }
-      }
-    } catch {}
-    return urlKey
-  })
-  const [singleView, setSingleView] = useState<string | null>(() => {
-    const urlKey = getViewFromPath().sessionKey
-    if (!urlKey) return null
-    try {
-      const stored = localStorage.getItem('termyard:pane-tree')
-      if (stored) {
-        const tree = JSON.parse(stored) as PaneTree
-        // If URL session is NOT in the stored split tree, it was a singleView
-        if (!findLeaf(tree, urlKey)) return urlKey
-      }
-    } catch {}
-    return null
-  })
-  const { groups: syncedGroups, loaded: groupsLoaded, refresh: refreshGroups, setTree: setGroupTree, setName: setGroupName, setRank: setGroupRank, deleteGroup } = useGroupSync(authenticated)
   const { ranks: sessionOrderRanks, loaded: sessionOrderLoaded, refresh: refreshSessionOrder, setRank: setSessionOrderRank } = useSessionOrder(authenticated)
-  const [activeGroupId, setActiveGroupId] = useState<string>(() => {
-    try {
-      const stored = localStorage.getItem('termyard:active-group-id')
-      if (stored) return stored
-    } catch {}
-    return Math.random().toString(36).slice(2)
-  })
   const migrationStartedRef = useRef(false)
   const selectedSession = singleView ?? activeKey
   // Read here rather than further down because the wiki callbacks below close
@@ -170,8 +119,8 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // Turning it off closes the panel. Leaving it up would strand a surface the
   // user just said they did not want, with no menu entry left to dismiss it.
   useEffect(() => {
-    if (!wikiEnabled) setWikiTarget(null)
-  }, [wikiEnabled])
+    if (!wikiEnabled) workspaceActions.closeWiki()
+  }, [wikiEnabled, workspaceActions])
 
   // Wiki panel state — hoisted from per-Terminal to a single app-level panel, so
   // a tiled layout mounts one iframe instead of one per pane, and wiki-viewer
@@ -181,7 +130,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // deliberately not read live from whichever pane has focus: the panel's embed
   // URL is keyed on the root, so a live read would rebuild the iframe whenever
   // focus moved and discard wiki-viewer's state, including unsaved edits.
-  const [wikiTarget, setWikiTarget] = useState<WikiTarget | null>(null)
   const wikiOpenSeqRef = useRef(0)
 
   const cwdForKey = useCallback((key: string) => {
@@ -193,22 +141,23 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     // "off" has to mean for the file to still open at all.
     if (!wikiEnabled) return false
     // Monotonic, so re-opening the same path from another pane still sends.
-    setWikiTarget({ path, cwd, nonce: ++wikiOpenSeqRef.current, hostId, session: sessionName })
+    workspaceActions.openWiki({ path, cwd, nonce: ++wikiOpenSeqRef.current, hostId, session: sessionName })
     return true
-  }, [wikiEnabled])
+  }, [wikiEnabled, workspaceActions])
 
   // Open the panel with no file. With no session focused there is no cwd and
   // the panel falls back to wiki-viewer's default_root.
   const toggleWikiPanel = useCallback(() => {
-    setWikiTarget(prev => {
-      if (prev) return null
-      return {
+    if (wikiTarget) {
+      workspaceActions.closeWiki()
+    } else {
+      workspaceActions.openWiki({
         path: null,
         cwd: selectedSession ? cwdForKey(selectedSession) : undefined,
         nonce: ++wikiOpenSeqRef.current,
-      }
-    })
-  }, [selectedSession, cwdForKey])
+      })
+    }
+  }, [wikiTarget, selectedSession, cwdForKey, workspaceActions])
 
   const activeGroup = syncedGroups[activeGroupId]
   const activeGroupName = activeGroup?.name ?? ''
@@ -217,7 +166,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (!authenticated || !groupsLoaded || !activeGroup || !paneTree || currentView !== 'session' || singleView) return
     const id = window.setTimeout(() => {
       if (JSON.stringify(activeGroup.tree) === JSON.stringify(paneTree)) return
-      tracePush('sync-back: overwrite server tree with paneTree', { activeGroupId: activeGroupIdRef.current, paneTreeLeaves: paneTree ? getLeaves(paneTree) : null, activeGroupLeaves: activeGroup.tree ? getLeaves(activeGroup.tree) : null, extra: { sameAsServer: false } })
       void setGroupTree(activeGroupId, paneTree)
     }, 250)
     return () => window.clearTimeout(id)
@@ -301,45 +249,19 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     localStorage.setItem('termyard:sidebar-collapsed', String(sidebarCollapsed))
   }, [sidebarCollapsed])
 
-  // Persist pane tree across reloads. Per-device — NOT synced.
-  useEffect(() => {
-    try {
-      if (paneTree) {
-        localStorage.setItem('termyard:pane-tree', JSON.stringify(paneTree))
-        localStorage.setItem('termyard:active-key', activeKey || '')
-      } else {
-        localStorage.removeItem('termyard:pane-tree')
-        localStorage.removeItem('termyard:active-key')
-      }
-    } catch {}
-  }, [paneTree, activeKey])
-
-  // Persist saved groups across reloads. Per-device — NOT synced.
-  useEffect(() => {
-    try {
-      localStorage.setItem('termyard:active-group-id', activeGroupId)
-    } catch {}
-  }, [activeGroupId])
-
   // Sync URL -> state on popstate (back/forward)
   useEffect(() => {
     const onPopState = () => {
-      const { view, sessionKey } = getViewFromPath()
-      setSettingsOpen(view === 'settings')
-      if (view !== 'settings') setCurrentView(view)
-      if (sessionKey) {
-        setPaneTree(prev => {
-          if (prev && findLeaf(prev, sessionKey)) { setActiveKey(sessionKey); setSingleView(null); return prev }
-          setSingleView(sessionKey); return prev
-        })
+      const { view, sessionKey: sk } = getViewFromPath()
+      if (view === 'settings') {
+        workspaceActions.openSettings(true)
       } else {
-        setSingleView(null)
-        // paneTree and activeKey untouched — split persists in background
+        workspaceActions.navigate(view as any, sk)
       }
     }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
-  }, [])
+  }, [workspaceActions])
 
   // Navigate to a session or view (push history)
   // sessKey is either "name" (local) or "host/name" (remote)
@@ -362,15 +284,8 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (window.location.pathname !== path) {
       window.history.pushState(null, '', path)
     }
-    setCurrentView(view || (sessKey ? 'session' : 'overview'))
-    if (!sessKey) {
-      setSingleView(null)
-      // paneTree and activeKey intentionally untouched — split persists
-      return
-    }
-    // sessKey path: kept for safety but selectSession() is preferred
-    setSingleView(sessKey)
-  }, [])
+    workspaceActions.navigate(view as any, sessKey)
+  }, [workspaceActions])
 
   // Remove a session leaf from every saved group EXCEPT the active one. Dropping
   // a session into the current view must not leave a duplicate leaf lingering in
@@ -419,7 +334,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     setSingleView(null)
     detachFromOtherGroups(sessKey)
     const currentActive = activeKeyRef.current
-    setPaneTree(prev => {
+    setPaneTree((prev: PaneTree | null) => {
       // Standalone session: target is the anchor, dragged session always second
       if (prev === null) {
         if (targetKey) {
@@ -445,32 +360,18 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   }, [detachFromOtherGroups, singleView, paneTree, activeGroupId, syncedGroups, setGroupTree, setGroupRank])
 
   const closePane = useCallback((sessKey: string) => {
-    setPaneTree(prev => {
-      if (prev === null) return null
-      const newTree = removeLeaf(prev, sessKey)
-      if (newTree === null) {
-        setActiveKey(null)
-        return null
-      }
-      // If the closed pane was the active one, pick the first leaf
-      if (sessKey === activeKeyRef.current) {
-        const leaves = getLeaves(newTree)
-        setActiveKey(leaves[0] || null)
-      }
-      return newTree
-    })
-  }, [])
+    workspaceActions.closePane(sessKey)
+  }, [workspaceActions])
 
   // Synchronous removal for a deliberately killed session: drop its leaf from
   // the active tree, any background group, and singleView at once, so the pane
   // disappears immediately instead of on the next session refresh.
   const removeSessionFromLayout = useCallback((sessKey: string) => {
-    closePane(sessKey)
-    setSingleView(prev => prev === sessKey ? null : prev)
+    workspaceActions.removeFromLayout(sessKey)
     // Explicit kill: dispose the pool entry so terminal/WS tear down.
     const { host, name } = parseSessionKey(sessKey)
     terminalPool.dispose(poolKeyFor(name, host || undefined))
-  }, [closePane])
+  }, [workspaceActions])
 
   const popOutPane = useCallback((sessKey: string) => {
     setSingleView(null)
@@ -504,7 +405,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (paneTree === null && !singleView && currentView === 'session') {
       // The active group just emptied (last session removed); delete its server
       // record before promoting the next group, so it does not linger.
-      tracePush('promote: empty active group -> deleteGroup', { activeGroupId: activeGroupIdRef.current, paneTreeLeaves: paneTree ? getLeaves(paneTree) : null })
       if (syncedGroupsRef.current[activeGroupId]) void deleteGroup(activeGroupId)
       const next = Object.entries(syncedGroups)
         .sort(([idA, a], [idB, b]) => {
@@ -520,11 +420,8 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         .find(([id]) => id !== activeGroupId)
       if (next) {
         const [nextId, nextGroup] = next
-        setPaneTree(nextGroup.tree)
-        setActiveKey(getLeaves(nextGroup.tree)[0] ?? null)
-        setActiveGroupId(nextId)
-        setSingleView(null)
         const focusKey = getLeaves(nextGroup.tree)[0] ?? null
+        workspaceActions.setActiveGroup(nextId, nextGroup.tree, focusKey)
         if (focusKey) {
           const { host, name } = parseSessionKey(focusKey)
           const path = host
@@ -533,10 +430,11 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
           if (window.location.pathname !== path) window.history.pushState(null, '', path)
         }
       } else {
-        navigateTo(null)
+        workspaceActions.navigate(undefined, null)
+        if (window.location.pathname !== '/') window.history.pushState(null, '', '/')
       }
     }
-  }, [paneTree, singleView, currentView, syncedGroups, activeGroupId, navigateTo, deleteGroup])
+  }, [paneTree, singleView, currentView, syncedGroups, activeGroupId, deleteGroup, workspaceActions])
 
   // Dissolve active group to standalone when only 1 session remains
   useEffect(() => {
@@ -545,20 +443,17 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (leaves.length !== 1) return
     if (splitTargetRef.current) return // split pending — don't dissolve yet
     const lastLeaf = leaves[0]
-    setSingleView(lastLeaf)
-    setActiveKey(null)
-    setPaneTree(null)
+    workspaceActions.dissolveToSingle()
     // The active layout is no longer a group; drop its server record so the
     // dissolved (broken-out) session stops re-rendering as grouped. Guard on a
     // real record to avoid tombstoning ids that were never persisted.
-    tracePush('dissolve: 1-leaf -> deleteGroup', { activeGroupId: activeGroupIdRef.current, paneTreeLeaves: paneTree ? getLeaves(paneTree) : null, extra: { lastLeaf } })
     if (syncedGroupsRef.current[activeGroupId]) void deleteGroup(activeGroupId)
     const { host, name } = parseSessionKey(lastLeaf)
     const path = host
       ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
       : `/session/${encodeURIComponent(name)}`
     if (window.location.pathname !== path) window.history.replaceState(null, '', path)
-  }, [paneTree, activeGroupId, deleteGroup])
+  }, [paneTree, activeGroupId, deleteGroup, workspaceActions])
 
   // Refs for latest values used in keyboard shortcuts (avoids effect churn)
 
@@ -570,17 +465,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   syncedGroupsRef.current = syncedGroups
   const activeGroupIdRef = useRef(activeGroupId)
   activeGroupIdRef.current = activeGroupId
-  // Evidence gate for pruning: never trust an empty/partial /api/sessions
-  // snapshot unless we have already seen a non-empty one since page load.
-  // On a reload (binary update) the list starts empty and only fills once the
-  // server's discovery loop catches up; treating that transient empty as
-  // authoritative collapses grouped splits permanently (prune → dissolve →
-  // deleteGroup tombstone). The time-based 12s grace was not enough.
-  const sawNonEmptySnapshotRef = useRef(false)
-  // Counts consecutive snapshots in which a paneTree leaf was missing from the
-  // live list. A leaf is only pruned after 2 consecutive misses, so a single
-  // partial list during discovery ramp-up cannot collapse a split.
-  const missingStreakRef = useRef<Map<string, { count: number; last: number }>>(new Map())
   const setActiveKeyRef = useRef(setActiveKey)
   setActiveKeyRef.current = setActiveKey
   const switchToGroupRef = useRef<((id: string) => void) | null>(null)
@@ -707,19 +591,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const migrateSessionKey = useCallback((oldKey: string, newKey: string) => {
     if (!oldKey || !newKey || oldKey === newKey) return
 
-    setPaneTree(prev => {
-      if (prev === null || !findLeaf(prev, oldKey)) return prev
-      // newKey already present: replacing would create a duplicate leaf, so
-      // drop the stale optimistic leaf instead of renaming onto it.
-      if (findLeaf(prev, newKey)) {
-        tracePush('migrateSessionKey: drop stale leaf (newKey present)', { extra: { oldKey, newKey } })
-        return removeLeaf(prev, oldKey) ?? prev
-      }
-      tracePush('migrateSessionKey: replaceLeaf', { extra: { oldKey, newKey } })
-      return replaceLeaf(prev, oldKey, newKey)
-    })
-    setActiveKey(prev => (prev === oldKey ? newKey : prev))
-    setSingleView(prev => (prev === oldKey ? newKey : prev))
+    workspaceActions.renameSession(oldKey, newKey)
 
     // Rekey pool entry: preserve terminal/WS, update reconnect identity.
     // If destination already has an entry (collision), dispose it first.
@@ -737,7 +609,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (window.location.pathname === oldPath) {
       window.history.replaceState(null, '', newPath)
     }
-  }, [])
+  }, [workspaceActions])
 
   // Listen for state events via WebSocket
   const onEvent = useCallback((evt: any) => {
@@ -776,19 +648,13 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (evt.type === 'activity') {
       handleActivityEvent(evt.snapshots || [])
       return
-
     }
-    if (evt.type === 'session-renamed') {
-      const oldName = evt.session || ''
-      const newName = evt.data?.new_name || ''
-      if (!oldName || !newName) return
-      const host = evt.host || ''
-      const oldKey = host ? `${host}/${oldName}` : oldName
-      const newKey = host ? `${host}/${newName}` : newName
-      migrateSessionKey(oldKey, newKey)
-      refresh()
-      refreshSessionOrder()
-      refreshGroups()
+    if (['session-removed', 'session-renamed', 'session-added', 'sessions-changed'].includes(evt.type)) {
+      workspaceActions.onEvent(evt)
+      if (evt.type === 'session-renamed') {
+        refreshSessionOrder()
+        refreshGroups()
+      }
       return
     }
     if (evt.type === 'recovery-started') {
@@ -799,18 +665,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       setRecovering(false)
       refresh()
       return
-    }
-    if (evt.type === 'session-removed') {
-      // Drop an optimistic stub the moment the backend confirms the session is
-      // gone, BEFORE refresh(). Otherwise refresh() preserves the stub (it is
-      // still pendingOptimistic and absent from /api/sessions), which shields
-      // the dead leaf behind a ghost entry: validKeys keeps the key, the prune
-      // effect never closes the pane or disposes the pool entry, and the
-      // terminal sits on a dead daemon socket — black screen / reconnecting.
-      removeSession(evt.session || '', evt.host || undefined)
-      refresh()
-    } else if (['session-added', 'sessions-changed'].includes(evt.type)) {
-      refresh()
     }
     if (evt.type === 'session-order-updated') {
       refreshSessionOrder()
@@ -834,25 +688,15 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (evt.type === 'sessions-crashed') {
       crashedHook.refresh()
     }
-  }, [refresh, refreshHosts, handleToolEvent, processToolEvent, handleActivityEvent, refreshSessionAttrs, refreshSessionOrder, refreshGroups, migrateSessionKey, removeSession, crashedHook.refresh])
+  }, [refresh, refreshHosts, handleToolEvent, processToolEvent, handleActivityEvent, refreshSessionAttrs, refreshSessionOrder, refreshGroups, workspaceActions, crashedHook.refresh])
 
   const { connected } = useWebSocket('/ws/events', onEvent)
 
-  // After a WS (re)connect — server restart, network blip, peer rejoin — the
-  // session list is still converging: peer/remote sessions and freshly
-  // discovered sessions trickle in over the next few seconds. Keep grace
-  // only for local projection / filters; synced group/order now live on server.
-  // ponytail: fixed 12s grace; switch to "missing across N stable snapshots" if peers reconnect slower.
-  const [reconnectGrace, setReconnectGrace] = useState(true)
-  const graceTimerRef = useRef<number | undefined>(undefined)
   useEffect(() => {
-    if (connected !== true) return
-    setReconnectGrace(true)
-    clearTimeout(graceTimerRef.current)
-    graceTimerRef.current = window.setTimeout(() => setReconnectGrace(false), 12000)
-    return () => clearTimeout(graceTimerRef.current)
-  }, [connected])
-  const pruningSuspended = recovering || reconnectGrace
+    workspaceActions.setConnection(connected === true)
+  }, [connected, workspaceActions])
+
+  const pruningSuspended = recovering || workspaceState.connection.livenessUnknown
 
   // Prune leaves whose session is gone from the live list. While the server is
   // alive the list is authoritative, so a missing session is a genuine kill and
@@ -860,103 +704,21 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // a live session is transiently absent; pruning is suspended then. We do NOT
   // bail when sessions is empty: killing the last session makes the list empty,
   // and its pane must still be pruned so the terminal unmounts instead of
-  // sitting on "disconnected — reconnecting" forever. Transient empties are
-  // already handled server-side (the state manager refuses to clear confirmed-
-  // alive sessions) and by pruningSuspended during the reconnect grace window.
-  // Evidence-based pruning gates the destructive path: the first non-empty
-  // snapshot opens the gate, and a leaf must be missing across 2 consecutive
-  // snapshots before it is pruned. This is the upgrade from the prior
-  // time-based 12s grace (the TODO at the old line 838).
+  // sitting on "disconnected — reconnecting" forever.
   useEffect(() => {
-    // Never prune while disconnected: WS teardown can deliver a final empty or
-    // partial sessions snapshot before reconnectGrace re-arms (grace only sets
-    // on the connected=true transition), and that snapshot is not evidence.
+    // Never prune while disconnected or when liveness is still unknown.
     if (sessionsLoading || pruningSuspended || connected !== true) return
     const validKeys = new Set(sessions.map(s => sessionKey(s)))
     if (pendingSessionRef.current) validKeys.add(pendingSessionRef.current)
 
-    // Never prune or sweep from a session list we've never seen populated since
-    // page load. After a binary-update reload the list starts empty and fills
-    // asynchronously; trusting that empty list destroys live grouped splits.
-    if (validKeys.size === 0 && !sawNonEmptySnapshotRef.current) return
-    if (validKeys.size > 0) sawNonEmptySnapshotRef.current = true
-
     // Authoritative sweep: dispose pool entries for sessions gone from the
-    // server list. Only runs when NOT in recovery / reconnect-grace window.
+    // server list.
     terminalPool.disposeAbsent(validKeys)
 
     if (paneTree) {
-      // Require a leaf to be missing across 2 consecutive non-empty snapshots
-      // before pruning — a single partial list during discovery ramp-up must
-      // not collapse a split. Streaks reset and clear the moment a key reappears.
-      // Consecutive snapshots must also be spaced in time: WS diff bursts can
-      // deliver two identical partial lists within milliseconds, which is one
-      // observation, not two.
-      const streaks = missingStreakRef.current
-      const now = Date.now()
-      const leaves = getLeaves(paneTree)
-      const toRemove: string[] = []
-      for (const key of leaves) {
-        if (validKeys.has(key)) { streaks.delete(key); continue }
-        const prev = streaks.get(key)
-        if (!prev) { streaks.set(key, { count: 1, last: now }); continue }
-        if (now - prev.last < 1000) continue
-        if (prev.count + 1 >= 2) { toRemove.push(key); streaks.delete(key) }
-        else streaks.set(key, { count: prev.count + 1, last: now })
-      }
-      if (toRemove.length > 0) {
-        tracePush('prune: removing leaves', { activeGroupId: activeGroupIdRef.current, paneTreeLeaves: paneTree ? getLeaves(paneTree) : null, extra: { toRemove, validKeys: [...validKeys] } })
-        setPaneTree(prev => {
-          if (prev === null) return null
-          let tree: PaneTree | null = prev
-          for (const key of toRemove) {
-            if (tree === null) break
-            tree = removeLeaf(tree, key)
-          }
-          if (tree && activeKeyRef.current && toRemove.includes(activeKeyRef.current)) {
-            setActiveKey(getLeaves(tree)[0] || null)
-          }
-          return tree
-        })
-      }
+      workspaceActions.pruneMissing([...validKeys], Date.now())
     }
-
-    setSingleView(prev => (prev && !validKeys.has(prev)) ? null : prev)
-
-  }, [sessions, sessionsLoading, paneTree, singleView, pruningSuspended, connected])
-
-  // ─── DEBUG: log every state transition that can collapse a group ───
-  // ponytail: temporary diagnostic for grouping breakouts. Single observer of
-  // the states that matter, so setters stay untouched. Runs after the prune
-  // effect so the trace reflects post-prune snapshots.
-  useEffect(() => {
-    const leafCounts: Record<string, number> = {}
-    const ids: string[] = []
-    for (const [id, g] of Object.entries(syncedGroups)) {
-      ids.push(id)
-      leafCounts[id] = g && g.tree ? getLeaves(g.tree).length : 0
-    }
-    tracePush('state-change', {
-      activeGroupId: activeGroupIdRef.current,
-      paneTreeLeaves: paneTree ? getLeaves(paneTree) : null,
-      singleView,
-      view: currentView,
-      syncedGroupIds: ids,
-      syncedGroupLeafCounts: leafCounts,
-      validKeysCount: sessionsRef.current.length,
-      extra: {
-        connected,
-        recovering,
-        pruningSuspended,
-        groupsLoaded,
-        hasActiveGroup: !!syncedGroups[activeGroupIdRef.current],
-        activeGroupLeaves: syncedGroups[activeGroupIdRef.current]?.tree ? getLeaves(syncedGroups[activeGroupIdRef.current]!.tree) : null,
-        hasStoredPaneTree: (() => { try { return !!localStorage.getItem('termyard:pane-tree') } catch { return null } })(),
-        storedActiveGroupId: (() => { try { return localStorage.getItem('termyard:active-group-id') } catch { return null } })(),
-      },
-    })
-  }, [paneTree, singleView, syncedGroups, activeGroupId, currentView, sessions, connected, recovering, pruningSuspended, groupsLoaded])
-  // ─── /DEBUG ───
+  }, [sessions, sessionsLoading, paneTree, pruningSuspended, connected, workspaceActions])
 
   // Release the pending-session guard once the freshly created session shows
   // up in state (remote creates arrive via a delayed peer broadcast).
@@ -1050,17 +812,11 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
       : `/session/${encodeURIComponent(name)}`
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
-    setCurrentView('session')
-    if (paneTree && findLeaf(paneTree, sk)) {
-      setSingleView(null)
-      setActiveKey(sk)
-    } else {
-      setSingleView(sk)
-    }
+    workspaceActions.selectSession(sk)
     // Refocus even when activeKey didn't change — Terminal auto-focus
     // on inactive panes may have stolen visual focus from the intended one.
     setTimeout(refocusTerminal, 150)
-  }, [paneTree, refocusTerminal])
+  }, [workspaceActions, refocusTerminal])
   selectSessionRef.current = selectSession
 
   const handleSessionSelect = (session: Session) => {
@@ -1097,7 +853,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       return
     }
     // Existing behavior: add to current group's tree
-    setPaneTree(prev => {
+    setPaneTree((prev: PaneTree | null) => {
       if (prev && findLeaf(prev, draggedKey) && findLeaf(prev, targetKey)) return prev
       if (prev && findLeaf(prev, targetKey)) return splitLeaf(prev, targetKey, 'h', draggedKey)
       if (prev && findLeaf(prev, draggedKey)) return splitLeaf(prev, draggedKey, 'h', targetKey)
@@ -1219,7 +975,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       window.setTimeout(() => {
         if (pendingSessionRef.current === fallbackPending) pendingSessionRef.current = null
       }, 15000)
-      upsertSession(optimisticSession(name, hostId || localHostId, localHostName, path))
+      workspaceActions.addOptimistic(optimisticSession(name, hostId || localHostId, localHostName, path))
     }
 
     // Apply the split/single layout with the optimistic key now, so the pane
@@ -1228,19 +984,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     splitTargetRef.current = null
     if (!worktreeBranch) {
       if (target) {
-        setPaneTree(prev => {
-          if (prev === null) return popOut(optimisticKey)
-          // Never insert a duplicate leaf: keys are session names and the
-          // terminal pool is keyed by name, so a dup would share one terminal.
-          if (findLeaf(prev, optimisticKey)) { setActiveKey(optimisticKey); return prev }
-          if (findLeaf(prev, target.key)) {
-            return target.newFirst
-              ? insertBesideLeaf(prev, target.key, target.direction, optimisticKey, true)
-              : splitLeaf(prev, target.key, target.direction, optimisticKey)
-          }
-          return prev
-        })
-        setActiveKey(optimisticKey)
+        workspaceActions.splitPane(target.key, target.direction, optimisticKey, target.newFirst)
       } else {
         selectSession(optimisticKey)
       }
@@ -1255,7 +999,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       })
       if (!res.ok) {
         if (!worktreeBranch) {
-          removeSession(name)
+          workspaceActions.removeOptimistic(name, hostId || localHostId)
           if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
         }
         if (worktreeBranch) {
@@ -1272,21 +1016,21 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         // Don't upsert a fresh stub: the real record is already on its way via
         // the server's session-added broadcast; just protect it from pruning.
         const resolvedKey = hostId ? `${hostId}/${resolvedName}` : resolvedName
-        removeSession(name)
-        migrateSessionKey(optimisticKey, resolvedKey)
+        workspaceActions.removeOptimistic(name, hostId || localHostId)
+        workspaceActions.renameSession(optimisticKey, resolvedKey)
         pendingSessionRef.current = resolvedKey
       }
       // Reconcile with the real server record; clears the optimistic stub.
-      refresh()
+      workspaceActions.refresh()
     } catch (err) {
       console.error('Failed to create session:', err)
       if (!worktreeBranch) {
-        removeSession(name)
+        workspaceActions.removeOptimistic(name, hostId || localHostId)
         if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
       }
     }
     return null
-  }, [selectSession, refresh, refocusTerminal, localHostId, localHostName, upsertSession, removeSession, migrateSessionKey])
+  }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions])
 
   const handleQuickShell = useCallback(() => {
     const name = `shell-${Date.now()}`
@@ -1301,21 +1045,21 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       body: JSON.stringify({ name, path: '', command: '', backend: 'daemon' }),
     }).then(res => {
       if (!res.ok) {
-        removeSession(name)
+        workspaceActions.removeOptimistic(name, localHostId)
         if (pendingSessionRef.current === sk) pendingSessionRef.current = null
       } else {
         // Reconcile with the real server record as soon as the daemon is up.
-        refresh()
+        workspaceActions.refresh()
       }
     }).catch(() => {
-      removeSession(name)
+      workspaceActions.removeOptimistic(name, localHostId)
       if (pendingSessionRef.current === sk) pendingSessionRef.current = null
     })
     pendingSessionRef.current = sk
-    upsertSession(optimisticSession(name, localHostId, localHostName))
+    workspaceActions.addOptimistic(optimisticSession(name, localHostId, localHostName))
     selectSession(sk)
     setTimeout(() => refocusTerminal(), 0)
-  }, [selectSession, refresh, refocusTerminal, localHostId, localHostName, upsertSession, removeSession])
+  }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions])
 
 
 
@@ -1635,7 +1379,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
               )}
             </div>
           )}
-          {currentView === 'setup' ? (
+          {(currentView as View) === 'setup' ? (
             <Setup onComplete={() => navigateTo(null)} />
           ) : currentView === 'session' && singleView ? (
             <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
@@ -1666,7 +1410,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
                 openNewSessionModal()
               }}
               onRatioChange={(path, ratio) => {
-                setPaneTree(prev => {
+                setPaneTree((prev: PaneTree | null) => {
                   if (prev === null) return null
                   return updateRatio(prev, path, ratio)
                 })
@@ -1676,9 +1420,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
               terminalContainerRef={terminalContainerRef}
               onDropSession={handleDropSession}
               onDropNewSession={handleDropNewSession}
-              onSwapPanes={(a, b) => setPaneTree(prev => prev ? swapLeaves(prev, a, b) : prev)}
+              onSwapPanes={(a, b) => setPaneTree((prev: PaneTree | null) => prev ? swapLeaves(prev, a, b) : prev)}
               onMovePanes={(sourceKey, targetKey, edge) =>
-                setPaneTree(prev => prev ? movePane(prev, sourceKey, targetKey, edge) : prev)
+                setPaneTree((prev: PaneTree | null) => prev ? movePane(prev, sourceKey, targetKey, edge) : prev)
               }
               getBackend={(key) => sessions.find(s => sessionKey(s) === key)?.backend}
               getCwd={cwdForKey}
