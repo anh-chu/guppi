@@ -8,11 +8,11 @@ build: frontend
 
 # Build just the frontend
 frontend:
-	cd web && npm install && npm run build
+	cd web && npm ci && npm run build
 
 # Development mode - run Go server with live reload
 dev:
-	go run . server --no-tls
+	go run . server
 
 # Install built binary — handles "text file busy" from running daemons.
 # rm unlinks the old inode; running processes keep their handle, but the
@@ -27,7 +27,6 @@ install: build
 # Clean build artifacts
 clean:
 	rm -rf dist/
-	rm -rf web/dist/
 	rm -rf web/node_modules/
 	rm -rf pkg/server/dist/*
 	touch pkg/server/dist/.gitkeep
