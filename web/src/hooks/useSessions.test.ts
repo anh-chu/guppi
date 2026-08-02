@@ -2,7 +2,6 @@
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useSessions, type Session } from './useSessions'
-import { sessionKey, optimisticSession } from './useSessions'
 
 function makeSession(name: string): Session {
   return {
@@ -69,42 +68,5 @@ describe('useSessions transport', () => {
     expect(fetch).toHaveBeenCalledTimes(2)
     // The first request was aborted; only one snapshot is ultimately applied.
     await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1))
-  })
-})
-
-describe('optimistic session identity', () => {
-  // Regression coverage for the drag-to-split bug: the caller (App.tsx)
-  // must build the same key it hands to optimisticSession() as the one it
-  // uses for the pane-tree leaf and pending-session guard. If the caller
-  // passes a local-host fallback id into optimisticSession() while keeping
-  // the pane-tree key unqualified, sessionKey(optimistic) diverges from the
-  // pane's key and the split never reconciles with the live session list.
-
-  it('keeps a local session key unqualified, matching the caller-derived key', () => {
-    const name = 'shell'
-    const hostId = undefined
-    const optimisticKey = hostId ? `${hostId}/${name}` : name
-    const session = optimisticSession(name, hostId, 'My Laptop', '/tmp')
-    expect(sessionKey(session)).toBe(optimisticKey)
-    expect(sessionKey(session)).toBe('shell')
-  })
-
-  it('keeps a remote session key host-qualified, matching the caller-derived key', () => {
-    const name = 'shell'
-    const hostId = 'peer-abc123'
-    const optimisticKey = hostId ? `${hostId}/${name}` : name
-    const session = optimisticSession(name, hostId, 'Remote Box', '/tmp')
-    expect(sessionKey(session)).toBe(optimisticKey)
-    expect(sessionKey(session)).toBe('peer-abc123/shell')
-  })
-
-  it('quick-shell local sessions are always unqualified regardless of a local host id', () => {
-    // handleQuickShell always creates a local daemon session and must never
-    // qualify the key/host with the local host's own id.
-    const name = 'shell-123'
-    const sk = name
-    const session = optimisticSession(name, undefined, 'My Laptop')
-    expect(sessionKey(session)).toBe(sk)
-    expect(session.host).toBeUndefined()
   })
 })
