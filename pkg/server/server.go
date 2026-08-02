@@ -77,8 +77,11 @@ type Options struct {
 	OrderStore       *sessionorder.Store
 	GroupStore       *groupsync.Store
 	AuthEnabled      bool
+	DebugPprof       bool
 	PasswordStore    *auth.PasswordStore
 	SessionMgr       *auth.SessionManager
+	AuthLimiter      *auth.Limiter
+	NotifyToken      string
 	Identity         *identity.Identity
 	PeerStore        *identity.PeerStore
 	PeerMgr          *peer.Manager
@@ -768,9 +771,25 @@ func Run(ctx context.Context, opts *Options) error {
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.StripSlashes)
 	r.Use(chimiddleware.RequestID)
-	// Diagnostic: live goroutine/heap profiles at /debug/pprof. Read-only, no
-	// behavior change; used to pin where a wedged peer link's goroutines park.
-	r.Mount("/debug", chimiddleware.Profiler())
+	// /debug/pprof is off by default; when enabled it requires session auth
+	// (if auth is on) and a loopback source.
+	if opts.DebugPprof {
+		debugRouter := chi.NewRouter()
+		debugRouter.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !auth.IsLoopbackRequest(r) {
+					http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+					return
+				}
+				next.ServeHTTP(w, r)
+			})
+		})
+		if opts.AuthEnabled {
+			debugRouter.Use(auth.Middleware(opts.SessionMgr))
+		}
+		debugRouter.Mount("/", chimiddleware.Profiler())
+		r.Mount("/debug", debugRouter)
+	}
 	registerAPIRoutes(r, opts, hub)
 
 	// WebSocket routes (protected by auth if enabled)
@@ -892,21 +911,40 @@ func wireSessionAttrsSync(opts *Options, hub *ws.Hub) {
 }
 
 func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
-	secureCookies := false
-
 	r.Route("/api", func(r chi.Router) {
 		// Public auth endpoints (no middleware)
 		r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasswordStore))
 		if opts.AuthEnabled {
-			r.Post("/auth/setup", auth.SetupHandler(opts.PasswordStore, opts.SessionMgr, secureCookies))
-			r.Post("/auth/login", auth.LoginHandler(opts.PasswordStore, opts.SessionMgr, secureCookies))
+			r.Post("/auth/setup", auth.SetupHandler(opts.PasswordStore, opts.SessionMgr, opts.AuthLimiter))
+			r.Post("/auth/login", auth.LoginHandler(opts.PasswordStore, opts.SessionMgr, opts.AuthLimiter))
 			r.Post("/auth/logout", auth.LogoutHandler(opts.SessionMgr))
 			r.Get("/auth/check", auth.CheckHandler(opts.SessionMgr))
 		}
 
+		bootstrapLimit := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if opts.AuthLimiter == nil {
+					next.ServeHTTP(w, r)
+					return
+				}
+				if ok, retry := opts.AuthLimiter.Allow("bootstrap", auth.ClientIP(r)); !ok {
+					seconds := int(retry.Seconds())
+					if seconds < 1 {
+						seconds = 1
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
+					w.WriteHeader(http.StatusTooManyRequests)
+					fmt.Fprintf(w, `{"error":"rate limit","retry_after":%d}`, seconds)
+					return
+				}
+				next.ServeHTTP(w, r)
+			})
+		}
+
 		// Peer bootstrap endpoint -- password-authenticated (no session cookie).
 		// Lets two nodes establish mutual trust via the dashboard password.
-		r.Post("/peers/bootstrap", func(w http.ResponseWriter, r *http.Request) {
+		r.With(bootstrapLimit).Post("/peers/bootstrap", func(w http.ResponseWriter, r *http.Request) {
 			handlePeersBootstrap(w, r, opts)
 		})
 
@@ -918,26 +956,37 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				"commit":  common.COMMIT,
 			})
 		})
-		// Tool event ingest -- no auth required (used by local CLI via unix socket)
+		// Tool event ingest. Unix-socket requests are trusted; TCP requests must
+		// present the local notify bearer token when auth is enabled.
 		r.Post("/tool-event", func(w http.ResponseWriter, r *http.Request) {
+			if !auth.IsUnixSocket(r) && opts.AuthEnabled {
+				if !auth.ValidBearer(r, opts.NotifyToken) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					fmt.Fprintf(w, `{"error":"unauthorized"}`)
+					return
+				}
+			}
+
 			body, err := io.ReadAll(io.LimitReader(r.Body, 16384))
 			if err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
 
-			logrus.WithField("raw_body", string(body)).Trace("tool-event API: received request")
-
 			var evt toolevents.Event
 			if err := json.Unmarshal(body, &evt); err != nil {
-				logrus.WithError(err).WithField("raw_body", string(body)).Trace("tool-event API: JSON parse failed")
+				logrus.WithError(err).WithField("request_id", chimiddleware.GetReqID(r.Context())).Trace("tool-event API: JSON parse failed")
 				http.Error(w, "invalid JSON", http.StatusBadRequest)
 				return
 			}
 
 			if evt.Tool == "" || evt.Status == "" || evt.Session == "" {
 				logrus.WithFields(logrus.Fields{
-					"tool": evt.Tool, "status": evt.Status, "session": evt.Session,
+					"tool":       evt.Tool,
+					"status":     evt.Status,
+					"session":    evt.Session,
+					"request_id": chimiddleware.GetReqID(r.Context()),
 				}).Trace("tool-event API: missing required fields")
 				http.Error(w, "tool, status, and session are required", http.StatusBadRequest)
 				return
@@ -954,13 +1003,13 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 			}
 
 			logrus.WithFields(logrus.Fields{
-				"tool":    evt.Tool,
-				"status":  evt.Status,
-				"session": evt.Session,
-				"window":  evt.Window,
-				"pane":    evt.Pane,
-				"message": evt.Message,
-				"host":    evt.Host,
+				"tool":       evt.Tool,
+				"status":     evt.Status,
+				"session":    evt.Session,
+				"window":     evt.Window,
+				"pane":       evt.Pane,
+				"request_id": chimiddleware.GetReqID(r.Context()),
+				"host":       evt.Host,
 			}).Debug("received tool event via API")
 
 			opts.Tracker.Record(&evt)
