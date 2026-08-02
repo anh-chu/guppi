@@ -935,7 +935,8 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       window.setTimeout(() => {
         if (pendingSessionRef.current === fallbackPending) pendingSessionRef.current = null
       }, 15000)
-      workspaceActions.addOptimistic(optimisticSession(name, hostId, localHostName, path))
+      const optimisticBackend = hostId ? 'tmux' : 'daemon'
+      workspaceActions.addOptimistic(optimisticSession(name, hostId, localHostName, path, optimisticBackend))
     }
 
     // Apply the split/single layout with the optimistic key now, so the pane

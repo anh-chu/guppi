@@ -81,7 +81,7 @@ export function parseSessionKey(key: string): { host: string; name: string } {
 // Build an optimistic session stub for instant sidebar/terminal rendering
 // while the backend daemon cold-starts. Fields are minimal but valid so the
 // sidebar and pool identity checks do not crash before /api/sessions confirms.
-export function optimisticSession(name: string, hostId?: string, hostName?: string, cwd = ''): Session {
+export function optimisticSession(name: string, hostId?: string, hostName?: string, cwd = '', backend: string = 'daemon'): Session {
   const now = new Date().toISOString()
   return {
     id: name,
@@ -89,7 +89,7 @@ export function optimisticSession(name: string, hostId?: string, hostName?: stri
     host: hostId || undefined,
     host_name: hostName,
     host_online: true,
-    backend: 'daemon',
+    backend,
     created: now,
     attached: false,
     last_activity: now,

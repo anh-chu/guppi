@@ -107,4 +107,22 @@ describe('optimistic session identity', () => {
     expect(sessionKey(session)).toBe(sk)
     expect(session.host).toBeUndefined()
   })
+
+  it('defaults to daemon backend for local sessions', () => {
+    const session = optimisticSession('shell', undefined, 'My Laptop', '/tmp')
+    expect(session.backend).toBe('daemon')
+  })
+
+  it('uses tmux backend when explicitly passed for a remote session', () => {
+    // Regression coverage: a remote drag-to-split create must produce an
+    // optimistic session whose backend matches the server's remote/tmux
+    // path, so the optimistic terminal connects via the same WebSocket
+    // route (/ws/session) that the reconciled session will use, instead of
+    // the daemon route (/ws/daemon-session).
+    const hostId = 'peer-abc123'
+    const optimisticBackend = hostId ? 'tmux' : 'daemon'
+    const session = optimisticSession('shell', hostId, 'Remote Box', '/tmp', optimisticBackend)
+    expect(session.backend).toBe('tmux')
+    expect(sessionKey(session)).toBe('peer-abc123/shell')
+  })
 })
