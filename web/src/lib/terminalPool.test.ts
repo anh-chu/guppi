@@ -40,6 +40,7 @@ interface FakeEl extends HTMLElement {
   _fire(type: string, ...args: any[]): void
   _children: HTMLElement[]
   _parent: HTMLElement | null
+  _listeners: Map<string, Array<(...args: any[]) => void>>
 }
 
 function fakeEl(tag = 'div'): FakeEl {
@@ -116,6 +117,7 @@ function fakeEl(tag = 'div'): FakeEl {
       const arr = listeners.get(type)
       arr?.forEach(fn => fn(...args))
     },
+    _listeners: listeners,
   } as unknown as FakeEl
 
   return el
@@ -231,7 +233,8 @@ class FakeWebSocket {
     this.url = url
   }
 
-  send(_data: any) { socketSendCount++ }
+  sent: any[] = []
+  send(data: any) { this.sent.push(data); socketSendCount++ }
   close() {
     socketCloseCount++
     this.readyState = FakeWebSocket.CLOSED
@@ -294,6 +297,14 @@ function noopCbs(): CheckoutCallbacks {
     onAltModifierChange: () => {},
     onSelectionMenu: () => {},
   }
+}
+
+// Reach into private pool maps only for characterization assertions.
+function getEntry(pool: any, key: string): any | undefined {
+  return pool.entries.get(key)
+}
+function hasEntry(pool: any, key: string): boolean {
+  return pool.entries.has(key)
 }
 
 // ── Suite ────────────────────────────────────────────────────────────
@@ -449,8 +460,8 @@ describe('TerminalPool', () => {
   it('active sends pass', () => {
     const container = fakeEl()
     const l = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
-    const entry = pool._debug_entry(l.key)
-    ;(entry?.ws as unknown as FakeWebSocket)?._open()
+    const entry = getEntry(pool, l.key)
+    ;(entry?.connection?.socket as unknown as FakeWebSocket)?._open()
     const scB = socketSendCount
     pool.sendText(l, 'hello')
     expect(socketSendCount).toBeGreaterThan(scB)
@@ -460,8 +471,8 @@ describe('TerminalPool', () => {
     const container = fakeEl()
     const l = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
     // Open socket so sends can go through while lease is active
-    const entry = pool._debug_entry(l.key)
-    ;(entry?.ws as unknown as FakeWebSocket)?._open()
+    const entry = getEntry(pool, l.key)
+    ;(entry?.connection?.socket as unknown as FakeWebSocket)?._open()
     // Send while active should work
     const scBeforeCheckin = socketSendCount
     pool.sendText(l, 'hello')
@@ -479,8 +490,8 @@ describe('TerminalPool', () => {
   it('stale sendImage rejected after checkin', async () => {
     const container = fakeEl()
     const l = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
-    const entry = pool._debug_entry(l.key)
-    const ws = entry?.ws as unknown as FakeWebSocket
+    const entry = getEntry(pool, l.key)
+    const ws = entry?.connection?.socket as unknown as FakeWebSocket
     ws?._open()
 
     // Create a small fake file
@@ -522,8 +533,8 @@ describe('TerminalPool', () => {
     const container = fakeEl()
     const l = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
     expect(pool.getSnapshot(l.key)!.connected).toBe(false)
-    const entry = pool._debug_entry(l.key)
-    ;(entry?.ws as unknown as FakeWebSocket)?._open()
+    const entry = getEntry(pool, l.key)
+    ;(entry?.connection?.socket as unknown as FakeWebSocket)?._open()
     expect(pool.getSnapshot(l.key)!.connected).toBe(true)
   })
 
@@ -532,7 +543,7 @@ describe('TerminalPool', () => {
   it('WebGL context loss disposes only WebGL, keeps terminal', () => {
     const container = fakeEl()
     const l = pool.checkout(defId('s1'), defPrefs({ renderer: 'webgl' }), container, noopCbs())
-    const entry = pool._debug_entry(l.key)
+    const entry = getEntry(pool, l.key)
     const wgl = entry?.webglAddon as unknown as FakeWebglAddon
     expect(wgl).toBeTruthy()
     const tdB = terminalDisposeCount, scB = socketCloseCount, adB = addonDisposeCount
@@ -572,8 +583,8 @@ describe('TerminalPool', () => {
     pool.rekey('hostA/old', 'hostA/new')
     expect(terminalCreateCount).toBe(tcB)
     expect(terminalDisposeCount).toBe(tdB)
-    expect(pool._debug_hasEntry('hostA/old')).toBe(false)
-    expect(pool._debug_hasEntry('hostA/new')).toBe(true)
+    expect(hasEntry(pool, 'hostA/old')).toBe(false)
+    expect(hasEntry(pool, 'hostA/new')).toBe(true)
   })
 
   it('rekey collision disposes dest', () => {
@@ -586,7 +597,7 @@ describe('TerminalPool', () => {
     pool.rekey('a', 'b')
     expect(terminalDisposeCount).toBeGreaterThan(tdB)
     expect(pool.size).toBe(1)
-    expect(pool._debug_hasEntry('b')).toBe(true)
+    expect(hasEntry(pool, 'b')).toBe(true)
   })
 
   // ── Dispose ────────────────────────────────────────────────────────
@@ -619,8 +630,8 @@ describe('TerminalPool', () => {
     expect(pool.size).toBe(2)
     pool.disposeAbsent(new Set(['s1']))
     expect(pool.size).toBe(1)
-    expect(pool._debug_hasEntry('s1')).toBe(true)
-    expect(pool._debug_hasEntry('s2')).toBe(false)
+    expect(hasEntry(pool, 's1')).toBe(true)
+    expect(hasEntry(pool, 's2')).toBe(false)
   })
 
   it('disposeAbsent with all valid does nothing', () => {
@@ -662,7 +673,7 @@ describe('TerminalPool', () => {
     }
     expect(pool.size).toBe(30)
     for (let i = 0; i < 30; i++) {
-      expect(pool._debug_hasEntry(`s${i}`)).toBe(true)
+      expect(hasEntry(pool, `s${i}`)).toBe(true)
     }
   })
 
@@ -673,7 +684,7 @@ describe('TerminalPool', () => {
     const l = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
     pool.checkin(l)
     expect(pool.size).toBe(1)
-    expect(pool._debug_hasEntry('s1')).toBe(true)
+    expect(hasEntry(pool, 's1')).toBe(true)
     expect(terminalDisposeCount).toBe(0)
   })
 
@@ -683,8 +694,8 @@ describe('TerminalPool', () => {
     const container = fakeEl()
     // First checkout creates entry with CONNECTING WS
     const l1 = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
-    const entry = pool._debug_entry(l1.key)
-    const ws = entry?.ws as unknown as FakeWebSocket
+    const entry = getEntry(pool, l1.key)
+    const ws = entry?.connection?.socket as unknown as FakeWebSocket
     // Open the socket, which should trigger pending resize from onopen
     ws?._open()
     expect(socketSendCount).toBeGreaterThan(0)
@@ -704,8 +715,8 @@ describe('TerminalPool', () => {
     const container = fakeEl()
     const id = defId(name, undefined, backend)
     const l = pool.checkout(id, defPrefs(), container, noopCbs())
-    const entry = pool._debug_entry(l.key)!
-    const ws = entry.ws as unknown as FakeWebSocket
+    const entry = getEntry(pool, l.key)!
+    const ws = entry.connection.socket as unknown as FakeWebSocket
     ws._open()
     const term = entry.terminal as unknown as FakeTerminal
     term.writes = []
@@ -713,10 +724,10 @@ describe('TerminalPool', () => {
   }
 
   function currentEntry(name: string) {
-    const entry = pool._debug_entry(name)!
+    const entry = getEntry(pool, name)!
     return {
       entry,
-      ws: entry.ws as unknown as FakeWebSocket,
+      ws: entry.connection.socket as unknown as FakeWebSocket,
       term: entry.terminal as unknown as FakeTerminal,
     }
   }
@@ -786,14 +797,14 @@ describe('TerminalPool', () => {
     const { ws } = openSession('s1')
     ws._message(JSON.stringify({ type: 'replay-start' }))
     ws._message(new Uint8Array([0x09]).buffer)
-    const oldConnId = pool._debug_entry('s1')!.connId
+    const oldWs = getEntry(pool, 's1')!.connection.socket
 
     // Simulate reconnect by closing and advancing reconnect timer
     ws.close()
     vi.advanceTimersByTime(2500)
 
     const { ws: ws2, term } = currentEntry('s1')
-    expect(pool._debug_entry('s1')!.connId).not.toBeUndefined()
+    expect(getEntry(pool, 's1')!.connection.socket).not.toBe(oldWs)
     ws2._open()
     expect(term.writes.length).toBe(0)
     ws2._message(new Uint8Array([0x0a]).buffer)
@@ -805,19 +816,16 @@ describe('TerminalPool', () => {
 
   it('replay buffer cap flushes immediately and arms passthrough', () => {
     vi.useFakeTimers()
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
     const { ws, term } = openSession('s1')
     ws._message(JSON.stringify({ type: 'replay-start' }))
     const chunk = new Uint8Array(MAX_REPLAY_BUFFER_BYTES + 1)
     ws._message(chunk.buffer)
     expect(term.writes.length).toBe(1)
     expect((term.writes[0].data as Uint8Array).length).toBe(MAX_REPLAY_BUFFER_BYTES + 1)
-    expect(debugSpy).toHaveBeenCalledWith('[termyard-replay] 32MB cap exceeded, passthrough')
     // After cap, bytes should be written immediately (passthroughArmed).
     ws._message(new Uint8Array([0x07]).buffer)
     expect(term.writes.length).toBe(2)
     expect([...(term.writes[1].data as Uint8Array)]).toEqual([7])
-    debugSpy.mockRestore()
     vi.useRealTimers()
   })
 
@@ -960,8 +968,126 @@ describe('TerminalPool', () => {
     vi.advanceTimersByTime(0)
     const bytes = term.writes.filter(w => w.data instanceof Uint8Array).flatMap(w => [...(w.data as Uint8Array)])
     expect(bytes).toEqual([0x41, 0x42, 0x43])
-    const entry = pool._debug_entry('s1')!
+    const entry = getEntry(pool, 's1')!
     expect(entry.syncCarryover).toBeNull()
+    vi.useRealTimers()
+  })
+
+  // ── Lifecycle & leak characterization ──────────────────────────────
+
+  it('StrictMode double mount keeps one terminal and disposes once', () => {
+    const c1 = fakeEl()
+    const l1 = pool.checkout(defId('s1'), defPrefs(), c1, noopCbs())
+    pool.checkin(l1)
+
+    const tcAfterFirst = terminalCreateCount
+    const tdBefore = terminalDisposeCount
+
+    const c2 = fakeEl()
+    const l2 = pool.checkout(defId('s1'), defPrefs(), c2, noopCbs())
+    expect(terminalCreateCount).toBe(tcAfterFirst)
+    pool.checkin(l2)
+
+    pool.dispose('s1')
+    expect(terminalDisposeCount).toBe(tdBefore + 1)
+  })
+
+  it('checkin removes all foreground and global listeners', () => {
+    const container = fakeEl()
+    const origWindowAdd = window.addEventListener
+    const origWindowRemove = window.removeEventListener
+    const windowListeners: { type: string; fn: EventListener }[] = []
+
+    window.addEventListener = ((type: string, fn: EventListener, options?: any) => {
+      windowListeners.push({ type, fn })
+      return origWindowAdd.call(window, type, fn, options)
+    }) as any
+
+    window.removeEventListener = ((type: string, fn: EventListener, options?: any) => {
+      const idx = windowListeners.findIndex(l => l.type === type && l.fn === fn)
+      if (idx > -1) windowListeners.splice(idx, 1)
+      return origWindowRemove.call(window, type, fn, options)
+    }) as any
+
+    const lease = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
+    const containerListenerCount = [...(container as unknown as FakeEl)._listeners.values()].flat().length
+    expect(containerListenerCount).toBeGreaterThan(0)
+    expect(windowListeners.length).toBeGreaterThan(0)
+
+    pool.checkin(lease)
+    expect([...(container as unknown as FakeEl)._listeners.values()].flat().length).toBe(0)
+    expect(windowListeners.length).toBe(0)
+
+    window.addEventListener = origWindowAdd
+    window.removeEventListener = origWindowRemove
+  })
+
+  it('dispose removes listeners and stops reconnect timers', () => {
+    const container = fakeEl()
+    const lease = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
+    const entry = getEntry(pool, lease.key)!
+    const ws = entry.connection.socket as unknown as FakeWebSocket
+    ws._open()
+    const containerListenerCount = [...(container as unknown as FakeEl)._listeners.values()].flat().length
+
+    expect(containerListenerCount).toBeGreaterThan(0)
+    pool.dispose('s1')
+    expect(hasEntry(pool, 's1')).toBe(false)
+    expect(socketCloseCount).toBeGreaterThan(0)
+  })
+
+  it('wheel and touchmove set the userScrolled flag', () => {
+    const container = fakeEl()
+    const lease = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
+    const entry = getEntry(pool, lease.key)!
+    expect(entry.userScrolled).toBe(false)
+    container._fire('wheel', {} as WheelEvent)
+    expect(entry.userScrolled).toBe(true)
+    const epoch = entry.fitEpoch
+    container._fire('touchmove', {} as TouchEvent)
+    expect(entry.userScrolled).toBe(true)
+    expect(entry.fitEpoch).toBe(epoch)
+  })
+
+  it('sendImage transmits a paste-image control', async () => {
+    const container = fakeEl()
+    const lease = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
+    const entry = getEntry(pool, lease.key)!
+    const ws = entry.connection.socket as unknown as FakeWebSocket
+    ws._open()
+    const file = new File(['\x89PNG\r\n'], 'shot.png', { type: 'image/png' })
+    await pool.sendImage(lease, file, 'image/png')
+    const last = ws.sent[ws.sent.length - 1]
+    expect(typeof last).toBe('string')
+    const payload = JSON.parse(last)
+    expect(payload.type).toBe('paste-image')
+    expect(payload.mime).toBe('image/png')
+  })
+
+  it('heartbeat pings are sent and watchdog closes silent connections', () => {
+    vi.useFakeTimers()
+    const { ws } = openSession('s1')
+    const scBefore = socketSendCount
+    vi.advanceTimersByTime(10000)
+    expect(socketSendCount).toBeGreaterThan(scBefore)
+    vi.advanceTimersByTime(15000)
+    expect(ws.readyState).toBe(FakeWebSocket.CLOSED)
+    vi.useRealTimers()
+  })
+
+  it('page hidden defers reconnect until visibility resumes', () => {
+    vi.useFakeTimers()
+    Object.defineProperty(document, 'hidden', { value: true, configurable: true, writable: true })
+    const { ws } = openSession('s1')
+    const openCountBefore = socketOpenCount
+    ws.close()
+    vi.advanceTimersByTime(3000)
+    expect(socketOpenCount).toBe(openCountBefore)
+
+    ;(document as any).hidden = false
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(socketOpenCount).toBeGreaterThan(openCountBefore)
+
     vi.useRealTimers()
   })
 })

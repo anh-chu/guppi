@@ -1,10 +1,12 @@
 //
-// terminalPool.ts — Frontend-owned terminal instance pool
+// terminalPool.ts — Frontend-owned terminal instance pool (facade).
 //
-// Owns Terminal, addons, WebSocket, timers, and lifecycle for each
-// hostId/sessionName key. Checkout picks an existing warm entry;
-// checkin moves the terminal DOM offscreen without disconnecting.
-// All input/resize is gated by an exclusive generation lease.
+// Checkout/checkin lease behavior is still owned here, but connection
+// lifecycle, replay assembly, and unavoidable xterm internals are delegated
+// to focused modules:
+//   - connectionMachine.ts: WebSocket state machine and timers
+//   - replayBuffer.ts: bounded replay byte assembly
+//   - xtermCompat.ts: the only _core access boundary
 //
 
 import { Terminal } from '@xterm/xterm'
@@ -16,9 +18,14 @@ import { ImageAddon } from '@xterm/addon-image'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import { PredictiveEcho } from './predictive-echo'
 import { getXtermTheme } from '../theme'
-// Shared DOM transfer primitive — Group B owns pip.ts.
-// Contract: (node: HTMLElement, dest: HTMLElement) => { crossedDocument: boolean }
+import { ConnectionMachine } from './terminal/connectionMachine'
+import { ReplayBuffer } from './terminal/replayBuffer'
+import { neutralizeXtermScrollbarFallback, measureXtermCharSize } from './terminal/xtermCompat'
 import { transferNode } from './pip'
+
+// Re-export the public contracts owned by the submodules so existing callers
+// keep working without importing through the submodule path.
+export { MAX_REPLAY_BUFFER_BYTES, concatU8 } from './terminal/replayBuffer'
 
 // Allow tests to inject a different transfer primitive.
 let _transferNode: ((node: HTMLElement, dest: HTMLElement) => { crossedDocument: boolean }) | null = transferNode
@@ -29,17 +36,6 @@ export function __injectTransferNode(
 }
 
 // --- internal helpers --------------------------------------------------
-
-type XtermWithCore = Terminal & {
-  _core?: { viewport?: { scrollBarWidth?: number } }
-}
-
-function neutralizeXtermScrollbarFallback(term: Terminal): void {
-  const viewport = (term as XtermWithCore)._core?.viewport
-  if (viewport && typeof viewport.scrollBarWidth === 'number') {
-    viewport.scrollBarWidth = 0
-  }
-}
 
 // Clipboard helpers
 let pendingClipboard: string | null = null
@@ -112,7 +108,7 @@ const clipboardProvider: IClipboardProvider = {
 
 const MAX_PASTED_FILE_BYTES = 10 * 1024 * 1024
 
-export function concatU8(parts: Uint8Array[]): Uint8Array {
+export function concatU8Legacy(parts: Uint8Array[]): Uint8Array {
   let len = 0
   for (const p of parts) len += p.length
   const out = new Uint8Array(len)
@@ -135,11 +131,6 @@ function indexOfU8(haystack: Uint8Array, needle: Uint8Array, start = 0): number 
   return -1
 }
 
-// Maximum bytes to buffer while waiting for replay-end. If a replay stream
-// exceeds this we flush what we have and switch to passthrough so the UI
-// never wedges on an unbounded backlog.
-export const MAX_REPLAY_BUFFER_BYTES = 32 * 1024 * 1024
-
 // Shared prefix of the DEC mode 2026 synchronized-update markers.
 // BSU = \x1b[?2026h, ESU = \x1b[?2026l. The 6-byte prefix is shared; the
 // 7th byte disambiguates start (0x68) vs end (0x6c).
@@ -159,16 +150,15 @@ async function sendPastedImage(
   ws: WebSocket,
   file: File,
   fallbackType: string,
-  entry: PoolEntryState,
+  entry: PoolEntry,
   gen: number,
 ): Promise<void> {
   if (file.size > MAX_PASTED_FILE_BYTES) {
-    console.warn(`Pasted image exceeds ${MAX_PASTED_FILE_BYTES} byte limit`)
     return
   }
   const buffer = await file.arrayBuffer()
   // Re-validate lease after async gap — entry may have been checked in/out
-  if (entry.generation !== gen || entry.ws !== ws || ws.readyState !== WebSocket.OPEN) return
+  if (entry.generation !== gen || entry.connection.socket !== ws || ws.readyState !== WebSocket.OPEN) return
   ws.send(JSON.stringify({
     type: 'paste-image',
     data: bytesToBase64(new Uint8Array(buffer)),
@@ -188,13 +178,8 @@ async function sendPastedImage(
 // (spinner/redraw animations), so capturing `baseY - viewportY` mid-frame
 // reads a stale in-between state and "restores" the terminal to a phantom
 // offset, pinning it mid-history and flashing on every redraw.
-//
-// When the user is following output (not scrolled), we just scrollToBottom
-// once and let xterm auto-stick on subsequent writes. No multi-frame deferred
-// restore pile: that competed with xterm's own scroll-on-write and was itself
-// a source of visible flashing during TUI animations.
 function fitPreservingScroll(
-  entry: PoolEntryState,
+  entry: PoolEntry,
   container: HTMLElement,
   opts?: { refreshAfter?: boolean },
 ): void {
@@ -205,7 +190,7 @@ function fitPreservingScroll(
   const myEpoch = ++entry.fitEpoch
   const buf = term.buffer.active
   // Only preserve a real user offset. geometry-based distFromBottom is
-  // unreliable during async writes (see header comment).
+  // unreliable during async writes.
   const userOffset = entry.userScrolled ? Math.max(0, buf.baseY - buf.viewportY) : 0
 
   const isStale = () => entry.fitEpoch !== myEpoch
@@ -232,8 +217,7 @@ function fitPreservingScroll(
   }
 
   // User is genuinely scrolled up: restore the captured offset, but only
-  // across a single deferred frame (xterm recomputes viewport async). Epoch
-  // gating cancels this if the user scrolls again or a newer fit runs.
+  // across a single deferred frame (xterm recomputes viewport async).
   const restoreOnce = () => {
     if (isStale() || !entry.userScrolled) return
     try {
@@ -335,12 +319,10 @@ const defaultFactory: PoolFactory = {
 
 // --- Pool entry state --------------------------------------------------
 
-interface PoolEntryState {
+interface PoolEntry {
   // Identity
   key: string
-  sessionName: string
-  hostId?: string
-  backend?: string
+  identity: PoolIdentity
 
   // Core resources
   terminal: Terminal
@@ -351,28 +333,13 @@ interface PoolEntryState {
   graphemesLoaded: boolean
   predictiveEcho: PredictiveEcho | null
   predictiveEchoEnabled: boolean
-  ws: WebSocket | null
 
-  // Timers
-  reconnectTimer: number | undefined
-  heartbeatTimer: number | undefined
-  watchdogTimer: number | undefined
-  telemetryInterval: number | undefined
-  fallbackTimer: number | undefined
+  // Delegates
+  connection: ConnectionMachine
+  replayBuffer: ReplayBuffer
 
   // Connection
-  connId: number
   connected: boolean
-
-  // Telemetry
-  msgCount: number
-  totalBytes: number
-  lastSummary: number
-  tConnect: number
-  pendingInputTs: number | null
-  writePending: boolean
-  discardedInputs: number
-  latencySamples: Array<{ inputToFrameMs: number; inputToWriteCompleteMs: number }>
 
   // Lease
   generation: number
@@ -382,13 +349,8 @@ interface PoolEntryState {
   fitEpoch: number
 
   // True only when the user has taken control of the viewport via a real
-  // gesture (wheel, touch, scrollbar drag). Buffer geometry (baseY vs
-  // viewportY) is NOT a reliable signal: xterm updates viewportY
-  // asynchronously during rapid writes (spinner/redraw animations), so the
-  // viewport can momentarily lag baseY by a few lines mid-frame. Treating
-  // that lag as a user scroll caused fit/restore logic to pin the view
-  // mid-history and flash on every redraw. We key all scroll-preserving
-  // behavior off this gesture flag instead.
+  // gesture (wheel, touch, scrollbar drag). Buffer geometry is NOT a reliable
+  // signal: xterm updates viewportY asynchronously during rapid writes.
   userScrolled: boolean
 
   // Active container state
@@ -415,31 +377,19 @@ interface PoolEntryState {
   // Applied preferences
   appliedPrefs: TerminalPrefs | null
 
-  // Reconnect URL identity (may differ from key after rekey)
-  reconnectSessionName: string
-  reconnectHostId?: string
-  reconnectBackend?: string
-
-  // Replay/sync state
-  inReplay: boolean
-  passthroughArmed: boolean
-  replayPending: Uint8Array[]
-  replayBytesAccum: number
+  // Live output sync markers
   syncCarryover: Uint8Array | null
   syncActive: boolean
   syncBuffer: Uint8Array[]
+
+  // Echo/write coordination
+  writePending: boolean
 }
 
 // --- Pool singleton ----------------------------------------------------
 
-let nextConnId = 0
-const MAX_TELEMETRY_SAMPLES = 1000
-const TELEMETRY_INTERVAL_MS = 60000
-const HEARTBEAT_MS = 10000
-const WATCHDOG_MS = 25000
-
 export class TerminalPool {
-  private entries = new Map<string, PoolEntryState>()
+  private entries = new Map<string, PoolEntry>()
   private factory: PoolFactory
   private poolRoot: HTMLElement | null = null
 
@@ -494,9 +444,10 @@ export class TerminalPool {
 
     // Dispose & recreate if backend identity changed for same key.
     if (entry) {
-      const backendChanged = entry.backend !== (identity.backend ?? undefined)
+      const backendChanged = entry.identity.backend !== (identity.backend ?? undefined)
       if (backendChanged) {
         this.disposeEntry(entry)
+        this.entries.delete(key)
         entry = undefined
       }
     }
@@ -518,13 +469,7 @@ export class TerminalPool {
     }
     entry.activeCallbacks = callbacks
 
-    // Bind terminal to the foreground container. On a cold entry (just
-    // created, never opened) term.element is undefined, so we MUST still call
-    // term.open(container) here to create the renderer and viewport — skipping
-    // it leaves the terminal with no renderer, and any later fit/refresh/
-    // syncScrollArea call throws `this._renderer.value is undefined` and can
-    // infinite-recurse in setRenderer. This path is hit exactly when a prior
-    // kill disposed the pooled entry and a new session cold-creates one.
+    // Bind terminal to the foreground container.
     const term = entry.terminal
     const root = term.element as HTMLElement | undefined
     if (root) {
@@ -545,23 +490,23 @@ export class TerminalPool {
     // Fit and resize
     if (container.clientWidth > 0 && container.clientHeight > 0) {
       fitPreservingScroll(entry, container, { refreshAfter: true })
-      if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
-        const { cols, rows } = entry.terminal
-        entry.ws.send(JSON.stringify({ type: 'resize', cols, rows }))
-        entry.lastCols = cols
-        entry.lastRows = rows
-        entry.pendingResizeOnOpen = false
+      if (entry.connection.connected) {
+        const ws = entry.connection.socket
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const { cols, rows } = entry.terminal
+          ws.send(JSON.stringify({ type: 'resize', cols, rows }))
+          entry.lastCols = cols
+          entry.lastRows = rows
+          entry.pendingResizeOnOpen = false
+        }
       } else {
         entry.pendingResizeOnOpen = true
       }
     }
 
     // Deferred refresh: xterm's IntersectionObserver pauses rendering while the
-    // terminal element is off-screen (hidden pool). The synchronous refresh()
-    // calls above set _needsFullRefresh=true internally but don't actually
-    // paint — the observer un-pauses asynchronously in the next frame. Schedule
-    // a second fit+refresh in rAF so the render fires once the observer has
-    // cleared the pause, avoiding a blank frame on warm switches.
+    // terminal element is off-screen. Schedule a second fit+refresh in rAF so
+    // the render fires once the observer has cleared the pause.
     const deferredKey = lease.key
     const deferredGen = entry.generation
     window.requestAnimationFrame(() => {
@@ -586,7 +531,6 @@ export class TerminalPool {
   checkin(lease: LeaseToken): void {
     const entry = this.entries.get(lease.key)
     if (!entry) return
-    // Stale lease — ignore
     if (entry.generation !== lease.generation) return
 
     // Invalidate lease so stale token can't operate after checkin
@@ -619,8 +563,6 @@ export class TerminalPool {
         try { entry.terminal.open(host) } catch { /* ignored */ }
       }
     }
-
-    // Never fit hidden, never emit resize, leave WS/addons/timers active
   }
 
   // ── public API: lease-gated operations ──────────────────────────────
@@ -659,7 +601,7 @@ export class TerminalPool {
   sendRawBytes(lease: LeaseToken, bytes: Uint8Array): void {
     const entry = this.validateLease(lease)
     if (!entry) return
-    const ws = entry.ws
+    const ws = entry.connection.socket
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(bytes)
     }
@@ -673,13 +615,13 @@ export class TerminalPool {
   async sendImage(lease: LeaseToken, file: File, fallbackType: string): Promise<void> {
     const entry = this.validateLease(lease)
     if (!entry) return
-    const ws = entry.ws
+    const ws = entry.connection.socket
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     const gen = lease.generation
     try {
       await sendPastedImage(ws, file, fallbackType, entry, gen)
     } catch (err) {
-      console.error('Failed to send pasted image:', err)
+      // Swallow; failed image paste should not crash the terminal.
     }
   }
 
@@ -726,7 +668,7 @@ export class TerminalPool {
   // ── public API: preferences ─────────────────────────────────────────
 
   /** Reconcile entry against current prefs (idempotent). Call on checkout. */
-  reconcilePrefs(entry: PoolEntryState, prefs: TerminalPrefs): void {
+  reconcilePrefs(entry: PoolEntry, prefs: TerminalPrefs): void {
     // Theme
     const xtermTheme = getXtermTheme(prefs.theme)
     entry.terminal.options.theme = xtermTheme
@@ -736,10 +678,7 @@ export class TerminalPool {
     const fontFamily = `'${prefs.fontFamily}', 'JetBrains Mono', 'Fira Code', Menlo, Monaco, 'Inconsolata LGC Nerd Font Mono', 'DejaVu Sans Mono Symbols', monospace`
     entry.terminal.options.fontSize = prefs.fontSize
     entry.terminal.options.fontFamily = fontFamily
-    try {
-      (entry.terminal as unknown as { _core?: { _charSizeService?: { measure?: () => void } } })
-        ._core?._charSizeService?.measure?.()
-    } catch { /* ignored */ }
+    measureXtermCharSize(entry.terminal)
 
     // Renderer
     if (prefs.renderer === 'webgl' && !entry.webglAddon) {
@@ -792,16 +731,14 @@ export class TerminalPool {
       // Scrollback change triggers rebuild
       if (prevScrollback !== undefined && prevScrollback !== newScrollback) {
         // Capture identity before disposal
-        const identity: PoolIdentity = {
-          sessionName: entry.reconnectSessionName,
-          hostId: entry.reconnectHostId,
-          backend: entry.reconnectBackend,
-        }
+        const identity = entry.identity
         const key = entry.key
         const wasActive = entry.activeContainer !== null
         const prevContainer = entry.activeContainer
 
         this.disposeEntry(entry)
+        this.entries.delete(key)
+
         const newEntry = this.createEntry(key, identity, prefs, this.factory)
         this.entries.set(key, newEntry)
 
@@ -810,21 +747,18 @@ export class TerminalPool {
           newEntry.generation++
           newEntry.activeContainer = prevContainer
           const root = newEntry.terminal.element as HTMLElement | undefined
-          // newEntry was just createEntry()'d (terminal never opened); always
-          // open() it into prevContainer so the renderer is bound, not just
-          // when a stale root happens to exist.
           try { newEntry.terminal.open(prevContainer) } catch { /* ignored */ }
           neutralizeXtermScrollbarFallback(newEntry.terminal)
-          // (root is only relevant for re-appending the existing DOM node.)
           if (root) prevContainer.appendChild(root)
           this.attachListeners(newEntry)
           // Load renderer-dependent addons (WebGL) AFTER open() above.
           this.reconcilePrefs(newEntry, prefs)
           fitPreservingScroll(newEntry, prevContainer, { refreshAfter: true })
           // Send resize
-          if (newEntry.ws && newEntry.ws.readyState === WebSocket.OPEN) {
+          const ws = newEntry.connection.socket
+          if (ws && ws.readyState === WebSocket.OPEN) {
             const { cols, rows } = newEntry.terminal
-            newEntry.ws.send(JSON.stringify({ type: 'resize', cols, rows }))
+            ws.send(JSON.stringify({ type: 'resize', cols, rows }))
           }
         }
       } else {
@@ -865,12 +799,11 @@ export class TerminalPool {
     // Move entry to new key
     this.entries.delete(oldKey)
     entry.key = newKey
-    entry.reconnectSessionName = newKey.includes('/')
-      ? newKey.slice(newKey.indexOf('/') + 1)
-      : newKey
-    entry.reconnectHostId = newKey.includes('/')
-      ? newKey.slice(0, newKey.indexOf('/'))
-      : undefined
+    entry.identity = {
+      sessionName: newKey.includes('/') ? newKey.slice(newKey.indexOf('/') + 1) : newKey,
+      hostId: newKey.includes('/') ? newKey.slice(0, newKey.indexOf('/')) : undefined,
+      backend: entry.identity.backend,
+    }
     // Update the lease token for current owner
     entry.generation++ // invalidate previous lease
     this.entries.set(newKey, entry)
@@ -889,24 +822,15 @@ export class TerminalPool {
     _transferNode = null
   }
 
-  // For tests: expose entry internals (snapshot only, not for mutation)
-  _debug_entry(key: string): Readonly<PoolEntryState> | undefined {
-    return this.entries.get(key)
-  }
-
-  _debug_hasEntry(key: string): boolean {
-    return this.entries.has(key)
-  }
-
   // ── private helpers ─────────────────────────────────────────────────
 
-  private validateLease(lease: LeaseToken): PoolEntryState | null {
+  private validateLease(lease: LeaseToken): PoolEntry | null {
     const entry = this.entries.get(lease.key)
     if (!entry || entry.generation !== lease.generation) return null
     return entry
   }
 
-  private ensureHiddenHost(entry: PoolEntryState): HTMLElement {
+  private ensureHiddenHost(entry: PoolEntry): HTMLElement {
     if (entry.hiddenHost) return entry.hiddenHost
 
     if (!this.poolRoot) {
@@ -944,7 +868,7 @@ export class TerminalPool {
     identity: PoolIdentity,
     prefs: TerminalPrefs,
     ef: PoolFactory,
-  ): PoolEntryState {
+  ): PoolEntry {
     const xtermTheme = getXtermTheme(prefs.theme)
     const fontFamily = `'${prefs.fontFamily}', 'JetBrains Mono', 'Fira Code', Menlo, Monaco, 'Inconsolata LGC Nerd Font Mono', 'DejaVu Sans Mono Symbols', monospace`
 
@@ -965,20 +889,14 @@ export class TerminalPool {
     term.loadAddon(ef.createWebLinksAddon())
     term.loadAddon(ef.createClipboardAddon(clipboardProvider))
 
-    // WebGL renderer is NOT loaded here: the WebGL addon must be loaded
-    // AFTER term.open() (xterm.js requirement). Loading it before open makes
-    // setRenderer infinite-recurse ("InternalError: too much recursion"). It
-    // is loaded lazily in reconcilePrefs(), which runs after open() in both
-    // checkout() and the scrollback-rebuild path.
+    // WebGL renderer is loaded lazily AFTER term.open() (xterm.js requirement).
     let webglAddon: WebglAddon | null = null
 
-    // Image addon
     const imageAddon = ef.createImageAddon()
     if (imageAddon) {
       try { term.loadAddon(imageAddon) } catch { /* ignored */ }
     }
 
-    // Unicode graphemes
     let graphemesAddon: UnicodeGraphemesAddon | null = null
     let graphemesLoaded = false
     if (prefs.unicodeGraphemes) {
@@ -990,19 +908,44 @@ export class TerminalPool {
       }
     }
 
-    // Predictive echo
     let predictiveEcho: PredictiveEcho | null = null
     if (prefs.predictiveEcho) {
       predictiveEcho = ef.createPredictiveEcho(term)
     }
 
-    const connId = ++nextConnId
+    const replayBuffer = new ReplayBuffer()
 
-    const entry: PoolEntryState = {
+    // eslint-disable-next-line prefer-const
+    let entry!: PoolEntry
+
+    const connection = new ConnectionMachine(
+      {
+        createWebSocket: ef.createWebSocket,
+        onConnecting: () => {
+          entry.replayBuffer.reset()
+          entry.syncActive = false
+          entry.syncBuffer = []
+          entry.syncCarryover = null
+        },
+        onConnectionChange: (connected) => this.handleConnectionChange(entry, connected),
+        onOpen: () => this.handleOpen(entry),
+        onBinaryMessage: (data) => this.handleBinaryMessage(entry, data),
+        onTextMessage: (text) => this.handleTextControl(entry, text),
+        onReplayStart: () => {
+          entry.replayBuffer.reset()
+          entry.syncActive = false
+          entry.syncBuffer = []
+          entry.syncCarryover = null
+        },
+        onReplayEnd: () => this.flushReplayBuffer(entry),
+        onFallback: () => this.flushReplayBuffer(entry),
+      },
+      this.buildUrl({ key, identity }),
+    )
+
+    entry = {
       key,
-      sessionName: identity.sessionName,
-      hostId: identity.hostId,
-      backend: identity.backend,
+      identity,
 
       terminal: term,
       fitAddon,
@@ -1012,25 +955,11 @@ export class TerminalPool {
       graphemesLoaded,
       predictiveEcho,
       predictiveEchoEnabled: prefs.predictiveEcho,
-      ws: null,
 
-      reconnectTimer: undefined,
-      heartbeatTimer: undefined,
-      watchdogTimer: undefined,
-      telemetryInterval: undefined,
-      fallbackTimer: undefined,
+      connection,
+      replayBuffer,
 
-      connId,
       connected: false,
-
-      msgCount: 0,
-      totalBytes: 0,
-      lastSummary: 0,
-      tConnect: 0,
-      pendingInputTs: null,
-      writePending: false,
-      discardedInputs: 0,
-      latencySamples: [],
 
       generation: 0,
       fitEpoch: 0,
@@ -1054,253 +983,130 @@ export class TerminalPool {
 
       appliedPrefs: { ...prefs },
 
-      reconnectSessionName: identity.sessionName,
-      reconnectHostId: identity.hostId,
-      reconnectBackend: identity.backend,
-
-      inReplay: false,
-      passthroughArmed: false,
-      replayPending: [],
-      replayBytesAccum: 0,
       syncCarryover: null,
       syncActive: false,
       syncBuffer: [],
+
+      writePending: false,
     }
 
-    // Initiate WebSocket connection
-    this.connect(entry)
-
+    connection.connect()
     return entry
   }
 
-  // ── connection ──────────────────────────────────────────────────────
+  // ── connection event handlers ───────────────────────────────────────
 
-  private connect(entry: PoolEntryState): void {
-    const term = entry.terminal
-    entry.userScrolled = false
-    // Reset replay/sync state on every (re)connect. Reconnect reuses the
-    // same entry, so any in-flight replay must start fresh.
-    entry.inReplay = false
-    entry.passthroughArmed = false
-    entry.replayPending = []
-    entry.replayBytesAccum = 0
-    entry.syncCarryover = null
-    entry.syncActive = false
-    entry.syncBuffer = []
-    if (entry.fallbackTimer !== undefined) {
-      clearTimeout(entry.fallbackTimer)
-      entry.fallbackTimer = undefined
-    }
-    const cols = term.cols || 80
-    const rows = term.rows || 24
+  private buildUrl(target: { key: string; identity: PoolIdentity }): string {
+    const term = this.entries.get(target.key)?.terminal
+    const cols = term?.cols || 80
+    const rows = term?.rows || 24
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const sessionName = entry.reconnectSessionName
-    const hostId = entry.reconnectHostId
-    const backend = entry.reconnectBackend
+    const sessionName = target.identity.sessionName
+    const hostId = target.identity.hostId
+    const backend = target.identity.backend
 
     const hostParam = hostId ? `&host=${encodeURIComponent(hostId)}` : ''
-    let wsUrl: string
     if (backend === 'daemon') {
-      wsUrl = `${protocol}//${window.location.host}/ws/daemon-session?name=${encodeURIComponent(sessionName)}&cols=${cols}&rows=${rows}${hostParam}&replay=1`
-    } else if (sessionName.startsWith('direct-pty:')) {
-      wsUrl = `${protocol}//${window.location.host}/ws/direct-session?cols=${cols}&rows=${rows}`
-    } else {
-      wsUrl = `${protocol}//${window.location.host}/ws/session?name=${encodeURIComponent(sessionName)}&cols=${cols}&rows=${rows}${hostParam}&replay=1`
+      return `${protocol}//${window.location.host}/ws/daemon-session?name=${encodeURIComponent(sessionName)}&cols=${cols}&rows=${rows}${hostParam}&replay=1`
     }
-
-    const ws = this.factory.createWebSocket(wsUrl)
-    ws.binaryType = 'arraybuffer'
-    entry.ws = ws
-    const connId = entry.connId
-    entry.tConnect = performance.now()
-
-    // Watchdog
-    const armWatchdog = () => {
-      if (entry.watchdogTimer) clearTimeout(entry.watchdogTimer)
-      entry.watchdogTimer = window.setTimeout(() => {
-        if (entry.connId !== connId) return
-        try { ws.close() } catch { /* ignored */ }
-      }, WATCHDOG_MS)
+    if (sessionName.startsWith('direct-pty:')) {
+      return `${protocol}//${window.location.host}/ws/direct-session?cols=${cols}&rows=${rows}`
     }
-
-    ws.onopen = () => {
-      if (entry.connId !== connId) { ws.close(); return }
-      entry.connected = true
-      entry.activeCallbacks?.onConnectionChange(true)
-      armWatchdog()
-      if (entry.heartbeatTimer) clearInterval(entry.heartbeatTimer)
-      entry.heartbeatTimer = window.setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          try { ws.send(JSON.stringify({ type: 'ping' })) } catch { /* ignored */ }
-        }
-      }, HEARTBEAT_MS)
-
-      // If the server does not send a replay-start control within 250ms,
-      // assume it is an old server or no replay was requested. Arm
-      // passthrough for the lifetime of this connection so late controls are
-      // ignored and bytes are written immediately.
-      entry.fallbackTimer = window.setTimeout(() => {
-        if (entry.connId !== connId) return
-        entry.passthroughArmed = true
-        entry.inReplay = false
-        if (entry.replayPending.length) {
-          const concat = concatU8(entry.replayPending)
-          entry.replayPending = []
-          entry.replayBytesAccum = 0
-          entry.predictiveEcho?.clear()
-          entry.terminal.write(concat)
-          if (!entry.userScrolled) {
-            try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
-          }
-        }
-      }, 250) as unknown as number
-
-      // Pending resize
-      if (entry.pendingResizeOnOpen && entry.activeContainer) {
-        entry.pendingResizeOnOpen = false
-        // Re-read from terminal after open
-        // Dimensions settled during checkout fit; send them
-        const c = entry.terminal.cols
-        const r = entry.terminal.rows
-        entry.lastCols = c
-        entry.lastRows = r
-        try { ws.send(JSON.stringify({ type: 'resize', cols: c, rows: r })) } catch { /* ignored */ }
-      }
-    }
-
-    ws.onmessage = (evt) => {
-      armWatchdog()
-      if (evt.data instanceof ArrayBuffer) {
-        entry.msgCount++
-        entry.totalBytes += evt.data.byteLength
-        const data = new Uint8Array(evt.data)
-        if (entry.inReplay) {
-          entry.replayPending.push(data)
-          entry.replayBytesAccum += data.byteLength
-          if (entry.replayBytesAccum > MAX_REPLAY_BUFFER_BYTES) {
-            const all = concatU8(entry.replayPending)
-            entry.predictiveEcho?.clear()
-            entry.terminal.write(all)
-            entry.replayPending = []
-            entry.replayBytesAccum = 0
-            entry.inReplay = false
-            entry.passthroughArmed = true
-            console.debug('[termyard-replay] 32MB cap exceeded, passthrough')
-          }
-          return
-        }
-        this.dispatchLiveOutput(entry, data)
-      } else if (typeof evt.data === 'string') {
-        this.handleTextControl(entry, evt.data)
-      }
-    }
-
-    ws.onclose = (evt) => {
-      if (entry.connId !== connId) return
-      if (entry.heartbeatTimer) { clearInterval(entry.heartbeatTimer); entry.heartbeatTimer = undefined }
-      if (entry.watchdogTimer) { clearTimeout(entry.watchdogTimer); entry.watchdogTimer = undefined }
-      if (entry.telemetryInterval) { clearInterval(entry.telemetryInterval); entry.telemetryInterval = undefined }
-      if (entry.fallbackTimer !== undefined) { clearTimeout(entry.fallbackTimer); entry.fallbackTimer = undefined }
-      if (entry.connected) {
-        entry.connected = false
-        if (!document.hidden) {
-          entry.activeCallbacks?.onConnectionChange(false)
-        }
-      }
-      // Only reconnect if document is visible
-      if (document.hidden) {
-        const onVisible = () => {
-          if (entry.connId !== connId) return
-          document.removeEventListener('visibilitychange', onVisible)
-          window.removeEventListener('pageshow', onVisible)
-          this.connect(entry)
-        }
-        document.addEventListener('visibilitychange', onVisible)
-        window.addEventListener('pageshow', onVisible)
-      } else {
-        entry.reconnectTimer = window.setTimeout(() => {
-          if (entry.connId === connId) {
-            this.connect(entry)
-          }
-        }, 2000) as unknown as number
-      }
-    }
-
-    ws.onerror = () => {
-      // Error is typically followed by onclose; no explicit state change needed here
-    }
-
-    // Telemetry
-    const emitTelemetry = (reason: string) => {
-      if (entry.connId !== connId) return
-      if (entry.latencySamples.length === 0) return
-      const sortedFrame = entry.latencySamples.map(s => s.inputToFrameMs).sort((a, b) => a - b)
-      const sortedWrite = entry.latencySamples.map(s => s.inputToWriteCompleteMs).sort((a, b) => a - b)
-      const p = (arr: number[], q: number) => arr[Math.floor(arr.length * q)] ?? 0
-      console.debug('[termyard-telemetry]', reason, {
-        samples: entry.latencySamples.length,
-        discarded: entry.discardedInputs,
-        inputToFrameMs: { p50: p(sortedFrame, 0.5), p90: p(sortedFrame, 0.9), p99: p(sortedFrame, 0.99) },
-        inputToWriteCompleteMs: { p50: p(sortedWrite, 0.5), p90: p(sortedWrite, 0.9), p99: p(sortedWrite, 0.99) },
-      })
-    }
-    entry.telemetryInterval = window.setInterval(() => emitTelemetry('periodic'), TELEMETRY_INTERVAL_MS)
+    return `${protocol}//${window.location.host}/ws/session?name=${encodeURIComponent(sessionName)}&cols=${cols}&rows=${rows}${hostParam}&replay=1`
   }
 
-  private handleTextControl(entry: PoolEntryState, text: string): void {
+  private handleConnectionChange(entry: PoolEntry, connected: boolean): void {
+    entry.connected = connected
+    if (connected) {
+      entry.activeCallbacks?.onConnectionChange(true)
+      return
+    }
+    // Suppress the disconnected overlay while the tab is hidden; the machine
+    // will reconnect automatically when visibility returns.
+    if (!document.hidden) {
+      entry.activeCallbacks?.onConnectionChange(false)
+    }
+  }
+
+  private handleOpen(entry: PoolEntry): void {
+    entry.syncActive = false
+    entry.syncBuffer = []
+    entry.syncCarryover = null
+    entry.writePending = false
+
+    const ws = entry.connection.socket
+    if (entry.pendingResizeOnOpen && entry.activeContainer && ws) {
+      entry.pendingResizeOnOpen = false
+      const c = entry.terminal.cols
+      const r = entry.terminal.rows
+      entry.lastCols = c
+      entry.lastRows = r
+      try { ws.send(JSON.stringify({ type: 'resize', cols: c, rows: r })) } catch { /* ignored */ }
+    }
+  }
+
+  private handleBinaryMessage(entry: PoolEntry, data: Uint8Array): void {
+    if (entry.connection.state === 'replaying') {
+      const flush = entry.replayBuffer.add(data)
+      if (flush) {
+        this.writeRaw(entry, flush.bytes)
+        entry.connection.markLive()
+      }
+      return
+    }
+
+    this.dispatchLiveOutput(entry, data)
+  }
+
+  private handleTextControl(entry: PoolEntry, text: string): void {
     let ctrl: { type?: string } | null = null
     try {
       ctrl = JSON.parse(text)
     } catch {
-      // Not a JSON control; fall through to terminal.write below.
+      // Not JSON; write the raw string below.
     }
-    if (ctrl && ctrl.type === 'pong') return
 
+    if (ctrl && ctrl.type === 'pong') return
     if (ctrl && ctrl.type === 'replay-start') {
-      if (entry.passthroughArmed) {
-        // Late replay-start after fallback timer; ignore and keep passthrough.
-        return
-      }
-      if (entry.fallbackTimer !== undefined) {
-        clearTimeout(entry.fallbackTimer)
-        entry.fallbackTimer = undefined
-      }
-      entry.inReplay = true
-      entry.replayPending = []
-      entry.replayBytesAccum = 0
+      entry.connection.startReplay()
+      return
+    }
+    if (ctrl && ctrl.type === 'replay-end') {
+      entry.connection.endReplay()
       return
     }
 
-    if (ctrl && ctrl.type === 'replay-end') {
-      if (!entry.inReplay) return
-      const all = concatU8(entry.replayPending)
-      entry.predictiveEcho?.clear()
-      entry.terminal.write(all)
-      entry.replayPending = []
-      entry.replayBytesAccum = 0
-      entry.inReplay = false
+    // Non-control string (or unknown control): write directly.
+    this.writeRaw(entry, text)
+  }
+
+  private flushReplayBuffer(entry: PoolEntry): void {
+    const all = entry.replayBuffer.flush()
+    if (all) {
+      this.writeRaw(entry, all)
+    }
+  }
+
+  // Replay / non-control output: no latency measurement; just write and scroll.
+  private writeRaw(entry: PoolEntry, data: Uint8Array | string): void {
+    entry.predictiveEcho?.clear()
+    entry.terminal.write(data, () => {
       if (!entry.userScrolled) {
         try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
       }
-      return
-    }
-
-    // Non-control string (or unknown control): write directly. Do not use
-    // per-write polling; rely on userScrolled for scroll decisions.
-    entry.terminal.write(text)
-    if (!entry.userScrolled) {
-      try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
-    }
+    })
   }
+
+  // ── live output dispatcher (BSU/ESU) ────────────────────────────────
 
   // Live output dispatcher. Handles DEC mode 2026 synchronized-update
   // markers (BSU/ESU) by buffering bytes between markers and flushing them
   // as a single terminal.write. Markers are stripped. Straddling markers are
-  // handled via syncCarryover. Replay bytes bypass this path entirely.
-  private dispatchLiveOutput(entry: PoolEntryState, data: Uint8Array): void {
+  // handled via syncCarryover.
+  private dispatchLiveOutput(entry: PoolEntry, data: Uint8Array): void {
     if (entry.syncCarryover !== null) {
-      data = concatU8([entry.syncCarryover, data])
+      data = concatU8Legacy([entry.syncCarryover, data])
       entry.syncCarryover = null
     }
 
@@ -1336,7 +1142,7 @@ export class TerminalPool {
       const markerByte = data[idx + SYNC_MARKER_PREFIX.length]
       if (markerByte !== 0x68 && markerByte !== 0x6c) {
         // Looks like the prefix but is not a valid BSU/ESU; treat as ordinary
-        // bytes and continue scanning after the prefix so we do not loop.
+        // bytes and continue scanning after the prefix.
         out.push(data.subarray(cursor, idx + SYNC_MARKER_PREFIX.length))
         cursor = idx + SYNC_MARKER_PREFIX.length
         continue
@@ -1356,20 +1162,19 @@ export class TerminalPool {
       } else {
         // End Synchronized Update.
         if (entry.syncActive) {
-          // Accumulate any plain bytes that arrived after the BSU and before
-          // this ESU into the sync buffer.
           if (out.length) {
             entry.syncBuffer.push(...out)
             out.length = 0
           }
-          const all = concatU8(entry.syncBuffer)
+          const all = concatU8Legacy(entry.syncBuffer)
           entry.predictiveEcho?.clear()
-          entry.terminal.write(all)
+          entry.terminal.write(all, () => {
+            if (!entry.userScrolled) {
+              try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
+            }
+          })
           entry.syncBuffer = []
           entry.syncActive = false
-          if (!entry.userScrolled) {
-            try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
-          }
         }
         // ESU without matching BSU is a no-op; marker stripped.
       }
@@ -1377,13 +1182,12 @@ export class TerminalPool {
       cursor = idx + SYNC_MARKER_PREFIX.length + 1
     }
 
-    // Handle any remaining plain slices.
     this.flushLiveSlices(entry, out)
   }
 
-  private flushLiveSlices(entry: PoolEntryState, slices: Uint8Array[]): void {
+  private flushLiveSlices(entry: PoolEntry, slices: Uint8Array[]): void {
     if (slices.length === 0) return
-    const data = concatU8(slices)
+    const data = concatU8Legacy(slices)
     slices.length = 0
     if (entry.syncActive) {
       entry.syncBuffer.push(data)
@@ -1392,36 +1196,20 @@ export class TerminalPool {
     this.writeLiveRaw(entry, data)
   }
 
-  private writeLiveRaw(entry: PoolEntryState, data: Uint8Array): void {
+  private writeLiveRaw(entry: PoolEntry, data: Uint8Array): void {
     entry.predictiveEcho?.clear()
-    if (entry.pendingInputTs !== null) {
-      const inputToFrameMs = performance.now() - entry.pendingInputTs
-      const capturedTs = entry.pendingInputTs
-      entry.pendingInputTs = null
-      entry.writePending = true
-      entry.terminal.write(data, () => {
-        const inputToWriteCompleteMs = performance.now() - capturedTs
-        entry.latencySamples.push({ inputToFrameMs, inputToWriteCompleteMs })
-        if (entry.latencySamples.length > MAX_TELEMETRY_SAMPLES) {
-          entry.latencySamples.shift()
-        }
+    const hadPending = entry.writePending
+    entry.writePending = false
+    entry.terminal.write(data, () => {
+      if (hadPending) {
         entry.writePending = false
-        if (!entry.userScrolled) {
-          try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
-        }
-      })
-    } else {
-      entry.terminal.write(data, () => {
-        if (!entry.userScrolled) {
-          try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
-        }
-      })
-    }
+      }
+      if (!entry.userScrolled) {
+        try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
+      }
+    })
   }
 
-  // Returns the longest non-empty suffix of `data` that is a prefix of the
-  // 7-byte marker sequence, or null if none exists. This allows BSU/ESU
-  // sequences split across WebSocket frames to be reassembled.
   private findSyncMarkerPrefixTail(data: Uint8Array): Uint8Array | null {
     const marker = SYNC_MARKER_PREFIX
     const max = Math.min(data.length, marker.length - 1)
@@ -1440,7 +1228,7 @@ export class TerminalPool {
 
   // ── foreground listeners ────────────────────────────────────────────
 
-  private attachListeners(entry: PoolEntryState): void {
+  private attachListeners(entry: PoolEntry): void {
     const container = entry.activeContainer
     if (!container) return
 
@@ -1466,8 +1254,10 @@ export class TerminalPool {
         const key = e.key.toUpperCase()
         if (key >= 'A' && key <= 'Z') {
           entry.suppressedInput = e.key
-          this.sendRawBytes({ generation: entry.generation, key: entry.key },
-            new Uint8Array([key.charCodeAt(0) - 64]))
+          this.sendRawBytes(
+            { generation: entry.generation, key: entry.key },
+            new Uint8Array([key.charCodeAt(0) - 64]),
+          )
           entry.ctrlModifierActive = false
           entry.activeCallbacks?.onCtrlModifierChange(false)
           return false
@@ -1480,8 +1270,10 @@ export class TerminalPool {
         e.key.length === 1
       ) {
         entry.suppressedInput = e.key
-        this.sendRawBytes({ generation: entry.generation, key: entry.key },
-          new Uint8Array([0x1b, ...new TextEncoder().encode(e.key)]))
+        this.sendRawBytes(
+          { generation: entry.generation, key: entry.key },
+          new Uint8Array([0x1b, ...new TextEncoder().encode(e.key)]),
+        )
         entry.altModifierActive = false
         entry.activeCallbacks?.onAltModifierChange(false)
         return false
@@ -1505,13 +1297,17 @@ export class TerminalPool {
           term.clearSelection()
           return false
         }
-        this.sendRawBytes({ generation: entry.generation, key: entry.key },
-          new Uint8Array([0x03]))
+        this.sendRawBytes(
+          { generation: entry.generation, key: entry.key },
+          new Uint8Array([0x03]),
+        )
         return false
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'b' && e.type === 'keydown') {
-        this.sendRawBytes({ generation: entry.generation, key: entry.key },
-          new Uint8Array([0x02]))
+        this.sendRawBytes(
+          { generation: entry.generation, key: entry.key },
+          new Uint8Array([0x02]),
+        )
         return false
       }
       return true
@@ -1542,20 +1338,19 @@ export class TerminalPool {
       if (!terminalFocused) return
       e.preventDefault()
       e.stopPropagation()
-      this.sendRawBytes({ generation: entry.generation, key: entry.key },
-        new Uint8Array([0x02]))
+      this.sendRawBytes(
+        { generation: entry.generation, key: entry.key },
+        new Uint8Array([0x02]),
+      )
     }
     const onPaste = (e: ClipboardEvent) => {
       const items = Array.from(e.clipboardData?.items ?? [])
       const imageItem = items.find(item => item.type.startsWith('image/'))
       if (!imageItem) {
         // Chrome 150+ strips file/image data from paste events whose target is
-        // a hidden editable (xterm's helper textarea sits at z-index:-5), so an
-        // image-only clipboard arrives here with an empty DataTransfer. Fall
-        // back to the async Clipboard API, which is not subject to that gating.
-        // Text clipboards still carry text/plain and are handled by xterm.
+        // a hidden editable, so fall back to the async Clipboard API.
         if (items.length === 0 && navigator.clipboard?.read) {
-          const currentWs = entry.ws
+          const currentWs = entry.connection.socket
           if (!currentWs || currentWs.readyState !== WebSocket.OPEN) return
           const gen = entry.generation
           navigator.clipboard.read().then(async (clipItems) => {
@@ -1573,12 +1368,12 @@ export class TerminalPool {
         return
       }
       const file = imageItem.getAsFile()
-      const currentWs = entry.ws
+      const currentWs = entry.connection.socket
       if (!file || !currentWs || currentWs.readyState !== WebSocket.OPEN) return
       e.preventDefault()
       const gen = entry.generation
-      sendPastedImage(currentWs, file, imageItem.type, entry, gen).catch((err) => {
-        console.error('Failed to read pasted image:', err)
+      sendPastedImage(currentWs, file, imageItem.type, entry, gen).catch(() => {
+        // Failed image paste is non-fatal.
       })
     }
     const onContextMenu = (e: MouseEvent) => {
@@ -1591,18 +1386,13 @@ export class TerminalPool {
       }
     }
 
-    // User took over the viewport. We track this with a gesture-driven flag
-    // (NOT buffer geometry, which lies during async writes) so
-    // fitPreservingScroll and the reconnect pin-guard know when to stop
-    // forcing scroll-to-bottom.
+    // User took over the viewport.
     const markUserScroll = () => {
       if (!entry.userScrolled) {
         entry.userScrolled = true
         entry.fitEpoch++
       }
     }
-    // Clear the flag when the user scrolls back to the bottom so output
-    // following resumes.
     const onViewportScroll = () => {
       if (!entry.userScrolled || !vpEl) return
       if (vpEl.scrollTop + vpEl.clientHeight >= vpEl.scrollHeight - 2) {
@@ -1623,7 +1413,6 @@ export class TerminalPool {
 
     // onData handler
     const onDataDispose = term.onData((data) => {
-      // Check lease — ignore if inactive
       if (!entry.activeCallbacks || !entry.activeContainer) return
 
       if (entry.suppressedInput !== null && data === entry.suppressedInput) {
@@ -1631,7 +1420,7 @@ export class TerminalPool {
         return
       }
       entry.suppressedInput = null
-      const ws = entry.ws
+      const ws = entry.connection.socket
       if (ws && ws.readyState === WebSocket.OPEN) {
         let payload = data
         if (
@@ -1645,10 +1434,8 @@ export class TerminalPool {
         if (data.length === 1) {
           const code = data.charCodeAt(0)
           if (code >= 0x20 && code <= 0x7e) {
-            if (entry.pendingInputTs === null && !entry.writePending) {
-              entry.pendingInputTs = performance.now()
-            } else {
-              entry.discardedInputs++
+            if (!entry.writePending) {
+              entry.writePending = true
             }
           }
         }
@@ -1670,9 +1457,9 @@ export class TerminalPool {
 
     // onResize handler — only while checked out
     const onResizeDispose = term.onResize(({ cols, rows }) => {
-      if (!entry.activeContainer) return // not checked out
+      if (!entry.activeContainer) return
       entry.predictiveEcho?.clear()
-      const ws = entry.ws
+      const ws = entry.connection.socket
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols, rows }))
         entry.lastCols = cols
@@ -1696,25 +1483,9 @@ export class TerminalPool {
 
   // ── entry disposal ──────────────────────────────────────────────────
 
-  private disposeEntry(entry: PoolEntryState): void {
-    // Invalidate connection
-    entry.connId = ++nextConnId
-
-    // Clear timers
-    if (entry.reconnectTimer) { clearTimeout(entry.reconnectTimer); entry.reconnectTimer = undefined }
-    if (entry.heartbeatTimer) { clearInterval(entry.heartbeatTimer); entry.heartbeatTimer = undefined }
-    if (entry.watchdogTimer) { clearTimeout(entry.watchdogTimer); entry.watchdogTimer = undefined }
-    if (entry.telemetryInterval) { clearInterval(entry.telemetryInterval); entry.telemetryInterval = undefined }
-    if (entry.fallbackTimer !== undefined) { clearTimeout(entry.fallbackTimer); entry.fallbackTimer = undefined }
-
-    // Close WS
-    if (entry.ws) {
-      entry.ws.onclose = null
-      entry.ws.onerror = null
-      entry.ws.onmessage = null
-      try { entry.ws.close() } catch { /* ignored */ }
-      entry.ws = null
-    }
+  private disposeEntry(entry: PoolEntry): void {
+    // Stop the connection machine first so reconnect timers abort.
+    entry.connection.dispose()
 
     // Cleanup listeners
     if (entry.listenerCleanup) {
