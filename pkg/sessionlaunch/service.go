@@ -30,13 +30,13 @@ var (
 // Request carries everything needed to launch one session.
 type Request struct {
 	Name           string
-	Host           string // empty or remote target host ID
+	Host           string // empty, the current node ID, or a remote target host ID
 	Path           string
 	Command        string
 	AgentType      string
 	WorktreeBranch string
 	ScheduleID     string
-	LocalHost      string // optional local host ID prefix for schedule metadata keys
+	LocalHost      string // the current node ID, used both for target classification (local vs remote) and for local schedule-metadata key construction
 	Fallback       string // used only for local requests when a name cannot be derived
 
 	Cols uint16
@@ -129,9 +129,10 @@ func (s *Service) Create(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	if req.Host != "" {
+	if req.Host != "" && req.Host != req.LocalHost {
 		return s.createRemote(ctx, req)
 	}
+	req.Host = ""
 	return s.createLocal(ctx, req)
 }
 
