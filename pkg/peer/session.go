@@ -86,17 +86,7 @@ type DaemonRegistry interface {
 	Kill(name string) error
 	Capture(name string) (string, error)
 	SocketPath(name string) string
-	List() []DaemonSessionInfo
-}
-
-// DaemonSessionInfo holds metadata for a daemon-backed session.
-type DaemonSessionInfo struct {
-	ID       string
-	Pid      int
-	ShellPid int
-	Shell    string
-	Cwd      string
-	Created  string
+	List() []pty.SessionInfo
 }
 
 // SessionDeps groups the runtime dependencies needed by a peer session.

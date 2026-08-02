@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/anh-chu/termyard/pkg/model"
+	"github.com/anh-chu/termyard/pkg/pty"
 )
 
 // fakeDaemonReg is a minimal DaemonRegistry stub for UpdateSessions tests.
@@ -11,7 +12,7 @@ type fakeDaemonReg struct {
 	dead map[string]bool
 }
 
-func (f *fakeDaemonReg) List() []DaemonSessionInfo              { return nil }
+func (f *fakeDaemonReg) List() []pty.SessionInfo               { return nil }
 func (f *fakeDaemonReg) Capture(name string) (string, error)    { return "", nil }
 func (f *fakeDaemonReg) CrashedSessions() []CrashedSessionInfo { return nil }
 func (f *fakeDaemonReg) IsSessionDead(name string) bool         { return f.dead[name] }

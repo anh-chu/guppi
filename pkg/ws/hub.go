@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -88,8 +89,9 @@ func (h *Hub) SetActivityTracker(at *activity.Tracker, peerActivity ActivitySour
 	h.localOnly = localOnly
 }
 
-// Run starts broadcasting state events and tool events to connected clients
-func (h *Hub) Run() {
+// Run starts broadcasting state events and tool events to connected clients.
+// Blocks until ctx is cancelled or its subscriptions are closed.
+func (h *Hub) Run(ctx context.Context) {
 	stateCh := h.stateMgr.Subscribe()
 	defer h.stateMgr.Unsubscribe(stateCh)
 
@@ -107,6 +109,8 @@ func (h *Hub) Run() {
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case evt, ok := <-stateCh:
 			if !ok {
 				return

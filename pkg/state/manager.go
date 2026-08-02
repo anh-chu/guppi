@@ -15,6 +15,7 @@ import (
 	"github.com/anh-chu/termyard/pkg/git"
 	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/namer"
+	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
@@ -81,7 +82,7 @@ type CrashedSessionInfo struct {
 
 // DaemonRegistry is the subset of pty.Registry needed by the state manager.
 type DaemonRegistry interface {
-	List() []DaemonSessionInfo
+	List() []pty.SessionInfo
 	Capture(name string) (string, error)
 	CrashedSessions() []CrashedSessionInfo
 	IsSessionDead(name string) bool
@@ -108,15 +109,7 @@ const (
 	promptPreviewEmptyLimit = 3
 )
 
-// DaemonSessionInfo carries the daemon session metadata the state manager needs.
-type DaemonSessionInfo struct {
-	ID       string
-	Pid      int
-	ShellPid int
-	Shell    string
-	Cwd      string
-	Created  string
-}
+
 
 // SetDaemonRegistry wires the daemon registry into the state manager.
 func (m *Manager) SetDaemonRegistry(reg DaemonRegistry) {
@@ -429,7 +422,7 @@ func (m *Manager) loadDaemonSessionDetails(session *model.Session) {
 	}
 
 	// Find this session's daemon metadata.
-	var info *DaemonSessionInfo
+	var info *pty.SessionInfo
 	for _, di := range m.daemonReg.List() {
 		if di.ID == session.Name {
 			info = &di

@@ -688,7 +688,7 @@ func Run(ctx context.Context, opts *Options) error {
 	registerAPIRoutes(r, opts, hub)
 
 	// WebSocket routes (protected by auth if enabled)
-	go hub.Run()
+	go hub.Run(ctx)
 	go runUpdateChecker(opts)
 
 	registerWSRoutes(r, opts, hub)
@@ -702,9 +702,13 @@ func Run(ctx context.Context, opts *Options) error {
 }
 
 func setupHub(opts *Options) *ws.Hub {
-	// Build the events hub up front so routes can broadcast layout changes.
-	hub := ws.NewHub(opts.StateMgr, opts.Tracker)
-	opts.Hub = hub
+	// Use a hub assembled by the runtime when available, otherwise build one
+	// here to preserve legacy callers.
+	hub := opts.Hub
+	if hub == nil {
+		hub = ws.NewHub(opts.StateMgr, opts.Tracker)
+		opts.Hub = hub
+	}
 	var peerActivity ws.ActivitySource
 	localHostID := ""
 	if opts.PeerMgr != nil {

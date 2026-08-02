@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"time"
@@ -10,9 +11,9 @@ import (
 	"github.com/anh-chu/termyard/pkg/activity"
 	"github.com/anh-chu/termyard/pkg/common"
 	"github.com/anh-chu/termyard/pkg/identity"
+	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/stats"
-	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
@@ -201,8 +202,8 @@ func (m *Manager) updateLocalStats() {
 }
 
 // Run starts forwarding local state events to peer manager subscribers
-// and pruning offline peers
-func (m *Manager) Run() {
+// and pruning offline peers. Blocks until ctx is cancelled.
+func (m *Manager) Run(ctx context.Context) {
 	// Forward local state events
 	localCh := m.localMgr.Subscribe()
 	defer m.localMgr.Unsubscribe(localCh)
@@ -241,6 +242,9 @@ func (m *Manager) Run() {
 
 		case <-pruneTimer.C:
 			m.pruneOffline()
+
+		case <-ctx.Done():
+			return
 		}
 	}
 }

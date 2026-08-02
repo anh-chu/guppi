@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +24,7 @@ func TestHubBroadcastArtifactEvent(t *testing.T) {
 	tracker := toolevents.NewTracker()
 	stateMgr := state.NewManager()
 	hub := NewHub(stateMgr, tracker)
-	go hub.Run()
+	go hub.Run(context.Background())
 
 	srv := httptest.NewServer(http.HandlerFunc(hub.HandleEvents))
 	defer srv.Close()
