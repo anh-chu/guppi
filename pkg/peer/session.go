@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -22,13 +21,13 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/activity"
 	"github.com/anh-chu/termyard/pkg/common"
-	"github.com/anh-chu/termyard/pkg/git"
 	"github.com/anh-chu/termyard/pkg/identity"
+	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/recovery"
+	"github.com/anh-chu/termyard/pkg/sessionlaunch"
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/stats"
-	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
@@ -113,6 +112,7 @@ type SessionDeps struct {
 	CaptureReg  *CaptureRegistry
 	FileReadReg *FileReadRegistry
 	AttrsSink   SessionAttrsSink
+	Launch      *sessionlaunch.Service
 	OrderSink   SessionOrderSink
 	GroupSink   GroupSink
 	BrowserHub  BrowserBroadcaster
@@ -986,8 +986,8 @@ func handleSessionMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 }
 
 func handleSessionAction(payload *SessionActionPayload, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
-	if deps.DaemonReg == nil {
-		log.Warn("no daemon registry available for session action")
+	if deps.Launch == nil {
+		log.Warn("no launch service available for session action")
 		return
 	}
 	switch payload.Action {
@@ -1002,50 +1002,20 @@ func handleSessionAction(payload *SessionActionPayload, pc *PeerConnection, deps
 		if err := json.Unmarshal(payload.Params, &params); err != nil || params.Name == "" {
 			return
 		}
-		// Create worktree locally if requested.
-		if params.WorktreeBranch != "" && params.Path != "" {
-			expanded := params.Path
-			if strings.HasPrefix(expanded, "~") {
-				if home, err := os.UserHomeDir(); err == nil && home != "" {
-					expanded = home + expanded[1:]
-				}
-			}
-			if !filepath.IsAbs(expanded) {
-				if home, err := os.UserHomeDir(); err == nil {
-					expanded = filepath.Join(home, expanded)
-				}
-			}
-			sanitized := strings.ReplaceAll(params.WorktreeBranch, "/", "-")
-			worktreesDir := filepath.Join(expanded, ".worktrees")
-			if err := os.MkdirAll(worktreesDir, 0755); err != nil {
-				log.WithError(err).Warn("mkdir .worktrees failed on peer")
-				return
-			}
-			destPath := filepath.Join(worktreesDir, sanitized)
-			if err := git.CreateWorktree(expanded, params.WorktreeBranch, destPath); err != nil {
-				log.WithError(err).Warn("git worktree add failed on peer")
-				return
-			}
-			params.Path = destPath
-		}
-		shell := params.Command
-		if shell == "" {
-			shell = os.Getenv("SHELL")
-			if shell == "" {
-				shell = "/bin/bash"
-			}
-		}
-		if err := deps.DaemonReg.Create(params.Name, shell, params.Path, 0, 0); err != nil {
-			log.WithError(err).Warn("new session via peer failed")
+		if deps.Launch == nil {
+			log.Warn("no launch service available for session action")
 			return
 		}
-		// Schedule ID is stored via the session-attrs sink.
-		if params.ScheduleID != "" && deps.AttrsSink != nil {
-			if err := deps.AttrsSink.SetScheduleID(params.Name, params.ScheduleID); err != nil {
-				log.WithError(err).Warn("failed to store schedule id for peer-spawned session")
-			} else if deps.BrowserHub != nil {
-				deps.BrowserHub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": params.Name})
-			}
+		req := sessionlaunch.Request{
+			Name:           params.Name,
+			Path:           params.Path,
+			Command:        params.Command,
+			WorktreeBranch: params.WorktreeBranch,
+			ScheduleID:     params.ScheduleID,
+		}
+		if _, err := deps.Launch.Create(context.Background(), req); err != nil {
+			log.WithError(err).Warn("new session via peer failed")
+			return
 		}
 		sendStateUpdate(pc, deps)
 

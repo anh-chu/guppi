@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/anh-chu/termyard/pkg/scheduler"
 	"github.com/anh-chu/termyard/pkg/server"
 	"github.com/anh-chu/termyard/pkg/sessionattrs"
+	"github.com/anh-chu/termyard/pkg/sessionlaunch"
 	"github.com/anh-chu/termyard/pkg/sessionorder"
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
@@ -274,6 +276,93 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	silenceMonitor.SetHost(peerMgr.LocalID(), peerMgr.LocalName())
 	reconciler.SetHost(peerMgr.LocalID(), peerMgr.LocalName())
 
+	launchSvc := &sessionlaunch.Service{
+		DaemonReg: daemonReg,
+		StateMgr:  stateMgr,
+		Attrs: sessionlaunch.AttrStoreFunc(func(key, scheduleID string) (sessionlaunch.ScheduleAttr, error) {
+			if attrsStore == nil {
+				return sessionlaunch.ScheduleAttr{}, fmt.Errorf("session attrs store not available")
+			}
+			attr, err := attrsStore.SetScheduleID(key, scheduleID)
+			if err != nil {
+				return sessionlaunch.ScheduleAttr{}, err
+			}
+			return sessionlaunch.ScheduleAttr{
+				Background: attr.Background,
+				Hidden:     attr.Hidden,
+				ScheduleID: attr.ScheduleID,
+				UpdatedAt:  attr.UpdatedAt,
+			}, nil
+		}),
+		Identity: nodeIdentity,
+		Refresh:  refreshSessions,
+		Remote: func(ctx context.Context, req sessionlaunch.Request) (sessionlaunch.Result, error) {
+			peerConn := peerMgr.GetPeerConnection(req.Host)
+			if peerConn == nil {
+				return sessionlaunch.Result{}, sessionlaunch.ErrPeerUnavailable
+			}
+			params, _ := json.Marshal(map[string]string{
+				"name":            req.Name,
+				"path":            req.Path,
+				"command":         req.Command,
+				"worktree_branch": req.WorktreeBranch,
+				"schedule_id":     req.ScheduleID,
+			})
+			msg, _ := peer.NewMessage(peer.MsgSessionAction, peer.SessionActionPayload{
+				Action: "new",
+				Params: params,
+			})
+			if !peerConn.Enqueue(msg) {
+				return sessionlaunch.Result{}, sessionlaunch.ErrPeerQueueFull
+			}
+			return sessionlaunch.Result{Name: req.Name, Host: req.Host}, nil
+		},
+		Fanout: func(key string, attr sessionlaunch.ScheduleAttr) {
+			if peerMgr == nil || nodeIdentity == nil {
+				return
+			}
+			msg, err := peer.NewMessage(peer.MsgSessionAttrsDelta, peer.SessionAttrsDeltaPayload{
+				Origin: nodeIdentity.Fingerprint(),
+				Key:    key,
+				Attr: peer.SessionAttr{
+					Background: attr.Background,
+					Hidden:     attr.Hidden,
+					ScheduleID: attr.ScheduleID,
+					UpdatedAt:  attr.UpdatedAt,
+				},
+			})
+			if err != nil {
+				return
+			}
+			for _, pc := range peerMgr.ConnectedPeers() {
+				pc.Enqueue(msg)
+			}
+		},
+		Names: func(host string) []string {
+			if host != "" && peerMgr != nil && !peerMgr.IsLocal(host) {
+				sessions := peerMgr.GetAllSessions()
+				names := make([]string, 0, len(sessions))
+				for _, s := range sessions {
+					if s != nil && s.Host == host {
+						names = append(names, s.Name)
+					}
+				}
+				return names
+			}
+			if stateMgr != nil {
+				sessions := stateMgr.GetSessions()
+				names := make([]string, 0, len(sessions))
+				for _, s := range sessions {
+					if s != nil {
+						names = append(names, s.Name)
+					}
+				}
+				return names
+			}
+			return nil
+		},
+	}
+
 	streamReg := peer.NewStreamRegistry()
 	captureReg := peer.NewCaptureRegistry()
 	fileReadReg := peer.NewFileReadRegistry()
@@ -286,6 +375,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		ToolTracker: tracker,
 		PeerStore:   peerStore,
 		DaemonReg:   &peerDaemonAdapter{reg: daemonReg},
+		Launch:      launchSvc,
 		StreamReg:   streamReg,
 		CaptureReg:  captureReg,
 		FileReadReg: fileReadReg,
@@ -333,6 +423,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		SchedulerStore:   schedulerStore,
 		WikiLite:         wikiSup,
 		DaemonReg:        daemonReg,
+		Launch:           launchSvc,
 		CWDResolver:      &daemonCWDResolver{reg: daemonReg},
 		OnDaemonOutput: func(paneID string) {
 			silenceMonitor.RecordOutput(paneID)
@@ -342,27 +433,16 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	}
 	if schedulerStore != nil {
 		runner := scheduler.NewRunner(schedulerStore, stateMgr, peerMgr, func(req scheduler.CreateSessionReq) error {
-			// Remote sessions still go through peer path.
-			if req.Host != "" && peerMgr != nil && !peerMgr.IsLocal(req.Host) {
-				return server.CreateSession(opts, req)
-			}
-			// Local sessions use daemon backend.
-			shell := req.Command
-			if shell == "" || shell == "shell" {
-				shell = ""
-			}
-			cwd := req.Path
-			if cwd == "~" {
-				cwd = ""
-			}
-			if err := daemonReg.Create(req.Name, shell, cwd, 120, 40); err != nil {
-				return err
-			}
-			if req.AgentType != "" {
-				stateMgr.SetSessionAgentType(req.Name, req.AgentType)
-			}
-			refreshSessions()
-			return nil
+			_, err := launchSvc.Create(ctx, sessionlaunch.Request{
+				Name:           req.Name,
+				Host:           req.Host,
+				Path:           req.Path,
+				Command:        req.Command,
+				AgentType:      req.AgentType,
+				WorktreeBranch: req.WorktreeBranch,
+				ScheduleID:     req.ScheduleID,
+			})
+			return err
 		}, logrus.WithField("component", "scheduler"))
 		runner.SetCapEnforcer(func(job scheduler.Job) {
 			// Pre-spawn: leave room for the incoming run.

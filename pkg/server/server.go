@@ -49,6 +49,7 @@ import (
 	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/scheduler"
 	"github.com/anh-chu/termyard/pkg/sessionattrs"
+	"github.com/anh-chu/termyard/pkg/sessionlaunch"
 	"github.com/anh-chu/termyard/pkg/sessionorder"
 	"github.com/anh-chu/termyard/pkg/socket"
 	"github.com/anh-chu/termyard/pkg/state"
@@ -96,6 +97,7 @@ type Options struct {
 	SchedulerRunner  *scheduler.Runner
 	WikiLite         *wikilite.Supervisor
 	DaemonReg        *pty.Registry
+	Launch           *sessionlaunch.Service
 	CWDResolver      toolevents.CWDResolver
 	RefreshSessions  func()              // triggers daemon state refresh
 	OnDaemonOutput   func(paneID string) // called on PTY output for daemon sessions (silence monitor)
@@ -369,116 +371,6 @@ func EnforceScheduleCap(opts *Options, scheduleID string, keep int) {
 	}
 }
 
-// CreateSession centralizes spawn logic for HTTP and scheduler fires.
-func CreateSession(opts *Options, req scheduler.CreateSessionReq) error {
-	req.Name = strings.TrimSpace(req.Name)
-	req.Host = strings.TrimSpace(req.Host)
-	req.Path = strings.TrimSpace(req.Path)
-	req.Command = strings.TrimSpace(req.Command)
-	if req.Name == "" {
-		return fmt.Errorf("name is required")
-	}
-	if err := model.ValidateSessionName(req.Name); err != nil {
-		return err
-	}
-
-	// Remote host -- forward via peer connection. The peer handles worktree
-	// creation locally so the worktree lands on the peer's filesystem, not ours.
-	if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
-		peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
-		if peerConn == nil {
-			return fmt.Errorf("peer not connected")
-		}
-		params, _ := json.Marshal(map[string]string{
-			"name":            req.Name,
-			"path":            req.Path,
-			"command":         req.Command,
-			"worktree_branch": req.WorktreeBranch,
-			"schedule_id":     req.ScheduleID,
-		})
-		msg, _ := peer.NewMessage(peer.MsgSessionAction, peer.SessionActionPayload{
-			Action: "new",
-			Params: params,
-		})
-		if !peerConn.Enqueue(msg) {
-			return fmt.Errorf("peer send queue full")
-		}
-		if opts.AttrsStore != nil && req.ScheduleID != "" {
-			key := sessionKey(req.Host, req.Name)
-			if attr, err := opts.AttrsStore.SetScheduleID(key, req.ScheduleID); err != nil {
-				logrus.WithError(err).Warn("failed to store schedule id")
-			} else {
-				fanoutAttrsDeltaToPeers(opts, key, attr)
-				if opts.Hub != nil {
-					opts.Hub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": key})
-				}
-			}
-		}
-		return nil
-	}
-
-	// If a worktree branch is requested, create the linked worktree first and
-	// redirect the session path to it.
-	if req.WorktreeBranch != "" && req.Path != "" {
-		expanded := req.Path
-		if strings.HasPrefix(expanded, "~") {
-			if home, err := os.UserHomeDir(); err == nil && home != "" {
-				expanded = home + expanded[1:]
-			}
-		}
-		// Resolve bare relative paths (e.g. "termyard") against the home dir.
-		if !filepath.IsAbs(expanded) {
-			if home, err := os.UserHomeDir(); err == nil {
-				expanded = filepath.Join(home, expanded)
-			}
-		}
-		sanitized := strings.ReplaceAll(req.WorktreeBranch, "/", "-")
-		worktreesDir := filepath.Join(expanded, ".worktrees")
-		if err := os.MkdirAll(worktreesDir, 0755); err != nil {
-			return fmt.Errorf("mkdir .worktrees: %w", err)
-		}
-		destPath := filepath.Join(worktreesDir, sanitized)
-		if err := git.CreateWorktree(expanded, req.WorktreeBranch, destPath); err != nil {
-			return fmt.Errorf("git worktree add: %w", err)
-		}
-		req.Path = destPath
-	}
-
-	shell := req.Command
-	if shell == "" || shell == "shell" {
-		shell = ""
-	}
-	cwd := req.Path
-	if cwd == "~" {
-		cwd = ""
-	}
-	if err := opts.DaemonReg.Create(req.Name, shell, cwd, 120, 40); err != nil {
-		return err
-	}
-	// Store explicit agent type before refresh so it survives inference.
-	if req.AgentType != "" && opts.StateMgr != nil {
-		opts.StateMgr.SetSessionAgentType(req.Name, req.AgentType)
-	}
-	if opts.AttrsStore != nil && req.ScheduleID != "" {
-		key := sessionKey(req.Host, req.Name)
-		if attr, err := opts.AttrsStore.SetScheduleID(key, req.ScheduleID); err != nil {
-			logrus.WithError(err).Warn("failed to store schedule id")
-		} else {
-			fanoutAttrsDeltaToPeers(opts, key, attr)
-			if opts.Hub != nil {
-				opts.Hub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": key})
-			}
-		}
-	}
-	// Trigger state refresh so WebSocket clients get notified.
-	if opts.RefreshSessions != nil {
-		opts.RefreshSessions()
-	}
-	return nil
-}
-
-// handleRemoteSession handles a terminal session request for a remote peer.
-// It tells the peer to spawn a PTY, then bridges the browser WS to the peer's PTY WS.
 func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, hostID string) {
 	sessionName := r.URL.Query().Get("name")
 	if sessionName == "" {
@@ -765,6 +657,9 @@ func Run(ctx context.Context, opts *Options) error {
 	logger := logrus.WithField("component", "server")
 
 	hub := setupHub(opts)
+	if opts.Launch != nil {
+		opts.Launch.Hub = opts.Hub
+	}
 	wireSessionAttrsSync(opts, hub)
 
 	r := chi.NewRouter()
@@ -1149,110 +1044,41 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 					http.Error(w, "invalid JSON", http.StatusBadRequest)
 					return
 				}
-				req.Name = strings.TrimSpace(req.Name)
-				req.Path = strings.TrimSpace(req.Path)
-				req.Command = strings.TrimSpace(req.Command)
-
-				// Remote host -- always forward via peer.
-				if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
-					req.Name = resolveNewSessionName(opts, req.Host, req.Name, req.Command, req.Path)
-					if req.Name == "" {
-						http.Error(w, "name or path is required", http.StatusBadRequest)
-						return
-					}
-					if err := CreateSession(opts, scheduler.CreateSessionReq{
-						Name:           req.Name,
-						Host:           req.Host,
-						Path:           req.Path,
-						Command:        req.Command,
-						AgentType:      req.AgentType,
-						WorktreeBranch: req.WorktreeBranch,
-						ScheduleID:     req.ScheduleID,
-					}); err != nil {
-						switch err.Error() {
-						case "peer not connected", "peer send queue full":
-							http.Error(w, err.Error(), http.StatusBadGateway)
-						default:
-							http.Error(w, err.Error(), http.StatusInternalServerError)
-						}
-						return
-					}
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]string{"name": req.Name})
+				if opts.Launch == nil {
+					http.Error(w, "launch service unavailable", http.StatusServiceUnavailable)
 					return
 				}
-
-				// Daemon backend (default for all local sessions).
-				// Always deduplicate -- even when the caller supplies a name
-				// (e.g. drag-to-split sends "shell" every time).
-				req.Name = resolveNewSessionName(opts, "", req.Name, req.Command, req.Path)
-				if req.Name == "" {
-					req.Name = fmt.Sprintf("shell-%d", time.Now().UnixMilli())
+				localHost := ""
+				if opts.PeerMgr != nil {
+					localHost = opts.PeerMgr.LocalID()
 				}
-				shell := req.Command
-				if shell == "" || shell == "shell" {
-					shell = "" // let daemon default to $SHELL
+				launchReq := sessionlaunch.Request{
+					Name:           req.Name,
+					Host:           req.Host,
+					Path:           req.Path,
+					Command:        req.Command,
+					AgentType:      req.AgentType,
+					WorktreeBranch: req.WorktreeBranch,
+					ScheduleID:     req.ScheduleID,
+					LocalHost:      localHost,
 				}
-				cwd := req.Path
-				if cwd == "~" {
-					cwd = ""
+				if req.Host == "" || opts.PeerMgr == nil || opts.PeerMgr.IsLocal(req.Host) {
+					launchReq.Fallback = fmt.Sprintf("shell-%d", time.Now().UnixMilli())
 				}
-				// If a worktree branch is requested, create the linked worktree
-				// first and redirect the session path to it.
-				if req.WorktreeBranch != "" && cwd != "" {
-					expanded := cwd
-					if strings.HasPrefix(expanded, "~") {
-						if home, err := os.UserHomeDir(); err == nil && home != "" {
-							expanded = home + expanded[1:]
-						}
+				res, err := opts.Launch.Create(r.Context(), launchReq)
+				if err != nil {
+					switch {
+					case errors.Is(err, sessionlaunch.ErrInvalidInput):
+						http.Error(w, err.Error(), http.StatusBadRequest)
+					case errors.Is(err, sessionlaunch.ErrPeerUnavailable), errors.Is(err, sessionlaunch.ErrPeerQueueFull):
+						http.Error(w, err.Error(), http.StatusBadGateway)
+					default:
+						http.Error(w, err.Error(), http.StatusInternalServerError)
 					}
-					if !filepath.IsAbs(expanded) {
-						if home, err := os.UserHomeDir(); err == nil {
-							expanded = filepath.Join(home, expanded)
-						}
-					}
-					sanitized := strings.ReplaceAll(req.WorktreeBranch, "/", "-")
-					worktreesDir := filepath.Join(expanded, ".worktrees")
-					if err := os.MkdirAll(worktreesDir, 0755); err != nil {
-						http.Error(w, fmt.Sprintf("mkdir .worktrees: %v", err), http.StatusInternalServerError)
-						return
-					}
-					destPath := filepath.Join(worktreesDir, sanitized)
-					if err := git.CreateWorktree(expanded, req.WorktreeBranch, destPath); err != nil {
-						http.Error(w, fmt.Sprintf("git worktree add: %v", err), http.StatusInternalServerError)
-						return
-					}
-					cwd = destPath
-				}
-				if err := opts.DaemonReg.Create(req.Name, shell, cwd, 120, 40); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
-				}
-				// Store agent type and schedule ID so they persist in state.
-				if req.AgentType != "" && opts.StateMgr != nil {
-					opts.StateMgr.SetSessionAgentType(req.Name, req.AgentType)
-				}
-				if opts.AttrsStore != nil && req.ScheduleID != "" {
-					localHost := ""
-					if opts.PeerMgr != nil {
-						localHost = opts.PeerMgr.LocalID()
-					}
-					key := sessionKey(localHost, req.Name)
-					if attr, err := opts.AttrsStore.SetScheduleID(key, req.ScheduleID); err != nil {
-						logrus.WithError(err).Warn("failed to store schedule id")
-					} else {
-						fanoutAttrsDeltaToPeers(opts, key, attr)
-						if opts.Hub != nil {
-							opts.Hub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": key})
-						}
-					}
-				}
-				// Trigger state refresh so WebSocket clients get notified.
-				if opts.StateMgr != nil && opts.RefreshSessions != nil {
-					opts.RefreshSessions()
 				}
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]string{"name": req.Name})
+				json.NewEncoder(w).Encode(map[string]string{"name": res.Name})
 			})
 
 			r.Post("/session/display-name", func(w http.ResponseWriter, r *http.Request) {
@@ -2246,7 +2072,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				w.WriteHeader(http.StatusNoContent)
 			})
 			r.Post("/schedules/{id}/run", func(w http.ResponseWriter, r *http.Request) {
-				if opts.SchedulerStore == nil || opts.SchedulerRunner == nil {
+				if opts.SchedulerStore == nil || opts.SchedulerRunner == nil || opts.Launch == nil {
 					http.Error(w, "scheduler not available", http.StatusServiceUnavailable)
 					return
 				}
@@ -2256,33 +2082,36 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 					http.Error(w, "job not found", http.StatusNotFound)
 					return
 				}
-				req := scheduler.CreateSessionReq{
-					Name:           job.SessionNamePrefix,
+				name := job.SessionNamePrefix
+				if name == "" {
+					name = job.Name
+				}
+				if name == "" {
+					name = "schedule"
+				}
+				name = fmt.Sprintf("%s-%d", name, time.Now().Unix())
+				if job.MaxConcurrency > 0 {
+					EnforceScheduleCap(opts, job.ID, job.MaxConcurrency-1)
+				}
+				res, err := opts.Launch.Create(r.Context(), sessionlaunch.Request{
+					Name:           name,
 					Host:           job.Host,
 					Path:           job.Path,
 					Command:        job.Command,
 					AgentType:      job.AgentType,
 					WorktreeBranch: job.WorktreeBranch,
 					ScheduleID:     job.ID,
-				}
-				if req.Name == "" {
-					req.Name = job.Name
-				}
-				if req.Name == "" {
-					req.Name = "schedule"
-				}
-				req.Name = fmt.Sprintf("%s-%d", req.Name, time.Now().Unix())
-				if job.MaxConcurrency > 0 {
-					EnforceScheduleCap(opts, job.ID, job.MaxConcurrency-1)
-				}
-				if err := CreateSession(opts, req); err != nil {
-					if err.Error() == "peer not connected" {
+				})
+				if err != nil {
+					switch {
+					case errors.Is(err, sessionlaunch.ErrPeerUnavailable), errors.Is(err, sessionlaunch.ErrPeerQueueFull):
 						http.Error(w, err.Error(), http.StatusBadGateway)
-					} else {
+					default:
 						http.Error(w, err.Error(), http.StatusInternalServerError)
 					}
 					return
 				}
+				_ = res
 				nextRun := job.NextRun
 				if _, err := opts.SchedulerStore.MarkRan(job.ID, time.Now(), nextRun); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2291,11 +2120,6 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 				updated, _ := opts.SchedulerStore.Get(job.ID)
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(updated)
-			})
-
-			// Peers management endpoints (auth-protected)
-			r.Get("/peers", func(w http.ResponseWriter, r *http.Request) {
-				handleGetPeers(w, r, opts)
 			})
 			r.Post("/peers", func(w http.ResponseWriter, r *http.Request) {
 				handlePostPeers(w, r, opts)
@@ -3037,96 +2861,6 @@ func shouldResurrectAgentMeta(session *model.Session, localHost string) bool {
 	return false
 }
 
-func defaultSessionName(command, projectPath string) string {
-	base := strings.TrimSpace(command)
-	if idx := strings.IndexByte(base, ' '); idx >= 0 {
-		base = base[:idx]
-	}
-	base = strings.Trim(base, `"'`)
-	base = strings.TrimSpace(base)
-	if base == "" {
-		base = "session"
-	}
-	if projectPath == "" {
-		return ""
-	}
-
-	projectBase := strings.TrimSpace(projectPath)
-	projectBase = strings.TrimRight(projectBase, "/")
-	if idx := strings.LastIndex(projectBase, "/"); idx >= 0 {
-		projectBase = projectBase[idx+1:]
-	}
-	projectBase = sanitizeSessionSegment(projectBase)
-	if projectBase == "" {
-		projectBase = "workspace"
-	}
-
-	return sanitizeSessionSegment(base) + "-" + projectBase
-}
-
-func sanitizeSessionSegment(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-			lastDash = false
-		case r == '-', r == '_', r == '.', r == '/', r == ' ':
-			if !lastDash {
-				b.WriteByte('-')
-				lastDash = true
-			}
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
-
-func resolveNewSessionName(opts *Options, host, name, command, projectPath string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = defaultSessionName(command, projectPath)
-	}
-	if name == "" {
-		return ""
-	}
-	return ensureUniqueSessionName(name, existingSessionNames(opts, host))
-}
-
-func existingSessionNames(opts *Options, host string) []string {
-	if opts == nil {
-		return nil
-	}
-
-	if host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(host) {
-		sessions := opts.PeerMgr.GetAllSessions()
-		names := make([]string, 0, len(sessions))
-		for _, session := range sessions {
-			if session != nil && session.Host == host {
-				names = append(names, session.Name)
-			}
-		}
-		return names
-	}
-
-	if opts.StateMgr != nil {
-		sessions := opts.StateMgr.GetSessions()
-		names := make([]string, 0, len(sessions))
-		for _, session := range sessions {
-			if session != nil {
-				names = append(names, session.Name)
-			}
-		}
-		return names
-	}
-
-	return nil
-}
-
 // handleDaemonSession upgrades to WebSocket and bridges a session daemon
 // (direct PTY with persistence) to the browser. Query params: name=<id>, cols=<>, rows=<>.
 func handleDaemonSession(w http.ResponseWriter, r *http.Request, opts *Options) {
@@ -3188,31 +2922,5 @@ func handleDaemonSession(w http.ResponseWriter, r *http.Request, opts *Options) 
 	// simply stays in the list, so this is a no-op for tab disconnects.
 	if opts.RefreshSessions != nil {
 		opts.RefreshSessions()
-	}
-}
-
-func ensureUniqueSessionName(name string, existing []string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return ""
-	}
-
-	used := make(map[string]struct{}, len(existing))
-	for _, candidate := range existing {
-		candidate = strings.TrimSpace(candidate)
-		if candidate != "" {
-			used[candidate] = struct{}{}
-		}
-	}
-
-	if _, exists := used[name]; !exists {
-		return name
-	}
-
-	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", name, i)
-		if _, exists := used[candidate]; !exists {
-			return candidate
-		}
 	}
 }
