@@ -27,6 +27,7 @@ import { usePreferencesProvider, usePreferences, PreferencesContext } from './ho
 import { useAuth } from './hooks/useAuth'
 import { useSessionAttrs } from './hooks/useSessionAttrs'
 import { useSessionOrder } from './hooks/useSessionOrder'
+import { useWikiController } from './hooks/useWikiController'
 import { Toasts, Toast } from './components/Toasts'
 import { RecoveryPanel } from './components/RecoveryPanel'
 import { useCrashedSessions } from './hooks/useCrashedSessions'
@@ -68,17 +69,11 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
   return { view: 'overview', sessionKey: null }
 }
 
-/** File open in the app-level wiki panel, with the root captured at click time. */
-// path is null when the panel is opened on demand rather than by clicking a
-// file: wiki-viewer then shows its tree with nothing selected.
-type WikiTarget = { path: string | null; cwd?: string; nonce: number; hostId?: string; session?: string }
-
 function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
   const workspace = useWorkspace(authenticated)
   const { state: workspaceState, actions: workspaceActions, groupSync } = workspace
-  const { sessions, loading: sessionsLoading, groups: syncedGroups, groupsLoaded, view, wiki } = workspaceState
+  const { sessions, loading: sessionsLoading, groups: syncedGroups, groupsLoaded, view } = workspaceState
   const { currentView, settingsOpen, paneTree, activeKey, singleView, activeGroupId } = view
-  const { target: wikiTarget } = wiki
 
   // Thin wrappers keep the rest of the file using the old variable names.
   const setPaneTree = useCallback((tree: PaneTree | null | ((prev: PaneTree | null) => PaneTree | null)) => {
@@ -90,10 +85,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const setCurrentView = useCallback((viewArg: View) => workspaceActions.setCurrentView(viewArg as any), [workspaceActions])
   const setSettingsOpen = useCallback((open: boolean) => workspaceActions.openSettings(open), [workspaceActions])
   const setActiveGroupId = useCallback((groupId: string) => workspaceActions.setActiveGroup(groupId), [workspaceActions])
-  const setWikiTarget = useCallback((target: WikiTarget | null) => {
-    if (target) workspaceActions.openWiki(target)
-    else workspaceActions.closeWiki()
-  }, [workspaceActions])
 
   const refresh = workspaceActions.refresh
   const refreshGroups = groupSync.refresh
@@ -107,10 +98,11 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const { ranks: sessionOrderRanks, loaded: sessionOrderLoaded, refresh: refreshSessionOrder, setRank: setSessionOrderRank } = useSessionOrder(authenticated)
   const migrationStartedRef = useRef(false)
   const selectedSession = singleView ?? activeKey
-  // Read here rather than further down because the wiki callbacks below close
-  // over it.
   const { prefs } = usePreferences()
   const wikiEnabled = !prefs.wiki_disabled
+  // Wiki open/close/target nonce/history live in a small controller so the UI
+  // components render and coordinate without owning state transitions.
+  const wiki = useWikiController(workspace, wikiEnabled)
   // The tinykeys effect must not re-register on a preference change: it is
   // rebuilt wholesale and rebinding every shortcut to toggle one of them is
   // needless churn.
@@ -119,45 +111,13 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // Turning it off closes the panel. Leaving it up would strand a surface the
   // user just said they did not want, with no menu entry left to dismiss it.
   useEffect(() => {
-    if (!wikiEnabled) workspaceActions.closeWiki()
-  }, [wikiEnabled, workspaceActions])
-
-  // Wiki panel state — hoisted from per-Terminal to a single app-level panel, so
-  // a tiled layout mounts one iframe instead of one per pane, and wiki-viewer
-  // sees one ephemeral workspace root at a time instead of N.
-  //
-  // cwd is captured HERE, at click time, from the session that asked. It is
-  // deliberately not read live from whichever pane has focus: the panel's embed
-  // URL is keyed on the root, so a live read would rebuild the iframe whenever
-  // focus moved and discard wiki-viewer's state, including unsaved edits.
-  const wikiOpenSeqRef = useRef(0)
+    if (!wikiEnabled) wiki.closePanel()
+  }, [wikiEnabled, wiki.closePanel])
 
   const cwdForKey = useCallback((key: string) => {
     const s = sessions.find(x => sessionKey(x) === key)
     return s ? sessionCwd(s) : undefined
   }, [sessions])
-  const openWikiFile = useCallback((path: string, cwd?: string, hostId?: string, sessionName?: string): boolean => {
-    // Turned off in settings: every path goes to the token tab, which is what
-    // "off" has to mean for the file to still open at all.
-    if (!wikiEnabled) return false
-    // Monotonic, so re-opening the same path from another pane still sends.
-    workspaceActions.openWiki({ path, cwd, nonce: ++wikiOpenSeqRef.current, hostId, session: sessionName })
-    return true
-  }, [wikiEnabled, workspaceActions])
-
-  // Open the panel with no file. With no session focused there is no cwd and
-  // the panel falls back to wiki-viewer's default_root.
-  const toggleWikiPanel = useCallback(() => {
-    if (wikiTarget) {
-      workspaceActions.closeWiki()
-    } else {
-      workspaceActions.openWiki({
-        path: null,
-        cwd: selectedSession ? cwdForKey(selectedSession) : undefined,
-        nonce: ++wikiOpenSeqRef.current,
-      })
-    }
-  }, [wikiTarget, selectedSession, cwdForKey, workspaceActions])
 
   const activeGroup = syncedGroups[activeGroupId]
   const activeGroupName = activeGroup?.name ?? ''
@@ -561,12 +521,12 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       // keys are all taken by the browser: Shift+W closes the window, Shift+E
       // opens Firefox's network monitor, Shift+D bookmarks every tab, and
       // Shift+F is already terminal fullscreen here.
-      '$mod+Shift+g': handler(() => { if (wikiEnabledRef.current) toggleWikiPanel() }),
+      '$mod+Shift+g': handler(() => { if (wikiEnabledRef.current) wiki.togglePanel() }),
       // Cycle sessions: Cmd/Ctrl + Shift + Arrow (Shift+[ / ] switches browser tabs)
       '$mod+Shift+ArrowRight': handler(() => cycle(1)),
       '$mod+Shift+ArrowLeft': handler(() => cycle(-1)),
     }, { ignore })
-  }, [navigateTo, activeKey, openNewSessionModal, openNewSessionPlain, toggleWikiPanel])
+  }, [navigateTo, activeKey, openNewSessionModal, openNewSessionPlain, wiki.togglePanel])
 
   // Backend notices (silent failures surfaced to the UI as toasts)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -1236,7 +1196,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
           onDismissUpdate={selfUpdate.dismiss}
           onOverview={() => navigateTo(null)}
           onSettings={openSettings}
-          onWiki={wikiEnabled ? toggleWikiPanel : undefined}
+          onWiki={wikiEnabled ? wiki.togglePanel : undefined}
           onHelp={() => setHelpOpen(true)}
           onNewSession={openNewSessionModal}
           onPortForwards={() => setPortForwardsOpen(true)}
@@ -1389,7 +1349,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
                 backend={sessions.find(s => sessionKey(s) === singleView)?.backend}
                 fullscreen={terminalFullscreen}
                 onToggleFullscreen={toggleFullscreen}
-                onOpenFile={(path) => openWikiFile(
+                onOpenFile={(path) => wiki.openFile(
                   path,
                   singleView ? cwdForKey(singleView) : undefined,
                   sessions.find(s => sessionKey(s) === singleView)?.host,
@@ -1426,12 +1386,12 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
               }
               getBackend={(key) => sessions.find(s => sessionKey(s) === key)?.backend}
               getCwd={cwdForKey}
-              onOpenFile={openWikiFile}
+              onOpenFile={wiki.openFile}
             />
           ) : (
             <Overview
               sessions={sessions}
-              onOpenFile={openWikiFile}
+              onOpenFile={wiki.openFile}
               hosts={hosts}
               hiddenSet={sessionAttrs.hidden}
               backgroundSet={sessionAttrs.background}
@@ -1468,14 +1428,14 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             onCheckUpdate={selfUpdate.checkNow}
           />
         </div>
-        {wikiTarget && (
+        {wiki.target && (
           <WikiPanel
-            filePath={wikiTarget.path}
-            openNonce={wikiTarget.nonce}
-            sessionCwd={wikiTarget.cwd}
-            hostId={wikiTarget.hostId}
-            session={wikiTarget.session}
-            onClose={() => setWikiTarget(null)}
+            filePath={wiki.target.path}
+            openNonce={wiki.target.nonce}
+            sessionCwd={wiki.target.cwd}
+            hostId={wiki.target.hostId}
+            session={wiki.target.session}
+            onClose={() => wiki.closePanel()}
           />
         )}
       </div>

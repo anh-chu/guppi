@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { pickEmbedRoot, resolveFilePath, buildWikiSrc } from '../components/WikiPanel'
+import { pickEmbedRoot, resolveFilePath, buildWikiSrc } from '../lib/wikiRoot'
 
 // wiki-viewer relativizes ?file= against ?root= and answers {"error":"Invalid
 // path"} when the file falls outside, which the panel can only show as its empty
@@ -60,6 +60,25 @@ describe('pickEmbedRoot', () => {
 
   it('returns the file dir when there is no cwd at all', () => {
     expect(pickEmbedRoot('/home/sil/seedwise/a.ts', undefined)).toBe('/home/sil/seedwise')
+  })
+
+  // A remote grant materialises the file into a private temp dir whose root is
+  // returned alongside the local path. The chooser must respect that root when
+  // it differs from the session cwd.
+  it('uses an explicit remote grant root when the resolved path is outside the session cwd', () => {
+    expect(pickEmbedRoot('/tmp/grants/peer-abc/project/src/main.go', '/home/local/cwd'))
+      .toBe('/tmp/grants/peer-abc/project/src')
+  })
+
+  // Local grants return {token, path} with no root. Resolver falls back to the
+  // usual cwd/file-dir logic: cwd when it contains the file, file dir otherwise.
+  it('falls back to the cwd for a local grant whose path is inside the session cwd', () => {
+    expect(pickEmbedRoot('/home/local/cwd/src/main.go', '/home/local/cwd')).toBe('/home/local/cwd')
+  })
+
+  it('falls back to the file dir for a local grant whose path is outside the session cwd', () => {
+    expect(pickEmbedRoot('/home/local/project/src/main.go', '/home/local/cwd'))
+      .toBe('/home/local/project/src')
   })
 })
 
@@ -182,6 +201,42 @@ describe('buildWikiSrc', () => {
     const src = buildWikiSrc({ root: '/home/sil/my files', file: '/home/sil/my files/doc.txt' })
     expect(src).toContain('root=%2Fhome%2Fsil%2Fmy+files')
     expect(src).toContain('file=%2Fhome%2Fsil%2Fmy+files%2Fdoc.txt')
+  })
+})
+
+describe('paths with .. segments', () => {
+  const cwd = '/home/sil/guppi'
+
+  it('normalizes relative paths that traverse above the cwd', () => {
+    expect(resolveFilePath('../a.ts', cwd)).toBe('/home/sil/a.ts')
+    expect(resolveFilePath('../../a.ts', cwd)).toBe('/home/a.ts')
+    expect(resolveFilePath('../../../a.ts', cwd)).toBe('/a.ts')
+  })
+
+  it('normalizes absolute paths with redundant and traversing segments', () => {
+    expect(resolveFilePath('/home/sil/guppi/src/../a.ts')).toBe('/home/sil/guppi/a.ts')
+    expect(resolveFilePath('/home/sil/guppi/../../a.ts')).toBe('/home/a.ts')
+    expect(resolveFilePath('/etc/../a.ts')).toBe('/a.ts')
+  })
+
+  it('keeps the resolved file inside the chosen root when .. changes directories', () => {
+    const cases: [string, string][] = [
+      ['../seedwise/a.ts', '/home/sil/seedwise'],
+      ['./../other/b.ts', '/home/sil/other'],
+      ['../../elsewhere/c.ts', '/home/elsewhere'],
+    ]
+    for (const [raw, expectedRoot] of cases) {
+      const resolved = resolveFilePath(raw, cwd)
+      const root = pickEmbedRoot(resolved, cwd)
+      expect(root, `root for ${raw}`).toBe(expectedRoot)
+      expect(resolved.startsWith(root! + '/'), `${resolved} inside ${root}`).toBe(true)
+    }
+  })
+
+  it('falls back above the cwd when .. traverses outside it', () => {
+    const resolved = resolveFilePath('../../secrets/key.txt', cwd)
+    expect(resolved).toBe('/home/secrets/key.txt')
+    expect(pickEmbedRoot(resolved, cwd)).toBe('/home/secrets')
   })
 })
 
