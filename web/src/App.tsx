@@ -1260,6 +1260,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         )}
         <div
           className="flex-1 flex flex-col overflow-hidden relative"
+          data-drop-zone="main"
           onDragOver={(e) => {
             const dt = e.dataTransfer
             const getZone = (): 'left'|'right'|'top'|'bottom'|'center' => {

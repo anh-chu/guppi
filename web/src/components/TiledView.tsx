@@ -192,6 +192,7 @@ export function TiledView({
         className={cn(
           'flex-1 flex flex-col overflow-hidden min-h-0 relative',
         )}
+        data-pane-key={sessionKey}
         onClick={() => {
           if (sessionKey !== activeKey) onActivate(sessionKey)
         }}

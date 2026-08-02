@@ -80,9 +80,16 @@ async function installBackendStubs(
     needsSetup = false,
     authenticated = false,
     sessions,
-  }: { needsSetup?: boolean; authenticated?: boolean; sessions?: any[] } = {},
+    captures,
+  }: {
+    needsSetup?: boolean
+    authenticated?: boolean
+    sessions?: any[]
+    captures?: { sessionNewBodies?: any[] }
+  } = {},
 ) {
   const localSessions = sessions ?? []
+  const capturedSessionNewBodies = captures?.sessionNewBodies
 
   await page.route('**/api/**', async (route, request) => {
     const url = new URL(request.url())
@@ -264,6 +271,7 @@ async function installBackendStubs(
 
     if (path === '/api/session/new' && method === 'POST') {
       const body = await json()
+      capturedSessionNewBodies?.push(body)
       const record = makeSession(body.name, body.host || undefined, body.agent_type || body.command || 'claude')
       localSessions.push(record)
       return route.fulfill({
@@ -402,4 +410,50 @@ test('reconnects and restores persisted view', async ({ page }) => {
     localStorage.getItem('termyard:sidebar-collapsed'),
   )
   expect(collapsedReload).toBe('true')
+})
+
+test('drags New session onto a local pane and persists the split after reload', async ({ page }) => {
+  const sessions = [makeSession('existing', 'local')]
+  const sessionNewBodies: any[] = []
+  await installBackendStubs(page, { authenticated: true, sessions, captures: { sessionNewBodies } })
+
+  await page.goto('/session/local/existing')
+  await expect(page).toHaveURL(/session\/local\/existing/)
+
+  await expect(page.locator('[data-session-key="local/existing"]')).toBeVisible()
+
+  const responsePromise = page.waitForResponse('**/api/session/new')
+  await page.evaluate(() => {
+    const source = document.querySelector('[title="New session (drag onto a pane to split)"]') as HTMLElement | null
+    const target = document.querySelector('[data-drop-zone="main"]') as HTMLElement | null
+    if (!source || !target) throw new Error('missing drag source or drop zone')
+
+    const dt = new DataTransfer()
+    dt.setData('application/x-termyard-new-session', '1')
+    dt.effectAllowed = 'copy'
+
+    const rect = target.getBoundingClientRect()
+    const x = rect.left + rect.width / 2
+    const y = rect.top + rect.height / 2
+
+    source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: 0, clientY: 0 }))
+    target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: x, clientY: y }))
+    target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: x, clientY: y }))
+    source.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: dt }))
+  })
+  await responsePromise
+
+  expect(sessionNewBodies).toHaveLength(1)
+  const body = sessionNewBodies[0]
+  expect(body.host).toBe('local')
+  expect(body.path).toBe('/tmp/e2e')
+  expect(body).not.toHaveProperty('backend')
+
+  await expect(page.locator('[data-pane-key="local/existing"]')).toBeVisible()
+  await expect(page.locator('[data-pane-key="local/shell"]')).toBeVisible()
+
+  await page.reload()
+
+  await expect(page.locator('[data-pane-key="local/existing"]')).toBeVisible()
+  await expect(page.locator('[data-pane-key="local/shell"]')).toBeVisible()
 })
