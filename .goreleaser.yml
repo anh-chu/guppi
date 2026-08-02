@@ -5,12 +5,12 @@ release:
     owner: anh-chu
     name: termyard
   draft: false
-  # Mark nightly-* tags as GitHub prereleases; v* tags become stable releases.
+  # v* tags are stable releases; nightly builds are snapshots and do not create releases here.
   prerelease: auto
   name_template: "{{ .Tag }}"
 before:
   hooks:
-    - /usr/bin/make frontend
+    - make frontend
 builds:
   - id: termyard
     goos:
@@ -41,6 +41,6 @@ checksum:
   name_template: "checksums.txt"
 snapshot:
   version_template: '{{ trimprefix .Summary "v" }}'
-# We are skipping changelog because we are using release-please
+# Changelog is maintained separately.
 changelog:
   disable: true

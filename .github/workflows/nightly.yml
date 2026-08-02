@@ -5,14 +5,9 @@ on:
   schedule:
     # 02:00 UTC every day
     - cron: "0 2 * * *"
-  push:
-    branches:
-      - master
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: nightly
@@ -42,26 +37,25 @@ jobs:
       - name: Compute nightly tag
         id: tag
         run: |
-          # goreleaser requires SemVer; encode the date + sha in a prerelease segment.
+          # Snapshots use a SemVer tag shape for versioning; the date + sha live in the prerelease segment.
           ts=$(date -u +'%Y%m%d%H%M%S')
           sha=$(git rev-parse --short=8 HEAD)
           tag="v0.0.0-nightly.${ts}.${sha}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
-      - name: Create and push tag
-        env:
-          TAG: ${{ steps.tag.outputs.tag }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git tag -a "$TAG" -m "Nightly build $TAG"
-          git push origin "$TAG"
-
-      - name: Run GoReleaser
+      - name: Run GoReleaser snapshot
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
-          args: release --clean
+          args: release --snapshot --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GORELEASER_CURRENT_TAG: ${{ steps.tag.outputs.tag }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: termyard-nightly-${{ steps.tag.outputs.tag }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
