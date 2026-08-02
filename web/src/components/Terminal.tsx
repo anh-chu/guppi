@@ -1,10 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import type { ChangeEvent, DragEvent, ReactNode } from 'react'
 import { useTerminal } from '../hooks/useTerminal'
 import { usePreferences } from '../hooks/usePreferences'
 import { useArtifacts } from '../hooks/useArtifacts'
-import { useFileUpload } from '../hooks/useFileUpload'
 import { UploadStatus } from './UploadStatus'
 import { cn } from '../lib/utils'
 import { popOut, pipUnavailableReason } from '../lib/pip'
@@ -12,6 +10,9 @@ import { grantArtifactToken, getArtifactKind } from '../lib/artifactPreview'
 import { ArtifactPreview } from './ArtifactPreview'
 import { createFileLinkProvider } from '../lib/fileLinkProvider'
 import type { IDisposable } from '@xterm/xterm'
+import { useTerminalInput } from './terminal/useTerminalInput'
+import { SelectionMenu } from './terminal/SelectionMenu'
+import { MobileGestureKey, HoldableKey } from './terminal/MobileKeys'
 
 interface TerminalProps {
   sessionName: string
@@ -28,136 +29,6 @@ interface TerminalProps {
    * new-tab viewer that does work off-machine.
    */
   onOpenFile?: (path: string) => boolean
-}
-
-type GestureDirection = 'up' | 'down' | 'left' | 'right'
-
-const HOLD_DELAY_MS = 260
-const HOLD_REPEAT_MS = 80
-
-function MobileGestureKey({
-  label,
-  directions,
-  onTrigger,
-  className = '',
-}: {
-  label: ReactNode
-  directions: GestureDirection[]
-  onTrigger: (direction: GestureDirection) => void
-  className?: string
-}) {
-  const startRef = useRef<{ x: number; y: number } | null>(null)
-  const activeDirectionRef = useRef<GestureDirection | null>(null)
-  const holdTimeoutRef = useRef<number | null>(null)
-  const repeatTimerRef = useRef<number | null>(null)
-
-  const stopRepeat = () => {
-    if (holdTimeoutRef.current !== null) {
-      window.clearTimeout(holdTimeoutRef.current)
-      holdTimeoutRef.current = null
-    }
-    if (repeatTimerRef.current !== null) {
-      window.clearInterval(repeatTimerRef.current)
-      repeatTimerRef.current = null
-    }
-  }
-
-  const trigger = (direction: GestureDirection, repeat = false) => {
-    onTrigger(direction)
-    if (!repeat) return
-    stopRepeat()
-    holdTimeoutRef.current = window.setTimeout(() => {
-      repeatTimerRef.current = window.setInterval(() => onTrigger(direction), HOLD_REPEAT_MS)
-    }, HOLD_DELAY_MS)
-  }
-
-  const resolveDirection = (dx: number, dy: number): GestureDirection | null => {
-    if (Math.abs(dx) < 18 && Math.abs(dy) < 18) return null
-    if (Math.abs(dx) > Math.abs(dy)) {
-      return dx > 0 ? 'right' : 'left'
-    }
-    return dy > 0 ? 'down' : 'up'
-  }
-
-  return (
-    <button
-      type="button"
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={(e) => e.preventDefault()}
-      onTouchStart={(e) => {
-        const touch = e.touches[0]
-        startRef.current = { x: touch.clientX, y: touch.clientY }
-        activeDirectionRef.current = null
-        stopRepeat()
-      }}
-      onTouchMove={(e) => {
-        const start = startRef.current
-        if (!start) return
-        const touch = e.touches[0]
-        const direction = resolveDirection(touch.clientX - start.x, touch.clientY - start.y)
-        if (!direction || !directions.includes(direction)) return
-        if (activeDirectionRef.current === direction) return
-        activeDirectionRef.current = direction
-        trigger(direction, true)
-      }}
-      onTouchEnd={() => {
-        stopRepeat()
-        startRef.current = null
-        activeDirectionRef.current = null
-      }}
-      onTouchCancel={() => {
-        stopRepeat()
-        startRef.current = null
-        activeDirectionRef.current = null
-      }}
-      className={`terminal-key ${className}`}
-    >
-      {label}
-    </button>
-  )
-}
-
-function HoldableKey({
-  label,
-  onPress,
-  className = '',
-}: {
-  label: string
-  onPress: () => void
-  className?: string
-}) {
-  const holdTimeoutRef = useRef<number | null>(null)
-  const repeatTimerRef = useRef<number | null>(null)
-
-  const stopRepeat = () => {
-    if (holdTimeoutRef.current !== null) {
-      window.clearTimeout(holdTimeoutRef.current)
-      holdTimeoutRef.current = null
-    }
-    if (repeatTimerRef.current !== null) {
-      window.clearInterval(repeatTimerRef.current)
-      repeatTimerRef.current = null
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onMouseDown={(e) => e.preventDefault()}
-      onTouchStart={() => {
-        stopRepeat()
-        holdTimeoutRef.current = window.setTimeout(() => {
-          repeatTimerRef.current = window.setInterval(onPress, HOLD_REPEAT_MS)
-        }, HOLD_DELAY_MS)
-      }}
-      onTouchEnd={stopRepeat}
-      onTouchCancel={stopRepeat}
-      onClick={onPress}
-      className={`terminal-key ${className}`}
-    >
-      {label}
-    </button>
-  )
 }
 
 export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFullscreen, keyBarEnabled = true, onOpenFile }: TerminalProps) {
@@ -186,6 +57,41 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     setSelectionMenu,
     reconfigure,
   } = useTerminal(sessionName, hostId, backend)
+
+  const {
+    sendSequence,
+    sendArrow,
+    sendPage,
+    handlePaste,
+    handleChooseFile,
+    handleFileSelection,
+    uploadFiles,
+    handleTerminalDragEnter,
+    handleTerminalDragOver,
+    handleTerminalDragLeave,
+    handleTerminalDrop,
+    handleCopy,
+    clipboardMenuOpen,
+    setClipboardMenuOpen,
+    capturedText,
+    setCapturedText,
+    isDraggingFiles,
+    fileInputRef,
+    captureTextareaRef,
+    uploads,
+    cancelUpload,
+    dismissUpload,
+  } = useTerminalInput({
+    sessionName,
+    hostId,
+    termRef,
+    sendRawBytes,
+    sendText,
+    sendImage,
+    termConnected,
+    focus,
+  })
+
   const { prefs } = usePreferences()
   const [showMobileKeyBar, setShowMobileKeyBar] = useState(false)
   const [artifactsOpen, setArtifactsOpen] = useState(false)
@@ -221,10 +127,6 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
   // The mobile key bar renders into a single shared slot at the bottom of the
   // app so split views show one full-width bar (active pane only), not one per pane.
   const [keyBarSlot, setKeyBarSlot] = useState<HTMLElement | null>(null)
-  const [capturedText, setCapturedText] = useState<string | null>(null)
-  const [clipboardMenuOpen, setClipboardMenuOpen] = useState(false)
-  const captureTextareaRef = useRef<HTMLTextAreaElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const popHomeRef = useRef<HTMLDivElement>(null)
   const popNodeRef = useRef<HTMLDivElement>(null)
   const [poppedOut, setPoppedOut] = useState(false)
@@ -271,22 +173,9 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
   }, [])
 
   useEffect(() => {
-    if (!capturedText || !captureTextareaRef.current) return
-    captureTextareaRef.current.focus()
-    captureTextareaRef.current.select()
-  }, [capturedText])
-
-  useEffect(() => {
     if (showMobileKeyBar) return
     setClipboardMenuOpen(false)
-  }, [showMobileKeyBar])
-
-  useEffect(() => {
-    if (!selectionMenu) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSelectionMenu(null) }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [selectionMenu, setSelectionMenu])
+  }, [showMobileKeyBar, setClipboardMenuOpen])
 
   // Layout-phase checkout/checkin: checkout before paint, checkin during cleanup.
   // Depends on canonical identity (name + host + backend) so backend changes
@@ -545,144 +434,6 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     }
   }, [])
 
-  const [isDraggingFiles, setIsDraggingFiles] = useState(false)
-
-  const sendSequence = useCallback((sequence: string | Uint8Array) => {
-    if (typeof sequence === 'string') {
-      sendText(sequence)
-      return
-    }
-    sendRawBytes(sequence)
-  }, [sendRawBytes, sendText])
-
-  const sendArrow = useCallback((direction: GestureDirection) => {
-    if (direction === 'left') sendSequence('\x1b[D')
-    if (direction === 'right') sendSequence('\x1b[C')
-    if (direction === 'up') sendSequence('\x1b[A')
-    if (direction === 'down') sendSequence('\x1b[B')
-  }, [sendSequence])
-
-  const sendPage = useCallback((direction: GestureDirection) => {
-    if (direction === 'up') sendSequence('\x1b[5~')
-    if (direction === 'down') sendSequence('\x1b[6~')
-  }, [sendSequence])
-
-  const handlePaste = useCallback(async () => {
-    setClipboardMenuOpen(false)
-    try {
-      // Async Clipboard API (secure context only) — handles images + text.
-      if (navigator.clipboard?.read) {
-        const items = await navigator.clipboard.read()
-        for (const item of items) {
-          const imageType = item.types.find((t) => t.startsWith('image/'))
-          if (imageType) {
-            const blob = await item.getType(imageType)
-            const ext = imageType.split('/')[1] || 'png'
-            sendImage(new File([blob], `pasted-image.${ext}`, { type: imageType }), imageType)
-            return
-          }
-        }
-        for (const item of items) {
-          if (item.types.includes('text/plain')) {
-            const blob = await item.getType('text/plain')
-            termRef.current?.paste(await blob.text())
-            return
-          }
-        }
-        return
-      }
-      const text = await navigator.clipboard?.readText?.()
-      if (text) termRef.current?.paste(text)
-    } catch (err) {
-      console.error('Failed to paste from clipboard:', err)
-    }
-  }, [termRef, sendImage])
-
-  const restoreTerminalFocus = useCallback(() => {
-    setTimeout(() => focus(), 0)
-  }, [focus])
-
-  const handleChooseFile = useCallback(() => {
-    setClipboardMenuOpen(false)
-    window.addEventListener('focus', restoreTerminalFocus, { once: true })
-    fileInputRef.current?.click()
-  }, [restoreTerminalFocus])
-
-  const { uploads, uploadFile, cancelUpload, dismissUpload, keepVisible } = useFileUpload(sessionName, hostId)
-
-  const uploadFiles = useCallback(async (files: FileList | File[]) => {
-    for (const file of Array.from(files)) {
-      const result = await uploadFile(file)
-      if (result.quotedPath) {
-        if (termConnected) {
-          sendText(result.quotedPath)
-        } else {
-          keepVisible(result.id)
-        }
-      }
-    }
-  }, [uploadFile, sendText, termConnected, keepVisible])
-
-  const handleFileSelection = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? [])
-    event.target.value = ''
-    restoreTerminalFocus()
-    if (!files.length) return
-    void uploadFiles(files)
-  }, [restoreTerminalFocus, uploadFiles])
-
-  const handleTerminalDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
-    if (!event.dataTransfer.types.includes('Files')) return
-    event.preventDefault()
-    event.stopPropagation()
-    setIsDraggingFiles(true)
-  }, [])
-
-  const handleTerminalDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
-    if (!event.dataTransfer.types.includes('Files')) return
-    event.preventDefault()
-    event.stopPropagation()
-    event.dataTransfer.dropEffect = 'copy'
-  }, [])
-
-  const handleTerminalDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
-    if (!event.dataTransfer.types.includes('Files')) return
-    if (event.currentTarget.contains(event.relatedTarget as Node)) return
-    setIsDraggingFiles(false)
-  }, [])
-
-  const handleTerminalDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
-    if (!event.dataTransfer.types.includes('Files')) return
-    event.preventDefault()
-    event.stopPropagation()
-    setIsDraggingFiles(false)
-    void uploadFiles(event.dataTransfer.files)
-    focus()
-  }, [focus, uploadFiles])
-
-  const handleCopy = useCallback(async () => {
-    setClipboardMenuOpen(false)
-    const term = termRef.current
-    if (!term) return
-
-    const lines: string[] = []
-    const buffer = term.buffer.active
-    const start = buffer.viewportY
-    const end = Math.min(start + term.rows, buffer.length)
-
-    for (let i = start; i < end; i++) {
-      const line = buffer.getLine(i)
-      if (!line) continue
-      lines.push(line.translateToString(true))
-    }
-
-    const text = lines.join('\n').trim()
-    if (!text) return
-
-    term.clearSelection()
-    setCapturedText(text)
-  }, [termRef])
-
   return (
     <div className="flex-1 overflow-hidden flex flex-row bg-canvas">
       <div className="h-full w-full flex flex-col p-[3px]">
@@ -861,7 +612,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                 </button>
                 {clipboardMenuOpen && (
                   <div className="absolute bottom-full left-0 mb-2 min-w-[120px] bg-surface-elevated border border-hairline rounded-md flex flex-col overflow-hidden z-50">
-                    <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { handlePaste(); setClipboardMenuOpen(false) }} className="px-4 py-2.5 text-left text-xs font-medium hover:bg-surface transition-colors border-b border-hairline/40">Paste</button>
+                    <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { void handlePaste(); setClipboardMenuOpen(false) }} className="px-4 py-2.5 text-left text-xs font-medium hover:bg-surface transition-colors border-b border-hairline/40">Paste</button>
                     <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={handleChooseFile} className="px-4 py-2.5 text-left text-xs font-medium hover:bg-surface transition-colors border-b border-hairline/40">Paste file…</button>
                     <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { handleCopy(); setClipboardMenuOpen(false) }} className="px-4 py-2.5 text-left text-xs font-medium hover:bg-surface transition-colors">Copy</button>
                   </div>
@@ -893,34 +644,27 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
               >
                 Alt
               </button>
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
+              <HoldableKey
+                label="Esc"
+                onPress={() => {
                   clearCtrlModifier()
                   clearAltModifier()
                   sendSequence('\x1b')
                 }}
                 className="h-10 rounded-sm border border-hairline bg-surface-elevated flex items-center justify-center text-[11px] font-medium text-mute active:bg-surface transition-colors"
-              >
-                Esc
-              </button>
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
+              />
+              <HoldableKey
+                label="Tab"
+                onPress={() => {
                   clearCtrlModifier()
                   clearAltModifier()
                   sendSequence('\t')
                 }}
                 className="h-10 rounded-sm border border-hairline bg-surface-elevated flex items-center justify-center text-[11px] font-medium text-mute active:bg-surface transition-colors"
-              >
-                Tab
-              </button>
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
+              />
+              <HoldableKey
+                label="⌫"
+                onPress={() => {
                   clearCtrlModifier()
                   clearAltModifier()
                   sendSequence(new Uint8Array([0x7f]))
@@ -928,9 +672,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                 className="h-10 rounded-sm border border-hairline bg-surface-elevated flex items-center justify-center text-base text-mute active:bg-surface transition-colors"
                 title="Backspace"
                 aria-label="Backspace"
-              >
-                ⌫
-              </button>
+              />
               <MobileGestureKey
                 label="Pg"
                 directions={['up', 'down']}
@@ -1001,49 +743,23 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
         </div>
       )}
       {selectionMenu && (
-        <>
-          <div
-            className="fixed inset-0 z-40"
-            onMouseDown={() => setSelectionMenu(null)}
-            onContextMenu={(e) => { e.preventDefault(); setSelectionMenu(null) }}
-          />
-          {/* ponytail: no edge-clamp; add if menus near viewport edge get clipped */}
-          <div
-            className="fixed z-50 min-w-[140px] bg-surface-elevated border border-hairline rounded-md flex flex-col overflow-hidden shadow-lg"
-            style={{ left: selectionMenu.x, top: selectionMenu.y }}
-          >
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                navigator.clipboard?.writeText(selectionMenu.text)
-                termRef.current?.clearSelection()
-                setSelectionMenu(null)
-              }}
-              className="px-4 py-2.5 text-left text-xs font-medium hover:bg-surface transition-colors"
-            >
-              Copy
-            </button>
-            {/^\S+$/.test(selectionMenu.text.trim()) && (
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  // Same two-step as the file links and the artifacts list: try
-                  // the wiki panel, fall back to the token tab when it declines
-                  // (remote session, where wiki-viewer cannot read the file).
-                  const path = selectionMenu.text.trim()
-                  if (!onOpenFile?.(path)) openFilePath(path)
-                  termRef.current?.clearSelection()
-                  setSelectionMenu(null)
-                }}
-                className="px-4 py-2.5 text-left text-xs font-medium hover:bg-surface transition-colors border-t border-hairline"
-              >
-                Open file
-              </button>
-            )}
-          </div>
-        </>
+        <SelectionMenu
+          selectionMenu={selectionMenu}
+          onClose={() => setSelectionMenu(null)}
+          onCopy={() => {
+            navigator.clipboard?.writeText(selectionMenu.text)
+            termRef.current?.clearSelection()
+            setSelectionMenu(null)
+          }}
+          onOpenFile={() => {
+            const path = selectionMenu.text.trim()
+            if (!onOpenFile?.(path)) openFilePath(path)
+            termRef.current?.clearSelection()
+            setSelectionMenu(null)
+          }}
+          terminalRef={containerRef}
+          aria-label="Terminal selection"
+        />
       )}
 
     </div>
