@@ -935,7 +935,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       window.setTimeout(() => {
         if (pendingSessionRef.current === fallbackPending) pendingSessionRef.current = null
       }, 15000)
-      workspaceActions.addOptimistic(optimisticSession(name, hostId || localHostId, localHostName, path))
+      workspaceActions.addOptimistic(optimisticSession(name, hostId, localHostName, path))
     }
 
     // Apply the split/single layout with the optimistic key now, so the pane
@@ -959,7 +959,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       })
       if (!res.ok) {
         if (!worktreeBranch) {
-          workspaceActions.removeOptimistic(name, hostId || localHostId)
+          workspaceActions.removeOptimistic(name, hostId)
           if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
         }
         if (worktreeBranch) {
@@ -976,7 +976,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         // Don't upsert a fresh stub: the real record is already on its way via
         // the server's session-added broadcast; just protect it from pruning.
         const resolvedKey = hostId ? `${hostId}/${resolvedName}` : resolvedName
-        workspaceActions.removeOptimistic(name, hostId || localHostId)
+        workspaceActions.removeOptimistic(name, hostId)
         workspaceActions.renameSession(optimisticKey, resolvedKey)
         pendingSessionRef.current = resolvedKey
       }
@@ -985,7 +985,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     } catch (err) {
       console.error('Failed to create session:', err)
       if (!worktreeBranch) {
-        workspaceActions.removeOptimistic(name, hostId || localHostId)
+        workspaceActions.removeOptimistic(name, hostId)
         if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
       }
     }
@@ -994,7 +994,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
 
   const handleQuickShell = useCallback(() => {
     const name = `shell-${Date.now()}`
-    const sk = localHostId ? `${localHostId}/${name}` : name
+    const sk = name
     // Optimistic: fire the backend create first (non-awaited) so the daemon
     // starts spawning immediately, then render the sidebar stub + mount the
     // terminal. The Terminal pool's WS connect retries while NewDaemonSession
@@ -1005,18 +1005,18 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       body: JSON.stringify({ name, path: '', command: '', backend: 'daemon' }),
     }).then(res => {
       if (!res.ok) {
-        workspaceActions.removeOptimistic(name, localHostId)
+        workspaceActions.removeOptimistic(name, undefined)
         if (pendingSessionRef.current === sk) pendingSessionRef.current = null
       } else {
         // Reconcile with the real server record as soon as the daemon is up.
         workspaceActions.refresh()
       }
     }).catch(() => {
-      workspaceActions.removeOptimistic(name, localHostId)
+      workspaceActions.removeOptimistic(name, undefined)
       if (pendingSessionRef.current === sk) pendingSessionRef.current = null
     })
     pendingSessionRef.current = sk
-    workspaceActions.addOptimistic(optimisticSession(name, localHostId, localHostName))
+    workspaceActions.addOptimistic(optimisticSession(name, undefined, localHostName))
     selectSession(sk)
     setTimeout(() => refocusTerminal(), 0)
   }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions])
