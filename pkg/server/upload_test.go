@@ -14,8 +14,8 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/auth"
 	"github.com/anh-chu/termyard/pkg/identity"
-	"github.com/anh-chu/termyard/pkg/peer"
 	"github.com/anh-chu/termyard/pkg/model"
+	"github.com/anh-chu/termyard/pkg/peer"
 )
 
 func TestHandleUploadLocal(t *testing.T) {

@@ -20,8 +20,8 @@ const (
 )
 
 type benchmarkResult struct {
-	ThroughputMbps    float64 `json:"throughput_mbps"`
-	FirstByteLatencyUs int64  `json:"first_byte_latency_us"`
+	ThroughputMbps     float64 `json:"throughput_mbps"`
+	FirstByteLatencyUs int64   `json:"first_byte_latency_us"`
 	TotalBytes         int64   `json:"total_bytes"`
 	ElapsedMs          int64   `json:"elapsed_ms"`
 }
@@ -124,7 +124,7 @@ func runThroughputBenchmark(sess pty.Session) (benchmarkResult, error) {
 	result := readTimed(sess, benchmarkTimeout)
 
 	return benchmarkResult{
-		ThroughputMbps:    result.throughputMbps,
+		ThroughputMbps:     result.throughputMbps,
 		FirstByteLatencyUs: firstByteUs,
 		TotalBytes:         result.totalBytes,
 		ElapsedMs:          result.elapsed.Milliseconds(),
@@ -308,5 +308,3 @@ func containsBytes(data, sub []byte) bool {
 	}
 	return false
 }
-
-

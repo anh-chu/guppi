@@ -141,8 +141,8 @@ func TestPprof_EnabledRequiresLoopbackAndAuth(t *testing.T) {
 	sm := auth.NewSessionManager(time.Hour)
 
 	opts := &Options{
-		AuthEnabled: true,
-		DebugPprof:  true,
+		AuthEnabled:   true,
+		DebugPprof:    true,
 		PasswordStore: ps,
 		SessionMgr:    sm,
 		AuthLimiter:   auth.NewLimiter(),
