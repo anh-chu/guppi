@@ -545,6 +545,15 @@ type workspaceSubscription struct {
 	fn func(layout LayoutID, rec WorkspaceRecord)
 }
 
+// WorkspaceSubscriberCount returns the number of live workspace
+// subscriptions. Used to detect leaked subscriptions (e.g. a subscribe call
+// that is never paired with its unsubscribe on an early-return error path).
+func (c *Catalog) WorkspaceSubscriberCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.workspaceSubs)
+}
+
 // SubscribeWorkspace registers a callback that receives the complete
 // WorkspaceRecord for a layout after every accepted command. The returned
 // function unsubscribes. Subscriptions prevent stale remote caches by

@@ -1530,9 +1530,13 @@ func handleDaemonSessionStable(w http.ResponseWriter, r *http.Request, opts *Opt
 		return
 	}
 
-	// Session record exists but is not in an attachable phase (pending/crashed/
-	// cleanly ended/dismissed) and no stable generation matches yet.
-	if !phaseOK && currentGen == "" {
+	// Session record exists but is not in an attachable phase (crashed/
+	// stopping/cleanly ended/dismissed). Reject unconditionally: these phases
+	// commonly retain a stale generation from before the session died, so
+	// gating this reject on an empty currentGen let dead sessions with a
+	// recorded generation fall through to socket attach. "starting" is
+	// already treated as phaseOK above, so it is unaffected here.
+	if !phaseOK {
 		writeDaemonAttachError(w, daemonAttachNotReady, http.StatusServiceUnavailable, "session is not ready for attach")
 		return
 	}

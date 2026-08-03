@@ -107,6 +107,46 @@ func TestHandleDaemonSessionStableNotReadyForPendingPhase(t *testing.T) {
 	}
 }
 
+// TestHandleDaemonSessionStableRejectsCrashedWithGeneration proves that a
+// session which has died (phase crashed) is rejected on attach even though it
+// still has a recorded generation from before it crashed. The reject must not
+// be gated on currentGen being empty: crashed/stopping/ended/dismissed
+// sessions commonly retain a stale generation.
+func TestHandleDaemonSessionStableRejectsCrashedWithGeneration(t *testing.T) {
+	owner := state.NewOwnerID()
+	catalog := state.NewCatalog(owner, nil)
+	sid := state.NewSessionID()
+	if err := catalog.PutSession(state.LocalSessionRecord{
+		ID:    sid,
+		Owner: owner,
+		Ref:   state.SessionRef{Owner: owner, Session: sid},
+		Phase: state.SessionPhaseCrashed,
+		Compat: state.CompatLocalSession{
+			Name:       "label",
+			Generation: "gen-stale",
+		},
+	}); err != nil {
+		t.Fatalf("PutSession: %v", err)
+	}
+
+	reg := pty.NewRegistry(t.TempDir())
+
+	opts := &Options{V2Catalog: catalog, DaemonReg: reg}
+	req := httptest.NewRequest(http.MethodGet, "/ws/daemon-session?sessionID="+string(sid)+"&generation=gen-stale", nil)
+	rr := httptest.NewRecorder()
+	handleDaemonSession(rr, req, opts)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (body %s)", rr.Code, rr.Body.String())
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload["code"] != "not_ready" {
+		t.Fatalf("code = %q, want not_ready", payload["code"])
+	}
+}
+
 // TestHandleDaemonSessionStableRejectsMaliciousSessionID proves the sessionID
 // query param is validated as a canonical SessionID (lowercase base32) before
 // it can be used as a daemon socket key. Path-traversal-style IDs are rejected

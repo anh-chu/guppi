@@ -244,12 +244,22 @@ func TestHandleV2CommandReply_DeliversToWaiter(t *testing.T) {
 }
 
 func TestLocalCapabilities_IncludesV2(t *testing.T) {
-	for _, c := range localCapabilities {
+	deps := SessionDeps{V2CommandSvc: &state.SessionCommandService{}}
+	for _, c := range capabilitiesFor(deps) {
 		if c == CapV2Catalog {
 			return
 		}
 	}
-	t.Fatal("expected CapV2Catalog in local capabilities")
+	t.Fatal("expected CapV2Catalog in capabilitiesFor when v2 command service is set")
+}
+
+func TestLocalCapabilities_ExcludesV2WhenDisabled(t *testing.T) {
+	deps := SessionDeps{}
+	for _, c := range capabilitiesFor(deps) {
+		if c == CapV2Catalog || c == CapV2Command {
+			t.Fatalf("expected no v2 capabilities when V2CommandSvc is nil, got %q", c)
+		}
+	}
 }
 
 func TestLegacyPeer_InitialStateUpdateStillSent(t *testing.T) {

@@ -144,6 +144,10 @@ func runSession(
 	pc.Caps = append([]string(nil), caps...)
 	pc.initV2Lazy()
 
+	if !deps.Manager.TryRegisterPeer(peerID, peerInfo.Name, peerInfo.PublicKey, address, pc) {
+		return fmt.Errorf("peer already connected")
+	}
+
 	var unsubWorkspace func()
 
 	// Subscribe to complete workspace snapshots after each accepted command
@@ -157,10 +161,6 @@ func runSession(
 			}
 			pc.EnqueueV2WorkspaceSnapshot(msg)
 		})
-	}
-
-	if !deps.Manager.TryRegisterPeer(peerID, peerInfo.Name, peerInfo.PublicKey, address, pc) {
-		return fmt.Errorf("peer already connected")
 	}
 
 	sessionCtx, cancel := context.WithCancel(ctx)

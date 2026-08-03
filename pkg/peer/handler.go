@@ -94,7 +94,7 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: localCapabilities})
+	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: capabilitiesFor(h.deps)})
 	if err := conn.WriteJSON(authOK); err != nil {
 		conn.Close()
 		return
@@ -128,7 +128,7 @@ func (h *Handler) HandlePeerStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: localCapabilities})
+	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: capabilitiesFor(h.deps)})
 	if err := conn.WriteJSON(authOK); err != nil {
 		conn.Close()
 		return

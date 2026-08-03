@@ -214,7 +214,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 			if err := rt.v2Catalog.Load(); err != nil {
 				logrus.WithError(err).Warn("failed to load v2 catalog")
 			} else {
-				enricher := &v2RuntimeEnricher{adapter: rt.adapter}
+				enricher := &v2RuntimeEnricher{adapter: rt.adapter, actTracker: rt.actTracker}
 				rt.v2Reconciler = state.NewReconciler(rt.v2Catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
 				rt.v2CommandSvc = state.NewSessionCommandService(rt.v2Catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.v2Catalog.Owner()})
 				rt.v2RemoteCreate = state.NewRemoteCreateCoordinator(rt.v2Catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.v2Catalog.Owner()})
@@ -848,7 +848,62 @@ func defaultSessionDir() string {
 // v2RuntimeEnricher supplies live runtime fields for v2 catalog records
 // without mutating persisted state.
 type v2RuntimeEnricher struct {
-	adapter *daemonAdapter
+	adapter    *daemonAdapter
+	actTracker *activity.Tracker
+
+	previewMu    sync.Mutex
+	previewCache map[string]*v2PreviewCacheEntry
+}
+
+// v2PreviewCacheEntry holds a throttled prompt-preview snapshot for a single
+// session so the (up to) 64KiB PTY capture only runs periodically instead of
+// on every catalog enrichment call. This mirrors the throttle pattern used by
+// state.Manager's legacy preview cache (see pkg/state/preview.go).
+type v2PreviewCacheEntry struct {
+	preview     string
+	lastAttempt time.Time
+}
+
+// v2PromptPreviewInterval throttles prompt-preview PTY captures during v2
+// catalog enrichment. Matches the legacy manager's promptPreviewInterval.
+const v2PromptPreviewInterval = 30 * time.Second
+
+// previewFor returns the cached prompt preview for a session, refreshing it
+// with a synchronous PTY capture at most once per v2PromptPreviewInterval.
+func (e *v2RuntimeEnricher) previewFor(sessionID string) string {
+	e.previewMu.Lock()
+	if e.previewCache == nil {
+		e.previewCache = make(map[string]*v2PreviewCacheEntry)
+	}
+	entry := e.previewCache[sessionID]
+	if entry == nil {
+		entry = &v2PreviewCacheEntry{}
+		e.previewCache[sessionID] = entry
+	}
+	due := time.Since(entry.lastAttempt) >= v2PromptPreviewInterval
+	if due {
+		entry.lastAttempt = time.Now()
+	}
+	cached := entry.preview
+	e.previewMu.Unlock()
+
+	if !due {
+		return cached
+	}
+
+	content, err := e.adapter.CaptureTail(sessionID, 64*1024)
+	if err != nil {
+		return cached
+	}
+	preview := model.ExtractPromptPreview(content)
+
+	e.previewMu.Lock()
+	if entry := e.previewCache[sessionID]; entry != nil {
+		entry.preview = preview
+	}
+	e.previewMu.Unlock()
+
+	return preview
 }
 
 func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionRecord) state.SessionRuntime {
@@ -871,10 +926,12 @@ func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionR
 				rt.CurrentPath = liveCwd
 			}
 		}
-		if content, err := e.adapter.CaptureTail(d.ID, 64*1024); err == nil {
-			rt.PromptPreview = model.ExtractPromptPreview(content)
+		rt.PromptPreview = e.previewFor(d.ID)
+		if e.actTracker != nil {
+			if snap := e.actTracker.Get(d.ID); snap != nil && snap.IdleSeconds >= 0 {
+				rt.LastActivity = time.Now().Add(-time.Duration(snap.IdleSeconds * float64(time.Second)))
+			}
 		}
-		rt.LastActivity = time.Now()
 		break
 	}
 	return rt

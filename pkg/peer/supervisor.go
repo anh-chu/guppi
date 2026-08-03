@@ -372,7 +372,7 @@ func (s *LinkSupervisor) dialOnce(ctx context.Context, link *peerLink) error {
 	authMsg, _ := NewMessage(MsgAuth, AuthPayload{
 		PublicKey:    s.deps.Identity.PublicKey,
 		Signature:    base64.StdEncoding.EncodeToString(sig),
-		Capabilities: localCapabilities,
+		Capabilities: capabilitiesFor(s.deps),
 	})
 	if err := conn.WriteJSON(authMsg); err != nil {
 		conn.Close()

@@ -118,7 +118,20 @@ const CapV2Catalog = "v2-catalog"
 const CapV2Command = "v2-command"
 
 // localCapabilities is what this build advertises in the hello.
-var localCapabilities = []string{CapPerStream, CapUpload, CapV2Catalog, CapV2Command}
+var localCapabilities = []string{CapPerStream, CapUpload}
+
+// capabilitiesFor returns the capability list to advertise for a given
+// SessionDeps. CapV2Catalog/CapV2Command are only included when the v2
+// command service was actually constructed (i.e. TERMYARD_V2_STATE=1 and
+// the v2 store/catalog initialized successfully), not merely when an env
+// var is set.
+func capabilitiesFor(deps SessionDeps) []string {
+	caps := append([]string(nil), localCapabilities...)
+	if deps.V2CommandSvc != nil {
+		caps = append(caps, CapV2Catalog, CapV2Command)
+	}
+	return caps
+}
 
 // V2 command kinds carried by V2CommandRequestPayload.
 const (
