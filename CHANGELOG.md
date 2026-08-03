@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.3.0] — Features
+
+### Features
+
+- **groups:** automatic AI naming for synced session groups. When a persisted layout group first reaches two or more member sessions, or its membership changes (session added/removed), the server generates a name via the existing AI namer and syncs it through the group peer channel. Pane ratio, split direction, reorder, rank, and unrelated metadata changes do not trigger renaming. Manual names are preserved via a new name_mode (auto/manual) field until the user clears the name or presses the AI-name button, which now forces an immediate server-side regeneration and returns the group to AI-managed mode. Automatic attempts share the same cooldown/concurrency/backoff gate as session naming (extracted to pkg/namer.AutomaticGate), debounce bursty tree writes, and discard stale results if the group is deleted, renamed, or its membership changes before the model responds.
+
 ## [4.0.5] — Bug Fixes
 
 ### Bug Fixes

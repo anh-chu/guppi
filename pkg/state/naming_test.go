@@ -21,37 +21,45 @@ func newTestNamer(handler http.HandlerFunc) (*namer.Namer, *httptest.Server) {
 	return namer.New(namer.Config{Endpoint: srv.URL, Model: "test"}), srv
 }
 
-func TestAutomaticNamingBackoff(t *testing.T) {
-	cases := []struct {
-		count int
-		want  time.Duration
-	}{
-		{0, nameRefreshInterval},
-		{1, time.Minute},
-		{2, 2 * time.Minute},
-		{3, 4 * time.Minute},
-		{4, 8 * time.Minute},
-		{5, 15 * time.Minute},
-		{10, 15 * time.Minute},
-		{-1, nameRefreshInterval},
+func TestAutomaticNamingGate_PolicyMatchesConstants(t *testing.T) {
+	m := &Manager{
+		sessions: map[string]*model.Session{},
+		meta:     map[string]SessionMetadata{},
 	}
 
-	for _, c := range cases {
-		got := automaticNamingBackoff(c.count)
-		if got != c.want {
-			t.Errorf("automaticNamingBackoff(%d) = %v, want %v", c.count, got, c.want)
+	// Manager should initialize the gate with the default policy.
+	if m.automaticGate() == nil {
+		t.Fatal("automaticGate returned nil")
+	}
+	p := namer.DefaultAutomaticPolicy()
+	if p.NormalInterval != nameRefreshInterval {
+		t.Fatalf("default NormalInterval = %v, want %v", p.NormalInterval, nameRefreshInterval)
+	}
+
+	want := []time.Duration{
+		time.Minute,
+		2 * time.Minute,
+		4 * time.Minute,
+		8 * time.Minute,
+		15 * time.Minute,
+	}
+	if len(p.BackoffSteps) != len(want) {
+		t.Fatalf("default BackoffSteps = %v, want %v", p.BackoffSteps, want)
+	}
+	for i, d := range want {
+		if p.BackoffSteps[i] != d {
+			t.Fatalf("default BackoffSteps[%d] = %v, want %v", i, p.BackoffSteps[i], d)
 		}
 	}
 }
 
-func TestBeginAutomaticNamingAttempt_Concurrency(t *testing.T) {
+func TestAutomaticNamingGate_BeginConcurrency(t *testing.T) {
 	m := &Manager{
 		sessions: map[string]*model.Session{},
 		meta:     map[string]SessionMetadata{},
 	}
 
 	const n = 100
-	now := time.Now()
 	var wg sync.WaitGroup
 	var passed int64
 
@@ -59,7 +67,7 @@ func TestBeginAutomaticNamingAttempt_Concurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if m.beginAutomaticNamingAttempt("s", now) {
+			if ok, _ := m.automaticGate().Begin("s"); ok {
 				atomic.AddInt64(&passed, 1)
 			}
 		}()
@@ -67,7 +75,7 @@ func TestBeginAutomaticNamingAttempt_Concurrency(t *testing.T) {
 	wg.Wait()
 
 	if passed != 1 {
-		t.Fatalf("expected exactly one beginAutomaticNamingAttempt to succeed, got %d", passed)
+		t.Fatalf("expected exactly one Begin to succeed, got %d", passed)
 	}
 }
 
@@ -135,8 +143,8 @@ func TestTriggerShellNaming_FailureIsSilent(t *testing.T) {
 		sessions: map[string]*model.Session{
 			"s": {Name: "s"},
 		},
-		meta:     map[string]SessionMetadata{"s": {}},
-		namer:    n,
+		meta:  map[string]SessionMetadata{"s": {}},
+		namer: n,
 	}
 	ch := m.Subscribe()
 	defer m.Unsubscribe(ch)
@@ -222,14 +230,16 @@ func TestAutomaticNaming_ResetsFailureAfterSuccess(t *testing.T) {
 		namer: n,
 	}
 
+	// Use a short failure backoff so the test can deterministically advance past it.
+	m.autoNameGate = namer.NewAutomaticGate(namer.AutomaticPolicy{
+		NormalInterval: time.Hour, // keep success interval out of the way
+		BackoffSteps:   []time.Duration{50 * time.Millisecond},
+	})
+
 	m.triggerAgentNaming("s") // fails
 
-	// Simulate that the backoff window has elapsed.
-	m.mu.Lock()
-	meta := m.meta["s"]
-	meta.LastNamingAttemptAt = time.Now().Add(-2 * time.Minute)
-	m.meta["s"] = meta
-	m.mu.Unlock()
+	// Wait past the injected failure backoff so the second attempt is eligible.
+	time.Sleep(100 * time.Millisecond)
 
 	m.triggerAgentNaming("s") // succeeds
 
@@ -238,7 +248,7 @@ func TestAutomaticNaming_ResetsFailureAfterSuccess(t *testing.T) {
 	}
 
 	m.mu.RLock()
-	meta = m.meta["s"]
+	meta := m.meta["s"]
 	m.mu.RUnlock()
 
 	if meta.NamingFailureCount != 0 {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { WorkspaceAction } from '../state/workspaceReducer'
 import type { PaneTree } from '../lib/paneTree'
 
@@ -20,6 +20,7 @@ export function useGroupSync(
   dispatch: React.Dispatch<WorkspaceAction>,
 ) {
   const abortRef = useRef<AbortController | null>(null)
+  const [namingGroupId, setNamingGroupId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!authenticated) return
@@ -58,9 +59,34 @@ export function useGroupSync(
   }, [dispatch, refresh])
 
   const setTree = useCallback((id: string, tree: PaneTree) => mutate({ id, op: 'tree', tree }), [mutate])
-  const setName = useCallback((id: string, name: string) => mutate({ id, op: 'name', name }), [mutate])
+  const setName = useCallback((id: string, name: string) => mutate({ id, op: 'name', name, mode: name.trim() === '' ? 'auto' : 'manual' }), [mutate])
   const setRank = useCallback((id: string, rank: string) => mutate({ id, op: 'rank', rank }), [mutate])
   const deleteGroup = useCallback((id: string) => mutate({ id, op: 'delete' }), [mutate])
 
-  return { refresh, setTree, setName, setRank, deleteGroup }
+  const forceAiName = useCallback(async (id: string): Promise<boolean> => {
+    setNamingGroupId(id)
+    try {
+      const res = await fetch('/api/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, op: 'ai-name' }),
+      })
+      if (!res.ok) {
+        // A legacy server that does not recognise the ai-name op is not a
+        // hard failure; the caller can fall back to the stateless endpoint.
+        if (res.status === 400) {
+          const text = await res.text().catch(() => '')
+          if (/invalid op|unknown op/i.test(text)) return false
+        }
+        throw new Error(`Failed to force AI name: ${res.status}`)
+      }
+      const body = await res.json()
+      dispatch({ type: 'groups/snapshot', groups: toGroups(body) })
+      return true
+    } finally {
+      setNamingGroupId(null)
+    }
+  }, [dispatch])
+
+  return { refresh, setTree, setName, setRank, deleteGroup, forceAiName, namingGroupId }
 }

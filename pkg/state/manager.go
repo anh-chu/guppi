@@ -64,6 +64,14 @@ type Manager struct {
 	// but shell DisplayNames and non-renamed agent names live only in meta).
 	namesPath string
 
+	// autoNameGate enforces automatic naming cadence (success interval and
+	// failure backoff) and serializes concurrent attempts per session. It is
+	// the authoritative source for gating decisions; the SessionMetadata mirror
+	// fields (LastNamedAt, LastNamingAttemptAt, NamingFailureCount) are kept
+	// only for compatibility/tests and logged introspection.
+	autoNameGate *namer.AutomaticGate
+	gateOnce     sync.Once
+
 	// Subscribers for state changes.
 	subMu       sync.RWMutex
 	subscribers []chan StateEvent
@@ -141,4 +149,16 @@ func NewManager() *Manager {
 		m.loadNames()
 	}
 	return m
+}
+
+// automaticGate returns the shared automatic-naming gate. It lazily initializes
+// with the default policy the first time it is requested; tests may pre-populate
+// m.autoNameGate with a custom gate before calling any naming method.
+func (m *Manager) automaticGate() *namer.AutomaticGate {
+	m.gateOnce.Do(func() {
+		if m.autoNameGate == nil {
+			m.autoNameGate = namer.NewAutomaticGate(namer.DefaultAutomaticPolicy())
+		}
+	})
+	return m.autoNameGate
 }

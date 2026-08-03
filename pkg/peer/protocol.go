@@ -267,13 +267,15 @@ type SessionOrderDeltaPayload struct {
 
 // Group is the wire form for one synced group record.
 type Group struct {
-	Tree          json.RawMessage `json:"tree"`
-	TreeUpdatedAt time.Time       `json:"tree_updated_at"`
-	Name          string          `json:"name"`
-	NameUpdatedAt time.Time       `json:"name_updated_at"`
-	Rank          string          `json:"rank"`
-	RankUpdatedAt time.Time       `json:"rank_updated_at"`
-	DeletedAt     time.Time       `json:"deleted_at"`
+	Tree              json.RawMessage `json:"tree"`
+	TreeUpdatedAt     time.Time       `json:"tree_updated_at"`
+	Name              string          `json:"name"`
+	NameUpdatedAt     time.Time       `json:"name_updated_at"`
+	NameMode          string          `json:"name_mode,omitempty"`
+	NameModeUpdatedAt time.Time       `json:"name_mode_updated_at,omitempty"`
+	Rank              string          `json:"rank"`
+	RankUpdatedAt     time.Time       `json:"rank_updated_at"`
+	DeletedAt         time.Time       `json:"deleted_at"`
 }
 
 // GroupSnapshotPayload carries the full group map to a peer.

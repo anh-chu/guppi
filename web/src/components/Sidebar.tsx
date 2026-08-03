@@ -55,6 +55,8 @@ interface SidebarProps {
   setSessionOrderRank: (key: string, rank: string) => void
   onSwitchGroup?: (groupId: string, focusKey?: string) => void
   onRenameGroup?: (groupId: string, name: string) => void
+  forceAiName?: (groupId: string) => Promise<boolean>
+  namingGroupId?: string | null
   onPairSessions?: (keyA: string, keyB: string) => void
   onRemoveFromSplit?: (key: string) => void
   onSessionKilled?: (key: string) => void
@@ -197,6 +199,8 @@ export function Sidebar({
   setSessionOrderRank,
   onSwitchGroup,
   onRenameGroup,
+  forceAiName,
+  namingGroupId,
   onPairSessions,
   onRemoveFromSplit,
   onSessionKilled,
@@ -316,7 +320,8 @@ export function Sidebar({
   const [, setUptimeTick] = useState(0)
   const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null)
   const [groupRenameValue, setGroupRenameValue] = useState('')
-  const [aiNamingGroupId, setAiNamingGroupId] = useState<string | null>(null)
+  const [legacyAiGroupId, setLegacyAiGroupId] = useState<string | null>(null)
+  const aiPendingGroupId = namingGroupId ?? legacyAiGroupId
   // Session keys (host/name) currently being AI-named, for the inline spinner.
   const [namingSessions, setNamingSessions] = useState<Set<string>>(new Set())
   const setNaming = (key: string, on: boolean) => setNamingSessions(prev => {
@@ -471,8 +476,8 @@ export function Sidebar({
     }
   }
 
-  const aiNameGroup = async (groupId: string, sessions: Session[], current?: string) => {
-    const members = sessions
+  const fallbackAiNameGroup = async (groupId: string, groupSessions: Session[], current?: string) => {
+    const members = groupSessions
       .map(s => ({
         label: sessionLabel(s),
         agent: s.agent_type || '',
@@ -481,7 +486,7 @@ export function Sidebar({
       }))
       .filter(m => m.label)
     if (members.length === 0) return
-    setAiNamingGroupId(groupId)
+    setLegacyAiGroupId(groupId)
     try {
       const res = await fetch('/api/group/name', {
         method: 'POST',
@@ -491,11 +496,28 @@ export function Sidebar({
       if (res.ok) {
         const { name } = await res.json()
         if (name) onRenameGroup?.(groupId, name)
+      } else {
+        const text = await res.text().catch(() => `AI naming failed (${res.status})`)
+        throw new Error(text)
       }
-    } catch {
-      // keep existing name on failure
     } finally {
-      setAiNamingGroupId(null)
+      setLegacyAiGroupId(null)
+    }
+  }
+
+  const showErrorToast = (message: string) => {
+    window.dispatchEvent(new CustomEvent('termyard:toast', { detail: { severity: 'error', source: 'termyard', message } }))
+  }
+
+  const handleAiNameGroup = async (groupId: string, groupSessions: Session[], current?: string) => {
+    if (!forceAiName) return
+    try {
+      const supported = await forceAiName(groupId)
+      if (!supported) {
+        await fallbackAiNameGroup(groupId, groupSessions, current)
+      }
+    } catch (err) {
+      showErrorToast(err instanceof Error ? err.message : 'Failed to AI-name group')
     }
   }
 
@@ -1152,11 +1174,11 @@ export function Sidebar({
                   <button
                     type="button"
                     title="AI name this group"
-                    disabled={aiNamingGroupId === group.id}
-                    onClick={(e) => { e.stopPropagation(); aiNameGroup(group.id, groupSessions, group.name) }}
+                    disabled={aiPendingGroupId === group.id}
+                    onClick={(e) => { e.stopPropagation(); handleAiNameGroup(group.id, groupSessions, group.name) }}
                     className="opacity-0 group-hover/collname:opacity-100 transition-opacity text-mute/40 hover:text-primary shrink-0 flex items-center disabled:opacity-100"
                   >
-                    <SparkleIcon spinning={aiNamingGroupId === group.id} size={11} />
+                    <SparkleIcon spinning={aiPendingGroupId === group.id} size={11} />
                   </button>
                 )}
                 {/* Rename pencil */}
@@ -1213,11 +1235,11 @@ export function Sidebar({
                       <button
                         type="button"
                         title="AI name this group"
-                        disabled={aiNamingGroupId === group.id}
-                        onClick={(e) => { e.stopPropagation(); aiNameGroup(group.id, groupSessions, group.name) }}
+                        disabled={aiPendingGroupId === group.id}
+                        onClick={(e) => { e.stopPropagation(); handleAiNameGroup(group.id, groupSessions, group.name) }}
                         className="opacity-0 group-hover/gname:opacity-100 transition-opacity text-mute/40 hover:text-primary shrink-0 flex items-center disabled:opacity-100"
                       >
-                        <SparkleIcon spinning={aiNamingGroupId === group.id} size={10} />
+                        <SparkleIcon spinning={aiPendingGroupId === group.id} size={10} />
                       </button>
                       <button
                         type="button"

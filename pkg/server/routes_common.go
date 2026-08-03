@@ -84,13 +84,15 @@ type groupStoreAdapter struct {
 
 func (a groupStoreAdapter) ApplyRemoteDelta(id string, group peer.Group) (bool, error) {
 	_, accepted, err := a.store.ApplyRemote(id, groupsync.Group{
-		Tree:          append(json.RawMessage(nil), group.Tree...),
-		TreeUpdatedAt: group.TreeUpdatedAt,
-		Name:          group.Name,
-		NameUpdatedAt: group.NameUpdatedAt,
-		Rank:          group.Rank,
-		RankUpdatedAt: group.RankUpdatedAt,
-		DeletedAt:     group.DeletedAt,
+		Tree:              append(json.RawMessage(nil), group.Tree...),
+		TreeUpdatedAt:     group.TreeUpdatedAt,
+		Name:              group.Name,
+		NameUpdatedAt:     group.NameUpdatedAt,
+		NameMode:          groupsync.NameMode(group.NameMode),
+		NameModeUpdatedAt: group.NameModeUpdatedAt,
+		Rank:              group.Rank,
+		RankUpdatedAt:     group.RankUpdatedAt,
+		DeletedAt:         group.DeletedAt,
 	})
 	return accepted, err
 }
@@ -99,13 +101,15 @@ func (a groupStoreAdapter) ApplyRemoteSnapshot(groups map[string]peer.Group) ([]
 	conv := make(map[string]groupsync.Group, len(groups))
 	for id, g := range groups {
 		conv[id] = groupsync.Group{
-			Tree:          append(json.RawMessage(nil), g.Tree...),
-			TreeUpdatedAt: g.TreeUpdatedAt,
-			Name:          g.Name,
-			NameUpdatedAt: g.NameUpdatedAt,
-			Rank:          g.Rank,
-			RankUpdatedAt: g.RankUpdatedAt,
-			DeletedAt:     g.DeletedAt,
+			Tree:              append(json.RawMessage(nil), g.Tree...),
+			TreeUpdatedAt:     g.TreeUpdatedAt,
+			Name:              g.Name,
+			NameUpdatedAt:     g.NameUpdatedAt,
+			NameMode:          groupsync.NameMode(g.NameMode),
+			NameModeUpdatedAt: g.NameModeUpdatedAt,
+			Rank:              g.Rank,
+			RankUpdatedAt:     g.RankUpdatedAt,
+			DeletedAt:         g.DeletedAt,
 		}
 	}
 	return a.store.ApplySnapshot(conv)
@@ -116,13 +120,15 @@ func (a groupStoreAdapter) SnapshotGroups() map[string]peer.Group {
 	out := make(map[string]peer.Group, len(snap))
 	for id, g := range snap {
 		out[id] = peer.Group{
-			Tree:          append(json.RawMessage(nil), g.Tree...),
-			TreeUpdatedAt: g.TreeUpdatedAt,
-			Name:          g.Name,
-			NameUpdatedAt: g.NameUpdatedAt,
-			Rank:          g.Rank,
-			RankUpdatedAt: g.RankUpdatedAt,
-			DeletedAt:     g.DeletedAt,
+			Tree:              append(json.RawMessage(nil), g.Tree...),
+			TreeUpdatedAt:     g.TreeUpdatedAt,
+			Name:              g.Name,
+			NameUpdatedAt:     g.NameUpdatedAt,
+			NameMode:          string(g.NameMode),
+			NameModeUpdatedAt: g.NameModeUpdatedAt,
+			Rank:              g.Rank,
+			RankUpdatedAt:     g.RankUpdatedAt,
+			DeletedAt:         g.DeletedAt,
 		}
 	}
 	return out
@@ -220,13 +226,15 @@ func fanoutGroupDeltaToPeers(opts *Options, id string, g groupsync.Group) {
 		Origin: opts.Identity.Fingerprint(),
 		ID:     id,
 		Group: peer.Group{
-			Tree:          append(json.RawMessage(nil), g.Tree...),
-			TreeUpdatedAt: g.TreeUpdatedAt,
-			Name:          g.Name,
-			NameUpdatedAt: g.NameUpdatedAt,
-			Rank:          g.Rank,
-			RankUpdatedAt: g.RankUpdatedAt,
-			DeletedAt:     g.DeletedAt,
+			Tree:              append(json.RawMessage(nil), g.Tree...),
+			TreeUpdatedAt:     g.TreeUpdatedAt,
+			Name:              g.Name,
+			NameUpdatedAt:     g.NameUpdatedAt,
+			NameMode:          string(g.NameMode),
+			NameModeUpdatedAt: g.NameModeUpdatedAt,
+			Rank:              g.Rank,
+			RankUpdatedAt:     g.RankUpdatedAt,
+			DeletedAt:         g.DeletedAt,
 		},
 	})
 	if err != nil {

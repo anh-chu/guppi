@@ -88,7 +88,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
 
   const refresh = workspaceActions.refresh
   const refreshGroups = groupSync.refresh
-  const { setTree: setGroupTree, setName: setGroupName, setRank: setGroupRank, deleteGroup } = groupSync
+  const { setTree: setGroupTree, setName: setGroupName, setRank: setGroupRank, deleteGroup, forceAiName, namingGroupId } = groupSync
 
   const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
   const { getSessionActivity, handleActivityEvent } = useActivity()
@@ -1246,6 +1246,8 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             setSessionOrderRank={setSessionOrderRank}
             onSwitchGroup={switchToGroup}
             onRenameGroup={renameGroup}
+            forceAiName={forceAiName}
+            namingGroupId={namingGroupId}
             onPairSessions={handlePairSessions}
             onRemoveFromSplit={closePane}
             onSessionKilled={removeSessionFromLayout}

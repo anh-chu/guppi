@@ -155,7 +155,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	if _, err = s.SetTree("g1", json.RawMessage(`{"type":"leaf","sessionKey":"x"}`)); err != nil {
 		t.Fatalf("SetTree: %v", err)
 	}
-	if _, err = s.SetName("g1", "name"); err != nil {
+	if _, err = s.SetName("g1", "name", NameModeManual); err != nil {
 		t.Fatalf("SetName: %v", err)
 	}
 	if _, err = s.SetRank("g1", "rank"); err != nil {
@@ -178,5 +178,114 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	}
 	if len(reloaded.Live()) != 0 {
 		t.Fatalf("live = %#v", reloaded.Live())
+	}
+}
+
+func TestEffectiveNameMode(t *testing.T) {
+	cases := []struct {
+		name string
+		g    Group
+		want NameMode
+	}{
+		{"explicit auto", Group{NameMode: NameModeAuto, Name: "foo"}, NameModeAuto},
+		{"explicit manual", Group{NameMode: NameModeManual, Name: "foo"}, NameModeManual},
+		{"legacy named", Group{Name: "foo"}, NameModeManual},
+		{"legacy unnamed", Group{}, NameModeAuto},
+		{"legacy empty-name", Group{Name: ""}, NameModeAuto},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := EffectiveNameMode(c.g); got != c.want {
+				t.Fatalf("EffectiveNameMode = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestSetNamePersistsMode(t *testing.T) {
+	s := newTestStore(t)
+	g, err := s.SetName("g1", "AI-chat", NameModeAuto)
+	if err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	if g.Name != "AI-chat" || g.NameMode != NameModeAuto {
+		t.Fatalf("group = %#v", g)
+	}
+	if g.NameModeUpdatedAt.IsZero() {
+		t.Fatal("NameModeUpdatedAt not set")
+	}
+
+	reloaded, err := NewStore()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got, ok := reloaded.Get("g1")
+	if !ok {
+		t.Fatal("missing reloaded group")
+	}
+	if got.Name != "AI-chat" || got.NameMode != NameModeAuto {
+		t.Fatalf("reloaded = %#v", got)
+	}
+	if EffectiveNameMode(got) != NameModeAuto {
+		t.Fatalf("effective mode = %q", EffectiveNameMode(got))
+	}
+}
+
+func TestApplyRemoteNameModeLWW(t *testing.T) {
+	s := &Store{path: filepath.Join(t.TempDir(), "groups.json"), groups: map[string]Group{
+		"g1": {
+			Name:              "old",
+			NameUpdatedAt:     mustTime(10),
+			NameMode:          NameModeManual,
+			NameModeUpdatedAt: mustTime(10),
+		},
+	}}
+
+	got, ok, err := s.ApplyRemote("g1", Group{
+		Name:              "old",
+		NameUpdatedAt:     mustTime(5),
+		NameMode:          NameModeAuto,
+		NameModeUpdatedAt: mustTime(20),
+	})
+	if err != nil {
+		t.Fatalf("ApplyRemote: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected accepted")
+	}
+	if got.Name != "old" {
+		t.Fatalf("name should stay local, got %q", got.Name)
+	}
+	if got.NameMode != NameModeAuto {
+		t.Fatalf("mode = %q, want auto", got.NameMode)
+	}
+	if got.NameModeUpdatedAt != mustTime(20) {
+		t.Fatalf("mode clock = %v", got.NameModeUpdatedAt)
+	}
+}
+
+func TestApplySnapshotNameModeLWW(t *testing.T) {
+	s := &Store{path: filepath.Join(t.TempDir(), "groups.json"), groups: map[string]Group{
+		"g1": {
+			NameMode:          NameModeManual,
+			NameModeUpdatedAt: mustTime(10),
+		},
+	}}
+
+	changed, err := s.ApplySnapshot(map[string]Group{
+		"g1": {
+			NameMode:          NameModeAuto,
+			NameModeUpdatedAt: mustTime(20),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplySnapshot: %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "g1" {
+		t.Fatalf("changed = %#v", changed)
+	}
+	got := s.groups["g1"]
+	if got.NameMode != NameModeAuto || got.NameModeUpdatedAt != mustTime(20) {
+		t.Fatalf("merged = %#v", got)
 	}
 }

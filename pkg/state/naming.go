@@ -112,65 +112,26 @@ func (m *Manager) SetRenameHook(fn func(oldName, newName string)) {
 	m.mu.Unlock()
 }
 
-// automaticNamingBackoff returns the cooldown before the next automatic naming
-// attempt. failureCount is the number of consecutive failures since the last
-// success. Count 0 means normal cadence; higher counts increase delay up to a
-// 15-minute ceiling.
-func automaticNamingBackoff(failureCount int) time.Duration {
-	switch {
-	case failureCount <= 0:
-		return nameRefreshInterval
-	case failureCount == 1:
-		return time.Minute
-	default:
-		d := time.Duration(1<<(failureCount-1)) * time.Minute
-		if d > 15*time.Minute {
-			d = 15 * time.Minute
-		}
-		return d
-	}
-}
+// logAutomaticNamingFailure records the failure in the authoritative gate and
+// in the SessionMetadata mirror fields, then logs the failure silently (no
+// frontend notice). Manual/explicit renames never call this path.
+func (m *Manager) logAutomaticNamingFailure(sessionName, kind string, err error) {
+	gate := m.automaticGate()
+	gate.Failure(sessionName)
 
-// beginAutomaticNamingAttempt checks whether an automatic naming attempt is
-// eligible for sessionName and, if so, records LastNamingAttemptAt under the
-// manager write lock. It also enforces the normal 45-second successful-refresh
-// debounce via LastNamedAt. Manual/explicit renames bypass this entirely.
-func (m *Manager) beginAutomaticNamingAttempt(sessionName string, now time.Time) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	meta := m.meta[sessionName]
-
-	interval := automaticNamingBackoff(meta.NamingFailureCount)
-	if !meta.LastNamingAttemptAt.IsZero() && now.Before(meta.LastNamingAttemptAt.Add(interval)) {
-		return false
-	}
-	if !meta.LastNamedAt.IsZero() && now.Before(meta.LastNamedAt.Add(nameRefreshInterval)) {
-		return false
-	}
-
-	meta.LastNamingAttemptAt = now
-	m.meta[sessionName] = meta
-	return true
-}
-
-// recordAutomaticNamingFailure increments the consecutive failure count for a
-// session and logs the failure silently (no frontend notice). Callers must have
-// already passed beginAutomaticNamingAttempt so that LastNamingAttemptAt is set.
-func (m *Manager) recordAutomaticNamingFailure(sessionName, kind string, err error) {
 	m.mu.Lock()
 	meta := m.meta[sessionName]
 	meta.NamingFailureCount++
 	count := meta.NamingFailureCount
-	attemptAt := meta.LastNamingAttemptAt
 	m.meta[sessionName] = meta
 	m.mu.Unlock()
 
-	nextEligible := attemptAt.Add(automaticNamingBackoff(count))
+	nextEligible := gate.NextEligible(sessionName)
 	logrus.WithFields(logrus.Fields{
-		"session":        sessionName,
-		"kind":           kind,
-		"failure_count":  count,
-		"next_eligible":  nextEligible,
+		"session":       sessionName,
+		"kind":          kind,
+		"failure_count": count,
+		"next_eligible": nextEligible,
 	}).WithError(err).Warn("automatic session naming failed")
 }
 
@@ -212,15 +173,24 @@ func (m *Manager) triggerAgentNaming(sessionName string) {
 		}
 	}
 
-	if !m.beginAutomaticNamingAttempt(sessionName, time.Now()) {
+	gate := m.automaticGate()
+	if ok, _ := gate.Begin(sessionName); !ok {
 		return
 	}
+
+	// Update the mirror field for compatibility/logging introspection; the
+	// gate is authoritative for actual gating decisions.
+	m.mu.Lock()
+	meta = m.meta[sessionName]
+	meta.LastNamingAttemptAt = time.Now()
+	m.meta[sessionName] = meta
+	m.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	name, err := n.Generate(ctx, nc)
 	if err != nil {
-		m.recordAutomaticNamingFailure(sessionName, "agent", err)
+		m.logAutomaticNamingFailure(sessionName, "agent", err)
 		return
 	}
 	logrus.WithFields(logrus.Fields{"session": sessionName, "name": name}).Info("agent session named")
@@ -245,7 +215,8 @@ func (m *Manager) applyGeneratedName(sessionName, displayName string) {
 		m.mu.Unlock()
 		return
 	}
-	meta.LastNamedAt = time.Now()
+	now := time.Now()
+	meta.LastNamedAt = now
 	meta.NamingFailureCount = 0
 	nameChanged := meta.DisplayName != displayName
 	meta.DisplayName = displayName
@@ -254,6 +225,12 @@ func (m *Manager) applyGeneratedName(sessionName, displayName string) {
 	if sess := m.sessions[sessionName]; sess != nil {
 		sess.DisplayName = displayName
 	}
+
+	// The name was accepted/stored; record success in the authoritative gate.
+	// This is called even for forced/manual agent renames so the automatic
+	// cooldown is respected after a successful explicit rename.
+	m.automaticGate().Success(sessionName)
+
 	m.mu.Unlock()
 
 	// All sessions are daemon-backed now — the session key is the socket ID
@@ -299,15 +276,22 @@ func (m *Manager) TriggerShellNaming(sessionName string, commands []string) {
 		}
 	}
 
-	if !m.beginAutomaticNamingAttempt(sessionName, time.Now()) {
+	gate := m.automaticGate()
+	if ok, _ := gate.Begin(sessionName); !ok {
 		return
 	}
+
+	m.mu.Lock()
+	meta = m.meta[sessionName]
+	meta.LastNamingAttemptAt = time.Now()
+	m.meta[sessionName] = meta
+	m.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	name, err := n.Generate(ctx, nc)
 	if err != nil {
-		m.recordAutomaticNamingFailure(sessionName, "shell", err)
+		m.logAutomaticNamingFailure(sessionName, "shell", err)
 		return
 	}
 	logrus.WithFields(logrus.Fields{"session": sessionName, "name": name}).Info("shell session named")

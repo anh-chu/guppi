@@ -11,15 +11,40 @@ import (
 	"github.com/anh-chu/termyard/pkg/config"
 )
 
+// NameMode indicates how a group's name was chosen.
+type NameMode string
+
+const (
+	// NameModeAuto means the group's name was generated automatically.
+	NameModeAuto NameMode = "auto"
+	// NameModeManual means the group's name was explicitly set by a user.
+	NameModeManual NameMode = "manual"
+)
+
+// EffectiveNameMode resolves the provenance of a group's name. Legacy records
+// without an explicit NameMode default to manual when a name exists and auto
+// when the name is empty.
+func EffectiveNameMode(g Group) NameMode {
+	if g.NameMode != "" {
+		return g.NameMode
+	}
+	if g.Name != "" {
+		return NameModeManual
+	}
+	return NameModeAuto
+}
+
 // Group is one synced saved-layout record.
 type Group struct {
-	Tree          json.RawMessage `json:"tree"`
-	TreeUpdatedAt time.Time       `json:"tree_updated_at"`
-	Name          string          `json:"name"`
-	NameUpdatedAt time.Time       `json:"name_updated_at"`
-	Rank          string          `json:"rank"`
-	RankUpdatedAt time.Time       `json:"rank_updated_at"`
-	DeletedAt     time.Time       `json:"deleted_at"`
+	Tree              json.RawMessage `json:"tree"`
+	TreeUpdatedAt     time.Time       `json:"tree_updated_at"`
+	Name              string          `json:"name"`
+	NameUpdatedAt     time.Time       `json:"name_updated_at"`
+	NameMode          NameMode        `json:"name_mode,omitempty"`
+	NameModeUpdatedAt time.Time       `json:"name_mode_updated_at,omitempty"`
+	Rank              string          `json:"rank"`
+	RankUpdatedAt     time.Time       `json:"rank_updated_at"`
+	DeletedAt         time.Time       `json:"deleted_at"`
 }
 
 // Store persists group records to disk.
@@ -103,12 +128,14 @@ func (s *Store) SetTree(id string, tree json.RawMessage) (Group, error) {
 }
 
 // SetName applies a local name update.
-func (s *Store) SetName(id, name string) (Group, error) {
+func (s *Store) SetName(id, name string, mode NameMode) (Group, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g := s.groups[id]
 	g.Name = name
 	g.NameUpdatedAt = time.Now()
+	g.NameMode = mode
+	g.NameModeUpdatedAt = time.Now()
 	s.groups[id] = g
 	if err := s.save(); err != nil {
 		return Group{}, err
@@ -161,6 +188,11 @@ func (s *Store) ApplyRemote(id string, in Group) (Group, bool, error) {
 		merged.NameUpdatedAt = in.NameUpdatedAt
 		accepted = true
 	}
+	if in.NameModeUpdatedAt.After(cur.NameModeUpdatedAt) {
+		merged.NameMode = in.NameMode
+		merged.NameModeUpdatedAt = in.NameModeUpdatedAt
+		accepted = true
+	}
 	if in.RankUpdatedAt.After(cur.RankUpdatedAt) {
 		merged.Rank = in.Rank
 		merged.RankUpdatedAt = in.RankUpdatedAt
@@ -199,6 +231,11 @@ func (s *Store) ApplySnapshot(snap map[string]Group) ([]string, error) {
 		if in.NameUpdatedAt.After(cur.NameUpdatedAt) {
 			merged.Name = in.Name
 			merged.NameUpdatedAt = in.NameUpdatedAt
+			accepted = true
+		}
+		if in.NameModeUpdatedAt.After(cur.NameModeUpdatedAt) {
+			merged.NameMode = in.NameMode
+			merged.NameModeUpdatedAt = in.NameModeUpdatedAt
 			accepted = true
 		}
 		if in.RankUpdatedAt.After(cur.RankUpdatedAt) {
