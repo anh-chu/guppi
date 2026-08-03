@@ -1,0 +1,361 @@
+diff --git a/pkg/commands/server/runtime.go b/pkg/commands/server/runtime.go
+index bdaf469..b8995b9 100644
+--- a/pkg/commands/server/runtime.go
++++ b/pkg/commands/server/runtime.go
+@@ -214,7 +214,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
+ 			if err := rt.v2Catalog.Load(); err != nil {
+ 				logrus.WithError(err).Warn("failed to load v2 catalog")
+ 			} else {
+-				enricher := &v2RuntimeEnricher{adapter: rt.adapter}
++				enricher := &v2RuntimeEnricher{adapter: rt.adapter, actTracker: rt.actTracker}
+ 				rt.v2Reconciler = state.NewReconciler(rt.v2Catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
+ 				rt.v2CommandSvc = state.NewSessionCommandService(rt.v2Catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.v2Catalog.Owner()})
+ 				rt.v2RemoteCreate = state.NewRemoteCreateCoordinator(rt.v2Catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.v2Catalog.Owner()})
+@@ -848,7 +848,62 @@ func defaultSessionDir() string {
+ // v2RuntimeEnricher supplies live runtime fields for v2 catalog records
+ // without mutating persisted state.
+ type v2RuntimeEnricher struct {
+-	adapter *daemonAdapter
++	adapter    *daemonAdapter
++	actTracker *activity.Tracker
++
++	previewMu    sync.Mutex
++	previewCache map[string]*v2PreviewCacheEntry
++}
++
++// v2PreviewCacheEntry holds a throttled prompt-preview snapshot for a single
++// session so the (up to) 64KiB PTY capture only runs periodically instead of
++// on every catalog enrichment call. This mirrors the throttle pattern used by
++// state.Manager's legacy preview cache (see pkg/state/preview.go).
++type v2PreviewCacheEntry struct {
++	preview     string
++	lastAttempt time.Time
++}
++
++// v2PromptPreviewInterval throttles prompt-preview PTY captures during v2
++// catalog enrichment. Matches the legacy manager's promptPreviewInterval.
++const v2PromptPreviewInterval = 30 * time.Second
++
++// previewFor returns the cached prompt preview for a session, refreshing it
++// with a synchronous PTY capture at most once per v2PromptPreviewInterval.
++func (e *v2RuntimeEnricher) previewFor(sessionID string) string {
++	e.previewMu.Lock()
++	if e.previewCache == nil {
++		e.previewCache = make(map[string]*v2PreviewCacheEntry)
++	}
++	entry := e.previewCache[sessionID]
++	if entry == nil {
++		entry = &v2PreviewCacheEntry{}
++		e.previewCache[sessionID] = entry
++	}
++	due := time.Since(entry.lastAttempt) >= v2PromptPreviewInterval
++	if due {
++		entry.lastAttempt = time.Now()
++	}
++	cached := entry.preview
++	e.previewMu.Unlock()
++
++	if !due {
++		return cached
++	}
++
++	content, err := e.adapter.CaptureTail(sessionID, 64*1024)
++	if err != nil {
++		return cached
++	}
++	preview := model.ExtractPromptPreview(content)
++
++	e.previewMu.Lock()
++	if entry := e.previewCache[sessionID]; entry != nil {
++		entry.preview = preview
++	}
++	e.previewMu.Unlock()
++
++	return preview
+ }
+ 
+ func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionRecord) state.SessionRuntime {
+@@ -871,10 +926,12 @@ func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionR
+ 				rt.CurrentPath = liveCwd
+ 			}
+ 		}
+-		if content, err := e.adapter.CaptureTail(d.ID, 64*1024); err == nil {
+-			rt.PromptPreview = model.ExtractPromptPreview(content)
++		rt.PromptPreview = e.previewFor(d.ID)
++		if e.actTracker != nil {
++			if snap := e.actTracker.Get(d.ID); snap != nil && snap.IdleSeconds >= 0 {
++				rt.LastActivity = time.Now().Add(-time.Duration(snap.IdleSeconds * float64(time.Second)))
++			}
+ 		}
+-		rt.LastActivity = time.Now()
+ 		break
+ 	}
+ 	return rt
+diff --git a/pkg/peer/handler.go b/pkg/peer/handler.go
+index 6cf8dfe..f922d5e 100644
+--- a/pkg/peer/handler.go
++++ b/pkg/peer/handler.go
+@@ -94,7 +94,7 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
+ 		return
+ 	}
+ 
+-	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: localCapabilities})
++	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: capabilitiesFor(h.deps)})
+ 	if err := conn.WriteJSON(authOK); err != nil {
+ 		conn.Close()
+ 		return
+@@ -128,7 +128,7 @@ func (h *Handler) HandlePeerStream(w http.ResponseWriter, r *http.Request) {
+ 		return
+ 	}
+ 
+-	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: localCapabilities})
++	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: capabilitiesFor(h.deps)})
+ 	if err := conn.WriteJSON(authOK); err != nil {
+ 		conn.Close()
+ 		return
+diff --git a/pkg/peer/manager_v2_test.go b/pkg/peer/manager_v2_test.go
+index dd7e01c..0e76b7f 100644
+--- a/pkg/peer/manager_v2_test.go
++++ b/pkg/peer/manager_v2_test.go
+@@ -244,12 +244,22 @@ func TestHandleV2CommandReply_DeliversToWaiter(t *testing.T) {
+ }
+ 
+ func TestLocalCapabilities_IncludesV2(t *testing.T) {
+-	for _, c := range localCapabilities {
++	deps := SessionDeps{V2CommandSvc: &state.SessionCommandService{}}
++	for _, c := range capabilitiesFor(deps) {
+ 		if c == CapV2Catalog {
+ 			return
+ 		}
+ 	}
+-	t.Fatal("expected CapV2Catalog in local capabilities")
++	t.Fatal("expected CapV2Catalog in capabilitiesFor when v2 command service is set")
++}
++
++func TestLocalCapabilities_ExcludesV2WhenDisabled(t *testing.T) {
++	deps := SessionDeps{}
++	for _, c := range capabilitiesFor(deps) {
++		if c == CapV2Catalog || c == CapV2Command {
++			t.Fatalf("expected no v2 capabilities when V2CommandSvc is nil, got %q", c)
++		}
++	}
+ }
+ 
+ func TestLegacyPeer_InitialStateUpdateStillSent(t *testing.T) {
+diff --git a/pkg/peer/protocol.go b/pkg/peer/protocol.go
+index 7aa96b8..54f408d 100644
+--- a/pkg/peer/protocol.go
++++ b/pkg/peer/protocol.go
+@@ -118,7 +118,20 @@ const CapV2Catalog = "v2-catalog"
+ const CapV2Command = "v2-command"
+ 
+ // localCapabilities is what this build advertises in the hello.
+-var localCapabilities = []string{CapPerStream, CapUpload, CapV2Catalog, CapV2Command}
++var localCapabilities = []string{CapPerStream, CapUpload}
++
++// capabilitiesFor returns the capability list to advertise for a given
++// SessionDeps. CapV2Catalog/CapV2Command are only included when the v2
++// command service was actually constructed (i.e. TERMYARD_V2_STATE=1 and
++// the v2 store/catalog initialized successfully), not merely when an env
++// var is set.
++func capabilitiesFor(deps SessionDeps) []string {
++	caps := append([]string(nil), localCapabilities...)
++	if deps.V2CommandSvc != nil {
++		caps = append(caps, CapV2Catalog, CapV2Command)
++	}
++	return caps
++}
+ 
+ // V2 command kinds carried by V2CommandRequestPayload.
+ const (
+diff --git a/pkg/peer/session.go b/pkg/peer/session.go
+index 39f70d8..584de6a 100644
+--- a/pkg/peer/session.go
++++ b/pkg/peer/session.go
+@@ -144,6 +144,10 @@ func runSession(
+ 	pc.Caps = append([]string(nil), caps...)
+ 	pc.initV2Lazy()
+ 
++	if !deps.Manager.TryRegisterPeer(peerID, peerInfo.Name, peerInfo.PublicKey, address, pc) {
++		return fmt.Errorf("peer already connected")
++	}
++
+ 	var unsubWorkspace func()
+ 
+ 	// Subscribe to complete workspace snapshots after each accepted command
+@@ -159,10 +163,6 @@ func runSession(
+ 		})
+ 	}
+ 
+-	if !deps.Manager.TryRegisterPeer(peerID, peerInfo.Name, peerInfo.PublicKey, address, pc) {
+-		return fmt.Errorf("peer already connected")
+-	}
+-
+ 	sessionCtx, cancel := context.WithCancel(ctx)
+ 
+ 	// Teardown order is crucial:
+diff --git a/pkg/peer/session_dupreg_test.go b/pkg/peer/session_dupreg_test.go
+new file mode 100644
+index 0000000..dc1784d
+--- /dev/null
++++ b/pkg/peer/session_dupreg_test.go
+@@ -0,0 +1,54 @@
++package peer
++
++import (
++	"testing"
++
++	"github.com/anh-chu/termyard/pkg/identity"
++	"github.com/anh-chu/termyard/pkg/state"
++)
++
++// TestRunSession_RejectedDuplicateLeavesNoDanglingWorkspaceSubscription
++// reproduces the ordering runSession uses on connect: register the peer
++// connection first, and only subscribe to workspace snapshots on success.
++// A rejected duplicate registration (simultaneous-connect race) must not
++// leave an orphaned subscription enqueuing snapshots into a PeerConnection
++// nobody will ever drain.
++func TestRunSession_RejectedDuplicateLeavesNoDanglingWorkspaceSubscription(t *testing.T) {
++	mgr := makeV2Manager(t)
++	cat := state.NewCatalog("owner-a", nil)
++	mgr.localMgr.EnableV2Shadow(cat, nil, nil)
++
++	remoteID, err := identity.Generate("remote")
++	if err != nil {
++		t.Fatal(err)
++	}
++	peerID := remoteID.Fingerprint()
++
++	// First connection registers fine and (per the fixed order in
++	// runSession) subscribes to workspace snapshots afterwards.
++	pc1 := NewPeerConnection(peerID, 64)
++	if !mgr.TryRegisterPeer(peerID, "remote", remoteID.PublicKey, "", pc1) {
++		t.Fatal("expected first registration to succeed")
++	}
++	unsub1 := cat.SubscribeWorkspace(func(state.LayoutID, state.WorkspaceRecord) {})
++	defer unsub1()
++
++	if got := cat.WorkspaceSubscriberCount(); got != 1 {
++		t.Fatalf("expected 1 subscriber after first connection, got %d", got)
++	}
++
++	// Simultaneous duplicate connection: registration must be attempted
++	// (and rejected) BEFORE any subscription is created, so the rejected
++	// path never subscribes at all.
++	pc2 := NewPeerConnection(peerID, 64)
++	registered := mgr.TryRegisterPeer(peerID, "remote", remoteID.PublicKey, "", pc2)
++	if registered {
++		t.Fatal("expected duplicate registration to be rejected")
++	}
++	// Mirrors runSession's fixed order: on rejection it returns before ever
++	// calling SubscribeWorkspace, so no subscription should exist here.
++
++	if got := cat.WorkspaceSubscriberCount(); got != 1 {
++		t.Fatalf("rejected duplicate leaked a workspace subscription: got %d subscribers, want 1", got)
++	}
++}
+diff --git a/pkg/peer/supervisor.go b/pkg/peer/supervisor.go
+index 36da741..91a744c 100644
+--- a/pkg/peer/supervisor.go
++++ b/pkg/peer/supervisor.go
+@@ -372,7 +372,7 @@ func (s *LinkSupervisor) dialOnce(ctx context.Context, link *peerLink) error {
+ 	authMsg, _ := NewMessage(MsgAuth, AuthPayload{
+ 		PublicKey:    s.deps.Identity.PublicKey,
+ 		Signature:    base64.StdEncoding.EncodeToString(sig),
+-		Capabilities: localCapabilities,
++		Capabilities: capabilitiesFor(s.deps),
+ 	})
+ 	if err := conn.WriteJSON(authMsg); err != nil {
+ 		conn.Close()
+diff --git a/pkg/server/daemon_attach_test.go b/pkg/server/daemon_attach_test.go
+index 3e2e106..83b75d7 100644
+--- a/pkg/server/daemon_attach_test.go
++++ b/pkg/server/daemon_attach_test.go
+@@ -107,6 +107,46 @@ func TestHandleDaemonSessionStableNotReadyForPendingPhase(t *testing.T) {
+ 	}
+ }
+ 
++// TestHandleDaemonSessionStableRejectsCrashedWithGeneration proves that a
++// session which has died (phase crashed) is rejected on attach even though it
++// still has a recorded generation from before it crashed. The reject must not
++// be gated on currentGen being empty: crashed/stopping/ended/dismissed
++// sessions commonly retain a stale generation.
++func TestHandleDaemonSessionStableRejectsCrashedWithGeneration(t *testing.T) {
++	owner := state.NewOwnerID()
++	catalog := state.NewCatalog(owner, nil)
++	sid := state.NewSessionID()
++	if err := catalog.PutSession(state.LocalSessionRecord{
++		ID:    sid,
++		Owner: owner,
++		Ref:   state.SessionRef{Owner: owner, Session: sid},
++		Phase: state.SessionPhaseCrashed,
++		Compat: state.CompatLocalSession{
++			Name:       "label",
++			Generation: "gen-stale",
++		},
++	}); err != nil {
++		t.Fatalf("PutSession: %v", err)
++	}
++
++	reg := pty.NewRegistry(t.TempDir())
++
++	opts := &Options{V2Catalog: catalog, DaemonReg: reg}
++	req := httptest.NewRequest(http.MethodGet, "/ws/daemon-session?sessionID="+string(sid)+"&generation=gen-stale", nil)
++	rr := httptest.NewRecorder()
++	handleDaemonSession(rr, req, opts)
++	if rr.Code != http.StatusServiceUnavailable {
++		t.Fatalf("status = %d, want 503 (body %s)", rr.Code, rr.Body.String())
++	}
++	var payload map[string]string
++	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
++		t.Fatalf("decode: %v", err)
++	}
++	if payload["code"] != "not_ready" {
++		t.Fatalf("code = %q, want not_ready", payload["code"])
++	}
++}
++
+ // TestHandleDaemonSessionStableRejectsMaliciousSessionID proves the sessionID
+ // query param is validated as a canonical SessionID (lowercase base32) before
+ // it can be used as a daemon socket key. Path-traversal-style IDs are rejected
+diff --git a/pkg/server/routes_sessions.go b/pkg/server/routes_sessions.go
+index 67e2dc3..80f7c37 100644
+--- a/pkg/server/routes_sessions.go
++++ b/pkg/server/routes_sessions.go
+@@ -1530,9 +1530,13 @@ func handleDaemonSessionStable(w http.ResponseWriter, r *http.Request, opts *Opt
+ 		return
+ 	}
+ 
+-	// Session record exists but is not in an attachable phase (pending/crashed/
+-	// cleanly ended/dismissed) and no stable generation matches yet.
+-	if !phaseOK && currentGen == "" {
++	// Session record exists but is not in an attachable phase (crashed/
++	// stopping/cleanly ended/dismissed). Reject unconditionally: these phases
++	// commonly retain a stale generation from before the session died, so
++	// gating this reject on an empty currentGen let dead sessions with a
++	// recorded generation fall through to socket attach. "starting" is
++	// already treated as phaseOK above, so it is unaffected here.
++	if !phaseOK {
+ 		writeDaemonAttachError(w, daemonAttachNotReady, http.StatusServiceUnavailable, "session is not ready for attach")
+ 		return
+ 	}
+diff --git a/pkg/state/workspace.go b/pkg/state/workspace.go
+index 4258f67..f241b84 100644
+--- a/pkg/state/workspace.go
++++ b/pkg/state/workspace.go
+@@ -545,6 +545,15 @@ type workspaceSubscription struct {
+ 	fn func(layout LayoutID, rec WorkspaceRecord)
+ }
+ 
++// WorkspaceSubscriberCount returns the number of live workspace
++// subscriptions. Used to detect leaked subscriptions (e.g. a subscribe call
++// that is never paired with its unsubscribe on an early-return error path).
++func (c *Catalog) WorkspaceSubscriberCount() int {
++	c.mu.RLock()
++	defer c.mu.RUnlock()
++	return len(c.workspaceSubs)
++}
++
+ // SubscribeWorkspace registers a callback that receives the complete
+ // WorkspaceRecord for a layout after every accepted command. The returned
+ // function unsubscribes. Subscriptions prevent stale remote caches by

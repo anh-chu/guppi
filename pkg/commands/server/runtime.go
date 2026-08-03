@@ -862,14 +862,19 @@ type v2RuntimeEnricher struct {
 type v2PreviewCacheEntry struct {
 	preview     string
 	lastAttempt time.Time
+	inFlight    bool
 }
 
 // v2PromptPreviewInterval throttles prompt-preview PTY captures during v2
 // catalog enrichment. Matches the legacy manager's promptPreviewInterval.
 const v2PromptPreviewInterval = 30 * time.Second
 
-// previewFor returns the cached prompt preview for a session, refreshing it
-// with a synchronous PTY capture at most once per v2PromptPreviewInterval.
+// previewFor returns the cached prompt preview for a session immediately,
+// without blocking the catalog projection path. When the cached preview is
+// stale (older than v2PromptPreviewInterval) and no refresh is already in
+// flight for this session, it kicks off exactly one asynchronous PTY capture
+// to refresh the cache for subsequent calls. This keeps catalog snapshot
+// publication off the PTY I/O path entirely.
 func (e *v2RuntimeEnricher) previewFor(sessionID string) string {
 	e.previewMu.Lock()
 	if e.previewCache == nil {
@@ -880,20 +885,37 @@ func (e *v2RuntimeEnricher) previewFor(sessionID string) string {
 		entry = &v2PreviewCacheEntry{}
 		e.previewCache[sessionID] = entry
 	}
+	cached := entry.preview
 	due := time.Since(entry.lastAttempt) >= v2PromptPreviewInterval
-	if due {
+	shouldRefresh := due && !entry.inFlight
+	if shouldRefresh {
+		entry.inFlight = true
 		entry.lastAttempt = time.Now()
 	}
-	cached := entry.preview
 	e.previewMu.Unlock()
 
-	if !due {
-		return cached
+	if shouldRefresh {
+		go e.refreshPreview(sessionID)
 	}
+
+	return cached
+}
+
+// refreshPreview performs the actual (potentially slow) PTY capture off the
+// synchronous enrichment path and stores the result for the next previewFor
+// call to observe.
+func (e *v2RuntimeEnricher) refreshPreview(sessionID string) {
+	defer func() {
+		e.previewMu.Lock()
+		if entry := e.previewCache[sessionID]; entry != nil {
+			entry.inFlight = false
+		}
+		e.previewMu.Unlock()
+	}()
 
 	content, err := e.adapter.CaptureTail(sessionID, 64*1024)
 	if err != nil {
-		return cached
+		return
 	}
 	preview := model.ExtractPromptPreview(content)
 
@@ -902,8 +924,6 @@ func (e *v2RuntimeEnricher) previewFor(sessionID string) string {
 		entry.preview = preview
 	}
 	e.previewMu.Unlock()
-
-	return preview
 }
 
 func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionRecord) state.SessionRuntime {
