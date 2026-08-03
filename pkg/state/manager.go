@@ -72,12 +72,12 @@ type Manager struct {
 	autoNameGate *namer.AutomaticGate
 	gateOnce     sync.Once
 
-	// v2 shadow catalog (Task 5). When enabled the legacy manager keeps
-	// running v1 routes but projects the v2 catalog for comparison logging.
+	// v2 state (active only in v2 mode). When v2Catalog is non-nil, the runtime
+	// operates in v2 mode and peer-to-peer catalog/workspace sync uses v2 messages.
+	// In legacy mode, these remain nil and routes branch on legacy stores.
 	v2Catalog    *Catalog
 	v2Reconciler *Reconciler
 	v2Enricher   RuntimeEnricher
-	v2Enabled    bool
 
 	// Subscribers for state changes.
 	subMu       sync.RWMutex
@@ -145,24 +145,17 @@ func (m *Manager) SetDaemonRegistry(reg DaemonRegistry) {
 	m.daemonReg = reg
 }
 
-// EnableV2Shadow wires the v2 catalog and reconciler into the legacy manager.
-// The legacy v1 session tree remains authoritative for routes; v2 is compared
-// and logged in shadow mode.
-func (m *Manager) EnableV2Shadow(catalog *Catalog, reconciler *Reconciler, enricher RuntimeEnricher) {
+// SetV2Catalog wires the v2 catalog and reconciler into the manager.
+// Used only for testing; in production, v2 fields are set during runtime initialization.
+func (m *Manager) SetV2Catalog(catalog *Catalog, reconciler *Reconciler, enricher RuntimeEnricher) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.v2Catalog = catalog
 	m.v2Reconciler = reconciler
 	m.v2Enricher = enricher
-	m.v2Enabled = true
 }
 
-// V2Enabled reports whether v2 catalog shadow mode is enabled.
-func (m *Manager) V2Enabled() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.v2Enabled
-}
-
-// V2Catalog returns the v2 catalog when enabled, or nil.
+// V2Catalog returns the v2 catalog when in v2 mode, or nil.
 func (m *Manager) V2Catalog() *Catalog {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -478,6 +478,12 @@ export class TerminalPool {
     if (!entry) {
       entry = this.createEntry(key, identity, prefs, ef)
       this.entries.set(key, entry)
+    } else {
+      // Warm checkout: reconcile generation change if present.
+      // If the caller provided a new generation (v2 recovery/restart), reconnect the socket.
+      if (identity.generation && entry.identity.generation !== identity.generation) {
+        this.updateGeneration(key, identity.generation)
+      }
     }
 
     // Increment lease — invalidate any previous owner

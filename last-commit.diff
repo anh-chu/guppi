@@ -1,361 +1,802 @@
+diff --git a/pkg/activity/tracker.go b/pkg/activity/tracker.go
+index 62b4e61..536a253 100644
+--- a/pkg/activity/tracker.go
++++ b/pkg/activity/tracker.go
+@@ -14,10 +14,11 @@ type SessionActivity struct {
+ 
+ // Snapshot is a point-in-time view of a session's activity
+ type Snapshot struct {
+-	Host        string  `json:"host,omitempty"` // peer fingerprint (empty = local)
+-	SessionName string  `json:"session"`
+-	IdleSeconds float64 `json:"idle_seconds"`
+-	TotalBytes  int64   `json:"total_bytes"`
++	Host        string    `json:"host,omitempty"` // peer fingerprint (empty = local)
++	SessionName string    `json:"session"`
++	IdleSeconds float64   `json:"idle_seconds"`
++	TotalBytes  int64     `json:"total_bytes"`
++	LastActive  time.Time `json:"last_active,omitempty"` // actual time of last recorded activity
+ }
+ 
+ // Tracker tracks output activity across all sessions
+@@ -80,6 +81,7 @@ func (t *Tracker) Get(session string) *Snapshot {
+ 		SessionName: session,
+ 		IdleSeconds: idle,
+ 		TotalBytes:  sa.totalBytes,
++		LastActive:  sa.lastActive,
+ 	}
+ }
+ 
 diff --git a/pkg/commands/server/runtime.go b/pkg/commands/server/runtime.go
-index bdaf469..b8995b9 100644
+index dee966f..f3217c7 100644
 --- a/pkg/commands/server/runtime.go
 +++ b/pkg/commands/server/runtime.go
-@@ -214,7 +214,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
- 			if err := rt.v2Catalog.Load(); err != nil {
- 				logrus.WithError(err).Warn("failed to load v2 catalog")
- 			} else {
--				enricher := &v2RuntimeEnricher{adapter: rt.adapter}
-+				enricher := &v2RuntimeEnricher{adapter: rt.adapter, actTracker: rt.actTracker}
- 				rt.v2Reconciler = state.NewReconciler(rt.v2Catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
- 				rt.v2CommandSvc = state.NewSessionCommandService(rt.v2Catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.v2Catalog.Owner()})
- 				rt.v2RemoteCreate = state.NewRemoteCreateCoordinator(rt.v2Catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.v2Catalog.Owner()})
-@@ -848,7 +848,62 @@ func defaultSessionDir() string {
- // v2RuntimeEnricher supplies live runtime fields for v2 catalog records
- // without mutating persisted state.
- type v2RuntimeEnricher struct {
--	adapter *daemonAdapter
-+	adapter    *daemonAdapter
-+	actTracker *activity.Tracker
-+
-+	previewMu    sync.Mutex
-+	previewCache map[string]*v2PreviewCacheEntry
-+}
-+
-+// v2PreviewCacheEntry holds a throttled prompt-preview snapshot for a single
-+// session so the (up to) 64KiB PTY capture only runs periodically instead of
-+// on every catalog enrichment call. This mirrors the throttle pattern used by
-+// state.Manager's legacy preview cache (see pkg/state/preview.go).
-+type v2PreviewCacheEntry struct {
-+	preview     string
-+	lastAttempt time.Time
-+}
-+
-+// v2PromptPreviewInterval throttles prompt-preview PTY captures during v2
-+// catalog enrichment. Matches the legacy manager's promptPreviewInterval.
-+const v2PromptPreviewInterval = 30 * time.Second
-+
-+// previewFor returns the cached prompt preview for a session, refreshing it
-+// with a synchronous PTY capture at most once per v2PromptPreviewInterval.
-+func (e *v2RuntimeEnricher) previewFor(sessionID string) string {
-+	e.previewMu.Lock()
-+	if e.previewCache == nil {
-+		e.previewCache = make(map[string]*v2PreviewCacheEntry)
-+	}
-+	entry := e.previewCache[sessionID]
-+	if entry == nil {
-+		entry = &v2PreviewCacheEntry{}
-+		e.previewCache[sessionID] = entry
-+	}
-+	due := time.Since(entry.lastAttempt) >= v2PromptPreviewInterval
-+	if due {
-+		entry.lastAttempt = time.Now()
-+	}
-+	cached := entry.preview
-+	e.previewMu.Unlock()
-+
-+	if !due {
-+		return cached
-+	}
-+
-+	content, err := e.adapter.CaptureTail(sessionID, 64*1024)
-+	if err != nil {
-+		return cached
-+	}
-+	preview := model.ExtractPromptPreview(content)
-+
-+	e.previewMu.Lock()
-+	if entry := e.previewCache[sessionID]; entry != nil {
-+		entry.preview = preview
-+	}
-+	e.previewMu.Unlock()
-+
-+	return preview
- }
- 
- func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionRecord) state.SessionRuntime {
-@@ -871,10 +926,12 @@ func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionR
- 				rt.CurrentPath = liveCwd
+@@ -949,7 +949,7 @@ func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionR
+ 		rt.PromptPreview = e.previewFor(d.ID)
+ 		if e.actTracker != nil {
+ 			if snap := e.actTracker.Get(d.ID); snap != nil && snap.IdleSeconds >= 0 {
+-				rt.LastActivity = time.Now().Add(-time.Duration(snap.IdleSeconds * float64(time.Second)))
++				rt.LastActivity = snap.LastActive
  			}
  		}
--		if content, err := e.adapter.CaptureTail(d.ID, 64*1024); err == nil {
--			rt.PromptPreview = model.ExtractPromptPreview(content)
-+		rt.PromptPreview = e.previewFor(d.ID)
-+		if e.actTracker != nil {
-+			if snap := e.actTracker.Get(d.ID); snap != nil && snap.IdleSeconds >= 0 {
-+				rt.LastActivity = time.Now().Add(-time.Duration(snap.IdleSeconds * float64(time.Second)))
-+			}
- 		}
--		rt.LastActivity = time.Now()
  		break
- 	}
- 	return rt
-diff --git a/pkg/peer/handler.go b/pkg/peer/handler.go
-index 6cf8dfe..f922d5e 100644
---- a/pkg/peer/handler.go
-+++ b/pkg/peer/handler.go
-@@ -94,7 +94,7 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
- 		return
- 	}
+diff --git a/pkg/commands/server/runtime_test.go b/pkg/commands/server/runtime_test.go
+index 66be267..517ff84 100644
+--- a/pkg/commands/server/runtime_test.go
++++ b/pkg/commands/server/runtime_test.go
+@@ -9,6 +9,7 @@ import (
  
--	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: localCapabilities})
-+	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: capabilitiesFor(h.deps)})
- 	if err := conn.WriteJSON(authOK); err != nil {
- 		conn.Close()
- 		return
-@@ -128,7 +128,7 @@ func (h *Handler) HandlePeerStream(w http.ResponseWriter, r *http.Request) {
- 		return
- 	}
+ 	"github.com/urfave/cli/v3"
  
--	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: localCapabilities})
-+	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: capabilitiesFor(h.deps)})
- 	if err := conn.WriteJSON(authOK); err != nil {
- 		conn.Close()
- 		return
-diff --git a/pkg/peer/manager_v2_test.go b/pkg/peer/manager_v2_test.go
-index dd7e01c..0e76b7f 100644
---- a/pkg/peer/manager_v2_test.go
-+++ b/pkg/peer/manager_v2_test.go
-@@ -244,12 +244,22 @@ func TestHandleV2CommandReply_DeliversToWaiter(t *testing.T) {
++	"github.com/anh-chu/termyard/pkg/activity"
+ 	"github.com/anh-chu/termyard/pkg/peer"
+ 	"github.com/anh-chu/termyard/pkg/pty"
+ 	"github.com/anh-chu/termyard/pkg/state"
+@@ -151,3 +152,139 @@ func TestRefreshDaemonState_ClassifiesBeforePublishing(t *testing.T) {
+ 		t.Fatalf("expected only live session in state, got %+v", sessions)
+ 	}
  }
- 
- func TestLocalCapabilities_IncludesV2(t *testing.T) {
--	for _, c := range localCapabilities {
-+	deps := SessionDeps{V2CommandSvc: &state.SessionCommandService{}}
-+	for _, c := range capabilitiesFor(deps) {
- 		if c == CapV2Catalog {
- 			return
- 		}
- 	}
--	t.Fatal("expected CapV2Catalog in local capabilities")
-+	t.Fatal("expected CapV2Catalog in capabilitiesFor when v2 command service is set")
-+}
 +
-+func TestLocalCapabilities_ExcludesV2WhenDisabled(t *testing.T) {
-+	deps := SessionDeps{}
-+	for _, c := range capabilitiesFor(deps) {
-+		if c == CapV2Catalog || c == CapV2Command {
-+			t.Fatalf("expected no v2 capabilities when V2CommandSvc is nil, got %q", c)
++// TestV2RuntimeEnricherPreviewReturnsImmediately verifies that previewFor returns
++// cached values immediately without blocking on PTY captures. The enricher must
++// not delay catalog snapshot publication by waiting for capture operations.
++func TestV2RuntimeEnricherPreviewReturnsImmediately(t *testing.T) {
++	denricher := &v2RuntimeEnricher{
++		adapter:    &daemonAdapter{reg: &fakeRegistry{sessions: []pty.SessionInfo{{ID: "s1", Pid: 100, ShellPid: 101}}}},
++		actTracker: nil,
++	}
++
++	// First call to previewFor returns immediately with cached (empty) value.
++	start := time.Now()
++	preview1 := denricher.previewFor("s1")
++	elapsed := time.Since(start)
++
++	if elapsed > 50*time.Millisecond {
++		t.Fatalf("previewFor took %v, should be instant", elapsed)
++	}
++	if preview1 != "" {
++		t.Fatalf("first previewFor should return empty cache, got %q", preview1)
++	}
++
++	// Concurrent calls also return immediately.
++	start = time.Now()
++	for i := 0; i < 5; i++ {
++		preview := denricher.previewFor("s1")
++		if preview != "" {
++			t.Fatalf("previewFor should return empty cache, got %q", preview)
 +		}
 +	}
++	elapsed = time.Since(start)
++
++	if elapsed > 50*time.Millisecond {
++		t.Fatalf("concurrent previewFor calls took %v, should be instant", elapsed)
++	}
++}
++
++// TestV2RuntimeEnricherLastActivityFromTracker verifies that enricher only sets
++// LastActivity based on real activity evidence, never from wall-clock time.
++func TestV2RuntimeEnricherLastActivityFromTracker(t *testing.T) {
++	tracker := activity.NewTracker()
++
++	ref := state.SessionRef{
++		Owner:   state.OwnerID("testowner"),
++		Session: state.SessionID("s1"),
++		Window:  0,
++		Pane:    0,
++	}
++
++	enricher := &v2RuntimeEnricher{
++		adapter:    &daemonAdapter{reg: &fakeRegistry{sessions: []pty.SessionInfo{{ID: "s1", Pid: 100, ShellPid: 101}}}},
++		actTracker: tracker,
++	}
++
++	rec := state.LocalSessionRecord{
++		ID:    state.SessionID("s1"),
++		Owner: ref.Owner,
++		Ref:   ref,
++	}
++
++	// Refresh adapter snapshot so sessions are visible.
++	enricher.adapter.refresh()
++
++	// Without activity evidence, LastActivity should be zero.
++	rt := enricher.Enrich(ref, rec)
++	if !rt.LastActivity.IsZero() {
++		t.Fatalf("without activity evidence, LastActivity should be zero, got %v", rt.LastActivity)
++	}
++
++	// Record activity bytes. The tracker records activity with current time.
++	tracker.Record("s1", 100)
++
++	// Enricher should now report LastActivity based on tracker evidence.
++	rt = enricher.Enrich(ref, rec)
++	if rt.LastActivity.IsZero() {
++		t.Fatal("with activity evidence, LastActivity should not be zero")
++	}
++
++	// Verify time is recent (within last second).
++	now := time.Now()
++	diff := now.Sub(rt.LastActivity)
++	if diff < 0 || diff > time.Second {
++		t.Fatalf("LastActivity should be recent, got %v (diff from now: %v)", rt.LastActivity, diff)
++	}
++}
++
++// TestV2RuntimeEnricherLastActivityNotBumpedByReEnrichment verifies that a stale
++// session's LastActivity doesn't get refreshed just by being enriched repeatedly.
++func TestV2RuntimeEnricherLastActivityNotBumpedByReEnrichment(t *testing.T) {
++	tracker := activity.NewTracker()
++
++	ref := state.SessionRef{
++		Owner:   state.OwnerID("testowner"),
++		Session: state.SessionID("stale"),
++		Window:  0,
++		Pane:    0,
++	}
++
++	enricher := &v2RuntimeEnricher{
++		adapter:    &daemonAdapter{reg: &fakeRegistry{sessions: []pty.SessionInfo{{ID: "stale", Pid: 100, ShellPid: 101}}}},
++		actTracker: tracker,
++	}
++
++	rec := state.LocalSessionRecord{
++		ID:    state.SessionID("stale"),
++		Owner: ref.Owner,
++		Ref:   ref,
++	}
++
++	// Refresh adapter snapshot so sessions are visible.
++	enricher.adapter.refresh()
++
++	// Record activity once.
++	tracker.Record("stale", 1)
++
++	// Enrich once, get the LastActivity.
++	rt1 := enricher.Enrich(ref, rec)
++	if rt1.LastActivity.IsZero() {
++		t.Fatal("expected LastActivity from tracker")
++	}
++	firstTime := rt1.LastActivity
++
++	// Wait a bit, then enrich again without recording new activity.
++	time.Sleep(100 * time.Millisecond)
++	rt2 := enricher.Enrich(ref, rec)
++
++	// LastActivity should NOT have been bumped to time.Now(). The second
++	// enrichment should report the same (or very close) time since no new
++	// activity was recorded. The tracker's IdleSeconds will be higher, but
++	// the reported LastActivity time should remain stable.
++	diff := rt2.LastActivity.Sub(firstTime).Abs()
++	if diff > 50*time.Millisecond {
++		t.Fatalf("LastActivity should not change on re-enrichment without new activity: %v vs %v (diff: %v)",
++			firstTime, rt2.LastActivity, diff)
++	}
++}
+diff --git a/pkg/peer/manager.go b/pkg/peer/manager.go
+index 5126472..479e4ae 100644
+--- a/pkg/peer/manager.go
++++ b/pkg/peer/manager.go
+@@ -636,6 +636,66 @@ func (m *Manager) RemoveHost(id string) {
+ 	}
  }
  
- func TestLegacyPeer_InitialStateUpdateStillSent(t *testing.T) {
-diff --git a/pkg/peer/protocol.go b/pkg/peer/protocol.go
-index 7aa96b8..54f408d 100644
---- a/pkg/peer/protocol.go
-+++ b/pkg/peer/protocol.go
-@@ -118,7 +118,20 @@ const CapV2Catalog = "v2-catalog"
- const CapV2Command = "v2-command"
- 
- // localCapabilities is what this build advertises in the hello.
--var localCapabilities = []string{CapPerStream, CapUpload, CapV2Catalog, CapV2Command}
-+var localCapabilities = []string{CapPerStream, CapUpload}
-+
-+// capabilitiesFor returns the capability list to advertise for a given
-+// SessionDeps. CapV2Catalog/CapV2Command are only included when the v2
-+// command service was actually constructed (i.e. TERMYARD_V2_STATE=1 and
-+// the v2 store/catalog initialized successfully), not merely when an env
-+// var is set.
-+func capabilitiesFor(deps SessionDeps) []string {
-+	caps := append([]string(nil), localCapabilities...)
-+	if deps.V2CommandSvc != nil {
-+		caps = append(caps, CapV2Catalog, CapV2Command)
++// validateCatalogOwnership checks that all sessions and layouts in the snapshot
++// have their Owner field matching the snapshot's top-level owner. Returns false
++// and logs a warning if any embedded owner differs.
++func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bool {
++	for _, sess := range snap.Sessions {
++		if sess.Owner != snap.Owner {
++			logrus.WithFields(logrus.Fields{
++				"peer": peerID,
++				"owner": string(snap.Owner),
++				"session_id": string(sess.ID),
++				"session_owner": string(sess.Owner),
++			}).Warn("dropping v2 snapshot: embedded session owner mismatch")
++			return false
++		}
 +	}
-+	return caps
++	for _, layout := range snap.Layouts {
++		if layout.Owner != snap.Owner {
++			logrus.WithFields(logrus.Fields{
++				"peer": peerID,
++				"owner": string(snap.Owner),
++				"layout_id": string(layout.ID),
++				"layout_owner": string(layout.Owner),
++			}).Warn("dropping v2 snapshot: embedded layout owner mismatch")
++			return false
++		}
++	}
++	return true
 +}
++
++// validateWorkspaceTreeOwnership recursively checks that all leaf SessionRefs in
++// the tree have owner matching rec.Owner. Returns false and logs a warning if
++// any leaf ref differs.
++func validateWorkspaceTreeOwnership(peerID string, rec state.WorkspaceRecord) bool {
++	var checkNode func(*state.PaneNode) bool
++	checkNode = func(node *state.PaneNode) bool {
++		if node == nil {
++			return true
++		}
++		if node.IsLeaf() {
++			if node.Ref != nil && node.Ref.Owner != rec.Owner {
++				logrus.WithFields(logrus.Fields{
++					"peer": peerID,
++					"owner": string(rec.Owner),
++					"layout_id": string(rec.ID),
++					"ref_owner": string(node.Ref.Owner),
++				}).Warn("dropping v2 snapshot: embedded leaf owner mismatch")
++				return false
++			}
++			return true
++		}
++		if node.IsSplit() {
++			if !checkNode(node.First) || !checkNode(node.Second) {
++				return false
++			}
++		}
++		return true
++	}
++	return checkNode(&rec.Tree)
++}
++
+ // bindRemoteOwner enforces the ownership binding: one owner per peer and one
+ // peer per owner. The first snapshot a peer publishes establishes its sole
+ // owner; a later snapshot from the same peer under a different owner, or a
+@@ -663,10 +723,14 @@ func (m *Manager) bindRemoteOwner(peerID string, owner state.OwnerID) bool {
+ // UpdateRemoteCatalog replaces the cached catalog for the snapshot's owner.
+ // The previous cache (if any) is overwritten, not merged. The owner must be
+ // the peer's bound owner and the revision must be increasing within the
+-// peer's current connection (stale/delayed snapshots are rejected). If a
++// peer's current connection (stale/delayed snapshots are rejected). All
++// embedded session and layout owners must match the snapshot's owner. If a
+ // remote store is wired, the complete set of accepted remote catalogs is
+ // persisted.
+ func (m *Manager) UpdateRemoteCatalog(peerID string, snap state.OwnerCatalogSnapshot) {
++	if !validateCatalogOwnership(peerID, snap) {
++		return
++	}
+ 	m.catalogMu.Lock()
+ 	if !m.bindRemoteOwner(peerID, snap.Owner) {
+ 		m.catalogMu.Unlock()
+@@ -696,8 +760,12 @@ func (m *Manager) UpdateRemoteCatalog(peerID string, snap state.OwnerCatalogSnap
  
- // V2 command kinds carried by V2CommandRequestPayload.
- const (
-diff --git a/pkg/peer/session.go b/pkg/peer/session.go
-index 39f70d8..584de6a 100644
---- a/pkg/peer/session.go
-+++ b/pkg/peer/session.go
-@@ -144,6 +144,10 @@ func runSession(
- 	pc.Caps = append([]string(nil), caps...)
- 	pc.initV2Lazy()
- 
-+	if !deps.Manager.TryRegisterPeer(peerID, peerInfo.Name, peerInfo.PublicKey, address, pc) {
-+		return fmt.Errorf("peer already connected")
+ // UpdateRemoteWorkspace replaces the cached workspace for owner. The owner
+ // must be the peer's bound owner, and the workspace revision must be
+-// increasing within the current connection (keyed per layout id).
++// increasing within the current connection (keyed per layout id). All
++// embedded leaf SessionRefs in the tree must have owner matching rec.Owner.
+ func (m *Manager) UpdateRemoteWorkspace(peerID string, rec state.WorkspaceRecord) {
++	if !validateWorkspaceTreeOwnership(peerID, rec) {
++		return
++	}
+ 	m.catalogMu.Lock()
+ 	if !m.bindRemoteOwner(peerID, rec.Owner) {
+ 		m.catalogMu.Unlock()
+diff --git a/pkg/peer/manager_v2_test.go b/pkg/peer/manager_v2_test.go
+index 0e76b7f..4a207ac 100644
+--- a/pkg/peer/manager_v2_test.go
++++ b/pkg/peer/manager_v2_test.go
+@@ -453,3 +453,166 @@ func TestRemoveHost_ForgetsRemoteCatalogPersists(t *testing.T) {
+ 		t.Fatal("forgotten peer reappeared after reload")
+ 	}
+ }
++
++// TestRemoteSnapshot_SpoofedSessionOwnerRejected proves that a snapshot
++// containing a session with embedded owner != snap.Owner is rejected.
++func TestRemoteSnapshot_SpoofedSessionOwnerRejected(t *testing.T) {
++	mgr := makeV2Manager(t)
++	peerID := "peer-a"
++	owner := state.OwnerID("owner1")
++	ownerSpoof := state.OwnerID("ownerX")
++	sessionID := state.NewSessionID()
++
++	// Crafted snapshot with session owner != snap.Owner
++	spoofedSession := state.LocalSessionRecord{
++		ID:    sessionID,
++		Owner: ownerSpoof, // SPOOF: different from snapshot owner
++		Ref:   state.SessionRef{Owner: ownerSpoof, Session: sessionID},
++	}
++	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
++		Owner:    owner,
++		Revision: 1,
++		Sessions: []state.LocalSessionRecord{spoofedSession},
++	})
++
++	// Snapshot must be rejected; no cache entry should exist
++	if _, ok := mgr.RemoteCatalogSnapshot(owner); ok {
++		t.Fatal("spoofed session owner snapshot was accepted")
++	}
++}
++
++// TestRemoteSnapshot_SpoofedLayoutOwnerRejected proves that a snapshot
++// containing a layout with embedded owner != snap.Owner is rejected.
++func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
++	mgr := makeV2Manager(t)
++	peerID := "peer-a"
++	owner := state.OwnerID("owner1")
++	ownerSpoof := state.OwnerID("ownerX")
++	layoutID := state.NewLayoutID()
++
++	// Crafted snapshot with layout owner != snap.Owner
++	spoofedLayout := state.LayoutRecord{
++		ID:    layoutID,
++		Owner: ownerSpoof, // SPOOF: different from snapshot owner
++		Order: 0,
++		Tree:  state.Leaf(state.SessionRef{Owner: owner, Session: "s1"}),
++	}
++	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
++		Owner:    owner,
++		Revision: 1,
++		Layouts:  []state.LayoutRecord{spoofedLayout},
++	})
++
++	// Snapshot must be rejected; no cache entry should exist
++	if _, ok := mgr.RemoteCatalogSnapshot(owner); ok {
++		t.Fatal("spoofed layout owner snapshot was accepted")
++	}
++}
++
++// TestRemoteWorkspace_SpoofedLeafOwnerRejected proves that a workspace
++// containing a leaf SessionRef with embedded owner != rec.Owner is rejected.
++func TestRemoteWorkspace_SpoofedLeafOwnerRejected(t *testing.T) {
++	mgr := makeV2Manager(t)
++	peerID := "peer-a"
++	owner := state.OwnerID("owner1")
++	ownerSpoof := state.OwnerID("ownerX")
++
++	// Crafted leaf with owner != record owner
++	spoofedRef := state.SessionRef{Owner: ownerSpoof, Session: "s1"}
++	mgr.UpdateRemoteWorkspace(peerID, state.WorkspaceRecord{
++		ID:       "layout1",
++		Owner:    owner,
++		Revision: 1,
++		Tree:     state.Leaf(spoofedRef), // SPOOF: leaf owner != record owner
++	})
++
++	// Workspace must be rejected; no cache entry should exist
++	if _, ok := mgr.RemoteWorkspaceSnapshot(owner); ok {
++		t.Fatal("spoofed leaf owner workspace was accepted")
++	}
++}
++
++// TestRemoteSnapshot_OutOfOrderDelivery proves that revisions delivered
++// out of order within one connection (10, 8, 11) result in 11 being accepted
++// as authoritative, never regressing to 8.
++func TestRemoteSnapshot_OutOfOrderDelivery(t *testing.T) {
++	mgr := makeV2Manager(t)
++	peerID := "peer-a"
++	owner := state.OwnerID("owner1")
++
++	// Deliver revision 10
++	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
++	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
++		Owner:    owner,
++		Revision: 10,
++		Sessions: []state.LocalSessionRecord{s1},
++	})
++	snap, _ := mgr.RemoteCatalogSnapshot(owner)
++	if len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s1" {
++		t.Fatalf("expected s1 in cache after rev 10")
 +	}
 +
- 	var unsubWorkspace func()
- 
- 	// Subscribe to complete workspace snapshots after each accepted command
-@@ -159,10 +163,6 @@ func runSession(
- 		})
- 	}
- 
--	if !deps.Manager.TryRegisterPeer(peerID, peerInfo.Name, peerInfo.PublicKey, address, pc) {
--		return fmt.Errorf("peer already connected")
--	}
--
- 	sessionCtx, cancel := context.WithCancel(ctx)
- 
- 	// Teardown order is crucial:
-diff --git a/pkg/peer/session_dupreg_test.go b/pkg/peer/session_dupreg_test.go
-new file mode 100644
-index 0000000..dc1784d
---- /dev/null
-+++ b/pkg/peer/session_dupreg_test.go
-@@ -0,0 +1,54 @@
-+package peer
++	// Deliver revision 8 (stale, out of order) -> must be rejected
++	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
++	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
++		Owner:    owner,
++		Revision: 8,
++		Sessions: []state.LocalSessionRecord{s2},
++	})
++	snap, _ = mgr.RemoteCatalogSnapshot(owner)
++	if len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s1" {
++		t.Fatalf("stale revision 8 regressed cache: expected s1, got %+v", snap.Sessions)
++	}
 +
-+import (
-+	"testing"
++	// Deliver revision 11 (newer) -> must be accepted
++	s3 := state.LocalSessionRecord{ID: "s3", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s3"}}
++	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
++		Owner:    owner,
++		Revision: 11,
++		Sessions: []state.LocalSessionRecord{s3},
++	})
++	snap, _ = mgr.RemoteCatalogSnapshot(owner)
++	if len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s3" {
++		t.Fatalf("revision 11 not accepted: got %+v", snap.Sessions)
++	}
++}
 +
-+	"github.com/anh-chu/termyard/pkg/identity"
-+	"github.com/anh-chu/termyard/pkg/state"
-+)
-+
-+// TestRunSession_RejectedDuplicateLeavesNoDanglingWorkspaceSubscription
-+// reproduces the ordering runSession uses on connect: register the peer
-+// connection first, and only subscribe to workspace snapshots on success.
-+// A rejected duplicate registration (simultaneous-connect race) must not
-+// leave an orphaned subscription enqueuing snapshots into a PeerConnection
-+// nobody will ever drain.
-+func TestRunSession_RejectedDuplicateLeavesNoDanglingWorkspaceSubscription(t *testing.T) {
++// TestRemoteSnapshot_NewGenerationAcceptsLowerRevision proves that a new peer
++// connection (generation) allows the same revision counter to be re-accepted,
++// and even lower revisions if they are authoritative from a fresh connection.
++func TestRemoteSnapshot_NewGenerationAcceptsLowerRevision(t *testing.T) {
 +	mgr := makeV2Manager(t)
-+	cat := state.NewCatalog("owner-a", nil)
-+	mgr.localMgr.EnableV2Shadow(cat, nil, nil)
-+
 +	remoteID, err := identity.Generate("remote")
 +	if err != nil {
 +		t.Fatal(err)
 +	}
-+	peerID := remoteID.Fingerprint()
++	fp := remoteID.Fingerprint()
++	owner := state.OwnerID(fp)
 +
-+	// First connection registers fine and (per the fixed order in
-+	// runSession) subscribes to workspace snapshots afterwards.
-+	pc1 := NewPeerConnection(peerID, 64)
-+	if !mgr.TryRegisterPeer(peerID, "remote", remoteID.PublicKey, "", pc1) {
-+		t.Fatal("expected first registration to succeed")
-+	}
-+	unsub1 := cat.SubscribeWorkspace(func(state.LayoutID, state.WorkspaceRecord) {})
-+	defer unsub1()
++	// First connection sends revision 100
++	conn1 := NewPeerConnection(fp, 64)
++	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, conn1)
++	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
++	mgr.UpdateRemoteCatalog(fp, state.OwnerCatalogSnapshot{
++		Owner:    owner,
++		Revision: 100,
++		Sessions: []state.LocalSessionRecord{s1},
++	})
 +
-+	if got := cat.WorkspaceSubscriberCount(); got != 1 {
-+		t.Fatalf("expected 1 subscriber after first connection, got %d", got)
-+	}
++	// Reconnect with a new connection
++	conn2 := NewPeerConnection(fp, 64)
++	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, conn2)
 +
-+	// Simultaneous duplicate connection: registration must be attempted
-+	// (and rejected) BEFORE any subscription is created, so the rejected
-+	// path never subscribes at all.
-+	pc2 := NewPeerConnection(peerID, 64)
-+	registered := mgr.TryRegisterPeer(peerID, "remote", remoteID.PublicKey, "", pc2)
-+	if registered {
-+		t.Fatal("expected duplicate registration to be rejected")
-+	}
-+	// Mirrors runSession's fixed order: on rejection it returns before ever
-+	// calling SubscribeWorkspace, so no subscription should exist here.
++	// Fresh connection sends revision 5 (lower than 100) -> should be accepted
++	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
++	mgr.UpdateRemoteCatalog(fp, state.OwnerCatalogSnapshot{
++		Owner:    owner,
++		Revision: 5,
++		Sessions: []state.LocalSessionRecord{s2},
++	})
 +
-+	if got := cat.WorkspaceSubscriberCount(); got != 1 {
-+		t.Fatalf("rejected duplicate leaked a workspace subscription: got %d subscribers, want 1", got)
++	snap, ok := mgr.RemoteCatalogSnapshot(owner)
++	if !ok || len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s2" {
++		t.Fatalf("new generation should accept lower revision, got %+v (ok=%v)", snap.Sessions, ok)
 +	}
 +}
-diff --git a/pkg/peer/supervisor.go b/pkg/peer/supervisor.go
-index 36da741..91a744c 100644
---- a/pkg/peer/supervisor.go
-+++ b/pkg/peer/supervisor.go
-@@ -372,7 +372,7 @@ func (s *LinkSupervisor) dialOnce(ctx context.Context, link *peerLink) error {
- 	authMsg, _ := NewMessage(MsgAuth, AuthPayload{
- 		PublicKey:    s.deps.Identity.PublicKey,
- 		Signature:    base64.StdEncoding.EncodeToString(sig),
--		Capabilities: localCapabilities,
-+		Capabilities: capabilitiesFor(s.deps),
- 	})
- 	if err := conn.WriteJSON(authMsg); err != nil {
- 		conn.Close()
-diff --git a/pkg/server/daemon_attach_test.go b/pkg/server/daemon_attach_test.go
-index 3e2e106..83b75d7 100644
---- a/pkg/server/daemon_attach_test.go
-+++ b/pkg/server/daemon_attach_test.go
-@@ -107,6 +107,46 @@ func TestHandleDaemonSessionStableNotReadyForPendingPhase(t *testing.T) {
+diff --git a/pkg/state/session_commands_test.go b/pkg/state/session_commands_test.go
+index 8abb24d..2213e2f 100644
+--- a/pkg/state/session_commands_test.go
++++ b/pkg/state/session_commands_test.go
+@@ -158,7 +158,7 @@ func TestCreateReturnsStableIDAndActivates(t *testing.T) {
  	}
+ 
+ 	// Wait for the worker to start the daemon and commit the running record.
+-	for start := time.Now(); time.Since(start) < 2*time.Second; {
++	for start := time.Now(); time.Since(start) < 5*time.Second; {
+ 		if r, ok := catalog.Session(res.Ref.Session); ok && r.Phase == SessionPhaseActive {
+ 			break
+ 		}
+@@ -216,7 +216,7 @@ func TestCreateDurableBeforeAsyncWork(t *testing.T) {
+ 	defer cancel()
+ 	startWorker(ctx, t, recovered)
+ 
+-	for start := time.Now(); time.Since(start) < 2*time.Second; {
++	for start := time.Now(); time.Since(start) < 5*time.Second; {
+ 		if _, ok := fresh.Session(pendingList[0].Ref.Session); ok {
+ 			break
+ 		}
+@@ -247,12 +247,17 @@ func TestDuplicateCommandIDIsIdempotent(t *testing.T) {
+ 	if res1.Ref.Session != res2.Ref.Session {
+ 		t.Fatalf("idempotency produced different refs: %v vs %v", res1.Ref.Session, res2.Ref.Session)
+ 	}
+-	for start := time.Now(); time.Since(start) < 2*time.Second; {
+-		if backend.startCount() == 1 {
++	// Wait for the worker to start the daemon and commit the running record.
++	for start := time.Now(); time.Since(start) < 5*time.Second; {
++		if r, ok := catalog.Session(res1.Ref.Session); ok && r.Phase == SessionPhaseActive {
+ 			break
+ 		}
+ 		time.Sleep(10 * time.Millisecond)
+ 	}
++	rec, ok := catalog.Session(res1.Ref.Session)
++	if !ok || rec.Phase != SessionPhaseActive {
++		t.Fatalf("expected active session: %+v", rec)
++	}
+ 	if backend.startCount() != 1 {
+ 		t.Fatalf("expected one daemon start, got %d", backend.startCount())
+ 	}
+@@ -286,7 +291,7 @@ func TestConcurrentCreateSameRefProducesOneSession(t *testing.T) {
+ 	if sessions := catalog.Sessions(); len(sessions)+len(catalog.PendingCreates()) != 1 {
+ 		t.Fatalf("expected one session or pending, got sessions=%d pending=%d", len(sessions), len(catalog.PendingCreates()))
+ 	}
+-	for start := time.Now(); time.Since(start) < 2*time.Second; {
++	for start := time.Now(); time.Since(start) < 5*time.Second; {
+ 		if backend.startCount() == 1 {
+ 			break
+ 		}
+@@ -535,7 +540,7 @@ func TestCrashAfterDaemonReadyResumesWithoutDuplicate(t *testing.T) {
+ 	defer cancel()
+ 	startWorker(ctx, t, recovered)
+ 
+-	for start := time.Now(); time.Since(start) < 2*time.Second; {
++	for start := time.Now(); time.Since(start) < 5*time.Second; {
+ 		if r, ok := fresh.Session(pending.Ref.Session); ok && r.Phase == SessionPhaseActive {
+ 			break
+ 		}
+diff --git a/web/src/App.tsx b/web/src/App.tsx
+index 509db27..19b26c9 100644
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -41,6 +41,7 @@ import { isV2StateEnabled } from './lib/featureFlags'
+ import { keyToSessionRef, splitIdAtPath } from './state/v2/paneTreeAdapter'
+ import type { SessionRef } from './state/v2/types'
+ import { sessionRefToKey } from './state/v2/paneTreeAdapter'
++import { selectSessionByRef } from './state/v2/projections'
+ 
+ type View = 'overview' | 'session' | 'settings' | 'setup'
+ 
+@@ -1444,19 +1445,39 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
+             <Setup onComplete={() => navigateTo(null)} />
+           ) : currentView === 'session' && renderSingleView ? (
+             <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
+-              <Terminal
+-                sessionName={parseSessionKey(renderSingleView).name}
+-                hostId={parseSessionKey(renderSingleView).host || undefined}
+-                backend={sessions.find(s => sessionKey(s) === renderSingleView)?.backend}
+-                fullscreen={terminalFullscreen}
+-                onToggleFullscreen={toggleFullscreen}
+-                onOpenFile={(path) => wiki.openFile(
+-                  path,
+-                  renderSingleView ? cwdForKey(renderSingleView) : undefined,
+-                  sessions.find(s => sessionKey(s) === renderSingleView)?.host,
+-                  renderSingleView ? parseSessionKey(renderSingleView).name : undefined,
+-                )}
+-              />
++              {(() => {
++                // Resolve v2 session identity when bootstrap is ready
++                let sessionId: string | undefined
++                let ownerId: string | undefined
++                let generation: string | undefined
++                if (v2Enabled && v2State.state.catalogBootstrapped && renderSingleView) {
++                  const ref = keyToSessionRef(renderSingleView)
++                  const sess = selectSessionByRef(v2State.state.catalog, ref)
++                  if (sess) {
++                    sessionId = sess.id
++                    ownerId = sess.owner
++                    generation = sess._compat?.generation
++                  }
++                }
++                return (
++                  <Terminal
++                    sessionName={parseSessionKey(renderSingleView).name}
++                    hostId={parseSessionKey(renderSingleView).host || undefined}
++                    backend={sessions.find(s => sessionKey(s) === renderSingleView)?.backend}
++                    sessionId={sessionId}
++                    ownerId={ownerId}
++                    generation={generation}
++                    fullscreen={terminalFullscreen}
++                    onToggleFullscreen={toggleFullscreen}
++                    onOpenFile={(path) => wiki.openFile(
++                      path,
++                      renderSingleView ? cwdForKey(renderSingleView) : undefined,
++                      sessions.find(s => sessionKey(s) === renderSingleView)?.host,
++                      renderSingleView ? parseSessionKey(renderSingleView).name : undefined,
++                    )}
++                  />
++                )
++              })()}
+             </div>
+           ) : currentView === 'session' && renderPaneTree ? (
+             <TiledView
+diff --git a/web/src/components/Terminal.tsx b/web/src/components/Terminal.tsx
+index 01e749f..520a239 100644
+--- a/web/src/components/Terminal.tsx
++++ b/web/src/components/Terminal.tsx
+@@ -18,6 +18,10 @@ interface TerminalProps {
+   sessionName: string
+   hostId?: string
+   backend?: string
++  // v2 stable identity (when available from v2 catalog)
++  sessionId?: string
++  ownerId?: string
++  generation?: string
+   fullscreen?: boolean
+   onToggleFullscreen?: () => void
+   // In split view, only the active pane shows the mobile key bar to avoid duplicates.
+@@ -31,7 +35,7 @@ interface TerminalProps {
+   onOpenFile?: (path: string) => boolean
  }
  
-+// TestHandleDaemonSessionStableRejectsCrashedWithGeneration proves that a
-+// session which has died (phase crashed) is rejected on attach even though it
-+// still has a recorded generation from before it crashed. The reject must not
-+// be gated on currentGen being empty: crashed/stopping/ended/dismissed
-+// sessions commonly retain a stale generation.
-+func TestHandleDaemonSessionStableRejectsCrashedWithGeneration(t *testing.T) {
-+	owner := state.NewOwnerID()
-+	catalog := state.NewCatalog(owner, nil)
-+	sid := state.NewSessionID()
-+	if err := catalog.PutSession(state.LocalSessionRecord{
-+		ID:    sid,
-+		Owner: owner,
-+		Ref:   state.SessionRef{Owner: owner, Session: sid},
-+		Phase: state.SessionPhaseCrashed,
-+		Compat: state.CompatLocalSession{
-+			Name:       "label",
-+			Generation: "gen-stale",
-+		},
-+	}); err != nil {
-+		t.Fatalf("PutSession: %v", err)
-+	}
-+
-+	reg := pty.NewRegistry(t.TempDir())
-+
-+	opts := &Options{V2Catalog: catalog, DaemonReg: reg}
-+	req := httptest.NewRequest(http.MethodGet, "/ws/daemon-session?sessionID="+string(sid)+"&generation=gen-stale", nil)
-+	rr := httptest.NewRecorder()
-+	handleDaemonSession(rr, req, opts)
-+	if rr.Code != http.StatusServiceUnavailable {
-+		t.Fatalf("status = %d, want 503 (body %s)", rr.Code, rr.Body.String())
-+	}
-+	var payload map[string]string
-+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
-+		t.Fatalf("decode: %v", err)
-+	}
-+	if payload["code"] != "not_ready" {
-+		t.Fatalf("code = %q, want not_ready", payload["code"])
-+	}
-+}
-+
- // TestHandleDaemonSessionStableRejectsMaliciousSessionID proves the sessionID
- // query param is validated as a canonical SessionID (lowercase base32) before
- // it can be used as a daemon socket key. Path-traversal-style IDs are rejected
-diff --git a/pkg/server/routes_sessions.go b/pkg/server/routes_sessions.go
-index 67e2dc3..80f7c37 100644
---- a/pkg/server/routes_sessions.go
-+++ b/pkg/server/routes_sessions.go
-@@ -1530,9 +1530,13 @@ func handleDaemonSessionStable(w http.ResponseWriter, r *http.Request, opts *Opt
- 		return
- 	}
+-export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFullscreen, keyBarEnabled = true, onOpenFile }: TerminalProps) {
++export function Terminal({ sessionName, hostId, backend, sessionId, ownerId, generation, fullscreen, onToggleFullscreen, keyBarEnabled = true, onOpenFile }: TerminalProps) {
+   const containerRef = useRef<HTMLDivElement>(null)
+   const onOpenFileRef = useRef(onOpenFile)
+   onOpenFileRef.current = onOpenFile
+@@ -56,7 +60,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
+     selectionMenu,
+     setSelectionMenu,
+     reconfigure,
+-  } = useTerminal(sessionName, hostId, backend)
++  } = useTerminal(sessionName, hostId, backend, sessionId, ownerId, generation)
  
--	// Session record exists but is not in an attachable phase (pending/crashed/
--	// cleanly ended/dismissed) and no stable generation matches yet.
--	if !phaseOK && currentGen == "" {
-+	// Session record exists but is not in an attachable phase (crashed/
-+	// stopping/cleanly ended/dismissed). Reject unconditionally: these phases
-+	// commonly retain a stale generation from before the session died, so
-+	// gating this reject on an empty currentGen let dead sessions with a
-+	// recorded generation fall through to socket attach. "starting" is
-+	// already treated as phaseOK above, so it is unaffected here.
-+	if !phaseOK {
- 		writeDaemonAttachError(w, daemonAttachNotReady, http.StatusServiceUnavailable, "session is not ready for attach")
- 		return
- 	}
-diff --git a/pkg/state/workspace.go b/pkg/state/workspace.go
-index 4258f67..f241b84 100644
---- a/pkg/state/workspace.go
-+++ b/pkg/state/workspace.go
-@@ -545,6 +545,15 @@ type workspaceSubscription struct {
- 	fn func(layout LayoutID, rec WorkspaceRecord)
- }
+   const {
+     sendSequence,
+@@ -205,7 +209,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
+       fileLinkDisposableRef.current = null
+     }
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [sessionName, hostId, backend])
++  }, [sessionName, hostId, backend, sessionId, ownerId, generation])
  
-+// WorkspaceSubscriberCount returns the number of live workspace
-+// subscriptions. Used to detect leaked subscriptions (e.g. a subscribe call
-+// that is never paired with its unsubscribe on an early-return error path).
-+func (c *Catalog) WorkspaceSubscriberCount() int {
-+	c.mu.RLock()
-+	defer c.mu.RUnlock()
-+	return len(c.workspaceSubs)
-+}
+   // Reconfigure the live terminal when renderer, grapheme, or predictive-echo
+   // prefs change, without tearing down the WebSocket connection.
+diff --git a/web/src/hooks/useTerminal.ts b/web/src/hooks/useTerminal.ts
+index 11594f6..00cb3f8 100644
+--- a/web/src/hooks/useTerminal.ts
++++ b/web/src/hooks/useTerminal.ts
+@@ -14,7 +14,7 @@ import type { LeaseToken, CheckoutCallbacks, PoolIdentity, TerminalPrefs, Connec
+ // Re-export for external consumers (e.g. tests, clipboard usage)
+ export { normalizeSelection }
+ 
+-export function useTerminal(sessionName: string, hostId?: string, backend?: string) {
++export function useTerminal(sessionName: string, hostId?: string, backend?: string, sessionId?: string, ownerId?: string, generation?: string) {
+   const { prefs } = usePreferences()
+ 
+   // Pool key
+@@ -63,7 +63,7 @@ export function useTerminal(sessionName: string, hostId?: string, backend?: stri
+   // Checkout into a container — called from Terminal.tsx layout effect
+   const checkout = useCallback((container: HTMLElement) => {
+     containerRef.current = container
+-    const identity: PoolIdentity = { sessionName, hostId, backend }
++    const identity: PoolIdentity = { sessionName, hostId, backend, sessionId, ownerId, generation }
+     const lease = terminalPool.checkout(identity, buildPrefs(), container, callbacksRef.current)
+     leaseRef.current = lease
+ 
+@@ -72,7 +72,7 @@ export function useTerminal(sessionName: string, hostId?: string, backend?: stri
+     if (snap) {
+       termRef.current = terminalPool.getTerminalForPaste(lease)
+     }
+-  }, [sessionName, hostId, backend, buildPrefs])
++  }, [sessionName, hostId, backend, sessionId, ownerId, generation, buildPrefs])
+ 
+   // Checkin — called from cleanup
+   const checkin = useCallback(() => {
+diff --git a/web/src/lib/terminalPool.test.ts b/web/src/lib/terminalPool.test.ts
+index 24004e6..b640cdd 100644
+--- a/web/src/lib/terminalPool.test.ts
++++ b/web/src/lib/terminalPool.test.ts
+@@ -1286,4 +1286,62 @@ describe('TerminalPool', () => {
+     expect(finalEntry.identity.sessionId).toBe('sid-42')
+     expect(finalEntry.identity.generation).toBe('gen-2') // generation changed
+   })
 +
- // SubscribeWorkspace registers a callback that receives the complete
- // WorkspaceRecord for a layout after every accepted command. The returned
- // function unsubscribes. Subscriptions prevent stale remote caches by
++  // ── v2 identity guard ──────────────────────────────────────────────
++
++  it('v2 identity with missing sessionId throws invariant error', () => {
++    const container = fakeEl()
++    // Backend daemon with ownerId/generation (v2 intent) but NO sessionId
++    // must throw, not silently fall back to name-based attach.
++    const v2IntentButNoId: PoolIdentity = {
++      sessionName: 'shell',
++      hostId: 'hostA',
++      backend: 'daemon',
++      ownerId: 'ownerX',
++      generation: 'gen-123',
++      // sessionId intentionally missing
++    }
++    expect(() => {
++      pool.checkout(v2IntentButNoId, defPrefs(), container, noopCbs())
++    }).toThrow(/v2 session requires sessionId/)
++  })
++
++  it('v2 identity with only generation but no sessionId throws', () => {
++    const container = fakeEl()
++    const v2IntentButNoId: PoolIdentity = {
++      sessionName: 'shell',
++      backend: 'daemon',
++      generation: 'gen-456',
++      // no ownerId or sessionId
++    }
++    expect(() => {
++      pool.checkout(v2IntentButNoId, defPrefs(), container, noopCbs())
++    }).toThrow(/v2 session requires sessionId/)
++  })
++
++  it('v2 identity with sessionId present does not throw', () => {
++    const container = fakeEl()
++    const v2Complete: PoolIdentity = {
++      sessionName: 'shell',
++      backend: 'daemon',
++      sessionId: 'sid-ok',
++      ownerId: 'ownerX',
++      generation: 'gen-789',
++    }
++    expect(() => {
++      pool.checkout(v2Complete, defPrefs(), container, noopCbs())
++    }).not.toThrow()
++  })
++
++  it('legacy identity with no v2 fields does not throw on missing sessionId', () => {
++    const container = fakeEl()
++    const legacyId: PoolIdentity = {
++      sessionName: 'shell',
++      backend: 'daemon',
++      // no sessionId, ownerId, or generation — pure legacy
++    }
++    expect(() => {
++      pool.checkout(legacyId, defPrefs(), container, noopCbs())
++    }).not.toThrow()
++  })
+ })
+diff --git a/web/src/lib/terminalPool.ts b/web/src/lib/terminalPool.ts
+index f7aa2fd..d458642 100644
+--- a/web/src/lib/terminalPool.ts
++++ b/web/src/lib/terminalPool.ts
+@@ -447,6 +447,16 @@ export class TerminalPool {
+     // Canonical pool identity is the immutable SessionRef (sessionId/ownerId),
+     // NOT the display label. A rename must never rekey, dispose, or reconnect
+     // an open terminal; label-only changes hit the same pool entry.
++    
++    // Guard: v2 session with missing sessionId is an invariant violation.
++    // If the caller provides ownerId or generation (v2 identity intent), sessionId
++    // MUST be present. Do not silently fall back to name-based attach.
++    if (identity.backend === 'daemon' && (identity.ownerId || identity.generation) && !identity.sessionId) {
++      const msg = `v2 session requires sessionId: ownerId=${identity.ownerId}, generation=${identity.generation}, sessionName=${identity.sessionName}`
++      console.error(msg)
++      throw new Error(msg)
++    }
++    
+     const canonical = identity.sessionId
+       ? TerminalPool.keyFor(identity.sessionId, identity.ownerId ?? identity.hostId)
+       : TerminalPool.keyFor(identity.sessionName, identity.hostId)
+diff --git a/web/src/state/v2/store.test.ts b/web/src/state/v2/store.test.ts
+index 9c91f49..9614d17 100644
+--- a/web/src/state/v2/store.test.ts
++++ b/web/src/state/v2/store.test.ts
+@@ -198,3 +198,46 @@ describe('V2Store connection state', () => {
+     expect(notifications).toBe(1)
+   })
+ })
++
++describe('v2 session identity extraction for terminal pool', () => {
++  it('selectSessionByRef extracts sessionId and ownerId for terminal checkout', () => {
++    const store = new V2Store()
++    const sess = session('shell-1', 'active', 10)
++    sess._compat = { generation: 'gen-recovery-5' }
++    store.replaceCatalog(catalogSnapshot(1, [sess]), 1)
++
++    const found = selectSessionByRef(store.getState().catalog, ref('shell-1'))
++    expect(found).toBeDefined()
++    expect(found?.id).toBe('shell-1') // sessionId for pool key
++    expect(found?.owner).toBe('owner1') // ownerId for pool key
++    expect(found?._compat?.generation).toBe('gen-recovery-5') // generation for daemon reconnect
++  })
++
++  it('selectSessionByRef returns undefined for missing session', () => {
++    const store = new V2Store()
++    store.replaceCatalog(catalogSnapshot(1, [session('a')]), 1)
++    const found = selectSessionByRef(store.getState().catalog, ref('nonexistent'))
++    expect(found).toBeUndefined()
++  })
++
++  it('selectSessionByRef works after catalog update', () => {
++    const store = new V2Store()
++    store.replaceCatalog(catalogSnapshot(1, [session('old-name')]), 1)
++    const oldRef = ref('old-name')
++    const oldSession = selectSessionByRef(store.getState().catalog, oldRef)
++    expect(oldSession?.id).toBe('old-name')
++
++    // Catalog update removes old and adds new session
++    const newSess = session('new-name', 'active', 5)
++    newSess._compat = { generation: 'gen-2' }
++    store.replaceCatalog(catalogSnapshot(2, [newSess]), 1)
++
++    const newSession = selectSessionByRef(store.getState().catalog, ref('new-name'))
++    expect(newSession?.id).toBe('new-name')
++    expect(newSession?._compat?.generation).toBe('gen-2')
++
++    // Old session is gone
++    const notFound = selectSessionByRef(store.getState().catalog, oldRef)
++    expect(notFound).toBeUndefined()
++  })
++})

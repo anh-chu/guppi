@@ -22,6 +22,7 @@ interface TiledViewProps {
   onMovePanes?: (sourceKey: string, targetKey: string, edge: 'left'|'right'|'top'|'bottom') => void
   getBackend?: (key: string) => string | undefined
   getCwd?: (key: string) => string | undefined
+  getTerminalIdentity?: (key: string) => { sessionId?: string; ownerId?: string; generation?: string }
   onOpenFile?: (path: string, cwd?: string, hostId?: string, sessionName?: string) => boolean
 }
 
@@ -45,6 +46,7 @@ export function TiledView({
   onMovePanes,
   getBackend,
   getCwd,
+  getTerminalIdentity,
   onOpenFile,
 }: TiledViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -465,15 +467,23 @@ export function TiledView({
           ref={isActive ? terminalContainerRef : undefined}
           className="flex-1 flex flex-col overflow-hidden"
         >
-          <Terminal
-            sessionName={name}
-            hostId={host || undefined}
-            backend={getBackend?.(sessionKey)}
-            fullscreen={isActive ? fullscreen : false}
-            onOpenFile={(path) => onOpenFile?.(path, getCwd?.(sessionKey), host || undefined, name) ?? false}
-            onToggleFullscreen={isActive ? onToggleFullscreen : undefined}
-            keyBarEnabled={isActive}
-          />
+          {(() => {
+            const identity = getTerminalIdentity?.(sessionKey) ?? {}
+            return (
+              <Terminal
+                sessionName={name}
+                hostId={host || undefined}
+                backend={getBackend?.(sessionKey)}
+                sessionId={identity.sessionId}
+                ownerId={identity.ownerId}
+                generation={identity.generation}
+                fullscreen={isActive ? fullscreen : false}
+                onOpenFile={(path) => onOpenFile?.(path, getCwd?.(sessionKey), host || undefined, name) ?? false}
+                onToggleFullscreen={isActive ? onToggleFullscreen : undefined}
+                keyBarEnabled={isActive}
+              />
+            )
+          })()}
         </div>
       </div>
     )

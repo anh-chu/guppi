@@ -16,7 +16,7 @@ import (
 func TestRunSession_RejectedDuplicateLeavesNoDanglingWorkspaceSubscription(t *testing.T) {
 	mgr := makeV2Manager(t)
 	cat := state.NewCatalog("owner-a", nil)
-	mgr.localMgr.EnableV2Shadow(cat, nil, nil)
+	mgr.localMgr.SetV2Catalog(cat, nil, nil)
 
 	remoteID, err := identity.Generate("remote")
 	if err != nil {

@@ -63,19 +63,22 @@ func TestUnregisterPeerConn_StaleCannotReplaceLive(t *testing.T) {
 
 func TestRemoteCatalog_ReplaceNotMerge(t *testing.T) {
 	mgr := makeV2Manager(t)
-	peerID := "remote-a"
+	peerID := "remotea"
 	owner := state.OwnerID(peerID) // owner must match the authenticated peer
 	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
 	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
 	s3 := state.LocalSessionRecord{ID: "s3", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s3"}}
 
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+	conn := NewPeerConnection(peerID, 64)
+	mgr.RegisterPeer(peerID, "remotea", "", conn)
+
+	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{s1, s2},
 	})
 
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 2,
 		Sessions: []state.LocalSessionRecord{s3},
@@ -102,7 +105,7 @@ func TestRemoteCatalog_PreservedThroughReconnect(t *testing.T) {
 
 	conn := NewPeerConnection(fp, 64)
 	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, conn)
-	mgr.UpdateRemoteCatalog(fp, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(fp, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{s1},
@@ -131,7 +134,7 @@ func TestRemoteCatalog_PreservedThroughReconnect(t *testing.T) {
 
 	// Newer snapshot overwrites.
 	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
-	mgr.UpdateRemoteCatalog(fp, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(fp, newConn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 2,
 		Sessions: []state.LocalSessionRecord{s2},
@@ -196,10 +199,9 @@ func TestGetHosts_DefensiveCopy(t *testing.T) {
 
 func TestHandleV2CatalogSnapshot_UpdatesCache(t *testing.T) {
 	mgr := makeV2Manager(t)
-	peerID := "remote-a"
-	// The wire round-trip requires a canonical (lowercase base32) OwnerID; it
-	// need not equal the peer id -- the manager binds peer -> owner instead.
-	owner := state.OwnerID("remotea123")
+	peerID := "remotea"
+	// Owner must equal the authenticated peer identity (peerID).
+	owner := state.OwnerID(peerID)
 	sessionID := state.NewSessionID()
 	s1 := state.LocalSessionRecord{ID: sessionID, Owner: owner, Ref: state.SessionRef{Owner: owner, Session: sessionID}}
 
@@ -213,7 +215,17 @@ func TestHandleV2CatalogSnapshot_UpdatesCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	pc := NewPeerConnection(peerID, 64)
+	mgr.RegisterPeer(peerID, "remotea", "", pc)
 	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr}
+
+	// DEBUG: verify payload marshals/unmarshals correctly
+	var p V2CatalogSnapshotPayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil {
+		t.Fatalf("payload unmarshal failed: %v", err)
+	}
+	if p.Owner != owner || len(p.Sessions) != 1 || p.Sessions[0].ID != sessionID {
+		t.Fatalf("payload mismatch after unmarshal: owner=%v, sessions=%+v", p.Owner, p.Sessions)
+	}
 
 	handleV2Message(peerID, msg, pc, deps, testLogger(t))
 
@@ -264,10 +276,10 @@ func TestLocalCapabilities_ExcludesV2WhenDisabled(t *testing.T) {
 
 func TestLegacyPeer_InitialStateUpdateStillSent(t *testing.T) {
 	mgr := makeV2Manager(t)
-	peerID := "legacy-a"
+	peerID := "legacya"
 	pc := NewPeerConnection(peerID, 8)
 	pc.Caps = []string{CapPerStream, CapUpload} // no v2 caps
-	mgr.RegisterPeer(peerID, "legacy", "", pc)
+	mgr.RegisterPeer(peerID, "legacya", "", pc)
 
 	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr}
 	sendStateUpdate(pc, deps)
@@ -303,13 +315,28 @@ func testLogger(t *testing.T) *logrus.Entry {
 // owners or a second peer claiming a bound owner is dropped.
 func TestRemoteSnapshot_OwnerBindingEnforced(t *testing.T) {
 	mgr := makeV2Manager(t)
-	peerA := "peer-a"
-	peerB := "peer-b"
-	ownerA := state.OwnerID("ownera1")
-	ownerB := state.OwnerID("ownerb2")
+	idA, err := identity.Generate("peer-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerA := idA.Fingerprint()
+	ownerA := state.OwnerID(peerA)
+
+	idB, err := identity.Generate("peerb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerB := idB.Fingerprint()
+	ownerB := state.OwnerID(peerB)
+
+	connA := NewPeerConnection(peerA, 64)
+	mgr.RegisterPeer(peerA, "peera", idA.PublicKey, connA)
+
+	connB := NewPeerConnection(peerB, 64)
+	mgr.RegisterPeer(peerB, "peerb", idB.PublicKey, connB)
 
 	// First snapshot from peerA binds ownerA.
-	mgr.UpdateRemoteCatalog(peerA, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(peerA, connA, state.OwnerCatalogSnapshot{
 		Owner:    ownerA,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{{ID: "s1", Owner: ownerA, Ref: state.SessionRef{Owner: ownerA, Session: "s1"}}},
@@ -319,7 +346,7 @@ func TestRemoteSnapshot_OwnerBindingEnforced(t *testing.T) {
 	}
 
 	// peerB claiming ownerA is a spoof -> dropped.
-	mgr.UpdateRemoteWorkspace(peerB, state.WorkspaceRecord{
+	mgr.UpdateRemoteWorkspace(peerB, connB, state.WorkspaceRecord{
 		ID:       "layout1",
 		Owner:    ownerA,
 		Revision: 1,
@@ -328,7 +355,7 @@ func TestRemoteSnapshot_OwnerBindingEnforced(t *testing.T) {
 	if _, ok := mgr.RemoteWorkspaceSnapshot(ownerA); ok {
 		t.Fatal("spoofed workspace under bound owner accepted")
 	}
-	mgr.UpdateRemoteCatalog(peerB, state.OwnerCatalogSnapshot{Owner: ownerA, Revision: 1})
+	mgr.UpdateRemoteCatalog(peerB, connB, state.OwnerCatalogSnapshot{Owner: ownerA, Revision: 1})
 	if _, ok := mgr.RemoteCatalogSnapshot(ownerA); ok {
 		// Still peerA's catalog; peerB's attempt must not replace it.
 		snap, _ := mgr.RemoteCatalogSnapshot(ownerA)
@@ -338,13 +365,13 @@ func TestRemoteSnapshot_OwnerBindingEnforced(t *testing.T) {
 	}
 
 	// peerB may bind its own distinct owner.
-	mgr.UpdateRemoteCatalog(peerB, state.OwnerCatalogSnapshot{Owner: ownerB, Revision: 1})
+	mgr.UpdateRemoteCatalog(peerB, connB, state.OwnerCatalogSnapshot{Owner: ownerB, Revision: 1})
 	if _, ok := mgr.RemoteCatalogSnapshot(ownerB); !ok {
 		t.Fatal("expected peerB own-owner catalog cached")
 	}
 
 	// peerA switching to ownerB is rejected (one owner per peer).
-	mgr.UpdateRemoteCatalog(peerA, state.OwnerCatalogSnapshot{Owner: ownerB, Revision: 2})
+	mgr.UpdateRemoteCatalog(peerA, connA, state.OwnerCatalogSnapshot{Owner: ownerB, Revision: 2})
 	snap, _ := mgr.RemoteCatalogSnapshot(ownerB)
 	if len(snap.Sessions) != 0 {
 		t.Fatalf("peerA published under peerB's owner: %+v", snap.Sessions)
@@ -353,22 +380,25 @@ func TestRemoteSnapshot_OwnerBindingEnforced(t *testing.T) {
 
 func TestRemoteCatalog_StaleRevisionRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
-	peerID := "peer-a"
+	peerID := "peera"
 	owner := state.OwnerID(peerID)
 	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
 	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
 
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{Owner: owner, Revision: 1, Sessions: []state.LocalSessionRecord{s1}})
+	conn := NewPeerConnection(peerID, 64)
+	mgr.RegisterPeer(peerID, "peera", "", conn)
+
+	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{Owner: owner, Revision: 1, Sessions: []state.LocalSessionRecord{s1}})
 
 	// Equal revision (delayed duplicate) must not regress the cache.
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{Owner: owner, Revision: 1, Sessions: []state.LocalSessionRecord{s2}})
+	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{Owner: owner, Revision: 1, Sessions: []state.LocalSessionRecord{s2}})
 	snap, _ := mgr.RemoteCatalogSnapshot(owner)
 	if len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s1" {
 		t.Fatalf("equal-revision snapshot regressed cache: %+v", snap.Sessions)
 	}
 
 	// Lower revision (stale/delayed) must be dropped too.
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{Owner: owner, Revision: 0, Sessions: []state.LocalSessionRecord{s2}})
+	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{Owner: owner, Revision: 0, Sessions: []state.LocalSessionRecord{s2}})
 	snap, _ = mgr.RemoteCatalogSnapshot(owner)
 	if len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s1" {
 		t.Fatalf("lower-revision snapshot regressed cache: %+v", snap.Sessions)
@@ -376,8 +406,9 @@ func TestRemoteCatalog_StaleRevisionRejected(t *testing.T) {
 
 	// A new connection is a new generation: the baseline resets, so the same
 	// numeric revision is accepted again.
-	mgr.RegisterPeer(peerID, "peer-a", "", NewPeerConnection(peerID, 64))
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{Owner: owner, Revision: 1, Sessions: []state.LocalSessionRecord{s2}})
+	newConn := NewPeerConnection(peerID, 64)
+	mgr.RegisterPeer(peerID, "peera", "", newConn)
+	mgr.UpdateRemoteCatalog(peerID, newConn, state.OwnerCatalogSnapshot{Owner: owner, Revision: 1, Sessions: []state.LocalSessionRecord{s2}})
 	snap, ok := mgr.RemoteCatalogSnapshot(owner)
 	if !ok || len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s2" {
 		t.Fatalf("reconnect baseline should accept revision 1 again, got %+v (ok=%v)", snap.Sessions, ok)
@@ -386,29 +417,32 @@ func TestRemoteCatalog_StaleRevisionRejected(t *testing.T) {
 
 func TestRemoteWorkspace_StaleRevisionRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
-	peerID := "peer-a"
+	peerID := "peera"
 	owner := state.OwnerID(peerID)
 	leafA := state.Leaf(state.SessionRef{Owner: owner, Session: "s1"})
 	leafB := state.Leaf(state.SessionRef{Owner: owner, Session: "s2"})
 
-	mgr.UpdateRemoteWorkspace(peerID, state.WorkspaceRecord{ID: "layout1", Owner: owner, Revision: 5, Tree: leafA})
+	conn := NewPeerConnection(peerID, 64)
+	mgr.RegisterPeer(peerID, "peera", "", conn)
+
+	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{ID: "layout1", Owner: owner, Revision: 5, Tree: leafA})
 
 	// Same layout, equal revision -> rejected.
-	mgr.UpdateRemoteWorkspace(peerID, state.WorkspaceRecord{ID: "layout1", Owner: owner, Revision: 5, Tree: leafB})
+	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{ID: "layout1", Owner: owner, Revision: 5, Tree: leafB})
 	ws, _ := mgr.RemoteWorkspaceSnapshot(owner)
 	if ws.Tree.Ref == nil || ws.Tree.Ref.Session != "s1" {
 		t.Fatalf("equal-revision workspace regressed cache")
 	}
 
 	// Same layout, lower revision -> rejected.
-	mgr.UpdateRemoteWorkspace(peerID, state.WorkspaceRecord{ID: "layout1", Owner: owner, Revision: 4, Tree: leafB})
+	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{ID: "layout1", Owner: owner, Revision: 4, Tree: leafB})
 	ws, _ = mgr.RemoteWorkspaceSnapshot(owner)
 	if ws.Tree.Ref == nil || ws.Tree.Ref.Session != "s1" {
 		t.Fatalf("lower-revision workspace regressed cache")
 	}
 
 	// A different layout has its own revision baseline.
-	mgr.UpdateRemoteWorkspace(peerID, state.WorkspaceRecord{ID: "layout2", Owner: owner, Revision: 1, Tree: leafB})
+	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{ID: "layout2", Owner: owner, Revision: 1, Tree: leafB})
 	ws, ok := mgr.RemoteWorkspaceSnapshot(owner)
 	if !ok || ws.ID != "layout2" {
 		t.Fatalf("independent workspace revisions should be accepted: %+v", ws)
@@ -431,9 +465,10 @@ func TestRemoveHost_ForgetsRemoteCatalogPersists(t *testing.T) {
 	fp := remoteID.Fingerprint()
 	owner := state.OwnerID(fp)
 
-	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, NewPeerConnection(fp, 64))
+	conn := NewPeerConnection(fp, 64)
+	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, conn)
 	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
-	mgr.UpdateRemoteCatalog(fp, state.OwnerCatalogSnapshot{Owner: owner, Revision: 1, Sessions: []state.LocalSessionRecord{s1}})
+	mgr.UpdateRemoteCatalog(fp, conn, state.OwnerCatalogSnapshot{Owner: owner, Revision: 1, Sessions: []state.LocalSessionRecord{s1}})
 
 	if _, ok := mgr.RemoteCatalogSnapshot(owner); !ok {
 		t.Fatal("expected cached catalog before forget")
@@ -458,10 +493,13 @@ func TestRemoveHost_ForgetsRemoteCatalogPersists(t *testing.T) {
 // containing a session with embedded owner != snap.Owner is rejected.
 func TestRemoteSnapshot_SpoofedSessionOwnerRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
-	peerID := "peer-a"
-	owner := state.OwnerID("owner1")
-	ownerSpoof := state.OwnerID("ownerX")
+	peerID := "peera"
+	owner := state.OwnerID(peerID)
+	ownerSpoof := state.OwnerID("ownerx")
 	sessionID := state.NewSessionID()
+
+	conn := NewPeerConnection(peerID, 64)
+	mgr.RegisterPeer(peerID, "peera", "", conn)
 
 	// Crafted snapshot with session owner != snap.Owner
 	spoofedSession := state.LocalSessionRecord{
@@ -469,7 +507,7 @@ func TestRemoteSnapshot_SpoofedSessionOwnerRejected(t *testing.T) {
 		Owner: ownerSpoof, // SPOOF: different from snapshot owner
 		Ref:   state.SessionRef{Owner: ownerSpoof, Session: sessionID},
 	}
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{spoofedSession},
@@ -485,10 +523,13 @@ func TestRemoteSnapshot_SpoofedSessionOwnerRejected(t *testing.T) {
 // containing a layout with embedded owner != snap.Owner is rejected.
 func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
-	peerID := "peer-a"
-	owner := state.OwnerID("owner1")
-	ownerSpoof := state.OwnerID("ownerX")
+	peerID := "peera"
+	owner := state.OwnerID(peerID)
+	ownerSpoof := state.OwnerID("ownerx")
 	layoutID := state.NewLayoutID()
+
+	conn := NewPeerConnection(peerID, 64)
+	mgr.RegisterPeer(peerID, "peera", "", conn)
 
 	// Crafted snapshot with layout owner != snap.Owner
 	spoofedLayout := state.LayoutRecord{
@@ -497,7 +538,7 @@ func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
 		Order: 0,
 		Tree:  state.Leaf(state.SessionRef{Owner: owner, Session: "s1"}),
 	}
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 1,
 		Layouts:  []state.LayoutRecord{spoofedLayout},
@@ -513,13 +554,16 @@ func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
 // containing a leaf SessionRef with embedded owner != rec.Owner is rejected.
 func TestRemoteWorkspace_SpoofedLeafOwnerRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
-	peerID := "peer-a"
-	owner := state.OwnerID("owner1")
-	ownerSpoof := state.OwnerID("ownerX")
+	peerID := "peera"
+	owner := state.OwnerID(peerID)
+	ownerSpoof := state.OwnerID("ownerx")
+
+	conn := NewPeerConnection(peerID, 64)
+	mgr.RegisterPeer(peerID, "peera", "", conn)
 
 	// Crafted leaf with owner != record owner
 	spoofedRef := state.SessionRef{Owner: ownerSpoof, Session: "s1"}
-	mgr.UpdateRemoteWorkspace(peerID, state.WorkspaceRecord{
+	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{
 		ID:       "layout1",
 		Owner:    owner,
 		Revision: 1,
@@ -537,12 +581,15 @@ func TestRemoteWorkspace_SpoofedLeafOwnerRejected(t *testing.T) {
 // as authoritative, never regressing to 8.
 func TestRemoteSnapshot_OutOfOrderDelivery(t *testing.T) {
 	mgr := makeV2Manager(t)
-	peerID := "peer-a"
-	owner := state.OwnerID("owner1")
+	peerID := "peera"
+	owner := state.OwnerID(peerID)
+
+	conn := NewPeerConnection(peerID, 64)
+	mgr.RegisterPeer(peerID, "peera", "", conn)
 
 	// Deliver revision 10
 	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 10,
 		Sessions: []state.LocalSessionRecord{s1},
@@ -554,7 +601,7 @@ func TestRemoteSnapshot_OutOfOrderDelivery(t *testing.T) {
 
 	// Deliver revision 8 (stale, out of order) -> must be rejected
 	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 8,
 		Sessions: []state.LocalSessionRecord{s2},
@@ -566,7 +613,7 @@ func TestRemoteSnapshot_OutOfOrderDelivery(t *testing.T) {
 
 	// Deliver revision 11 (newer) -> must be accepted
 	s3 := state.LocalSessionRecord{ID: "s3", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s3"}}
-	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 11,
 		Sessions: []state.LocalSessionRecord{s3},
@@ -593,7 +640,7 @@ func TestRemoteSnapshot_NewGenerationAcceptsLowerRevision(t *testing.T) {
 	conn1 := NewPeerConnection(fp, 64)
 	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, conn1)
 	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
-	mgr.UpdateRemoteCatalog(fp, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(fp, conn1, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 100,
 		Sessions: []state.LocalSessionRecord{s1},
@@ -605,7 +652,7 @@ func TestRemoteSnapshot_NewGenerationAcceptsLowerRevision(t *testing.T) {
 
 	// Fresh connection sends revision 5 (lower than 100) -> should be accepted
 	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
-	mgr.UpdateRemoteCatalog(fp, state.OwnerCatalogSnapshot{
+	mgr.UpdateRemoteCatalog(fp, conn2, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 5,
 		Sessions: []state.LocalSessionRecord{s2},

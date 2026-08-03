@@ -291,3 +291,67 @@ func TestProxyHTMLRewriteCap(t *testing.T) {
 		t.Errorf("small body not rewritten: %s", string(out))
 	}
 }
+
+// TestLegacyStoreRoutesReturn503WhenNil verifies that legacy-only routes
+// (session-attrs, session-order, groups) return 503 Service Unavailable when
+// their backing stores are nil, which is the expected behavior in v2 mode.
+func TestLegacyStoreRoutesReturn503WhenNil(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	tracker := toolevents.NewTracker()
+	hub := ws.NewHub(state.NewManager(), tracker)
+
+	// Create options with nil legacy stores (simulating v2 mode).
+	opts := &Options{
+		Port:             7654,
+		Tracker:          tracker,
+		Hub:              hub,
+		PortForwardStore: portforward.NewStore(),
+		// AttrsStore, OrderStore, GroupStore all remain nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r, _, err := BuildRouter(ctx, opts)
+	if err != nil {
+		t.Fatalf("BuildRouter: %v", err)
+	}
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"GET /api/session-attrs", http.MethodGet, "/api/session-attrs"},
+		{"POST /api/session-attrs", http.MethodPost, "/api/session-attrs"},
+		{"GET /api/session-order", http.MethodGet, "/api/session-order"},
+		{"POST /api/session-order", http.MethodPost, "/api/session-order"},
+		{"GET /api/groups", http.MethodGet, "/api/groups"},
+		{"POST /api/groups", http.MethodPost, "/api/groups"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(tt.method, srv.URL+tt.path, bytes.NewReader([]byte("{}")))
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			defer resp.Body.Close()
+			
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Errorf("%s returned %d, want %d (Service Unavailable)",
+					tt.name, resp.StatusCode, http.StatusServiceUnavailable)
+			}
+		})
+	}
+}

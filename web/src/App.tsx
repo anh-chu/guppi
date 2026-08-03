@@ -36,12 +36,12 @@ import { applyTheme } from './theme'
 import { sessionSignal } from './lib/sessionState'
 import { generateKeyBetween } from 'fractional-indexing'
 import { terminalPool, keyFor as poolKeyFor } from './lib/terminalPool'
-import { useV2State } from './hooks/useV2State'
-import { isV2StateEnabled } from './lib/featureFlags'
 import { keyToSessionRef, splitIdAtPath } from './state/v2/paneTreeAdapter'
 import type { SessionRef } from './state/v2/types'
 import { sessionRefToKey } from './state/v2/paneTreeAdapter'
 import { selectSessionByRef } from './state/v2/projections'
+import { useV2State } from './hooks/useV2State'
+import { isV2StateEnabled } from './lib/featureFlags'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
 
@@ -75,12 +75,9 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
   return { view: 'overview', sessionKey: null }
 }
 
-function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
-  // v2 state stream: default OFF. Only session creation is migrated to this
-  // path so far (Task 12, first slice) -- rendering still reads exclusively
-  // from the legacy workspace/session hooks below.
-  const v2Enabled = authenticated && isV2StateEnabled()
-  const v2State = useV2State({ enabled: v2Enabled })
+function AppLegacy({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
+  // Legacy v1 mode: workspace/groups/session ordering all via legacy hooks.
+  // This component is used when v2State is disabled.
   const workspace = useWorkspace(authenticated)
   const { state: workspaceState, actions: workspaceActions, groupSync } = workspace
   const { sessions, loading: sessionsLoading, groups: syncedGroups, groupsLoaded, view } = workspaceState
@@ -108,7 +105,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const { hosts, refresh: refreshHosts } = useHosts()
   const { ranks: sessionOrderRanks, loaded: sessionOrderLoaded, refresh: refreshSessionOrder, setRank: setSessionOrderRank } = useSessionOrder(authenticated)
   const migrationStartedRef = useRef(false)
-  const selectedSession = v2Enabled ? v2State.activeKey : (singleView ?? activeKey)
+  const selectedSession = singleView ?? activeKey
   const { prefs } = usePreferences()
   const wikiEnabled = !prefs.wiki_disabled
   // Wiki open/close/target nonce/history live in a small controller so the UI
@@ -331,13 +328,8 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   }, [detachFromOtherGroups, singleView, paneTree, activeGroupId, syncedGroups, setGroupTree, setGroupRank])
 
   const closePane = useCallback((sessKey: string) => {
-    if (v2Enabled && v2State.layoutId) {
-      void v2State.workspaceCommand(v2State.layoutId, { action: 'remove', ref: keyToSessionRef(sessKey) })
-        .catch(err => console.error('v2 remove command failed:', err))
-      return
-    }
     workspaceActions.closePane(sessKey)
-  }, [workspaceActions, v2Enabled, v2State])
+  }, [workspaceActions])
 
   // Synchronous removal for a deliberately killed session: drop its leaf from
   // the active tree, any background group, and singleView at once, so the pane
@@ -567,19 +559,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const migrateSessionKey = useCallback((oldKey: string, newKey: string) => {
     if (!oldKey || !newKey || oldKey === newKey) return
 
-    // v2: mirror the rename into the workspace tree via the typed rename
-    // command (pkg/state/workspace.go WorkspaceActionRename, old/new
-    // SessionRef) instead of the legacy in-place reducer key swap. Fire and
-    // forget -- the authoritative tree update arrives back over the state
-    // stream, same pattern as other v2 layout mutations below.
-    if (v2Enabled && v2State.layoutId) {
-      void v2State.workspaceCommand(v2State.layoutId, {
-        action: 'rename',
-        old: keyToSessionRef(oldKey),
-        new: keyToSessionRef(newKey),
-      }).catch(err => console.error('v2 rename command failed:', err))
-    }
-
     workspaceActions.renameSession(oldKey, newKey)
 
     // Rekey pool entry: preserve terminal/WS, update reconnect identity.
@@ -806,14 +785,10 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     // independent, additional signal (it keeps the server-side active key in
     // sync), not a replacement for local nav state.
     workspaceActions.selectSession(sk)
-    if (v2Enabled && v2State.layoutId) {
-      void v2State.workspaceCommand(v2State.layoutId, { action: 'select', ref: keyToSessionRef(sk) })
-        .catch(err => console.error('v2 select command failed:', err))
-    }
     // Refocus even when activeKey didn't change — Terminal auto-focus
     // on inactive panes may have stolen visual focus from the intended one.
     setTimeout(refocusTerminal, 150)
-  }, [workspaceActions, refocusTerminal, v2Enabled, v2State])
+  }, [workspaceActions, refocusTerminal])
   selectSessionRef.current = selectSession
 
   const handleSessionSelect = (session: Session) => {
@@ -989,63 +964,27 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     }
 
     try {
-      // v2 slice: route creation through the typed session-command endpoint
-      // when enabled, instead of the legacy per-field create call. Only the
-      // create action is migrated so far -- everything else below (optimistic
-      // stub, pane placement, reconciliation) is unchanged.
+      // Legacy API: create session via per-field endpoint
       let resolvedName: string
-      if (v2Enabled && !hostId) {
-        try {
-          const result = await v2State.createSession({ name, shell: command || undefined, cwd: path, worktreeBranch: worktreeBranch || undefined, layoutId: target ? (v2State.layoutId ?? undefined) : undefined })
-          const r = result as { Ref?: { owner?: string | null; session?: string; window?: number; pane?: number }; DisplayName?: string } | null
-          resolvedName = r?.Ref?.session || r?.DisplayName || name
-          if (target && v2State.layoutId && r?.Ref?.session) {
-            const newRef: SessionRef = {
-              owner: r.Ref.owner ?? null,
-              session: r.Ref.session,
-              window: r.Ref.window ?? 0,
-              pane: r.Ref.pane ?? 0,
-            }
-            void v2State.workspaceCommand(v2State.layoutId, {
-              action: 'split',
-              target: keyToSessionRef(target.key),
-              direction: target.direction,
-              new: newRef,
-              new_first: target.newFirst,
-            }).catch(err => console.error('v2 split command failed:', err))
-          }
-        } catch (err) {
-          if (!worktreeBranch) {
-            workspaceActions.removeOptimistic(name, hostId || localHostId)
-            if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
-          }
-          if (worktreeBranch) {
-            return err instanceof Error ? err.message : 'Failed to create worktree'
-          }
-          return null
+      const res = await fetch('/api/session/new', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, path, command, host: hostId || undefined, agent_type: agentType || undefined, worktree_branch: worktreeBranch || undefined }),
+      })
+      if (!res.ok) {
+        if (!worktreeBranch) {
+          workspaceActions.removeOptimistic(name, hostId || localHostId)
+          if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
         }
-        if (worktreeBranch) setNewSessionModalOpen(false)
-      } else {
-        const res = await fetch('/api/session/new', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, path, command, host: hostId || undefined, agent_type: agentType || undefined, worktree_branch: worktreeBranch || undefined }),
-        })
-        if (!res.ok) {
-          if (!worktreeBranch) {
-            workspaceActions.removeOptimistic(name, hostId || localHostId)
-            if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
-          }
-          if (worktreeBranch) {
-            const msg = await res.text().catch(() => 'Failed to create worktree')
-            return msg
-          }
-          return null
+        if (worktreeBranch) {
+          const msg = await res.text().catch(() => 'Failed to create worktree')
+          return msg
         }
-        if (worktreeBranch) setNewSessionModalOpen(false)
-        const payload = await res.json().catch(() => null)
-        resolvedName = payload?.name || name
+        return null
       }
+      if (worktreeBranch) setNewSessionModalOpen(false)
+      const payload = await res.json().catch(() => null)
+      resolvedName = payload?.name || name
       if (resolvedName !== name && !worktreeBranch) {
         // Server deduped the name — migrate the optimistic key to the real one.
         // Don't upsert a fresh stub: the real record is already on its way via
@@ -1065,7 +1004,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       }
     }
     return null
-  }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions, v2Enabled, v2State])
+  }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions])
 
   const handleQuickShell = useCallback(() => {
     const name = `shell-${Date.now()}`
@@ -1166,18 +1105,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   }, [currentView])
 
   const layoutGroups = useMemo<LayoutGroup[]>(() => {
-    // v2: no groups/singleView -- the state stream tracks exactly one
-    // layout, rendered as a single (always-active) group.
-    if (v2Enabled) {
-      if (!v2State.paneTree) return []
-      return [{
-        id: v2State.layoutId ?? 'v2',
-        leaves: getLeaves(v2State.paneTree),
-        isActive: true,
-        activeKey: v2State.activeKey,
-        name: undefined,
-      }]
-    }
     const ids = new Set<string>(Object.keys(syncedGroups))
     if (paneTree) ids.add(activeGroupId)
     return Array.from(ids).map(id => {
@@ -1200,19 +1127,12 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       if (ar !== br) return ar.localeCompare(br)
       return a.id.localeCompare(b.id)
     })
-  }, [v2Enabled, v2State.paneTree, v2State.layoutId, v2State.activeKey, syncedGroups, paneTree, activeGroupId, activeKey, currentView, singleView, activeGroup?.rank, activeGroupName])
+  }, [syncedGroups, paneTree, activeGroupId, activeKey, currentView, singleView, activeGroup?.rank, activeGroupName])
 
-  const v2SessionKeys = useMemo(() => {
-    if (!v2Enabled) return null
-    const keys = new Set<string>()
-    for (const rec of v2State.state.catalog.sessionsByRef.values()) keys.add(sessionRefToKey(rec.ref))
-    return keys
-  }, [v2Enabled, v2State.state.catalog])
-
-  const renderSessions = v2Enabled && v2SessionKeys ? sessions.filter(s => v2SessionKeys.has(sessionKey(s))) : sessions
-  const renderPaneTree = v2Enabled ? v2State.paneTree : paneTree
-  const renderActiveKey = v2Enabled ? v2State.activeKey : activeKey
-  const renderSingleView = v2Enabled ? null : singleView
+  const renderSessions = sessions
+  const renderPaneTree = paneTree
+  const renderActiveKey = activeKey
+  const renderSingleView = singleView
 
   const showingTerminal = currentView === 'session' && !!selectedSession
 
@@ -1445,61 +1365,31 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             <Setup onComplete={() => navigateTo(null)} />
           ) : currentView === 'session' && renderSingleView ? (
             <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
-              {(() => {
-                // Resolve v2 session identity when bootstrap is ready
-                let sessionId: string | undefined
-                let ownerId: string | undefined
-                let generation: string | undefined
-                if (v2Enabled && v2State.state.catalogBootstrapped && renderSingleView) {
-                  const ref = keyToSessionRef(renderSingleView)
-                  const sess = selectSessionByRef(v2State.state.catalog, ref)
-                  if (sess) {
-                    sessionId = sess.id
-                    ownerId = sess.owner
-                    generation = sess._compat?.generation
-                  }
-                }
-                return (
-                  <Terminal
-                    sessionName={parseSessionKey(renderSingleView).name}
-                    hostId={parseSessionKey(renderSingleView).host || undefined}
-                    backend={sessions.find(s => sessionKey(s) === renderSingleView)?.backend}
-                    sessionId={sessionId}
-                    ownerId={ownerId}
-                    generation={generation}
-                    fullscreen={terminalFullscreen}
-                    onToggleFullscreen={toggleFullscreen}
-                    onOpenFile={(path) => wiki.openFile(
-                      path,
-                      renderSingleView ? cwdForKey(renderSingleView) : undefined,
-                      sessions.find(s => sessionKey(s) === renderSingleView)?.host,
-                      renderSingleView ? parseSessionKey(renderSingleView).name : undefined,
-                    )}
-                  />
-                )
-              })()}
+              <Terminal
+                sessionName={parseSessionKey(renderSingleView).name}
+                hostId={parseSessionKey(renderSingleView).host || undefined}
+                backend={sessions.find(s => sessionKey(s) === renderSingleView)?.backend}
+                fullscreen={terminalFullscreen}
+                onToggleFullscreen={toggleFullscreen}
+                onOpenFile={(path) => wiki.openFile(
+                  path,
+                  renderSingleView ? cwdForKey(renderSingleView) : undefined,
+                  sessions.find(s => sessionKey(s) === renderSingleView)?.host,
+                  renderSingleView ? parseSessionKey(renderSingleView).name : undefined,
+                )}
+              />
             </div>
           ) : currentView === 'session' && renderPaneTree ? (
             <TiledView
               tree={renderPaneTree}
               activeKey={renderActiveKey}
               onActivate={(key) => {
-                if (v2Enabled && v2State.layoutId) {
-                  void v2State.workspaceCommand(v2State.layoutId, { action: 'select', ref: keyToSessionRef(key) })
-                    .catch(err => console.error('v2 select command failed:', err))
-                } else {
-                  setActiveKey(key)
-                }
+                setActiveKey(key)
                 refocusTerminal()
               }}
               onClose={closePane}
               onKill={killPane}
               onPopOut={(key) => {
-                if (v2Enabled && v2State.layoutId) {
-                  void v2State.workspaceCommand(v2State.layoutId, { action: 'pop_out', ref: keyToSessionRef(key) })
-                    .catch(err => console.error('v2 pop_out command failed:', err))
-                  return
-                }
                 popOutPane(key)
               }}
               onSplit={(key, direction) => {
@@ -1507,15 +1397,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
                 openNewSessionModal()
               }}
               onRatioChange={(path, ratio) => {
-                if (v2Enabled && v2State.layoutId) {
-                  const record = v2State.state.workspace.record
-                  const splitId = record ? splitIdAtPath(record.tree, path) : undefined
-                  if (splitId) {
-                    void v2State.workspaceCommand(v2State.layoutId, { action: 'resize', split_id: splitId, ratio })
-                      .catch(err => console.error('v2 resize command failed:', err))
-                  }
-                  return
-                }
                 setPaneTree((prev: PaneTree | null) => {
                   if (prev === null) return null
                   return updateRatio(prev, path, ratio)
@@ -1527,23 +1408,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
               onDropSession={handleDropSession}
               onDropNewSession={handleDropNewSession}
               onSwapPanes={(a, b) => {
-                if (v2Enabled && v2State.layoutId) {
-                  void v2State.workspaceCommand(v2State.layoutId, { action: 'swap', a: keyToSessionRef(a), b: keyToSessionRef(b) })
-                    .catch(err => console.error('v2 swap command failed:', err))
-                  return
-                }
                 setPaneTree((prev: PaneTree | null) => prev ? swapLeaves(prev, a, b) : prev)
               }}
               onMovePanes={(sourceKey, targetKey, edge) => {
-                if (v2Enabled && v2State.layoutId) {
-                  void v2State.workspaceCommand(v2State.layoutId, {
-                    action: 'move',
-                    source: keyToSessionRef(sourceKey),
-                    target: keyToSessionRef(targetKey),
-                    edge,
-                  }).catch(err => console.error('v2 move command failed:', err))
-                  return
-                }
                 setPaneTree((prev: PaneTree | null) => prev ? movePane(prev, sourceKey, targetKey, edge) : prev)
               }}
               getBackend={(key) => sessions.find(s => sessionKey(s) === key)?.backend}
@@ -1574,6 +1441,440 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
           <div id="mobile-keybar-slot" className="flex-none" />
           <SettingsDrawer
             open={settingsOpen}
+            onClose={closeSettings}
+            pushState={pushState}
+            onPushSubscribe={pushSubscribe}
+            onPushUnsubscribe={pushUnsubscribe}
+            onLogout={onLogout}
+            version={serverVersion}
+            updateAvailable={updateAvailable}
+            binaryUpdate={selfUpdate.status}
+            onApplyUpdate={selfUpdate.apply}
+            updateApplying={selfUpdate.applying}
+            updateRestartMode={selfUpdate.restartMode}
+            updateError={selfUpdate.error}
+            updateChecking={selfUpdate.checking}
+            onCheckUpdate={selfUpdate.checkNow}
+          />
+        </div>
+        {wiki.target && (
+          <WikiPanel
+            filePath={wiki.target.path}
+            openNonce={wiki.target.nonce}
+            sessionCwd={wiki.target.cwd}
+            hostId={wiki.target.hostId}
+            session={wiki.target.session}
+            onClose={() => wiki.closePanel()}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
+  // V2 mode: normalized catalog + workspace state via useV2State.
+  // Simpler than AppLegacy: only one layout (no groups/singleView).
+  const v2State = useV2State({ enabled: true })
+  const { state, paneTree, activeKey, layoutId } = v2State
+  const currentView: View = paneTree ? 'session' : 'overview'
+
+  // Shared non-session hooks (same as AppLegacy)
+  const { prefs } = usePreferences()
+  const wikiEnabled = !prefs.wiki_disabled
+  const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
+  const { getSessionActivity, handleActivityEvent } = useActivity()
+  const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications()
+  const { processToolEvent } = useNotifications(pushState === 'subscribed')
+  const { hosts, refresh: refreshHosts } = useHosts()
+  const { prefs: _ } = usePreferences() // already have prefs above
+  const wiki = useWikiController(undefined as any, wikiEnabled) // v2 doesn't have workspace object
+  const { sets: sessionAttrs, setAttr: setSessionAttr, refresh: refreshSessionAttrs } = useSessionAttrs(authenticated)
+  const crashedHook = useCrashedSessions()
+  const selfUpdate = useSelfUpdate(null)
+  const wikiEnabledRef = useRef(wikiEnabled)
+  wikiEnabledRef.current = wikiEnabled
+
+  useEffect(() => {
+    if (!wikiEnabled) wiki.closePanel()
+  }, [wikiEnabled, wiki.closePanel])
+
+  const [serverVersion, setServerVersion] = useState<string | null>(null)
+  const loadedVersionRef = useRef<string | null>(null)
+  const updateAvailable = loadedVersionRef.current !== null && serverVersion !== null && serverVersion !== loadedVersionRef.current
+  const [newSessionModalOpen, setNewSessionModalOpen] = useState(false)
+  const terminalContainerRef = useRef<HTMLDivElement>(null)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('termyard:sidebar-collapsed') === 'true' } catch { return false }
+  })
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try {
+      const v = parseInt(localStorage.getItem('termyard:sidebar-width') || '', 10)
+      if (!Number.isNaN(v)) return Math.min(560, Math.max(200, v))
+    } catch {}
+    return 288
+  })
+  const handleSidebarWidth = useCallback((w: number) => {
+    setSidebarWidth(w)
+    try { localStorage.setItem('termyard:sidebar-width', String(w)) } catch {}
+  }, [])
+  const [terminalFullscreen, setTerminalFullscreen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
+  const [portForwardsOpen, setPortForwardsOpen] = useState(false)
+  const [schedulesOpen, setSchedulesOpen] = useState(false)
+  const [mainDragOver, setMainDragOver] = useState<{ type: 'new-session' | 'sidebar'; zone: 'left' | 'right' | 'top' | 'bottom' | 'center' } | null>(null)
+  const mainDragOverRef = useRef<{ type: 'new-session' | 'sidebar'; zone: 'left' | 'right' | 'top' | 'bottom' | 'center' } | null>(null)
+
+  const lastActivityRef = useRef<number>(Date.now())
+  useEffect(() => {
+    if (!onLogout || !prefs.lock_timeout_minutes) return
+    const idleMs = prefs.lock_timeout_minutes * 60 * 1000
+    const onActivity = () => { lastActivityRef.current = Date.now() }
+    const events = ['keydown', 'click', 'scroll', 'touchstart', 'mousemove'] as const
+    const opts: AddEventListenerOptions = { passive: true, capture: true }
+    events.forEach(e => document.addEventListener(e, onActivity, opts))
+    const checkInterval = setInterval(() => {
+      const elapsed = Date.now() - lastActivityRef.current
+      if (elapsed >= idleMs) onLogout()
+    }, 30_000)
+    return () => {
+      events.forEach(e => document.removeEventListener(e, onActivity, opts as EventListenerOptions))
+      clearInterval(checkInterval)
+    }
+  }, [onLogout, prefs.lock_timeout_minutes])
+
+  useEffect(() => {
+    localStorage.setItem('termyard:sidebar-collapsed', String(sidebarCollapsed))
+  }, [sidebarCollapsed])
+
+  // getTerminalIdentity: converts legacy sessionKey to v2 catalog lookup
+  const getTerminalIdentity = useCallback((legacyKey: string) => {
+    if (!legacyKey) return {}
+    const ref = keyToSessionRef(legacyKey)
+    const session = selectSessionByRef(state.catalog, ref)
+    if (!session) return {}
+    return {
+      sessionId: session.id,
+      ownerId: session.owner,
+      generation: String(state.catalog.generation),
+    }
+  }, [state.catalog])
+
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const toastIdRef = useRef(0)
+  const dismissToast = useCallback((id: number) => setToasts(t => t.filter(x => x.id !== id)), [])
+
+  useEffect(() => {
+    const onToast = (e: Event) => {
+      const d = (e as CustomEvent).detail || {}
+      setToasts(t => [...t, {
+        id: ++toastIdRef.current,
+        severity: d.severity === 'error' || d.severity === 'warn' ? d.severity : 'info',
+        source: d.source || 'termyard',
+        message: d.message || '',
+      }].slice(-4))
+    }
+    window.addEventListener('termyard:toast', onToast)
+    return () => window.removeEventListener('termyard:toast', onToast)
+  }, [])
+
+  const onEvent = useCallback((evt: any) => {
+    if (evt.type === 'notice') {
+      const d = evt.data || {}
+      setToasts(t => [{
+        id: ++toastIdRef.current,
+        severity: d.severity === 'error' || d.severity === 'warn' ? d.severity : 'info',
+        source: d.source || 'server',
+        message: d.message || '',
+        session: evt.session || undefined,
+      }, ...t].slice(-4))
+    } else if (evt.type === 'welcome') {
+      const v = evt.version || null
+      if (!loadedVersionRef.current) loadedVersionRef.current = v
+      setServerVersion(v)
+    } else if (evt.type === 'tool-event') {
+      handleToolEvent(evt)
+      processToolEvent(evt)
+      window.dispatchEvent(new CustomEvent('termyard:artifacts', { detail: evt }))
+    } else if (evt.type === 'artifacts') {
+      window.dispatchEvent(new CustomEvent('termyard:artifacts', { detail: evt }))
+    } else if (evt.type === 'activity') {
+      handleActivityEvent(evt.snapshots || [])
+    } else if (evt.type === 'recovery-started' || evt.type === 'recovery-finished' || evt.type === 'session-order-updated' || evt.type === 'groups-updated') {
+      // v2 doesn't use these, but listen silently
+    } else if (['peer-connected', 'peer-disconnected'].includes(evt.type)) {
+      refreshHosts()
+    } else if (evt.type === 'update-status') {
+      // ignore
+    } else if (evt.type === 'session-attrs-updated') {
+      refreshSessionAttrs()
+    } else if (evt.type === 'sessions-crashed') {
+      crashedHook.refresh()
+    }
+  }, [handleToolEvent, processToolEvent, handleActivityEvent, refreshSessionAttrs, refreshHosts, crashedHook.refresh])
+
+  const { connected } = useWebSocket('/ws/events', onEvent)
+
+  useEffect(() => {
+    const needsAttention = allToolEvents.some(evt => evt.status === 'waiting' || evt.status === 'error' || evt.status === 'stuck')
+    document.title = needsAttention ? 'Termyard - Attention needed' : 'Termyard'
+  }, [allToolEvents])
+
+  useEffect(() => {
+    if (currentView !== 'session') setTerminalFullscreen(false)
+  }, [currentView])
+
+  const hasMultipleHosts = hosts.length > 1
+  const localHost = hosts.find(h => h.local)
+  const localHostId = localHost?.id
+  const localHostName = localHost?.name
+
+  // Single layout group (v2 doesn't have multiple groups)
+  const layoutGroups = useMemo<LayoutGroup[]>(() => {
+    if (!layoutId) return []
+    return [{
+      id: layoutId,
+      leaves: paneTree ? getLeaves(paneTree) : [],
+      isActive: currentView === 'session',
+      activeKey: activeKey,
+      name: undefined,
+    }]
+  }, [layoutId, paneTree, activeKey, currentView])
+
+  const refocusTerminal = useCallback(() => {
+    requestAnimationFrame(() => {
+      const textarea = terminalContainerRef.current?.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null
+      textarea?.focus()
+    })
+  }, [])
+
+  const handleSessionSelect = (session: Session) => {
+    const key = sessionKey(session)
+    const { host, name } = parseSessionKey(key)
+    const path = host
+      ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
+      : `/session/${encodeURIComponent(name)}`
+    if (window.location.pathname !== path) window.history.pushState(null, '', path)
+    if (layoutId && activeKey !== key) {
+      v2State.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
+    }
+    setTimeout(refocusTerminal, 150)
+  }
+
+  const handleCreateSession = useCallback(async (name: string, path: string, command: string, hostId?: string, _wb?: string, _ag?: string): Promise<string | null> => {
+    setNewSessionModalOpen(false)
+    try {
+      const res = await fetch('/api/session/new', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, path, command, host: hostId || undefined }),
+      })
+      if (!res.ok) return null
+      const payload = await res.json().catch(() => null)
+      return payload?.name || name
+    } catch (err) {
+      console.error('Failed to create session:', err)
+      return null
+    }
+  }, [])
+
+  const toggleFullscreen = useCallback(() => {
+    setTerminalFullscreen(f => !f)
+  }, [])
+
+  const glance = useMemo(() => {
+    const allSessions = Array.from(state.catalog.sessionsByRef.values())
+    let parked = 0, working = 0, waiting = 0
+    for (const sess of allSessions) {
+      const key = sessionRefToKey(sess.ref)
+      const signal = sessionSignal(undefined as any, getSessionEvents(key), getSessionActivity(key), isSessionInActiveTurn(key))
+      if (signal.state === 'needs_you') waiting++
+      else if (signal.state === 'working') working++
+      else parked++
+    }
+    return { parked, working, waiting }
+  }, [state.catalog.sessionsByRef, getSessionEvents, getSessionActivity, isSessionInActiveTurn, allToolEvents])
+
+  const openNewSessionModal = useCallback(() => {
+    setNewSessionModalOpen(true)
+  }, [])
+
+  const openSettings = useCallback(() => {
+    if (window.location.pathname !== '/settings') window.history.pushState(null, '', '/settings')
+  }, [])
+
+  const closeSettings = useCallback(() => {
+    window.history.pushState(null, '', '/')
+  }, [])
+
+  return (
+    <div className="flex flex-col h-full w-full bg-background text-foreground relative">
+      <Toasts toasts={toasts} onDismiss={dismissToast} />
+      {crashedHook.crashedSessions.length > 0 && (
+        <RecoveryPanel
+          crashedSessions={crashedHook.crashedSessions}
+          onRecover={crashedHook.recover}
+          onDismiss={crashedHook.dismiss}
+          onDismissAll={crashedHook.dismissAll}
+        />
+      )}
+      {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {portForwardsOpen && <PortForwardModal onClose={() => setPortForwardsOpen(false)} />}
+      {schedulesOpen && <ScheduleModal onClose={() => setSchedulesOpen(false)} />}
+      {quickSwitcherOpen && (
+        <QuickSwitcher
+          sessions={[]}
+          waitingEvents={allToolEvents}
+          onSelect={() => setQuickSwitcherOpen(false)}
+          onOverview={() => setQuickSwitcherOpen(false)}
+          onCreateSession={() => {
+            openNewSessionModal()
+            setQuickSwitcherOpen(false)
+          }}
+          onClose={() => setQuickSwitcherOpen(false)}
+        />
+      )}
+      {newSessionModalOpen && (
+        <NewSessionModal
+          hosts={hosts}
+          sessions={[]}
+          onCreateSession={handleCreateSession}
+          onClose={() => setNewSessionModalOpen(false)}
+        />
+      )}
+      {(!terminalFullscreen) && (
+        <TopBar
+          currentView={currentView}
+          settingsActive={false}
+          selfUpdateAvailable={selfUpdate.status?.update_available ?? false}
+          updateVersion={selfUpdate.status?.latest_version}
+          onApplyUpdate={selfUpdate.apply}
+          updateApplying={selfUpdate.applying}
+          onDismissUpdate={selfUpdate.dismiss}
+          onOverview={() => window.history.pushState(null, '', '/')}
+          onSettings={openSettings}
+          onWiki={wikiEnabled ? wiki.togglePanel : undefined}
+          onHelp={() => setHelpOpen(true)}
+          onNewSession={openNewSessionModal}
+          onPortForwards={() => setPortForwardsOpen(true)}
+          onSchedules={() => setSchedulesOpen(true)}
+          events={allToolEvents}
+          connected={connected === true}
+          onJumpToSession={() => {}}
+          onDismiss={dismissEvent}
+          onDismissAll={dismissAllEvents}
+          panesCount={paneTree ? getLeaves(paneTree).length : 0}
+          onSplitPane={() => { openNewSessionModal() }}
+          glance={glance}
+        />
+      )}
+      <div className="flex-1 flex overflow-hidden">
+        {!terminalFullscreen && (
+          <Sidebar
+            sessions={Array.from(state.catalog.sessionsByRef.values()).map(s => ({
+              id: s.id,
+              name: s._compat?.name || s.id,
+              host: s.owner,
+              windows: [],
+              created: s.created_at,
+              attached: true,
+              last_activity: new Date().toISOString(),
+            } as Session))}
+            selectedSession={activeKey}
+            collapsed={sidebarCollapsed}
+            selfUpdateAvailable={selfUpdate.status?.update_available ?? false}
+            collapseMode={(prefs.sidebar.collapse_mode || 'small') as 'small' | 'hidden'}
+            width={sidebarWidth}
+            onWidthChange={handleSidebarWidth}
+            hasMultipleHosts={hasMultipleHosts}
+            localHostId={localHostId}
+            hosts={hosts}
+            onSessionSelect={handleSessionSelect}
+            getSessionEvents={getSessionEvents}
+            sessionNeedsAttention={sessionNeedsAttention}
+            isSessionInActiveTurn={isSessionInActiveTurn}
+            getSessionActivity={getSessionActivity}
+            agentCount={0}
+            glance={glance}
+            onToggleCollapse={() => setSidebarCollapsed(c => !c)}
+            layoutGroups={layoutGroups}
+            sessionOrderRanks={{}}
+            setSessionOrderRank={() => {}}
+            onSwitchGroup={() => {}}
+            onRenameGroup={() => {}}
+            forceAiName={async () => false}
+            namingGroupId={null}
+            onPairSessions={() => {}}
+            onRemoveFromSplit={() => {}}
+            onSessionKilled={() => {}}
+            sessionAttrs={sessionAttrs}
+            setSessionAttr={setSessionAttr}
+            pruningSuspended={false}
+            onQuickShell={() => {}}
+            crashedCount={crashedHook.crashedSessions.length}
+            onCrashedClick={() => crashedHook.refresh()}
+          />
+        )}
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+          {currentView === 'session' && paneTree ? (
+            <TiledView
+              tree={paneTree}
+              activeKey={activeKey}
+              onActivate={(key) => {
+                if (layoutId && activeKey !== key) {
+                  v2State.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
+                }
+                refocusTerminal()
+              }}
+              onClose={(key) => {
+                if (layoutId) {
+                  v2State.workspaceCommand(layoutId, { action: 'remove', ref: keyToSessionRef(key) })
+                }
+              }}
+              onPopOut={() => {}}
+              onSplit={() => { openNewSessionModal() }}
+              onRatioChange={() => {}}
+              fullscreen={terminalFullscreen}
+              onToggleFullscreen={toggleFullscreen}
+              terminalContainerRef={terminalContainerRef}
+              onDropSession={() => {}}
+              onDropNewSession={() => {}}
+              onSwapPanes={() => {}}
+              onMovePanes={() => {}}
+              getTerminalIdentity={getTerminalIdentity}
+              onOpenFile={wiki.openFile}
+            />
+          ) : (
+            <Overview
+              sessions={Array.from(state.catalog.sessionsByRef.values()).map(s => ({
+                id: s.id,
+                name: s._compat?.name || s.id,
+                host: s.owner,
+                windows: [],
+                created: s.created_at,
+                attached: true,
+                last_activity: new Date().toISOString(),
+              } as Session))}
+              onOpenFile={wiki.openFile}
+              hosts={hosts}
+              hiddenSet={sessionAttrs.hidden}
+              backgroundSet={sessionAttrs.background}
+              scheduleIDs={sessionAttrs.scheduleIDs}
+              onSessionSelect={handleSessionSelect}
+              getSessionEvents={getSessionEvents}
+              getSessionActivity={getSessionActivity}
+              isSessionInActiveTurn={isSessionInActiveTurn}
+              onJumpToSession={() => {}}
+              onDismissAlert={dismissEvent}
+              setSessionAttr={setSessionAttr}
+              onSessionKilled={() => {}}
+              layoutGroups={layoutGroups}
+            />
+          )}
+          <div id="mobile-keybar-slot" className="flex-none" />
+          <SettingsDrawer
+            open={false}
             onClose={closeSettings}
             pushState={pushState}
             onPushSubscribe={pushSubscribe}
@@ -1686,9 +1987,15 @@ export default function App() {
     )
   }
 
+  const v2Enabled = isV2StateEnabled()
+
   return (
     <PreferencesContext.Provider value={prefsProvider}>
-      <AppInner onLogout={authRequired ? logout : undefined} authenticated={authRequired ? authenticated : true} />
+      {v2Enabled ? (
+        <AppV2 onLogout={authRequired ? logout : undefined} authenticated={authRequired ? authenticated : true} />
+      ) : (
+        <AppLegacy onLogout={authRequired ? logout : undefined} authenticated={authRequired ? authenticated : true} />
+      )}
     </PreferencesContext.Provider>
   )
 }

@@ -18,6 +18,11 @@ type snapshotSlot struct {
 	pending *Message
 	cond    *sync.Cond
 	closed  bool
+
+	// testWaitBeforeDrain blocks runSnapshotEmitter before draining slots,
+	// allowing tests to accumulate multiple publishes before any flush.
+	// Nil in production.
+	testWaitBeforeDrain chan struct{}
 }
 
 func newSnapshotSlot() *snapshotSlot {
@@ -83,6 +88,12 @@ func runSnapshotEmitter(ctx context.Context, pc *PeerConnection, slot *snapshotS
 		msg := slot.next()
 		if msg == nil {
 			return
+		}
+
+		// If a test gate is set, wait for it before draining. This allows
+		// tests to accumulate multiple publishes before any flush occurs.
+		if slot.testWaitBeforeDrain != nil {
+			<-slot.testWaitBeforeDrain
 		}
 
 		// Coalesce: keep consuming pending snapshots until none left, then emit

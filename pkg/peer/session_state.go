@@ -142,9 +142,6 @@ func sendInitialV2Catalog(pc *PeerConnection, deps SessionDeps) {
 	if deps.Manager == nil || deps.Manager.localMgr == nil {
 		return
 	}
-	if !deps.Manager.localMgr.V2Enabled() {
-		return
-	}
 	catalog := deps.Manager.localMgr.V2Catalog()
 	if catalog == nil {
 		return
@@ -165,9 +162,6 @@ func sendInitialV2Catalog(pc *PeerConnection, deps SessionDeps) {
 
 func sendInitialV2Workspace(pc *PeerConnection, deps SessionDeps) {
 	if deps.Manager == nil || deps.Manager.localMgr == nil {
-		return
-	}
-	if !deps.Manager.localMgr.V2Enabled() {
 		return
 	}
 	catalog := deps.Manager.localMgr.V2Catalog()
@@ -205,7 +199,7 @@ func handleV2Message(peerID string, msg *Message, pc *PeerConnection, deps Sessi
 			log.WithError(err).Debug("invalid v2 catalog snapshot")
 			return
 		}
-		deps.Manager.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+		deps.Manager.UpdateRemoteCatalog(peerID, pc, state.OwnerCatalogSnapshot{
 			Owner:    p.Owner,
 			Revision: p.Revision,
 			Sessions: p.Sessions,
@@ -218,7 +212,7 @@ func handleV2Message(peerID string, msg *Message, pc *PeerConnection, deps Sessi
 			log.WithError(err).Debug("invalid v2 workspace snapshot")
 			return
 		}
-		deps.Manager.UpdateRemoteWorkspace(peerID, p.Workspace)
+		deps.Manager.UpdateRemoteWorkspace(peerID, pc, p.Workspace)
 
 	case MsgV2CommandRequest:
 		var p V2CommandRequestPayload

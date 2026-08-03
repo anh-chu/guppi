@@ -196,8 +196,13 @@ type Manager struct {
 	// peer's current connection. A new connection (re-registration) resets the
 	// baseline so a restarted peer with a fresh revision counter is accepted;
 	// within one connection, non-increasing revisions (stale or delayed
-	// snapshots) are rejected to stop cache regression. Guarded by catalogMu.
+	// snapshots) are rejected to stop cache regression. Each connection is
+	// tagged with a unique generation so delayed frames from a superseded
+	// connection are rejected. Guarded by catalogMu.
 	remoteRevs map[string]*remoteRevisionState
+	// connGen is a monotonic counter incremented on each new peer connection.
+	// Used to tag remoteRevisionState generations. Guarded by catalogMu.
+	connGen int64
 
 	// ownerBinding enforces one owner per peer and one peer per owner so a
 	// peer cannot publish state under another peer's established owner.
@@ -231,20 +236,28 @@ type remoteCatalogCache struct {
 
 // remoteRevisionState is the per-peer, per-connection revision baseline for
 // v2 snapshot streams. -1 means "no baseline yet" (fresh connection).
+// Generation tags the connection that produced this state; a snapshot with a
+// mismatched generation is from a stale/superseded connection and is dropped.
 type remoteRevisionState struct {
-	catalog   int64
-	workspace map[state.LayoutID]int64
+	generation int64 // monotonic connection-generation token
+	catalog    int64
+	workspace  map[state.LayoutID]int64
 }
 
 // NewManager creates a new peer manager
 func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr *state.Manager) *Manager {
 	m := &Manager{
-		hosts:     make(map[string]*HostState),
-		localID:   id.Fingerprint(),
-		localName: id.Name,
-		identity:  id,
-		peerStore: peerStore,
-		localMgr:  localMgr,
+		hosts:           make(map[string]*HostState),
+		localID:         id.Fingerprint(),
+		localName:       id.Name,
+		identity:        id,
+		peerStore:       peerStore,
+		localMgr:        localMgr,
+		remoteCatalogs:  make(map[state.OwnerID]remoteCatalogCache),
+		remoteRevs:      make(map[string]*remoteRevisionState),
+		peerOwner:       make(map[string]state.OwnerID),
+		ownerPeer:       make(map[state.OwnerID]string),
+		commandWaiters:  make(map[string]*commandWaiter),
 	}
 
 	// Register local host
@@ -256,12 +269,6 @@ func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr *
 		Connected: true,
 		LastSeen:  time.Now(),
 	}
-
-	m.remoteCatalogs = make(map[state.OwnerID]remoteCatalogCache)
-	m.remoteRevs = make(map[string]*remoteRevisionState)
-	m.peerOwner = make(map[string]state.OwnerID)
-	m.ownerPeer = make(map[state.OwnerID]string)
-	m.commandWaiters = make(map[string]*commandWaiter)
 
 	return m
 }
@@ -696,13 +703,29 @@ func validateWorkspaceTreeOwnership(peerID string, rec state.WorkspaceRecord) bo
 	return checkNode(&rec.Tree)
 }
 
+// isConnectionStill reports whether conn is the currently-active connection for
+// peerID. Used to reject snapshots from superseded/stale connections. Caller
+// must hold catalogMu.
+func (m *Manager) isConnectionStill(peerID string, conn *PeerConnection) bool {
+	if conn == nil {
+		return false
+	}
+	m.mu.RLock()
+	hostState, ok := m.hosts[peerID]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	return hostState.Conn == conn
+}
+
 // bindRemoteOwner enforces the ownership binding: one owner per peer and one
 // peer per owner. The first snapshot a peer publishes establishes its sole
 // owner; a later snapshot from the same peer under a different owner, or a
 // second peer claiming an already-bound owner, is a spoof and is dropped.
-// Caller must hold catalogMu. The v2 catalog Owner is a random base32 id, NOT
-// the peer fingerprint, so an explicit cross-peer binding map is the sound
-// integrity mechanism here.
+// Caller must hold catalogMu. The v2 catalog Owner MUST equal the peer's
+// authenticated fingerprint (peerID), so the binding is an authenticated fact,
+// not derived from the snapshot.
 func (m *Manager) bindRemoteOwner(peerID string, owner state.OwnerID) bool {
 	if peerID == "" || owner == "" {
 		return false
@@ -721,25 +744,38 @@ func (m *Manager) bindRemoteOwner(peerID string, owner state.OwnerID) bool {
 }
 
 // UpdateRemoteCatalog replaces the cached catalog for the snapshot's owner.
-// The previous cache (if any) is overwritten, not merged. The owner must be
-// the peer's bound owner and the revision must be increasing within the
-// peer's current connection (stale/delayed snapshots are rejected). All
-// embedded session and layout owners must match the snapshot's owner. If a
-// remote store is wired, the complete set of accepted remote catalogs is
-// persisted.
-func (m *Manager) UpdateRemoteCatalog(peerID string, snap state.OwnerCatalogSnapshot) {
+// The previous cache (if any) is merged (not overwritten). The owner must equal
+// the peer's authenticated identity (enforced via peerID == snap.Owner assumption),
+// the peer's bound owner (one owner per peer, one peer per owner), and the
+// revision must be increasing within the peer's current connection (stale/delayed
+// snapshots from superseded connections are rejected). All embedded session and
+// layout owners must match the snapshot's owner. If a remote store is wired, the
+// complete set of accepted remote catalogs is persisted.
+func (m *Manager) UpdateRemoteCatalog(peerID string, conn *PeerConnection, snap state.OwnerCatalogSnapshot) {
 	if !validateCatalogOwnership(peerID, snap) {
 		return
 	}
+	// Enforce: remote peer's OwnerID must equal its authenticated fingerprint (peerID).
+	expectedOwner := state.OwnerID(peerID)
+	if snap.Owner != expectedOwner {
+		logrus.WithFields(logrus.Fields{
+			"peer": peerID,
+			"claimed_owner": string(snap.Owner),
+			"expected_owner": string(expectedOwner),
+		}).Warn("dropping v2 catalog snapshot: owner does not match authenticated peer identity")
+		return
+	}
 	m.catalogMu.Lock()
+	// Check that the snapshot comes from the current active connection (generation match).
+	rs := m.remoteRevs[peerID]
+	if rs == nil || conn == nil || !m.isConnectionStill(peerID, conn) {
+		m.catalogMu.Unlock()
+		logrus.WithFields(logrus.Fields{"peer": peerID}).Debug("dropping v2 catalog snapshot: connection generation mismatch or stale")
+		return
+	}
 	if !m.bindRemoteOwner(peerID, snap.Owner) {
 		m.catalogMu.Unlock()
 		return
-	}
-	rs := m.remoteRevs[peerID]
-	if rs == nil {
-		rs = &remoteRevisionState{catalog: -1}
-		m.remoteRevs[peerID] = rs
 	}
 	if rs.catalog >= 0 && snap.Revision <= rs.catalog {
 		m.catalogMu.Unlock()
@@ -747,34 +783,49 @@ func (m *Manager) UpdateRemoteCatalog(peerID string, snap state.OwnerCatalogSnap
 		return
 	}
 	rs.catalog = snap.Revision
-	m.remoteCatalogs[snap.Owner] = remoteCatalogCache{
-		Owner:      snap.Owner,
-		PeerID:     peerID,
-		Snapshot:   snap,
-		ReceivedAt: time.Now(),
-		CatalogRev: snap.Revision,
-	}
+	// Merge: preserve existing workspace, update catalog fields.
+	cache := m.remoteCatalogs[snap.Owner]
+	cache.Owner = snap.Owner
+	cache.PeerID = peerID
+	cache.Snapshot = snap
+	cache.ReceivedAt = time.Now()
+	cache.CatalogRev = snap.Revision
+	// Do not modify Workspace or WorkspaceRev; let them persist.
+	m.remoteCatalogs[snap.Owner] = cache
 	m.catalogMu.Unlock()
 	m.persistRemoteCatalogs()
 }
 
-// UpdateRemoteWorkspace replaces the cached workspace for owner. The owner
+// UpdateRemoteWorkspace merges the cached workspace for owner. The owner
+// must equal the peer's authenticated identity (enforced via peerID == rec.Owner),
 // must be the peer's bound owner, and the workspace revision must be
 // increasing within the current connection (keyed per layout id). All
 // embedded leaf SessionRefs in the tree must have owner matching rec.Owner.
-func (m *Manager) UpdateRemoteWorkspace(peerID string, rec state.WorkspaceRecord) {
+func (m *Manager) UpdateRemoteWorkspace(peerID string, conn *PeerConnection, rec state.WorkspaceRecord) {
 	if !validateWorkspaceTreeOwnership(peerID, rec) {
 		return
 	}
+	// Enforce: remote peer's OwnerID must equal its authenticated fingerprint (peerID).
+	expectedOwner := state.OwnerID(peerID)
+	if rec.Owner != expectedOwner {
+		logrus.WithFields(logrus.Fields{
+			"peer": peerID,
+			"claimed_owner": string(rec.Owner),
+			"expected_owner": string(expectedOwner),
+		}).Warn("dropping v2 workspace snapshot: owner does not match authenticated peer identity")
+		return
+	}
 	m.catalogMu.Lock()
+	// Check that the snapshot comes from the current active connection (generation match).
+	rs := m.remoteRevs[peerID]
+	if rs == nil || conn == nil || !m.isConnectionStill(peerID, conn) {
+		m.catalogMu.Unlock()
+		logrus.WithFields(logrus.Fields{"peer": peerID}).Debug("dropping v2 workspace snapshot: connection generation mismatch or stale")
+		return
+	}
 	if !m.bindRemoteOwner(peerID, rec.Owner) {
 		m.catalogMu.Unlock()
 		return
-	}
-	rs := m.remoteRevs[peerID]
-	if rs == nil {
-		rs = &remoteRevisionState{catalog: -1}
-		m.remoteRevs[peerID] = rs
 	}
 	if rs.workspace == nil {
 		rs.workspace = make(map[state.LayoutID]int64)
@@ -785,12 +836,14 @@ func (m *Manager) UpdateRemoteWorkspace(peerID string, rec state.WorkspaceRecord
 		return
 	}
 	rs.workspace[rec.ID] = rec.Revision
+	// Merge: preserve existing catalog, update workspace fields.
 	cache := m.remoteCatalogs[rec.Owner]
 	cache.Owner = rec.Owner
 	cache.PeerID = peerID
 	cache.Workspace = &rec
 	cache.ReceivedAt = time.Now()
 	cache.WorkspaceRev = rec.Revision
+	// Do not modify Snapshot or CatalogRev; let them persist.
 	m.remoteCatalogs[rec.Owner] = cache
 	m.catalogMu.Unlock()
 	m.persistRemoteCatalogs()
@@ -928,7 +981,9 @@ func (m *Manager) peerIDForOwner(owner state.OwnerID) string {
 }
 
 // LoadRemoteCatalogCache loads persisted remote catalogs into memory. It is
-// idempotent and ignores missing sidecar files.
+// idempotent and ignores missing sidecar files. For each loaded catalog,
+// restores the peer ownership binding based on the owner value (which is
+// expected to equal the peer's authenticated fingerprint).
 func (m *Manager) LoadRemoteCatalogCache() error {
 	if m.remoteStore == nil {
 		return nil
@@ -940,12 +995,20 @@ func (m *Manager) LoadRemoteCatalogCache() error {
 	m.catalogMu.Lock()
 	defer m.catalogMu.Unlock()
 	for _, c := range catalogs {
+		// Derive the peer ID from the owner ID (they are the same by architecture).
+		// The persisted catalog's Owner was set by a peer matching its fingerprint,
+		// so restore that binding without requiring the peer to be connected.
+		peerID := string(c.Owner)
 		m.remoteCatalogs[c.Owner] = remoteCatalogCache{
 			Owner:      c.Owner,
+			PeerID:     peerID,
 			Snapshot:   c,
 			ReceivedAt: time.Now(),
 			CatalogRev: c.Revision,
 		}
+		// Restore the ownership binding: owner -> peerID.
+		m.peerOwner[peerID] = c.Owner
+		m.ownerPeer[c.Owner] = peerID
 	}
 	return nil
 }
@@ -988,12 +1051,19 @@ func (m *Manager) forgetRemoteCatalogsForPeer(peerID string) {
 	m.persistRemoteCatalogs()
 }
 
-// resetRemoteRevisions clears the per-connection revision baseline for a
-// peer. Called whenever a new connection registers.
-func (m *Manager) resetRemoteRevisions(peerID string) {
+// resetRemoteRevisions increments the connection generation for a peer and
+// initializes a fresh revision baseline. Called whenever a new connection
+// registers. Returns the new generation token.
+func (m *Manager) resetRemoteRevisions(peerID string) int64 {
 	m.catalogMu.Lock()
-	delete(m.remoteRevs, peerID)
+	m.connGen++
+	gen := m.connGen
+	m.remoteRevs[peerID] = &remoteRevisionState{
+		generation: gen,
+		catalog:    -1,
+	}
 	m.catalogMu.Unlock()
+	return gen
 }
 
 func cloneOwnerCatalogSnapshot(s state.OwnerCatalogSnapshot) state.OwnerCatalogSnapshot {

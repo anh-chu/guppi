@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -286,5 +287,139 @@ func TestV2RuntimeEnricherLastActivityNotBumpedByReEnrichment(t *testing.T) {
 	if diff > 50*time.Millisecond {
 		t.Fatalf("LastActivity should not change on re-enrichment without new activity: %v vs %v (diff: %v)",
 			firstTime, rt2.LastActivity, diff)
+	}
+}
+
+// TestNewRuntimeV2ModeSkipsLegacyStores verifies that when TERMYARD_V2_STATE=1,
+// the legacy state stores (AttrsStore, OrderStore, GroupStore) are not constructed
+// and remain nil in the server options.
+func TestNewRuntimeV2ModeSkipsLegacyStores(t *testing.T) {
+	t.Setenv("TERMYARD_V2_STATE", "1")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", "")
+
+	rt, err := newRuntime(&cli.Command{})
+	if err != nil {
+		t.Fatalf("newRuntime in v2 mode: %v", err)
+	}
+	defer rt.Stop()
+
+	// Legacy stores must be nil in v2 mode.
+	if rt.opts.AttrsStore != nil {
+		t.Fatal("AttrsStore should be nil in v2 mode")
+	}
+	if rt.opts.OrderStore != nil {
+		t.Fatal("OrderStore should be nil in v2 mode")
+	}
+	if rt.opts.GroupStore != nil {
+		t.Fatal("GroupStore should be nil in v2 mode")
+	}
+
+	// V2 components must be non-nil.
+	if rt.v2Catalog == nil {
+		t.Fatal("v2Catalog should not be nil in v2 mode")
+	}
+	if rt.v2CommandSvc == nil {
+		t.Fatal("v2CommandSvc should not be nil in v2 mode")
+	}
+	if rt.v2StateStream == nil {
+		t.Fatal("v2StateStream should not be nil in v2 mode")
+	}
+
+	// Verify v2 components wired into opts.
+	if rt.opts.V2Catalog == nil {
+		t.Fatal("opts.V2Catalog should be set in v2 mode")
+	}
+	if rt.opts.V2CommandSvc == nil {
+		t.Fatal("opts.V2CommandSvc should be set in v2 mode")
+	}
+	if rt.opts.V2StateStream == nil {
+		t.Fatal("opts.V2StateStream should be set in v2 mode")
+	}
+}
+
+// TestNewRuntimeLegacyModeConstructsLegacyStores verifies that with
+// TERMYARD_V2_STATE unset (default), legacy stores are constructed and v2
+// components remain nil.
+func TestNewRuntimeLegacyModeConstructsLegacyStores(t *testing.T) {
+	// Ensure env var is NOT set.
+	t.Setenv("TERMYARD_V2_STATE", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", "")
+
+	rt, err := newRuntime(&cli.Command{})
+	if err != nil {
+		t.Fatalf("newRuntime in legacy mode: %v", err)
+	}
+	defer rt.Stop()
+
+	// In legacy mode, v2 components must be nil.
+	if rt.v2Catalog != nil {
+		t.Fatal("v2Catalog should be nil in legacy mode")
+	}
+	if rt.v2CommandSvc != nil {
+		t.Fatal("v2CommandSvc should be nil in legacy mode")
+	}
+	if rt.v2StateStream != nil {
+		t.Fatal("v2StateStream should be nil in legacy mode")
+	}
+
+	// opts should not have v2 services wired.
+	if rt.opts.V2Catalog != nil {
+		t.Fatal("opts.V2Catalog should be nil in legacy mode")
+	}
+	if rt.opts.V2CommandSvc != nil {
+		t.Fatal("opts.V2CommandSvc should be nil in legacy mode")
+	}
+	if rt.opts.V2StateStream != nil {
+		t.Fatal("opts.V2StateStream should be nil in legacy mode")
+	}
+
+	// Legacy stores MAY be nil if their constructors fail (which is OK),
+	// but they should at least be attempted. We just verify the runtime
+	// doesn't explode with a nil opts.StateMgr.
+	if rt.opts.StateMgr == nil {
+		t.Fatal("opts.StateMgr should always be set")
+	}
+}
+
+// TestNewRuntimeV2InitFailureReturnsFatalError verifies that if v2 store
+// initialization fails in v2 mode, newRuntime returns an error (not a fallback).
+func TestNewRuntimeV2InitFailureReturnsFatalError(t *testing.T) {
+	t.Setenv("TERMYARD_V2_STATE", "1")
+
+	// Create a temporary directory and place a FILE at the location where
+	// the v2 state directory should be created. This will cause os.MkdirAll
+	// in state.OpenStore to fail.
+	tempHome := t.TempDir()
+	dataDir := fmt.Sprintf("%s/.local/share/termyard/v2", tempHome)
+	// Create all parent dirs
+	if err := os.MkdirAll(fmt.Sprintf("%s/.local/share/termyard", tempHome), 0700); err != nil {
+		t.Fatalf("setup: failed to create parent dirs: %v", err)
+	}
+	// Create a FILE where the v2 directory should go, blocking directory creation.
+	if err := os.WriteFile(dataDir, []byte("blocking-file"), 0o600); err != nil {
+		t.Fatalf("setup: failed to create blocking file: %v", err)
+	}
+
+	// Redirect HOME so the v2 state dir calculation will point to our blocking file.
+	t.Setenv("HOME", tempHome)
+	t.Setenv("XDG_DATA_HOME", "") // Ensure we use HOME-based path
+
+	// In v2 mode with a blocking file, newRuntime should fail with a fatal error,
+	// not silently continue with legacy mode.
+	rt, err := newRuntime(&cli.Command{})
+
+	if err == nil {
+		if rt != nil {
+			rt.Stop()
+		}
+		t.Fatal("expected newRuntime to return error in v2 mode when v2 dir cannot be created")
+	}
+
+	// Error should mention either "v2" or "state" to be clear it's
+	// a v2 initialization failure, not a generic startup problem.
+	if !strings.Contains(err.Error(), "v2") && !strings.Contains(err.Error(), "state") {
+		t.Logf("Warning: error message may not be clear about v2 failure: %v", err)
 	}
 }

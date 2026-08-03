@@ -97,6 +97,11 @@ type Runtime struct {
 // newRuntime builds the dependency graph without starting any monitors. All
 // construction-time errors are returned synchronously.
 func newRuntime(c *cli.Command) (*Runtime, error) {
+	// Resolve the runtime mode BEFORE constructing dependencies. In v2 mode,
+	// legacy state stores are not constructed; in legacy mode, v2 is not constructed.
+	// This ensures single authority: either v2 or legacy, never both.
+	v2Mode := os.Getenv("TERMYARD_V2_STATE") == "1"
+
 	rt := &Runtime{
 		stateMgr:   state.NewManager(),
 		tracker:    toolevents.NewTracker(),
@@ -123,22 +128,30 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	rt.detector = toolevents.NewDetector(rt.tracker, rt.listPanes, 5*time.Second)
 	rt.silenceMonitor = toolevents.NewSilenceMonitor(rt.tracker, rt.detector, rt.adapter)
 
-	attrsStore, err := sessionattrs.NewStore()
-	if err != nil {
-		logrus.WithError(err).Warn("failed to load session-attrs store, sync disabled")
-		attrsStore = nil
-	}
+	// Legacy state stores: only constructed in legacy mode.
+	var attrsStore *sessionattrs.Store
+	var orderStore *sessionorder.Store
+	var groupStore *groupsync.Store
 
-	orderStore, err := sessionorder.NewStore()
-	if err != nil {
-		logrus.WithError(err).Warn("failed to load session-order store, sync disabled")
-		orderStore = nil
-	}
+	if !v2Mode {
+		var err error
+		attrsStore, err = sessionattrs.NewStore()
+		if err != nil {
+			logrus.WithError(err).Warn("failed to load session-attrs store, sync disabled")
+			attrsStore = nil
+		}
 
-	groupStore, err := groupsync.NewStore()
-	if err != nil {
-		logrus.WithError(err).Warn("failed to load groups store, sync disabled")
-		groupStore = nil
+		orderStore, err = sessionorder.NewStore()
+		if err != nil {
+			logrus.WithError(err).Warn("failed to load session-order store, sync disabled")
+			orderStore = nil
+		}
+
+		groupStore, err = groupsync.NewStore()
+		if err != nil {
+			logrus.WithError(err).Warn("failed to load groups store, sync disabled")
+			groupStore = nil
+		}
 	}
 
 	prefStore, err := preferences.NewStore()
@@ -201,28 +214,29 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	logrus.WithField("name", nodeIdentity.Name).WithField("fingerprint", nodeIdentity.Fingerprint()).Info("node identity loaded")
 	rt.identity = nodeIdentity
 
-	// v2 state store is dormant by default. Opening it requires an explicit
-	// opt-in so integration tests and production processes do not touch real
-	// data until Task 3+ wiring is enabled.
-	if os.Getenv("TERMYARD_V2_STATE") == "1" {
-		if v2Dir, err := config.V2StateDir(); err != nil {
-			logrus.WithError(err).Warn("failed to determine v2 state directory")
-		} else if rt.v2store, err = state.OpenStore(v2Dir, nodeIdentity.Fingerprint(), state.StoreOptions{}); err != nil {
-			logrus.WithError(err).Warn("failed to open v2 state store")
-		} else {
-			rt.v2Catalog = state.NewCatalog(rt.v2store.Owner(), rt.v2store)
-			if err := rt.v2Catalog.Load(); err != nil {
-				logrus.WithError(err).Warn("failed to load v2 catalog")
-			} else {
-				enricher := &v2RuntimeEnricher{adapter: rt.adapter, actTracker: rt.actTracker}
-				rt.v2Reconciler = state.NewReconciler(rt.v2Catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
-				rt.v2CommandSvc = state.NewSessionCommandService(rt.v2Catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.v2Catalog.Owner()})
-				rt.v2RemoteCreate = state.NewRemoteCreateCoordinator(rt.v2Catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.v2Catalog.Owner()})
-				rt.stateMgr.EnableV2Shadow(rt.v2Catalog, rt.v2Reconciler, enricher)
-				rt.v2StateStream = ws.NewStateStreamHub(rt.v2Catalog, nil)
-				logrus.WithField("owner", rt.v2Catalog.Owner()).Info("v2 catalog shadow enabled")
-			}
+	// v2 mode: initialize v2 store, catalog, and services. All failures are FATAL.
+	if v2Mode {
+		v2Dir, err := config.V2StateDir()
+		if err != nil {
+			return nil, fmt.Errorf("failed to determine v2 state directory: %w", err)
 		}
+
+		rt.v2store, err = state.OpenStore(v2Dir, nodeIdentity.Fingerprint(), state.StoreOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to open v2 state store: %w", err)
+		}
+
+		rt.v2Catalog = state.NewCatalog(rt.v2store.Owner(), rt.v2store)
+		if err := rt.v2Catalog.Load(); err != nil {
+			return nil, fmt.Errorf("failed to load v2 catalog: %w", err)
+		}
+
+		enricher := &v2RuntimeEnricher{adapter: rt.adapter, actTracker: rt.actTracker}
+		rt.v2Reconciler = state.NewReconciler(rt.v2Catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
+		rt.v2CommandSvc = state.NewSessionCommandService(rt.v2Catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.v2Catalog.Owner()})
+		rt.v2RemoteCreate = state.NewRemoteCreateCoordinator(rt.v2Catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.v2Catalog.Owner()})
+		rt.v2StateStream = ws.NewStateStreamHub(rt.v2Catalog, nil)
+		logrus.WithField("owner", rt.v2Catalog.Owner()).Info("v2 mode enabled (legacy stores disabled)")
 	}
 
 	peerStore, err := identity.NewPeerStore()

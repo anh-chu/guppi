@@ -75,7 +75,7 @@ func TestSendStateUpdate(t *testing.T) {
 
 func TestHandleStateMessageUpdate(t *testing.T) {
 	mgr := makeTestManager(t)
-	mgr.RegisterPeer("peer-a", "remote-a", "", nil)
+	mgr.RegisterPeer("peera", "remotea", "", nil)
 	pc := NewPeerConnection("peer", 1)
 	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr}
 	log := logrus.NewEntry(logrus.New())
@@ -89,9 +89,9 @@ func TestHandleStateMessageUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handleStateMessage("peer-a", msg, pc, deps, log)
+	handleStateMessage("peera", msg, pc, deps, log)
 
-	got := getPeerSessions(mgr, "peer-a")
+	got := getPeerSessions(mgr, "peera")
 	if len(got) != 1 || got[0].Name != "remote" {
 		t.Fatalf("expected remote session, got %+v", got)
 	}
@@ -108,7 +108,7 @@ func TestHandleStateMessageRequestState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handleStateMessage("peer-a", msg, pc, deps, log)
+	handleStateMessage("peera", msg, pc, deps, log)
 
 	select {
 	case f := <-pc.LoLane():

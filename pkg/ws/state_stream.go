@@ -50,6 +50,10 @@ type stateStreamClient struct {
 	closeMu sync.Mutex
 
 	metrics *StateStreamMetrics
+
+	// testWaitBeforeDrain blocks writeLoop before draining slots, allowing
+	// tests to accumulate multiple publishes before any flush. Nil in production.
+	testWaitBeforeDrain chan struct{}
 }
 
 func newStateStreamClient(conn *websocket.Conn, metrics *StateStreamMetrics) *stateStreamClient {
@@ -102,6 +106,11 @@ func (c *stateStreamClient) writeLoop() {
 	for range c.signal {
 		if c.closed.Load() {
 			return
+		}
+		// If a test gate is set, wait for it before draining. This allows
+		// tests to accumulate multiple publishes before any flush occurs.
+		if c.testWaitBeforeDrain != nil {
+			<-c.testWaitBeforeDrain
 		}
 		c.mu.Lock()
 		cat := c.catalog
@@ -197,6 +206,18 @@ func (h *StateStreamHub) Close() {
 	}
 	if h.unsubscribeWorkspace != nil {
 		h.unsubscribeWorkspace()
+	}
+}
+
+// setTestWaitBeforeDrain sets a gate channel on all connected clients to block
+// writeLoop before draining slots. Used by tests to ensure multiple publishes
+// accumulate before any flush. Gate must be closed or send len(clients) signals
+// to unblock all pending drains.
+func (h *StateStreamHub) setTestWaitBeforeDrain(gate chan struct{}) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		c.testWaitBeforeDrain = gate
 	}
 }
 

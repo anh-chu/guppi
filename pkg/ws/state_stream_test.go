@@ -99,8 +99,15 @@ func TestStateStreamCoalescesToLatestRevision(t *testing.T) {
 	// Drain the initial complete snapshot.
 	_ = readTyped(t, conn)
 
+	// Create a test gate to block the writeLoop before draining slots.
+	// This ensures multiple publishes accumulate before any flush occurs,
+	// forcing deterministic coalescing.
+	gate := make(chan struct{})
+	hub.setTestWaitBeforeDrain(gate)
+
 	// Apply many mutations back-to-back without reading in between. The
-	// slow-reader window should coalesce these into the latest state.
+	// writeLoop will wake up on each publish but block on the gate, allowing
+	// all publishes to accumulate in the coalescing slots.
 	const n = 20
 	for i := 0; i < n; i++ {
 		params, _ := json.Marshal(state.LabelParams{Label: "irrelevant"})
@@ -116,12 +123,16 @@ func TestStateStreamCoalescesToLatestRevision(t *testing.T) {
 		_ = params
 	}
 
-	// Give the publisher a moment to finish, then drain every frame the
-	// writer actually sent. Coalescing means this must be fewer than n
-	// frames, each carrying a strictly increasing, complete revision, and the
-	// final frame must reflect all n sessions -- proving a dropped
-	// intermediate frame is always repaired by a later complete snapshot.
-	time.Sleep(150 * time.Millisecond)
+	// Close the gate to unblock the writeLoop, allowing it to drain all
+	// accumulated revisions. The coalescing logic ensures it sends only the
+	// latest catalog revision, not intermediate ones.
+	close(gate)
+
+	// Drain every frame the writer actually sent. Coalescing means this must
+	// be fewer than n frames, each carrying a strictly increasing, complete
+	// revision, and the final frame must reflect all n sessions -- proving a
+	// dropped intermediate frame is always repaired by a later complete
+	// snapshot.
 	var frames int
 	var lastCount int
 	var lastRevision float64

@@ -49,9 +49,9 @@ func newV2PeerConnection(hostID string) *PeerConnection {
 
 func TestSendCommand_Success(t *testing.T) {
 	mgr := makeTestV2Manager(t)
-	peerID := "remote-a"
+	peerID := "remotea"
 	pc := newV2PeerConnection(peerID)
-	mgr.RegisterPeer(peerID, "remote", "", pc)
+	mgr.RegisterPeer(peerID, "remotea", "", pc)
 
 	cmd := state.SessionCommand{
 		ID:     validCommandID,
@@ -99,10 +99,10 @@ func TestSendCommand_Success(t *testing.T) {
 
 func TestSendCommand_QueueFull(t *testing.T) {
 	mgr := makeTestV2Manager(t)
-	peerID := "remote-a"
+	peerID := "remotea"
 	pc := newV2PeerConnection(peerID)
 	pc.cmdQueue = newReliableCommandQueue(0)
-	mgr.RegisterPeer(peerID, "remote", "", pc)
+	mgr.RegisterPeer(peerID, "remotea", "", pc)
 
 	cmd := state.SessionCommand{
 		ID:     validCommandID2,
@@ -121,9 +121,9 @@ func TestSendCommand_LostReplyRetryReturnsSameReceipt(t *testing.T) {
 	// (waiter keyed by command ID) and by the command service deduplicating
 	// identical command IDs.
 	mgr := makeTestV2Manager(t)
-	peerID := "remote-a"
+	peerID := "remotea"
 	pc := newV2PeerConnection(peerID)
-	mgr.RegisterPeer(peerID, "remote", "", pc)
+	mgr.RegisterPeer(peerID, "remotea", "", pc)
 
 	cmd := state.SessionCommand{
 		ID:     validCommandID3,
@@ -176,14 +176,26 @@ func TestCatalogSlot_CoalescesSlowQueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Create a test gate to block the emitter before draining slots.
+	// This ensures multiple publishes accumulate before any flush occurs,
+	// forcing deterministic coalescing.
+	gate := make(chan struct{})
+	pc.catalogSlot.testWaitBeforeDrain = gate
+
 	go runSnapshotEmitter(ctx, pc, pc.catalogSlot)
 
-	// Push ten snapshots rapidly; the emitter should coalesce them.
+	// Push ten snapshots rapidly; the emitter will wake up on the first one
+	// but block on the gate, allowing all ten to accumulate in the slot.
 	for i := 0; i < 10; i++ {
 		payload := V2CatalogSnapshotPayload{Revision: int64(i)}
 		msg, _ := NewMessage(MsgV2CatalogSnapshot, payload)
 		pc.catalogSlot.swap(msg)
 	}
+
+	// Close the gate to unblock the emitter, allowing it to drain all
+	// accumulated snapshots. The coalescing logic ensures it emits only the
+	// latest revision.
+	close(gate)
 
 	select {
 	case f := <-pc.LoLane():
