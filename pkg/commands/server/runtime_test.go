@@ -9,6 +9,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/anh-chu/termyard/pkg/activity"
 	"github.com/anh-chu/termyard/pkg/peer"
 	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/state"
@@ -149,5 +150,141 @@ func TestRefreshDaemonState_ClassifiesBeforePublishing(t *testing.T) {
 	sessions := rt.stateMgr.GetSessions()
 	if len(sessions) != 1 || sessions[0].Name != "live" {
 		t.Fatalf("expected only live session in state, got %+v", sessions)
+	}
+}
+
+// TestV2RuntimeEnricherPreviewReturnsImmediately verifies that previewFor returns
+// cached values immediately without blocking on PTY captures. The enricher must
+// not delay catalog snapshot publication by waiting for capture operations.
+func TestV2RuntimeEnricherPreviewReturnsImmediately(t *testing.T) {
+	denricher := &v2RuntimeEnricher{
+		adapter:    &daemonAdapter{reg: &fakeRegistry{sessions: []pty.SessionInfo{{ID: "s1", Pid: 100, ShellPid: 101}}}},
+		actTracker: nil,
+	}
+
+	// First call to previewFor returns immediately with cached (empty) value.
+	start := time.Now()
+	preview1 := denricher.previewFor("s1")
+	elapsed := time.Since(start)
+
+	if elapsed > 50*time.Millisecond {
+		t.Fatalf("previewFor took %v, should be instant", elapsed)
+	}
+	if preview1 != "" {
+		t.Fatalf("first previewFor should return empty cache, got %q", preview1)
+	}
+
+	// Concurrent calls also return immediately.
+	start = time.Now()
+	for i := 0; i < 5; i++ {
+		preview := denricher.previewFor("s1")
+		if preview != "" {
+			t.Fatalf("previewFor should return empty cache, got %q", preview)
+		}
+	}
+	elapsed = time.Since(start)
+
+	if elapsed > 50*time.Millisecond {
+		t.Fatalf("concurrent previewFor calls took %v, should be instant", elapsed)
+	}
+}
+
+// TestV2RuntimeEnricherLastActivityFromTracker verifies that enricher only sets
+// LastActivity based on real activity evidence, never from wall-clock time.
+func TestV2RuntimeEnricherLastActivityFromTracker(t *testing.T) {
+	tracker := activity.NewTracker()
+
+	ref := state.SessionRef{
+		Owner:   state.OwnerID("testowner"),
+		Session: state.SessionID("s1"),
+		Window:  0,
+		Pane:    0,
+	}
+
+	enricher := &v2RuntimeEnricher{
+		adapter:    &daemonAdapter{reg: &fakeRegistry{sessions: []pty.SessionInfo{{ID: "s1", Pid: 100, ShellPid: 101}}}},
+		actTracker: tracker,
+	}
+
+	rec := state.LocalSessionRecord{
+		ID:    state.SessionID("s1"),
+		Owner: ref.Owner,
+		Ref:   ref,
+	}
+
+	// Refresh adapter snapshot so sessions are visible.
+	enricher.adapter.refresh()
+
+	// Without activity evidence, LastActivity should be zero.
+	rt := enricher.Enrich(ref, rec)
+	if !rt.LastActivity.IsZero() {
+		t.Fatalf("without activity evidence, LastActivity should be zero, got %v", rt.LastActivity)
+	}
+
+	// Record activity bytes. The tracker records activity with current time.
+	tracker.Record("s1", 100)
+
+	// Enricher should now report LastActivity based on tracker evidence.
+	rt = enricher.Enrich(ref, rec)
+	if rt.LastActivity.IsZero() {
+		t.Fatal("with activity evidence, LastActivity should not be zero")
+	}
+
+	// Verify time is recent (within last second).
+	now := time.Now()
+	diff := now.Sub(rt.LastActivity)
+	if diff < 0 || diff > time.Second {
+		t.Fatalf("LastActivity should be recent, got %v (diff from now: %v)", rt.LastActivity, diff)
+	}
+}
+
+// TestV2RuntimeEnricherLastActivityNotBumpedByReEnrichment verifies that a stale
+// session's LastActivity doesn't get refreshed just by being enriched repeatedly.
+func TestV2RuntimeEnricherLastActivityNotBumpedByReEnrichment(t *testing.T) {
+	tracker := activity.NewTracker()
+
+	ref := state.SessionRef{
+		Owner:   state.OwnerID("testowner"),
+		Session: state.SessionID("stale"),
+		Window:  0,
+		Pane:    0,
+	}
+
+	enricher := &v2RuntimeEnricher{
+		adapter:    &daemonAdapter{reg: &fakeRegistry{sessions: []pty.SessionInfo{{ID: "stale", Pid: 100, ShellPid: 101}}}},
+		actTracker: tracker,
+	}
+
+	rec := state.LocalSessionRecord{
+		ID:    state.SessionID("stale"),
+		Owner: ref.Owner,
+		Ref:   ref,
+	}
+
+	// Refresh adapter snapshot so sessions are visible.
+	enricher.adapter.refresh()
+
+	// Record activity once.
+	tracker.Record("stale", 1)
+
+	// Enrich once, get the LastActivity.
+	rt1 := enricher.Enrich(ref, rec)
+	if rt1.LastActivity.IsZero() {
+		t.Fatal("expected LastActivity from tracker")
+	}
+	firstTime := rt1.LastActivity
+
+	// Wait a bit, then enrich again without recording new activity.
+	time.Sleep(100 * time.Millisecond)
+	rt2 := enricher.Enrich(ref, rec)
+
+	// LastActivity should NOT have been bumped to time.Now(). The second
+	// enrichment should report the same (or very close) time since no new
+	// activity was recorded. The tracker's IdleSeconds will be higher, but
+	// the reported LastActivity time should remain stable.
+	diff := rt2.LastActivity.Sub(firstTime).Abs()
+	if diff > 50*time.Millisecond {
+		t.Fatalf("LastActivity should not change on re-enrichment without new activity: %v vs %v (diff: %v)",
+			firstTime, rt2.LastActivity, diff)
 	}
 }

@@ -949,7 +949,7 @@ func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionR
 		rt.PromptPreview = e.previewFor(d.ID)
 		if e.actTracker != nil {
 			if snap := e.actTracker.Get(d.ID); snap != nil && snap.IdleSeconds >= 0 {
-				rt.LastActivity = time.Now().Add(-time.Duration(snap.IdleSeconds * float64(time.Second)))
+				rt.LastActivity = snap.LastActive
 			}
 		}
 		break

@@ -14,10 +14,11 @@ type SessionActivity struct {
 
 // Snapshot is a point-in-time view of a session's activity
 type Snapshot struct {
-	Host        string  `json:"host,omitempty"` // peer fingerprint (empty = local)
-	SessionName string  `json:"session"`
-	IdleSeconds float64 `json:"idle_seconds"`
-	TotalBytes  int64   `json:"total_bytes"`
+	Host        string    `json:"host,omitempty"` // peer fingerprint (empty = local)
+	SessionName string    `json:"session"`
+	IdleSeconds float64   `json:"idle_seconds"`
+	TotalBytes  int64     `json:"total_bytes"`
+	LastActive  time.Time `json:"last_active,omitempty"` // actual time of last recorded activity
 }
 
 // Tracker tracks output activity across all sessions
@@ -80,6 +81,7 @@ func (t *Tracker) Get(session string) *Snapshot {
 		SessionName: session,
 		IdleSeconds: idle,
 		TotalBytes:  sa.totalBytes,
+		LastActive:  sa.lastActive,
 	}
 }
 

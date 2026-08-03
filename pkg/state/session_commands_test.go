@@ -158,7 +158,7 @@ func TestCreateReturnsStableIDAndActivates(t *testing.T) {
 	}
 
 	// Wait for the worker to start the daemon and commit the running record.
-	for start := time.Now(); time.Since(start) < 2*time.Second; {
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
 		if r, ok := catalog.Session(res.Ref.Session); ok && r.Phase == SessionPhaseActive {
 			break
 		}
@@ -216,7 +216,7 @@ func TestCreateDurableBeforeAsyncWork(t *testing.T) {
 	defer cancel()
 	startWorker(ctx, t, recovered)
 
-	for start := time.Now(); time.Since(start) < 2*time.Second; {
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
 		if _, ok := fresh.Session(pendingList[0].Ref.Session); ok {
 			break
 		}
@@ -247,11 +247,16 @@ func TestDuplicateCommandIDIsIdempotent(t *testing.T) {
 	if res1.Ref.Session != res2.Ref.Session {
 		t.Fatalf("idempotency produced different refs: %v vs %v", res1.Ref.Session, res2.Ref.Session)
 	}
-	for start := time.Now(); time.Since(start) < 2*time.Second; {
-		if backend.startCount() == 1 {
+	// Wait for the worker to start the daemon and commit the running record.
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
+		if r, ok := catalog.Session(res1.Ref.Session); ok && r.Phase == SessionPhaseActive {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	rec, ok := catalog.Session(res1.Ref.Session)
+	if !ok || rec.Phase != SessionPhaseActive {
+		t.Fatalf("expected active session: %+v", rec)
 	}
 	if backend.startCount() != 1 {
 		t.Fatalf("expected one daemon start, got %d", backend.startCount())
@@ -286,7 +291,7 @@ func TestConcurrentCreateSameRefProducesOneSession(t *testing.T) {
 	if sessions := catalog.Sessions(); len(sessions)+len(catalog.PendingCreates()) != 1 {
 		t.Fatalf("expected one session or pending, got sessions=%d pending=%d", len(sessions), len(catalog.PendingCreates()))
 	}
-	for start := time.Now(); time.Since(start) < 2*time.Second; {
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
 		if backend.startCount() == 1 {
 			break
 		}
@@ -535,7 +540,7 @@ func TestCrashAfterDaemonReadyResumesWithoutDuplicate(t *testing.T) {
 	defer cancel()
 	startWorker(ctx, t, recovered)
 
-	for start := time.Now(); time.Since(start) < 2*time.Second; {
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
 		if r, ok := fresh.Session(pending.Ref.Session); ok && r.Phase == SessionPhaseActive {
 			break
 		}

@@ -636,6 +636,66 @@ func (m *Manager) RemoveHost(id string) {
 	}
 }
 
+// validateCatalogOwnership checks that all sessions and layouts in the snapshot
+// have their Owner field matching the snapshot's top-level owner. Returns false
+// and logs a warning if any embedded owner differs.
+func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bool {
+	for _, sess := range snap.Sessions {
+		if sess.Owner != snap.Owner {
+			logrus.WithFields(logrus.Fields{
+				"peer": peerID,
+				"owner": string(snap.Owner),
+				"session_id": string(sess.ID),
+				"session_owner": string(sess.Owner),
+			}).Warn("dropping v2 snapshot: embedded session owner mismatch")
+			return false
+		}
+	}
+	for _, layout := range snap.Layouts {
+		if layout.Owner != snap.Owner {
+			logrus.WithFields(logrus.Fields{
+				"peer": peerID,
+				"owner": string(snap.Owner),
+				"layout_id": string(layout.ID),
+				"layout_owner": string(layout.Owner),
+			}).Warn("dropping v2 snapshot: embedded layout owner mismatch")
+			return false
+		}
+	}
+	return true
+}
+
+// validateWorkspaceTreeOwnership recursively checks that all leaf SessionRefs in
+// the tree have owner matching rec.Owner. Returns false and logs a warning if
+// any leaf ref differs.
+func validateWorkspaceTreeOwnership(peerID string, rec state.WorkspaceRecord) bool {
+	var checkNode func(*state.PaneNode) bool
+	checkNode = func(node *state.PaneNode) bool {
+		if node == nil {
+			return true
+		}
+		if node.IsLeaf() {
+			if node.Ref != nil && node.Ref.Owner != rec.Owner {
+				logrus.WithFields(logrus.Fields{
+					"peer": peerID,
+					"owner": string(rec.Owner),
+					"layout_id": string(rec.ID),
+					"ref_owner": string(node.Ref.Owner),
+				}).Warn("dropping v2 snapshot: embedded leaf owner mismatch")
+				return false
+			}
+			return true
+		}
+		if node.IsSplit() {
+			if !checkNode(node.First) || !checkNode(node.Second) {
+				return false
+			}
+		}
+		return true
+	}
+	return checkNode(&rec.Tree)
+}
+
 // bindRemoteOwner enforces the ownership binding: one owner per peer and one
 // peer per owner. The first snapshot a peer publishes establishes its sole
 // owner; a later snapshot from the same peer under a different owner, or a
@@ -663,10 +723,14 @@ func (m *Manager) bindRemoteOwner(peerID string, owner state.OwnerID) bool {
 // UpdateRemoteCatalog replaces the cached catalog for the snapshot's owner.
 // The previous cache (if any) is overwritten, not merged. The owner must be
 // the peer's bound owner and the revision must be increasing within the
-// peer's current connection (stale/delayed snapshots are rejected). If a
+// peer's current connection (stale/delayed snapshots are rejected). All
+// embedded session and layout owners must match the snapshot's owner. If a
 // remote store is wired, the complete set of accepted remote catalogs is
 // persisted.
 func (m *Manager) UpdateRemoteCatalog(peerID string, snap state.OwnerCatalogSnapshot) {
+	if !validateCatalogOwnership(peerID, snap) {
+		return
+	}
 	m.catalogMu.Lock()
 	if !m.bindRemoteOwner(peerID, snap.Owner) {
 		m.catalogMu.Unlock()
@@ -696,8 +760,12 @@ func (m *Manager) UpdateRemoteCatalog(peerID string, snap state.OwnerCatalogSnap
 
 // UpdateRemoteWorkspace replaces the cached workspace for owner. The owner
 // must be the peer's bound owner, and the workspace revision must be
-// increasing within the current connection (keyed per layout id).
+// increasing within the current connection (keyed per layout id). All
+// embedded leaf SessionRefs in the tree must have owner matching rec.Owner.
 func (m *Manager) UpdateRemoteWorkspace(peerID string, rec state.WorkspaceRecord) {
+	if !validateWorkspaceTreeOwnership(peerID, rec) {
+		return
+	}
 	m.catalogMu.Lock()
 	if !m.bindRemoteOwner(peerID, rec.Owner) {
 		m.catalogMu.Unlock()

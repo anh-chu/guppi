@@ -14,7 +14,7 @@ import type { LeaseToken, CheckoutCallbacks, PoolIdentity, TerminalPrefs, Connec
 // Re-export for external consumers (e.g. tests, clipboard usage)
 export { normalizeSelection }
 
-export function useTerminal(sessionName: string, hostId?: string, backend?: string) {
+export function useTerminal(sessionName: string, hostId?: string, backend?: string, sessionId?: string, ownerId?: string, generation?: string) {
   const { prefs } = usePreferences()
 
   // Pool key
@@ -63,7 +63,7 @@ export function useTerminal(sessionName: string, hostId?: string, backend?: stri
   // Checkout into a container — called from Terminal.tsx layout effect
   const checkout = useCallback((container: HTMLElement) => {
     containerRef.current = container
-    const identity: PoolIdentity = { sessionName, hostId, backend }
+    const identity: PoolIdentity = { sessionName, hostId, backend, sessionId, ownerId, generation }
     const lease = terminalPool.checkout(identity, buildPrefs(), container, callbacksRef.current)
     leaseRef.current = lease
 
@@ -72,7 +72,7 @@ export function useTerminal(sessionName: string, hostId?: string, backend?: stri
     if (snap) {
       termRef.current = terminalPool.getTerminalForPaste(lease)
     }
-  }, [sessionName, hostId, backend, buildPrefs])
+  }, [sessionName, hostId, backend, sessionId, ownerId, generation, buildPrefs])
 
   // Checkin — called from cleanup
   const checkin = useCallback(() => {

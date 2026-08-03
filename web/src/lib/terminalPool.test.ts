@@ -1286,4 +1286,62 @@ describe('TerminalPool', () => {
     expect(finalEntry.identity.sessionId).toBe('sid-42')
     expect(finalEntry.identity.generation).toBe('gen-2') // generation changed
   })
+
+  // ── v2 identity guard ──────────────────────────────────────────────
+
+  it('v2 identity with missing sessionId throws invariant error', () => {
+    const container = fakeEl()
+    // Backend daemon with ownerId/generation (v2 intent) but NO sessionId
+    // must throw, not silently fall back to name-based attach.
+    const v2IntentButNoId: PoolIdentity = {
+      sessionName: 'shell',
+      hostId: 'hostA',
+      backend: 'daemon',
+      ownerId: 'ownerX',
+      generation: 'gen-123',
+      // sessionId intentionally missing
+    }
+    expect(() => {
+      pool.checkout(v2IntentButNoId, defPrefs(), container, noopCbs())
+    }).toThrow(/v2 session requires sessionId/)
+  })
+
+  it('v2 identity with only generation but no sessionId throws', () => {
+    const container = fakeEl()
+    const v2IntentButNoId: PoolIdentity = {
+      sessionName: 'shell',
+      backend: 'daemon',
+      generation: 'gen-456',
+      // no ownerId or sessionId
+    }
+    expect(() => {
+      pool.checkout(v2IntentButNoId, defPrefs(), container, noopCbs())
+    }).toThrow(/v2 session requires sessionId/)
+  })
+
+  it('v2 identity with sessionId present does not throw', () => {
+    const container = fakeEl()
+    const v2Complete: PoolIdentity = {
+      sessionName: 'shell',
+      backend: 'daemon',
+      sessionId: 'sid-ok',
+      ownerId: 'ownerX',
+      generation: 'gen-789',
+    }
+    expect(() => {
+      pool.checkout(v2Complete, defPrefs(), container, noopCbs())
+    }).not.toThrow()
+  })
+
+  it('legacy identity with no v2 fields does not throw on missing sessionId', () => {
+    const container = fakeEl()
+    const legacyId: PoolIdentity = {
+      sessionName: 'shell',
+      backend: 'daemon',
+      // no sessionId, ownerId, or generation — pure legacy
+    }
+    expect(() => {
+      pool.checkout(legacyId, defPrefs(), container, noopCbs())
+    }).not.toThrow()
+  })
 })

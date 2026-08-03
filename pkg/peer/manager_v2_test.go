@@ -453,3 +453,166 @@ func TestRemoveHost_ForgetsRemoteCatalogPersists(t *testing.T) {
 		t.Fatal("forgotten peer reappeared after reload")
 	}
 }
+
+// TestRemoteSnapshot_SpoofedSessionOwnerRejected proves that a snapshot
+// containing a session with embedded owner != snap.Owner is rejected.
+func TestRemoteSnapshot_SpoofedSessionOwnerRejected(t *testing.T) {
+	mgr := makeV2Manager(t)
+	peerID := "peer-a"
+	owner := state.OwnerID("owner1")
+	ownerSpoof := state.OwnerID("ownerX")
+	sessionID := state.NewSessionID()
+
+	// Crafted snapshot with session owner != snap.Owner
+	spoofedSession := state.LocalSessionRecord{
+		ID:    sessionID,
+		Owner: ownerSpoof, // SPOOF: different from snapshot owner
+		Ref:   state.SessionRef{Owner: ownerSpoof, Session: sessionID},
+	}
+	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+		Owner:    owner,
+		Revision: 1,
+		Sessions: []state.LocalSessionRecord{spoofedSession},
+	})
+
+	// Snapshot must be rejected; no cache entry should exist
+	if _, ok := mgr.RemoteCatalogSnapshot(owner); ok {
+		t.Fatal("spoofed session owner snapshot was accepted")
+	}
+}
+
+// TestRemoteSnapshot_SpoofedLayoutOwnerRejected proves that a snapshot
+// containing a layout with embedded owner != snap.Owner is rejected.
+func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
+	mgr := makeV2Manager(t)
+	peerID := "peer-a"
+	owner := state.OwnerID("owner1")
+	ownerSpoof := state.OwnerID("ownerX")
+	layoutID := state.NewLayoutID()
+
+	// Crafted snapshot with layout owner != snap.Owner
+	spoofedLayout := state.LayoutRecord{
+		ID:    layoutID,
+		Owner: ownerSpoof, // SPOOF: different from snapshot owner
+		Order: 0,
+		Tree:  state.Leaf(state.SessionRef{Owner: owner, Session: "s1"}),
+	}
+	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+		Owner:    owner,
+		Revision: 1,
+		Layouts:  []state.LayoutRecord{spoofedLayout},
+	})
+
+	// Snapshot must be rejected; no cache entry should exist
+	if _, ok := mgr.RemoteCatalogSnapshot(owner); ok {
+		t.Fatal("spoofed layout owner snapshot was accepted")
+	}
+}
+
+// TestRemoteWorkspace_SpoofedLeafOwnerRejected proves that a workspace
+// containing a leaf SessionRef with embedded owner != rec.Owner is rejected.
+func TestRemoteWorkspace_SpoofedLeafOwnerRejected(t *testing.T) {
+	mgr := makeV2Manager(t)
+	peerID := "peer-a"
+	owner := state.OwnerID("owner1")
+	ownerSpoof := state.OwnerID("ownerX")
+
+	// Crafted leaf with owner != record owner
+	spoofedRef := state.SessionRef{Owner: ownerSpoof, Session: "s1"}
+	mgr.UpdateRemoteWorkspace(peerID, state.WorkspaceRecord{
+		ID:       "layout1",
+		Owner:    owner,
+		Revision: 1,
+		Tree:     state.Leaf(spoofedRef), // SPOOF: leaf owner != record owner
+	})
+
+	// Workspace must be rejected; no cache entry should exist
+	if _, ok := mgr.RemoteWorkspaceSnapshot(owner); ok {
+		t.Fatal("spoofed leaf owner workspace was accepted")
+	}
+}
+
+// TestRemoteSnapshot_OutOfOrderDelivery proves that revisions delivered
+// out of order within one connection (10, 8, 11) result in 11 being accepted
+// as authoritative, never regressing to 8.
+func TestRemoteSnapshot_OutOfOrderDelivery(t *testing.T) {
+	mgr := makeV2Manager(t)
+	peerID := "peer-a"
+	owner := state.OwnerID("owner1")
+
+	// Deliver revision 10
+	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
+	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+		Owner:    owner,
+		Revision: 10,
+		Sessions: []state.LocalSessionRecord{s1},
+	})
+	snap, _ := mgr.RemoteCatalogSnapshot(owner)
+	if len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s1" {
+		t.Fatalf("expected s1 in cache after rev 10")
+	}
+
+	// Deliver revision 8 (stale, out of order) -> must be rejected
+	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
+	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+		Owner:    owner,
+		Revision: 8,
+		Sessions: []state.LocalSessionRecord{s2},
+	})
+	snap, _ = mgr.RemoteCatalogSnapshot(owner)
+	if len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s1" {
+		t.Fatalf("stale revision 8 regressed cache: expected s1, got %+v", snap.Sessions)
+	}
+
+	// Deliver revision 11 (newer) -> must be accepted
+	s3 := state.LocalSessionRecord{ID: "s3", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s3"}}
+	mgr.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+		Owner:    owner,
+		Revision: 11,
+		Sessions: []state.LocalSessionRecord{s3},
+	})
+	snap, _ = mgr.RemoteCatalogSnapshot(owner)
+	if len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s3" {
+		t.Fatalf("revision 11 not accepted: got %+v", snap.Sessions)
+	}
+}
+
+// TestRemoteSnapshot_NewGenerationAcceptsLowerRevision proves that a new peer
+// connection (generation) allows the same revision counter to be re-accepted,
+// and even lower revisions if they are authoritative from a fresh connection.
+func TestRemoteSnapshot_NewGenerationAcceptsLowerRevision(t *testing.T) {
+	mgr := makeV2Manager(t)
+	remoteID, err := identity.Generate("remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := remoteID.Fingerprint()
+	owner := state.OwnerID(fp)
+
+	// First connection sends revision 100
+	conn1 := NewPeerConnection(fp, 64)
+	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, conn1)
+	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
+	mgr.UpdateRemoteCatalog(fp, state.OwnerCatalogSnapshot{
+		Owner:    owner,
+		Revision: 100,
+		Sessions: []state.LocalSessionRecord{s1},
+	})
+
+	// Reconnect with a new connection
+	conn2 := NewPeerConnection(fp, 64)
+	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, conn2)
+
+	// Fresh connection sends revision 5 (lower than 100) -> should be accepted
+	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
+	mgr.UpdateRemoteCatalog(fp, state.OwnerCatalogSnapshot{
+		Owner:    owner,
+		Revision: 5,
+		Sessions: []state.LocalSessionRecord{s2},
+	})
+
+	snap, ok := mgr.RemoteCatalogSnapshot(owner)
+	if !ok || len(snap.Sessions) != 1 || snap.Sessions[0].ID != "s2" {
+		t.Fatalf("new generation should accept lower revision, got %+v (ok=%v)", snap.Sessions, ok)
+	}
+}

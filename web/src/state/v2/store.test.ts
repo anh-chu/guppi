@@ -198,3 +198,46 @@ describe('V2Store connection state', () => {
     expect(notifications).toBe(1)
   })
 })
+
+describe('v2 session identity extraction for terminal pool', () => {
+  it('selectSessionByRef extracts sessionId and ownerId for terminal checkout', () => {
+    const store = new V2Store()
+    const sess = session('shell-1', 'active', 10)
+    sess._compat = { generation: 'gen-recovery-5' }
+    store.replaceCatalog(catalogSnapshot(1, [sess]), 1)
+
+    const found = selectSessionByRef(store.getState().catalog, ref('shell-1'))
+    expect(found).toBeDefined()
+    expect(found?.id).toBe('shell-1') // sessionId for pool key
+    expect(found?.owner).toBe('owner1') // ownerId for pool key
+    expect(found?._compat?.generation).toBe('gen-recovery-5') // generation for daemon reconnect
+  })
+
+  it('selectSessionByRef returns undefined for missing session', () => {
+    const store = new V2Store()
+    store.replaceCatalog(catalogSnapshot(1, [session('a')]), 1)
+    const found = selectSessionByRef(store.getState().catalog, ref('nonexistent'))
+    expect(found).toBeUndefined()
+  })
+
+  it('selectSessionByRef works after catalog update', () => {
+    const store = new V2Store()
+    store.replaceCatalog(catalogSnapshot(1, [session('old-name')]), 1)
+    const oldRef = ref('old-name')
+    const oldSession = selectSessionByRef(store.getState().catalog, oldRef)
+    expect(oldSession?.id).toBe('old-name')
+
+    // Catalog update removes old and adds new session
+    const newSess = session('new-name', 'active', 5)
+    newSess._compat = { generation: 'gen-2' }
+    store.replaceCatalog(catalogSnapshot(2, [newSess]), 1)
+
+    const newSession = selectSessionByRef(store.getState().catalog, ref('new-name'))
+    expect(newSession?.id).toBe('new-name')
+    expect(newSession?._compat?.generation).toBe('gen-2')
+
+    // Old session is gone
+    const notFound = selectSessionByRef(store.getState().catalog, oldRef)
+    expect(notFound).toBeUndefined()
+  })
+})

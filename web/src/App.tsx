@@ -41,6 +41,7 @@ import { isV2StateEnabled } from './lib/featureFlags'
 import { keyToSessionRef, splitIdAtPath } from './state/v2/paneTreeAdapter'
 import type { SessionRef } from './state/v2/types'
 import { sessionRefToKey } from './state/v2/paneTreeAdapter'
+import { selectSessionByRef } from './state/v2/projections'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
 
@@ -1444,19 +1445,39 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             <Setup onComplete={() => navigateTo(null)} />
           ) : currentView === 'session' && renderSingleView ? (
             <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
-              <Terminal
-                sessionName={parseSessionKey(renderSingleView).name}
-                hostId={parseSessionKey(renderSingleView).host || undefined}
-                backend={sessions.find(s => sessionKey(s) === renderSingleView)?.backend}
-                fullscreen={terminalFullscreen}
-                onToggleFullscreen={toggleFullscreen}
-                onOpenFile={(path) => wiki.openFile(
-                  path,
-                  renderSingleView ? cwdForKey(renderSingleView) : undefined,
-                  sessions.find(s => sessionKey(s) === renderSingleView)?.host,
-                  renderSingleView ? parseSessionKey(renderSingleView).name : undefined,
-                )}
-              />
+              {(() => {
+                // Resolve v2 session identity when bootstrap is ready
+                let sessionId: string | undefined
+                let ownerId: string | undefined
+                let generation: string | undefined
+                if (v2Enabled && v2State.state.catalogBootstrapped && renderSingleView) {
+                  const ref = keyToSessionRef(renderSingleView)
+                  const sess = selectSessionByRef(v2State.state.catalog, ref)
+                  if (sess) {
+                    sessionId = sess.id
+                    ownerId = sess.owner
+                    generation = sess._compat?.generation
+                  }
+                }
+                return (
+                  <Terminal
+                    sessionName={parseSessionKey(renderSingleView).name}
+                    hostId={parseSessionKey(renderSingleView).host || undefined}
+                    backend={sessions.find(s => sessionKey(s) === renderSingleView)?.backend}
+                    sessionId={sessionId}
+                    ownerId={ownerId}
+                    generation={generation}
+                    fullscreen={terminalFullscreen}
+                    onToggleFullscreen={toggleFullscreen}
+                    onOpenFile={(path) => wiki.openFile(
+                      path,
+                      renderSingleView ? cwdForKey(renderSingleView) : undefined,
+                      sessions.find(s => sessionKey(s) === renderSingleView)?.host,
+                      renderSingleView ? parseSessionKey(renderSingleView).name : undefined,
+                    )}
+                  />
+                )
+              })()}
             </div>
           ) : currentView === 'session' && renderPaneTree ? (
             <TiledView

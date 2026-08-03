@@ -447,6 +447,16 @@ export class TerminalPool {
     // Canonical pool identity is the immutable SessionRef (sessionId/ownerId),
     // NOT the display label. A rename must never rekey, dispose, or reconnect
     // an open terminal; label-only changes hit the same pool entry.
+    
+    // Guard: v2 session with missing sessionId is an invariant violation.
+    // If the caller provides ownerId or generation (v2 identity intent), sessionId
+    // MUST be present. Do not silently fall back to name-based attach.
+    if (identity.backend === 'daemon' && (identity.ownerId || identity.generation) && !identity.sessionId) {
+      const msg = `v2 session requires sessionId: ownerId=${identity.ownerId}, generation=${identity.generation}, sessionName=${identity.sessionName}`
+      console.error(msg)
+      throw new Error(msg)
+    }
+    
     const canonical = identity.sessionId
       ? TerminalPool.keyFor(identity.sessionId, identity.ownerId ?? identity.hostId)
       : TerminalPool.keyFor(identity.sessionName, identity.hostId)

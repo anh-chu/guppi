@@ -18,6 +18,10 @@ interface TerminalProps {
   sessionName: string
   hostId?: string
   backend?: string
+  // v2 stable identity (when available from v2 catalog)
+  sessionId?: string
+  ownerId?: string
+  generation?: string
   fullscreen?: boolean
   onToggleFullscreen?: () => void
   // In split view, only the active pane shows the mobile key bar to avoid duplicates.
@@ -31,7 +35,7 @@ interface TerminalProps {
   onOpenFile?: (path: string) => boolean
 }
 
-export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFullscreen, keyBarEnabled = true, onOpenFile }: TerminalProps) {
+export function Terminal({ sessionName, hostId, backend, sessionId, ownerId, generation, fullscreen, onToggleFullscreen, keyBarEnabled = true, onOpenFile }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const onOpenFileRef = useRef(onOpenFile)
   onOpenFileRef.current = onOpenFile
@@ -56,7 +60,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     selectionMenu,
     setSelectionMenu,
     reconfigure,
-  } = useTerminal(sessionName, hostId, backend)
+  } = useTerminal(sessionName, hostId, backend, sessionId, ownerId, generation)
 
   const {
     sendSequence,
@@ -205,7 +209,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
       fileLinkDisposableRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionName, hostId, backend])
+  }, [sessionName, hostId, backend, sessionId, ownerId, generation])
 
   // Reconfigure the live terminal when renderer, grapheme, or predictive-echo
   // prefs change, without tearing down the WebSocket connection.
