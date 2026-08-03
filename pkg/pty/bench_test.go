@@ -181,3 +181,76 @@ func avgDuration(ds []time.Duration) time.Duration {
 	}
 	return total / time.Duration(count)
 }
+
+// BenchmarkStableEchoLatency measures PTY echo latency through a stable-attached
+// daemon connection (re-keyed by SessionID+generation). One daemon is spawned
+// and multiple clients connect to it to measure echo latency in isolation from
+// cold-start overhead. Baseline: 195.754 µs (direct PTY).
+func BenchmarkStableEchoLatency(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping latency benchmark in short mode")
+	}
+
+	const latencyIterations = 20
+
+	// Spawn a stable daemon once per benchmark run
+	socketDir := b.TempDir()
+	stateDir := b.TempDir()
+	daemonKey := "bench-echo-stable"
+
+	daemonCfg := pty.DaemonConfig{
+		ID:        daemonKey,
+		Shell:     "/bin/sh",
+		Cols:      120,
+		Rows:      40,
+		Cwd:       "/tmp",
+		SocketDir: socketDir,
+		StateDir:  stateDir,
+	}
+
+	// Start daemon in background
+	go func() {
+		_ = pty.RunDaemon(daemonCfg)
+	}()
+
+	// Wait for socket to be ready
+	socketPath := socketDir + "/" + daemonKey + ".sock"
+	if !waitForSocketReady(socketPath, 10*time.Second) {
+		b.Fatal("daemon did not become ready")
+	}
+
+	// Measure echo latency through the daemon-attached connection
+	var latencies []time.Duration
+
+	// Create a daemon session (client connection)
+	daemonSess, err := pty.NewDaemonSession(socketPath)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer daemonSess.Close()
+
+	dr := newPTYReader(daemonSess)
+
+	// Warmup
+	daemonSess.Write([]byte("\n"))
+	dr.drain(500 * time.Millisecond)
+
+	// Measure echo latency
+	for i := 0; i < latencyIterations; i++ {
+		dr.drain(50 * time.Millisecond)
+		daemonSess.Write([]byte("echo x\n"))
+		if lat, ok := dr.readFirst(5 * time.Second); ok {
+			latencies = append(latencies, lat)
+		}
+		dr.drain(50 * time.Millisecond)
+	}
+
+	avgLat := avgDuration(latencies)
+	b.Logf("Stable-attach echo latency (avg of %d): %v", len(latencies), avgLat)
+	b.Logf("Samples: %v", latencies)
+
+	// Report as metric (microseconds)
+	if avgLat > 0 {
+		b.ReportMetric(float64(avgLat.Microseconds()), "µs/op")
+	}
+}

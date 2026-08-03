@@ -1227,4 +1227,63 @@ describe('TerminalPool', () => {
 
     vi.useRealTimers()
   })
+
+  // ── Terminal identity preservation across rename + generation change ──
+
+  it('terminal instance identity survives both rename and generation-change events', () => {
+    const container = fakeEl()
+    // Checkout with stable identity: immutable sessionId + generation.
+    const lease = pool.checkout(
+      defStableId('old-label', 'sid-42', 'gen-1', 'hostX'),
+      defPrefs(),
+      container,
+      noopCbs(),
+    )
+    const oldKey = lease.key
+
+    // Capture terminal instance reference before any mutations.
+    const terminalBefore = pool.getTerminalForPaste(lease)!
+    expect(terminalBefore).not.toBeNull()
+
+    // Record counters before events.
+    const tcB = terminalCreateCount
+    const tdB = terminalDisposeCount
+    const sockOpenB = socketOpenCount
+
+    // Event 1: Rename (label change). Simulate by rekeying the entry.
+    // Rekey moves entry to new key but preserves terminal instance.
+    const newKey = 'hostX/new-label'
+    pool.rekey(oldKey, newKey)
+
+    // Assert: terminal NOT disposed, NOT recreated.
+    expect(terminalCreateCount).toBe(tcB) // no new terminal created
+    expect(terminalDisposeCount).toBe(tdB) // old terminal NOT disposed
+
+    // Assert: pool entry moved to new key, terminal still same.
+    expect(hasEntry(pool, oldKey)).toBe(false)
+    expect(hasEntry(pool, newKey)).toBe(true)
+    const terminalAfterRename = getEntry(pool, newKey).terminal
+    expect(terminalAfterRename).toBe(terminalBefore)
+
+    // Event 2: Generation change (daemon recovery). Simulate by updateGeneration.
+    // updateGeneration reconnects the SAME pool entry in place (new socket, same terminal).
+    const genBefore = socketOpenCount
+    pool.updateGeneration(newKey, 'gen-2')
+
+    // Assert: terminal still NOT disposed, NOT recreated.
+    expect(terminalCreateCount).toBe(tcB) // no new terminal
+    expect(terminalDisposeCount).toBe(tdB) // original terminal still NOT disposed
+    // Assert: new socket connection opened (reconnect happened).
+    expect(socketOpenCount).toBeGreaterThan(genBefore)
+
+    // Assert: terminal instance identity unchanged after both events.
+    const terminalAfterGenChange = getEntry(pool, newKey).terminal
+    expect(terminalAfterGenChange).toBe(terminalBefore) // same instance throughout
+    expect(terminalAfterGenChange).toBe(terminalAfterRename) // transitive
+
+    // Assert: pool entry mutation fields updated correctly (identity only).
+    const finalEntry = getEntry(pool, newKey)
+    expect(finalEntry.identity.sessionId).toBe('sid-42')
+    expect(finalEntry.identity.generation).toBe('gen-2') // generation changed
+  })
 })

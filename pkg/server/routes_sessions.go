@@ -751,6 +751,12 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 					evt.Host = opts.PeerMgr.LocalID()
 					evt.HostName = opts.PeerMgr.LocalName()
 				}
+				// Stamp durable session identity (v2) when available
+				if opts.V2CommandSvc != nil {
+					if ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(info.Session); ok {
+						evt.SessionID = string(ref.Session)
+					}
+				}
 				events = append(events, evt)
 			}
 		}

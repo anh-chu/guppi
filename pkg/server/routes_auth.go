@@ -107,6 +107,14 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *gr
 				evt.Host = opts.PeerMgr.LocalID()
 				evt.HostName = opts.PeerMgr.LocalName()
 			}
+
+			// Stamp durable session identity (v2) when available
+			if opts.V2CommandSvc != nil && evt.SessionID == "" {
+				if ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(evt.Session); ok {
+					evt.SessionID = string(ref.Session)
+				}
+			}
+
 			if len(evt.Files) > 0 {
 				cwd := toolevents.ResolveSessionCWD(opts.CWDResolver, evt.Session)
 				evt.Artifacts = toolevents.EnrichArtifacts(evt.Files, cwd, evt.Tool, "hook")

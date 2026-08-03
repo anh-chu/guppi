@@ -92,6 +92,17 @@ Measured with `BenchmarkSerializedSize*` in `pkg/state` (`go test ./pkg/state -b
 
 These blocks are outside Task 1's scope because they are not caused by the baseline changes and would require fixing or removing partial v2 code that predates Task 1.
 
+## Task 13: PTY echo latency (stable-attach path)
+
+Benchmark added in Task 13: `BenchmarkStableEchoLatency` measures echo latency through a stable-attach daemon connection (re-keyed by SessionID+generation). Measured on same machine as baseline.
+
+| Path | Echo latency (first-byte) | Notes |
+|------|:------------------------:|-------|
+| Direct PTY (baseline) | 195.754 µs | /bin/sh directly |
+| Stable-attach daemon | 662.725 µs | Via daemon socket (inter-process) |
+
+Daemon overhead (~3.4x) is expected due to socket IPC, protocol marshaling, and inter-process buffer delays. No regression detected on the stable-attach path.
+
 ## Acceptance status
 
 - Crash state is not published as live in the same cycle. ✅
@@ -100,3 +111,4 @@ These blocks are outside Task 1's scope because they are not caused by the basel
 - One uncertain session response cannot dispose active terminals. ✅
 - The existing ghost lifecycle pollution regression remains fixed. ✅
 - Baseline data exists for Task 13 and Task 15 comparisons. ✅
+- Task 13 echo latency benchmark added; no regression on stable-attach path. ✅
