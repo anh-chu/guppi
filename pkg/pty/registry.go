@@ -55,6 +55,7 @@ func validSessionID(id string) bool {
 // Registry manages session daemon lifecycle: create, list, kill, capture.
 type Registry struct {
 	dir       string // socket directory
+	stateDir  string // optional override for DefaultStateDir() (tests)
 	failMu    sync.Mutex
 	failCount map[string]int // consecutive liveness failures per session
 
@@ -84,6 +85,21 @@ func (r *Registry) Dir() string {
 // and persist session metadata for crash recovery.
 func (r *Registry) SetLifecycleStore(store *LifecycleStore) {
 	r.lifecycleStore = store
+}
+
+// SetStateDir overrides the lifecycle state directory used when spawning
+// daemons. Empty means use DefaultStateDir(). Intended for tests.
+func (r *Registry) SetStateDir(dir string) {
+	r.stateDir = dir
+}
+
+// stateDirOrDefault returns the configured state directory or the platform
+// default.
+func (r *Registry) stateDirOrDefault() string {
+	if r.stateDir != "" {
+		return r.stateDir
+	}
+	return DefaultStateDir()
 }
 
 // LifecycleStore returns the durable lifecycle store, or nil if not set.
@@ -147,7 +163,7 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) error {
 	}
 
 	// Pass state dir for lifecycle persistence.
-	stateDir := DefaultStateDir()
+	stateDir := r.stateDirOrDefault()
 	args = append(args, "--state-dir", stateDir)
 
 	// Try to wrap in a systemd user scope for cgroup isolation.

@@ -1,12 +1,15 @@
 package peer
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/anh-chu/termyard/pkg/common"
 	"github.com/anh-chu/termyard/pkg/model"
+	"github.com/anh-chu/termyard/pkg/state"
 )
 
 // sendInitialPeerState pushes a snapshot containing only the local host
@@ -126,7 +129,204 @@ func getPeerSessions(m *Manager, peerID string) []*model.Session {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if h, ok := m.hosts[peerID]; ok {
-		return h.Sessions
+		out := make([]*model.Session, len(h.Sessions))
+		for i, s := range h.Sessions {
+			out[i] = copySession(s)
+		}
+		return out
 	}
 	return nil
+}
+
+func sendInitialV2Catalog(pc *PeerConnection, deps SessionDeps) {
+	if deps.Manager == nil || deps.Manager.localMgr == nil {
+		return
+	}
+	if !deps.Manager.localMgr.V2Enabled() {
+		return
+	}
+	catalog := deps.Manager.localMgr.V2Catalog()
+	if catalog == nil {
+		return
+	}
+	snap := catalog.LocalCatalogSnapshot()
+	payload := V2CatalogSnapshotPayload{
+		Owner:    snap.Owner,
+		Revision: snap.Revision,
+		Sessions: snap.Sessions,
+		Layouts:  snap.Layouts,
+	}
+	msg, err := NewMessage(MsgV2CatalogSnapshot, payload)
+	if err != nil {
+		return
+	}
+	pc.EnqueueV2CatalogSnapshot(msg)
+}
+
+func sendInitialV2Workspace(pc *PeerConnection, deps SessionDeps) {
+	if deps.Manager == nil || deps.Manager.localMgr == nil {
+		return
+	}
+	if !deps.Manager.localMgr.V2Enabled() {
+		return
+	}
+	catalog := deps.Manager.localMgr.V2Catalog()
+	if catalog == nil {
+		return
+	}
+	// Send the first layout as a complete workspace snapshot. The
+	// per-connection subscriber below forwards updates after each accepted
+	// command so the remote cache never sees intermediate steps.
+	layouts := catalog.Layouts()
+	if len(layouts) == 0 {
+		return
+	}
+	snap, err := catalog.WorkspaceSnapshot(layouts[0].ID)
+	if err != nil {
+		return
+	}
+	msg, err := NewMessage(MsgV2WorkspaceSnapshot, V2WorkspaceSnapshotPayload{
+		Owner:     snap.Record.Owner,
+		Revision:  snap.Record.Revision,
+		Workspace: snap.Record,
+	})
+	if err != nil {
+		return
+	}
+	pc.EnqueueV2WorkspaceSnapshot(msg)
+}
+
+// handleV2Message routes v2 catalog, workspace, and command messages.
+func handleV2Message(peerID string, msg *Message, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
+	switch msg.Type {
+	case MsgV2CatalogSnapshot:
+		var p V2CatalogSnapshotPayload
+		if err := json.Unmarshal(msg.Payload, &p); err != nil {
+			log.WithError(err).Debug("invalid v2 catalog snapshot")
+			return
+		}
+		deps.Manager.UpdateRemoteCatalog(peerID, state.OwnerCatalogSnapshot{
+			Owner:    p.Owner,
+			Revision: p.Revision,
+			Sessions: p.Sessions,
+			Layouts:  p.Layouts,
+		})
+
+	case MsgV2WorkspaceSnapshot:
+		var p V2WorkspaceSnapshotPayload
+		if err := json.Unmarshal(msg.Payload, &p); err != nil {
+			log.WithError(err).Debug("invalid v2 workspace snapshot")
+			return
+		}
+		deps.Manager.UpdateRemoteWorkspace(peerID, p.Workspace)
+
+	case MsgV2CommandRequest:
+		var p V2CommandRequestPayload
+		if err := json.Unmarshal(msg.Payload, &p); err != nil {
+			log.WithError(err).Debug("invalid v2 command request")
+			return
+		}
+		handleV2CommandRequest(peerID, p, pc, deps, log)
+
+	case MsgV2CommandReply:
+		var p V2CommandReplyPayload
+		if err := json.Unmarshal(msg.Payload, &p); err != nil {
+			log.WithError(err).Debug("invalid v2 command reply")
+			return
+		}
+		deps.Manager.deliverCommandReply(p)
+	}
+}
+
+func handleV2CommandRequest(peerID string, req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
+	reply := V2CommandReplyPayload{ID: req.ID}
+	switch req.Kind {
+	case V2CommandKindSession:
+		handleV2SessionCommandRequest(req, pc, deps, &reply)
+	case V2CommandKindWorkspace:
+		handleV2WorkspaceCommandRequest(req, pc, deps, &reply)
+	case V2CommandKindRemoteCreate:
+		handleV2RemoteCreateRequest(req, pc, deps, &reply)
+	default:
+		reply.Error = fmt.Sprintf("unknown command kind %q", req.Kind)
+	}
+	sendV2CommandReply(pc, reply)
+}
+
+func handleV2SessionCommandRequest(req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
+	if deps.V2CommandSvc == nil {
+		reply.Error = "v2 command service unavailable"
+		return
+	}
+	var cmd state.SessionCommand
+	if err := json.Unmarshal(req.Command, &cmd); err != nil {
+		reply.Error = "malformed command"
+		return
+	}
+	res, err := deps.V2CommandSvc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		reply.Error = err.Error()
+		return
+	}
+	reply.Handled = true
+	data, err := json.Marshal(res)
+	if err != nil {
+		reply.Error = "failed to encode result"
+		return
+	}
+	reply.Result = data
+}
+
+func handleV2WorkspaceCommandRequest(req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
+	cat := deps.LocalMgr.V2Catalog()
+	if cat == nil {
+		reply.Error = "v2 catalog not enabled"
+		return
+	}
+	var cmd state.WorkspaceCommand
+	if err := json.Unmarshal(req.Command, &cmd); err != nil {
+		reply.Error = "malformed workspace command"
+		return
+	}
+	if err := cat.ApplyWorkspaceCommand(cmd); err != nil {
+		reply.Error = err.Error()
+		return
+	}
+	reply.Handled = true
+}
+
+func handleV2RemoteCreateRequest(req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
+	if deps.RemoteCreateCoordinator == nil {
+		reply.Error = "remote create coordinator unavailable"
+		return
+	}
+	var r state.RemoteCreateRequest
+	if err := json.Unmarshal(req.Command, &r); err != nil {
+		reply.Error = "malformed remote create request"
+		return
+	}
+	res, err := deps.RemoteCreateCoordinator.ExecuteRemoteCreate(context.Background(), r)
+	if err != nil {
+		reply.Error = err.Error()
+		return
+	}
+	reply.Handled = true
+	data, err := json.Marshal(res)
+	if err != nil {
+		reply.Error = "failed to encode remote create result"
+		return
+	}
+	reply.Result = data
+}
+
+func sendV2CommandReply(pc *PeerConnection, reply V2CommandReplyPayload) {
+	msg, err := NewMessage(MsgV2CommandReply, reply)
+	if err != nil {
+		return
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	pc.enqueue(pc.lo, wireFrame{data: data})
 }

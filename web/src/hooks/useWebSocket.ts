@@ -9,20 +9,32 @@ export function useWebSocket(path: string, onMessage: (data: any) => void) {
   // Keep a ref to the latest onMessage so the WebSocket always calls the current version
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage
+  // Connection generation: once cleanup runs, callbacks from the old socket
+  // must not open a new connection or mutate React state.
+  const generationRef = useRef(0)
+  const disposedRef = useRef(false)
 
   useEffect(() => {
+    disposedRef.current = false
+
     function connect() {
+      if (disposedRef.current) return
+      generationRef.current++
+      const myGen = generationRef.current
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const url = `${protocol}//${window.location.host}${path}`
       const ws = new WebSocket(url)
       wsRef.current = ws
 
       ws.onopen = () => {
+        if (disposedRef.current || generationRef.current !== myGen) return
         hasConnected.current = true
         setConnected(true)
       }
 
       ws.onmessage = (evt) => {
+        if (disposedRef.current || generationRef.current !== myGen) return
         try {
           const data = JSON.parse(evt.data)
           onMessageRef.current(data)
@@ -33,6 +45,8 @@ export function useWebSocket(path: string, onMessage: (data: any) => void) {
       }
 
       ws.onclose = () => {
+        // Ignore close events from sockets that outlive their effect generation.
+        if (disposedRef.current || generationRef.current !== myGen) return
         // Don't flash the disconnect banner if the page is just hidden
         // or if we haven't established a connection yet (initial connect)
         if (!hiddenRef.current && hasConnected.current) {
@@ -47,12 +61,14 @@ export function useWebSocket(path: string, onMessage: (data: any) => void) {
       }
 
       ws.onerror = (err) => {
+        if (disposedRef.current || generationRef.current !== myGen) return
         console.error(`WS error: ${path}`, err)
         ws.close()
       }
     }
 
     function onVisibilityChange() {
+      if (disposedRef.current) return
       if (document.hidden) {
         hiddenRef.current = true
       } else {
@@ -72,6 +88,7 @@ export function useWebSocket(path: string, onMessage: (data: any) => void) {
     window.addEventListener('pageshow', onVisibilityChange)
 
     return () => {
+      disposedRef.current = true
       document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('pageshow', onVisibilityChange)
       if (reconnectTimer.current) {

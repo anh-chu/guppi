@@ -639,3 +639,70 @@ func TestDismissSession_NoLifecycleRecordCleansFilesOnly(t *testing.T) {
 		t.Error("metadata file should be removed after dismiss")
 	}
 }
+
+// TestLifecycleStore_DoesNotPolluteDefaultStateDir is a regression guard:
+// benchmark and comparison tests must write lifecycle records only into their
+// own isolated directories, never into the user's real state directory.
+func TestLifecycleStore_DoesNotPolluteDefaultStateDir(t *testing.T) {
+	realDefault := DefaultStateDir()
+
+	controlled := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", controlled)
+
+	isolated := t.TempDir()
+	reg := NewRegistry(t.TempDir())
+	store, err := NewLifecycleStore(isolated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.SetLifecycleStore(store)
+
+	const id = "lifecycle-isolation-probe"
+	if err := store.RecordActive(LifecycleRecord{ID: id, DaemonPID: 999999}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The record must land only in the explicitly-provided state directory.
+	if _, err := os.Stat(filepath.Join(isolated, id+".lifecycle.json")); err != nil {
+		t.Fatalf("expected record in isolated dir: %v", err)
+	}
+
+	// It must NOT appear in the real default state directory.
+	entries, err := os.ReadDir(realDefault)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("failed to read real default dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() == id+".lifecycle.json" {
+			t.Fatalf("lifecycle probe leaked into real state dir %s", realDefault)
+		}
+	}
+}
+
+func TestGenerationFor(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLifecycleStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(t.TempDir())
+	reg.SetLifecycleStore(store)
+
+	// No record -> empty.
+	if got := reg.GenerationFor("missing"); got != "" {
+		t.Fatalf("GenerationFor(missing) = %q, want empty", got)
+	}
+
+	// Lifecycle record generation wins.
+	if err := store.RecordActive(LifecycleRecord{
+		ID:         "s1",
+		State:      LifecycleActive,
+		DaemonPID:  12345,
+		Generation: "gen-live",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.GenerationFor("s1"); got != "gen-live" {
+		t.Fatalf("GenerationFor(s1) = %q, want gen-live", got)
+	}
+}

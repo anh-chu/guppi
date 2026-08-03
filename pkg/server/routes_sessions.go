@@ -27,6 +27,7 @@ import (
 	"github.com/anh-chu/termyard/pkg/preferences"
 	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/sessionlaunch"
+	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/stats"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 	"github.com/anh-chu/termyard/pkg/ws"
@@ -231,6 +232,30 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			} else {
 				http.Error(w, "peer send queue full", http.StatusBadGateway)
 			}
+			return
+		}
+
+		if opts.V2CommandSvc != nil && opts.V2Catalog != nil {
+			ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(req.Session)
+			if !ok {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			label := req.DisplayName
+			if req.Clear {
+				label = string(ref.Session)
+			}
+			params, _ := json.Marshal(state.LabelParams{Label: label})
+			if _, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+				ID:     state.NewCommandID(),
+				Ref:    ref,
+				Action: state.ActionLabel,
+				Params: params,
+			}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
@@ -498,6 +523,26 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			return
 		}
 
+		// v2 local command path.
+		if opts.V2CommandSvc != nil && opts.V2Catalog != nil {
+			ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(req.Name)
+			if !ok {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			if _, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+				ID:     state.NewCommandID(),
+				Ref:    ref,
+				Action: state.ActionKill,
+			}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// Legacy local session kill.
 		// Capture worktree path before state is cleared.
 		var worktreePath string
 		if req.RemoveWorktree && opts.StateMgr != nil {
@@ -532,6 +577,27 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 
 	// Crashed sessions recovery endpoints
 	r.Get("/crashed-sessions", func(w http.ResponseWriter, r *http.Request) {
+		if opts.V2Catalog != nil {
+			var out []map[string]string
+			for _, rec := range opts.V2Catalog.Sessions() {
+				if rec.Phase != state.SessionPhaseCrashed {
+					continue
+				}
+				name := rec.Compat.Name
+				if name == "" {
+					name = string(rec.ID)
+				}
+				out = append(out, map[string]string{
+					"id":         name,
+					"shell":      rec.Compat.Shell,
+					"cwd":        rec.Compat.Cwd,
+					"generation": rec.Compat.Generation,
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(out)
+			return
+		}
 		if opts.DaemonReg == nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode([]interface{}{})
@@ -543,10 +609,6 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 	})
 
 	r.Post("/crashed-sessions/{id}/recover", func(w http.ResponseWriter, r *http.Request) {
-		if opts.DaemonReg == nil {
-			http.Error(w, "daemon registry unavailable", http.StatusServiceUnavailable)
-			return
-		}
 		id := chi.URLParam(r, "id")
 		if id == "" {
 			http.Error(w, "id is required", http.StatusBadRequest)
@@ -558,6 +620,35 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			// Empty body is fine; use crashed-record defaults.
+		}
+
+		if opts.V2CommandSvc != nil && opts.V2Catalog != nil {
+			ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(id)
+			if !ok {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			params, _ := json.Marshal(state.RecoverParams{Shell: body.Shell, Cwd: body.Cwd})
+			if _, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+				ID:     state.NewCommandID(),
+				Ref:    ref,
+				Action: state.ActionRecover,
+				Params: params,
+			}); err != nil {
+				http.Error(w, "recover failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if opts.RefreshSessions != nil {
+				opts.RefreshSessions()
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"ok": "true", "session": id})
+			return
+		}
+
+		if opts.DaemonReg == nil {
+			http.Error(w, "daemon registry unavailable", http.StatusServiceUnavailable)
+			return
 		}
 		if err := opts.DaemonReg.RecoverSession(id, body.Shell, body.Cwd); err != nil {
 			http.Error(w, "recover failed: "+err.Error(), http.StatusInternalServerError)
@@ -571,13 +662,32 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 	})
 
 	r.Delete("/crashed-sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if opts.DaemonReg == nil {
-			http.Error(w, "daemon registry unavailable", http.StatusServiceUnavailable)
-			return
-		}
 		id := chi.URLParam(r, "id")
 		if id == "" {
 			http.Error(w, "id is required", http.StatusBadRequest)
+			return
+		}
+
+		if opts.V2CommandSvc != nil && opts.V2Catalog != nil {
+			ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(id)
+			if !ok {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			if _, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+				ID:     state.NewCommandID(),
+				Ref:    ref,
+				Action: state.ActionDismiss,
+			}); err != nil {
+				http.Error(w, "dismiss failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		if opts.DaemonReg == nil {
+			http.Error(w, "daemon registry unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		if err := opts.DaemonReg.DismissSession(id); err != nil {
@@ -1169,11 +1279,17 @@ func registerWSRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 		r.With(authMw).Get("/ws/session", daemonWS)
 		r.With(authMw).Get("/ws/direct-session", ptyHandler.HandleDirectSession)
 		r.With(authMw).Get("/ws/daemon-session", daemonWS)
+		if opts.V2StateStream != nil {
+			r.With(authMw).Get("/ws/v2/state", opts.V2StateStream.HandleState)
+		}
 	} else {
 		r.Get("/ws/events", hub.HandleEvents)
 		r.Get("/ws/session", daemonWS)
 		r.Get("/ws/direct-session", ptyHandler.HandleDirectSession)
 		r.Get("/ws/daemon-session", daemonWS)
+		if opts.V2StateStream != nil {
+			r.Get("/ws/v2/state", opts.V2StateStream.HandleState)
+		}
 	}
 }
 
@@ -1221,7 +1337,14 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 		return
 	}
 	defer browserWS.Close()
-	ok := serveViewerPerStream(browserWS, peerConn, opts, hostID, sessionName, cols, rows)
+	// Forward the stable identity (immutable SessionID + generation) when the
+	// browser supplied it. The receiving peer prefers the SessionID as its
+	// daemon socket key and only falls back to the legacy `name` when no
+	// SessionID was carried (a v2 session is routed stably; a pre-v2 peer/label
+	// keeps working over the name path).
+	sessionID := r.URL.Query().Get("sessionID")
+	generation := r.URL.Query().Get("generation")
+	ok := serveViewerPerStream(browserWS, peerConn, opts, hostID, sessionName, sessionID, generation, cols, rows)
 	if !ok {
 		// Write a close frame so the browser knows this is a terminal failure,
 		// not a normal closure. Use application-level close code 4000 + reason.
@@ -1230,7 +1353,7 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 	}
 }
 
-func serveViewerPerStream(browserWS *websocket.Conn, peerConn *peer.PeerConnection, opts *Options, hostID, session string, cols, rows uint16) bool {
+func serveViewerPerStream(browserWS *websocket.Conn, peerConn *peer.PeerConnection, opts *Options, hostID, session, sessionID, generation string, cols, rows uint16) bool {
 	if opts == nil || opts.PeerMgr == nil || opts.Identity == nil || opts.StreamReg == nil {
 		return false
 	}
@@ -1240,6 +1363,8 @@ func serveViewerPerStream(browserWS *websocket.Conn, peerConn *peer.PeerConnecti
 	openMsg, _ := peer.NewMessage(peer.MsgOpenTerminal, peer.OpenTerminalPayload{
 		StreamID:     streamID,
 		Session:      session,
+		SessionID:    sessionID,
+		Generation:   generation,
 		Cols:         cols,
 		Rows:         rows,
 		Token:        token,
@@ -1281,15 +1406,15 @@ func serveViewerPerStream(browserWS *websocket.Conn, peerConn *peer.PeerConnecti
 
 // handleDaemonSession upgrades to WebSocket and bridges a session daemon
 // (direct PTY with persistence) to the browser. Query params: name=<id>, cols=<>, rows=<>.
+//
+// Stable re-keying: when `sessionID` (immutable SessionID) and `generation`
+// are supplied, the attach is routed by the immutable SessionID and validated
+// against the current generation (from the v2 catalog, when present) BEFORE
+// any PTY bytes stream. A mismatched or superseded generation returns a typed
+// JSON error so an open terminal can never attach to a stale daemon generation.
 func handleDaemonSession(w http.ResponseWriter, r *http.Request, opts *Options) {
 	if opts.DaemonReg == nil {
 		http.Error(w, "daemon sessions not available", http.StatusServiceUnavailable)
-		return
-	}
-
-	name := r.URL.Query().Get("name")
-	if name == "" {
-		http.Error(w, "missing name", http.StatusBadRequest)
 		return
 	}
 
@@ -1303,6 +1428,19 @@ func handleDaemonSession(w http.ResponseWriter, r *http.Request, opts *Options) 
 	}
 
 	replayGated := r.URL.Query().Get("replay") == "1"
+
+	// v2 stable-attach path: key the daemon lookup by immutable SessionID and
+	// gate on generation. Legacy clients keep routing by `name`.
+	if idParam := r.URL.Query().Get("sessionID"); idParam != "" || r.URL.Query().Get("generation") != "" {
+		handleDaemonSessionStable(w, r, opts, idParam, uint16(cols), uint16(rows), replayGated)
+		return
+	}
+
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "missing name", http.StatusBadRequest)
+		return
+	}
 
 	socketPath := opts.DaemonReg.SocketPath(name)
 	sess, err := pty.NewDaemonSession(socketPath)
@@ -1341,6 +1479,109 @@ func handleDaemonSession(w http.ResponseWriter, r *http.Request, opts *Options) 
 	if opts.RefreshSessions != nil {
 		opts.RefreshSessions()
 	}
+}
+
+// daemonAttachCode is a stable, typed reject reason for generation-gated
+// daemon attach. It mirrors the v2 wire error vocabulary where possible.
+type daemonAttachCode string
+
+const (
+	daemonAttachNotFound          daemonAttachCode = "not_found"
+	daemonAttachGenerationChanged daemonAttachCode = "generation_changed"
+	daemonAttachNotReady          daemonAttachCode = "not_ready"
+)
+
+// handleDaemonSessionStable validates a stable-identity attach request against
+// the current daemon generation and, when it matches, bridges the daemon PTY
+// exactly like the legacy name-keyed path. The immutable SessionID is the
+// daemon key (DaemonKey defaults to SessionID), so rename never changes the
+// route; only a generation change (recovery/restart) or a missing/starting
+// session can reject the attach.
+func handleDaemonSessionStable(w http.ResponseWriter, r *http.Request, opts *Options, sessionID string, cols, rows uint16, replayGated bool) {
+	sid := state.SessionID(sessionID)
+	if !validSessionIDQuery(sid) {
+		writeDaemonAttachError(w, daemonAttachNotFound, http.StatusBadRequest, "missing or invalid sessionID")
+		return
+	}
+
+	requestedGen := r.URL.Query().Get("generation")
+
+	// Resolve the current generation. Prefer the v2 catalog when it is
+	// configured (it is authoritative for created sessions); otherwise ask the
+	// daemon registry via its lifecycle record.
+	currentGen := ""
+	phaseOK := true
+	if opts.V2Catalog != nil {
+		if rec, ok := opts.V2Catalog.Session(sid); ok {
+			currentGen = rec.Compat.Generation
+			phaseOK = rec.Phase == state.SessionPhaseActive || rec.Phase == state.SessionPhaseStarting
+		}
+	}
+	if currentGen == "" && opts.DaemonReg != nil {
+		currentGen = opts.DaemonReg.GenerationFor(string(sid))
+	}
+
+	// A requested generation that differs from the live one is a stale attach:
+	// the browser must reconnect with the current generation before any bytes
+	// stream. This is what lets recovery change generation and re-key the open
+	// terminal instead of silently splicing onto an old daemon.
+	if requestedGen != "" && currentGen != "" && requestedGen != currentGen {
+		writeDaemonAttachError(w, daemonAttachGenerationChanged, http.StatusConflict, "session generation changed; reconnect with current generation")
+		return
+	}
+
+	// Session record exists but is not in an attachable phase (pending/crashed/
+	// cleanly ended/dismissed) and no stable generation matches yet.
+	if !phaseOK && currentGen == "" {
+		writeDaemonAttachError(w, daemonAttachNotReady, http.StatusServiceUnavailable, "session is not ready for attach")
+		return
+	}
+
+	socketPath := opts.DaemonReg.SocketPath(string(sid))
+	sess, err := pty.NewDaemonSession(socketPath)
+	if err != nil {
+		http.Error(w, "daemon connect: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sess.Resize(cols, rows)
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin:    ws.CheckSameOrigin,
+		ReadBufferSize: 1024, WriteBufferSize: 1024 * 32,
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		sess.Close()
+		return
+	}
+	defer conn.Close()
+
+	log := logrus.WithFields(logrus.Fields{"session_id": string(sid), "generation": currentGen, "backend": "daemon"})
+	paneID := string(sid) + ":0.0"
+	var onOutput func()
+	if opts.OnDaemonOutput != nil {
+		onOutput = func() { opts.OnDaemonOutput(paneID) }
+	}
+	ws.BridgeDirectPTY(conn, sess, string(sid), opts.ActivityTracker, log, replayGated, onOutput)
+
+	if opts.RefreshSessions != nil {
+		opts.RefreshSessions()
+	}
+}
+
+// validSessionIDQuery reports whether sid is a canonical SessionID (lowercase
+// base32 per pkg/state/ids.go). Anything else -- including path separators,
+// ".." sequences, control characters, or over-long values -- is rejected
+// before it can be used as a daemon socket key.
+func validSessionIDQuery(sid state.SessionID) bool {
+	return sid.Validate() == nil
+}
+
+func writeDaemonAttachError(w http.ResponseWriter, code daemonAttachCode, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": string(code), "message": msg})
 }
 
 func enrichSessionsFromTracker(sessions []*model.Session, tracker *toolevents.Tracker, localHost string) {

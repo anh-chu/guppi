@@ -69,9 +69,12 @@ type Options struct {
 	LinkSupervisor *peer.LinkSupervisor
 
 	// Launch / registry
-	Launch    *sessionlaunch.Service
-	DaemonReg *pty.Registry
-	Hub       *ws.Hub
+	Launch         *sessionlaunch.Service
+	DaemonReg      *pty.Registry
+	Hub            *ws.Hub
+	V2CommandSvc   *state.SessionCommandService
+	V2Catalog      *state.Catalog
+	V2StateStream  *ws.StateStreamHub
 
 	// Push notifications / media
 	PushKeys  *webpush.VAPIDKeys

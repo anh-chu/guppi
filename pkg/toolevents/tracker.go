@@ -57,7 +57,8 @@ type Event struct {
 	Kind           string          `json:"kind,omitempty"`
 	Host           string          `json:"host,omitempty"`             // peer fingerprint (empty = local)
 	HostName       string          `json:"host_name,omitempty"`        // peer display name
-	Session        string          `json:"session"`                    // session name
+	Session        string          `json:"session"`                    // session name (display alias, mutable on rename)
+	SessionID      string          `json:"session_id,omitempty"`       // durable session identity; stable across renames
 	Window         int             `json:"window"`                     // window index
 	Pane           string          `json:"pane,omitempty"`             // pane ID (optional)
 	Message        string          `json:"message,omitempty"`          // human-readable detail
@@ -77,6 +78,18 @@ type PaneKey struct {
 	Session string
 	Window  int
 	Pane    string
+}
+
+// eventSessionKey returns the session identity used to track and correlate
+// an event: the durable SessionID when present, otherwise the session name.
+// The name is a display alias that can change on rename, so preferring the
+// stable id keeps already-recorded (in-flight) events correlated across
+// renames. Legacy events without a SessionID fall back to the name.
+func eventSessionKey(sessionID, sessionName string) string {
+	if sessionID != "" {
+		return sessionID
+	}
+	return sessionName
 }
 
 type SessionMeta struct {
@@ -195,7 +208,7 @@ func (t *Tracker) load() {
 		if evt == nil {
 			continue
 		}
-		t.events[PaneKey{Host: evt.Host, Session: evt.Session, Window: evt.Window, Pane: evt.Pane}] = evt
+		t.events[PaneKey{Host: evt.Host, Session: eventSessionKey(evt.SessionID, evt.Session), Window: evt.Window, Pane: evt.Pane}] = evt
 	}
 	for k, arts := range st.Artifacts {
 		if len(arts) == 0 {
@@ -282,7 +295,7 @@ func (t *Tracker) Record(evt *Event) {
 
 	key := PaneKey{
 		Host:    evt.Host,
-		Session: evt.Session,
+		Session: eventSessionKey(evt.SessionID, evt.Session),
 		Window:  evt.Window,
 		Pane:    evt.Pane,
 	}
@@ -498,12 +511,24 @@ func (t *Tracker) GetAll() []*Event {
 	return events
 }
 
-// Clear removes a specific event by session/window/pane
-// Clear removes a specific event by host/session/window/pane
+// Clear removes a specific event by session/window/pane, matching either the
+// durable SessionID or the session name so a rename cannot orphan a retained
+// in-flight event addressed by its stable identity.
 func (t *Tracker) Clear(host, session string, window int, pane string) {
 	t.mu.Lock()
-	key := PaneKey{Host: host, Session: session, Window: window, Pane: pane}
-	delete(t.events, key)
+	// Scan for events that share the pane and correlate by stable id or name
+	// (storage prefers SessionID when present, so an exact key built from the
+	// name alone may miss a rekeyed entry).
+	for k, evt := range t.events {
+		if evt.Pane != pane || evt.Window != window || evt.Host != host {
+			continue
+		}
+		if evt.SessionID == session || evt.Session == session {
+			delete(t.events, k)
+		}
+	}
+	// Exact-position delete for directly-constructed legacy keys.
+	delete(t.events, PaneKey{Host: host, Session: session, Window: window, Pane: pane})
 	t.mu.Unlock()
 }
 
@@ -602,14 +627,16 @@ func (t *Tracker) SessionMetaFor(host, session string) SessionMeta {
 	return t.sessionMeta[host+"\x00"+session]
 }
 
-// GetForSession returns events for a specific session
+// GetForSession returns events for a specific session. The argument may be
+// the durable SessionID or the session name; the stable id takes precedence
+// so a rename (which changes only the name) does not lose correlation.
 func (t *Tracker) GetForSession(session string) []*Event {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
 	var events []*Event
 	for key, evt := range t.events {
-		if key.Session == session {
+		if key.Session == session || evt.SessionID == session || evt.Session == session {
 			events = append(events, evt)
 		}
 	}

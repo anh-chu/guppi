@@ -4,6 +4,7 @@ package sessionlaunch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/git"
 	"github.com/anh-chu/termyard/pkg/model"
+	"github.com/anh-chu/termyard/pkg/state"
 )
 
 // Typed launch errors. HTTP/router layers map these to status codes without
@@ -38,6 +40,7 @@ type Request struct {
 	ScheduleID     string
 	LocalHost      string // the current node ID, used both for target classification (local vs remote) and for local schedule-metadata key construction
 	Fallback       string // used only for local requests when a name cannot be derived
+	CommandID      string // stable command id for v2 state commands (optional)
 
 	Cols uint16
 	Rows uint16
@@ -109,17 +112,23 @@ type ExistingNames func(host string) []string
 // nil skips the refresh.
 type RefreshFunc func()
 
+// V2Commander executes state commands against the v2 catalog.
+type V2Commander interface {
+	ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error)
+}
+
 // Service is the sole owner of session launch semantics.
 type Service struct {
-	DaemonReg DaemonRegistry
-	StateMgr  StateManager
-	Attrs     ScheduleAttrStore
-	Hub       BrowserHub
-	Identity  Identity
-	Remote    RemoteLauncher
-	Fanout    PeerFanout
-	Names     ExistingNames
-	Refresh   RefreshFunc
+	DaemonReg    DaemonRegistry
+	StateMgr     StateManager
+	Attrs        ScheduleAttrStore
+	Hub          BrowserHub
+	Identity     Identity
+	Remote       RemoteLauncher
+	Fanout       PeerFanout
+	Names        ExistingNames
+	Refresh      RefreshFunc
+	V2Commander  V2Commander // nil keeps legacy path
 }
 
 // Create validates, resolves, and launches one session.
@@ -197,6 +206,10 @@ func (s *Service) createRemote(ctx context.Context, req Request) (Result, error)
 func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) {
 	req.Name = s.resolveName(req)
 
+	if s.V2Commander != nil {
+		return s.createLocalV2(ctx, req)
+	}
+
 	cwd, err := s.prepareLocalPath(req)
 	if err != nil {
 		return Result{}, err
@@ -233,6 +246,52 @@ func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) 
 	}
 
 	return Result{Name: req.Name, Host: req.Host, Path: cwd}, nil
+}
+
+func (s *Service) createLocalV2(ctx context.Context, req Request) (Result, error) {
+	cmdID := state.CommandID(req.CommandID)
+	if cmdID == "" {
+		cmdID = state.NewCommandID()
+	}
+	params, _ := json.Marshal(state.CreateParams{
+		Name:           req.Name,
+		Shell:          req.Command,
+		Cwd:            req.Path,
+		WorktreeBranch: req.WorktreeBranch,
+		Cols:           req.Cols,
+		Rows:           req.Rows,
+		AgentType:      req.AgentType,
+	})
+	res, err := s.V2Commander.ExecuteSessionCommand(ctx, state.SessionCommand{
+		ID:     cmdID,
+		Ref:    state.SessionRef{},
+		Action: state.ActionCreate,
+		Params: params,
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	if s.StateMgr != nil && req.AgentType != "" {
+		s.StateMgr.SetSessionAgentType(res.DisplayName, req.AgentType)
+	}
+	if s.Attrs != nil && req.ScheduleID != "" {
+		key := sessionKey(req.LocalHost, res.DisplayName)
+		attr, err := s.Attrs.SetScheduleID(key, req.ScheduleID)
+		if err != nil {
+			logrus.WithError(err).Warn("failed to store schedule id")
+		} else {
+			if s.Fanout != nil {
+				s.Fanout(key, attr)
+			}
+			if s.Hub != nil {
+				s.Hub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": key})
+			}
+		}
+	}
+	if s.Refresh != nil {
+		s.Refresh()
+	}
+	return Result{Name: res.DisplayName, Host: req.Host, Path: res.Path}, nil
 }
 
 func (s *Service) prepareLocalPath(req Request) (string, error) {

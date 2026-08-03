@@ -119,3 +119,35 @@ func TestExecuteReturnsAssemblyError(t *testing.T) {
 		t.Fatal("expected Execute to return an assembly error")
 	}
 }
+
+// TestRefreshDaemonState_ClassifiesBeforePublishing verifies that crash
+// classification/cleanup runs before the live state snapshot is published.
+// A crashed session must not appear as live in the same refresh cycle.
+func TestRefreshDaemonState_ClassifiesBeforePublishing(t *testing.T) {
+	var order []string
+	reg := &fakeRegistry{sessions: []pty.SessionInfo{{ID: "live"}}}
+	adapter := &daemonAdapter{reg: reg}
+
+	rt := &Runtime{
+		adapter:  adapter,
+		stateMgr: state.NewManager(),
+		detectCrashesFn: func() []pty.LifecycleRecord {
+			order = append(order, "classify")
+			return []pty.LifecycleRecord{{ID: "crashed"}}
+		},
+	}
+
+	rt.refreshDaemonState()
+
+	if len(order) != 1 || order[0] != "classify" {
+		t.Fatalf("expected classify call, got %v", order)
+	}
+	if reg.listCalls != 1 {
+		t.Fatalf("expected adapter.List after classify, listCalls=%d", reg.listCalls)
+	}
+
+	sessions := rt.stateMgr.GetSessions()
+	if len(sessions) != 1 || sessions[0].Name != "live" {
+		t.Fatalf("expected only live session in state, got %+v", sessions)
+	}
+}

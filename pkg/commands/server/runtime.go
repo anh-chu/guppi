@@ -14,6 +14,7 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/activity"
 	"github.com/anh-chu/termyard/pkg/auth"
+	"github.com/anh-chu/termyard/pkg/config"
 	"github.com/anh-chu/termyard/pkg/groupsync"
 	"github.com/anh-chu/termyard/pkg/identity"
 	"github.com/anh-chu/termyard/pkg/model"
@@ -46,11 +47,11 @@ type Runtime struct {
 	opts  *server.Options
 
 	// Core stores / registries
-	stateMgr  *state.Manager
-	tracker   *toolevents.Tracker
+	stateMgr   *state.Manager
+	tracker    *toolevents.Tracker
 	actTracker *activity.Tracker
-	daemonReg *pty.Registry
-	adapter   *daemonAdapter
+	daemonReg  *pty.Registry
+	adapter    *daemonAdapter
 
 	// Tool-event monitors
 	reconciler     *toolevents.Reconciler
@@ -71,6 +72,26 @@ type Runtime struct {
 	// Helpers
 	fgProvider ForegroundProvider
 	hub        *ws.Hub
+
+	// Dormant v2 store (Task 3). It is opened here but not wired into the
+	// active session/workspace source of truth yet.
+	v2store *state.Store
+
+	// Task 5 v2 catalog and reconciler (shadow mode behind TERMYARD_V2_STATE).
+	v2Catalog    *state.Catalog
+	v2Reconciler *state.Reconciler
+
+	// Task 7 v2 local command service.
+	v2CommandSvc *state.SessionCommandService
+
+	// Task 9 v2 remote create coordinator.
+	v2RemoteCreate *state.RemoteCreateCoordinator
+
+	// Task 10 durable v2 browser state stream.
+	v2StateStream *ws.StateStreamHub
+
+	// Test hook: if set, overrides DetectAndCleanupCrashes in runDaemonRefresh.
+	detectCrashesFn func() []pty.LifecycleRecord
 }
 
 // newRuntime builds the dependency graph without starting any monitors. All
@@ -180,12 +201,45 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	logrus.WithField("name", nodeIdentity.Name).WithField("fingerprint", nodeIdentity.Fingerprint()).Info("node identity loaded")
 	rt.identity = nodeIdentity
 
+	// v2 state store is dormant by default. Opening it requires an explicit
+	// opt-in so integration tests and production processes do not touch real
+	// data until Task 3+ wiring is enabled.
+	if os.Getenv("TERMYARD_V2_STATE") == "1" {
+		if v2Dir, err := config.V2StateDir(); err != nil {
+			logrus.WithError(err).Warn("failed to determine v2 state directory")
+		} else if rt.v2store, err = state.OpenStore(v2Dir, nodeIdentity.Fingerprint(), state.StoreOptions{}); err != nil {
+			logrus.WithError(err).Warn("failed to open v2 state store")
+		} else {
+			rt.v2Catalog = state.NewCatalog(rt.v2store.Owner(), rt.v2store)
+			if err := rt.v2Catalog.Load(); err != nil {
+				logrus.WithError(err).Warn("failed to load v2 catalog")
+			} else {
+				enricher := &v2RuntimeEnricher{adapter: rt.adapter}
+				rt.v2Reconciler = state.NewReconciler(rt.v2Catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
+				rt.v2CommandSvc = state.NewSessionCommandService(rt.v2Catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.v2Catalog.Owner()})
+				rt.v2RemoteCreate = state.NewRemoteCreateCoordinator(rt.v2Catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.v2Catalog.Owner()})
+				rt.stateMgr.EnableV2Shadow(rt.v2Catalog, rt.v2Reconciler, enricher)
+				rt.v2StateStream = ws.NewStateStreamHub(rt.v2Catalog, nil)
+				logrus.WithField("owner", rt.v2Catalog.Owner()).Info("v2 catalog shadow enabled")
+			}
+		}
+	}
+
 	peerStore, err := identity.NewPeerStore()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load peer store: %w", err)
 	}
 
 	rt.peerMgr = peer.NewManager(nodeIdentity, peerStore, rt.stateMgr)
+	if rt.v2RemoteCreate != nil {
+		rt.peerMgr.SetRemoteCreateCoordinator(rt.v2RemoteCreate)
+	}
+	if rt.v2store != nil {
+		rt.peerMgr.SetRemoteStore(rt.v2store)
+		if err := rt.peerMgr.LoadRemoteCatalogCache(); err != nil {
+			logrus.WithError(err).Warn("failed to load remote catalog cache")
+		}
+	}
 	rt.detector.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.silenceMonitor.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.reconciler.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
@@ -282,17 +336,19 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	fileReadReg := peer.NewFileReadRegistry()
 
 	deps := peer.SessionDeps{
-		Manager:     rt.peerMgr,
-		LocalMgr:    rt.stateMgr,
-		Identity:    nodeIdentity,
-		ActTracker:  rt.actTracker,
-		ToolTracker: rt.tracker,
-		PeerStore:   peerStore,
-		DaemonReg:   rt.adapter,
-		Launch:      launchSvc,
-		StreamReg:   streamReg,
-		CaptureReg:  captureReg,
-		FileReadReg: fileReadReg,
+		Manager:      rt.peerMgr,
+		LocalMgr:     rt.stateMgr,
+		Identity:     nodeIdentity,
+		ActTracker:   rt.actTracker,
+		ToolTracker:  rt.tracker,
+		PeerStore:    peerStore,
+		DaemonReg:    rt.adapter,
+		Launch:       launchSvc,
+		StreamReg:    streamReg,
+		CaptureReg:   captureReg,
+		FileReadReg:  fileReadReg,
+		V2CommandSvc:            rt.v2CommandSvc,
+		RemoteCreateCoordinator: rt.v2RemoteCreate,
 	}
 
 	peerHandler := peer.NewHandler(deps, streamReg)
@@ -361,6 +417,12 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		Hub:            rt.hub,
 	}
 	launchSvc.Hub = rt.hub
+	if rt.v2CommandSvc != nil {
+		rt.opts.V2CommandSvc = rt.v2CommandSvc
+		rt.opts.V2Catalog = rt.v2Catalog
+		rt.opts.V2StateStream = rt.v2StateStream
+		launchSvc.V2Commander = rt.v2CommandSvc
+	}
 
 	if schedulerStore != nil {
 		rt.schedulerRunner = scheduler.NewRunner(schedulerStore, rt.stateMgr, rt.peerMgr, func(req scheduler.CreateSessionReq) error {
@@ -372,6 +434,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 				AgentType:      req.AgentType,
 				WorktreeBranch: req.WorktreeBranch,
 				ScheduleID:     req.ScheduleID,
+				CommandID:      req.CommandID,
 			})
 			if err != nil {
 				return err
@@ -381,6 +444,9 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		rt.schedulerRunner.SetCapEnforcer(func(job scheduler.Job) {
 			server.EnforceScheduleCap(rt.opts, job.ID, job.MaxConcurrency-1)
 		})
+		if rt.v2Catalog != nil {
+			rt.schedulerRunner.Owner = rt.v2Catalog.Owner().String()
+		}
 		rt.opts.SchedulerRunner = rt.schedulerRunner
 	}
 
@@ -431,6 +497,16 @@ func (rt *Runtime) Start(parent context.Context) error {
 
 	go rt.runDaemonRefresh(rt.ctx)
 
+	if rt.v2Reconciler != nil {
+		go rt.v2Reconciler.Run(rt.ctx)
+	}
+	if rt.v2CommandSvc != nil {
+		go rt.v2CommandSvc.Run(rt.ctx)
+	}
+	if rt.v2RemoteCreate != nil {
+		go rt.v2RemoteCreate.Run(rt.ctx)
+	}
+
 	if rt.schedulerRunner != nil {
 		go rt.schedulerRunner.Run(rt.ctx)
 	}
@@ -449,6 +525,9 @@ func (rt *Runtime) Ready() <-chan struct{} {
 func (rt *Runtime) Stop() {
 	if rt.cancel != nil {
 		rt.cancel()
+	}
+	if rt.v2StateStream != nil {
+		rt.v2StateStream.Close()
 	}
 }
 
@@ -491,6 +570,28 @@ func (rt *Runtime) refreshSessions(infos []pty.SessionInfo) {
 	rt.stateMgr.UpdateSessions(sessions)
 }
 
+// classifyAndCleanupCrashes is the crash-detection half of the refresh cycle.
+// It uses the test hook if present, otherwise the real lifecycle store.
+func (rt *Runtime) classifyAndCleanupCrashes() {
+	var crashed []pty.LifecycleRecord
+	if rt.detectCrashesFn != nil {
+		crashed = rt.detectCrashesFn()
+	} else if lcStore := rt.daemonReg.LifecycleStore(); lcStore != nil {
+		crashed = rt.daemonReg.DetectAndCleanupCrashes()
+	}
+	if len(crashed) > 0 {
+		logrus.WithField("count", len(crashed)).Warn("detected newly crashed sessions")
+	}
+}
+
+// refreshDaemonState runs one classify-then-publish cycle.  Crash detection
+// happens first so a crashed session is never broadcast as live in the same
+// cycle.
+func (rt *Runtime) refreshDaemonState() {
+	rt.classifyAndCleanupCrashes()
+	rt.refreshSessions(rt.adapter.refresh())
+}
+
 // runDaemonRefresh keeps an up-to-date snapshot of daemon sessions and runs
 // crash detection on the same cadence as state discovery.
 func (rt *Runtime) runDaemonRefresh(ctx context.Context) {
@@ -498,20 +599,15 @@ func (rt *Runtime) runDaemonRefresh(ctx context.Context) {
 	defer ticker.Stop()
 
 	// One immediate refresh so tests see state without waiting for the tick.
-	rt.refreshSessions(rt.adapter.refresh())
+	// Classify first so the initial snapshot cannot publish crash state as live.
+	rt.refreshDaemonState()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			infos := rt.adapter.refresh()
-			rt.refreshSessions(infos)
-			if lcStore := rt.daemonReg.LifecycleStore(); lcStore != nil {
-				if crashed := rt.daemonReg.DetectAndCleanupCrashes(); len(crashed) > 0 {
-					logrus.WithField("count", len(crashed)).Warn("detected newly crashed sessions")
-				}
-			}
+			rt.refreshDaemonState()
 		}
 	}
 }
@@ -578,6 +674,7 @@ type registryView interface {
 	List() []pty.SessionInfo
 	IsSessionDead(name string) bool
 	CrashedSessions() []pty.LifecycleRecord
+	GenerationFor(name string) string
 }
 
 // daemonAdapter wraps a registryView and presents one immutable snapshot to
@@ -621,6 +718,8 @@ func (a *daemonAdapter) CaptureTail(name string, maxBytes int) (string, error) {
 }
 
 func (a *daemonAdapter) SocketPath(name string) string { return a.reg.SocketPath(name) }
+
+func (a *daemonAdapter) GenerationFor(name string) string { return a.reg.GenerationFor(name) }
 
 func (a *daemonAdapter) IsSessionDead(name string) bool { return a.reg.IsSessionDead(name) }
 
@@ -744,4 +843,39 @@ func defaultSessionDir() string {
 	}
 	uid := fmt.Sprintf("%d", os.Getuid())
 	return fmt.Sprintf("/tmp/termyard-sessions-%s", uid)
+}
+
+// v2RuntimeEnricher supplies live runtime fields for v2 catalog records
+// without mutating persisted state.
+type v2RuntimeEnricher struct {
+	adapter *daemonAdapter
+}
+
+func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionRecord) state.SessionRuntime {
+	var rt state.SessionRuntime
+	for _, d := range e.adapter.List() {
+		if d.ID != string(ref.Session) {
+			continue
+		}
+		rt.DaemonPID = d.Pid
+		rt.ShellPID = d.ShellPid
+		rt.CurrentCommand = d.Shell
+		rt.CurrentPath = d.Cwd
+
+		pid := d.ShellPid
+		if pid == 0 {
+			pid = d.Pid
+		}
+		if pid > 0 {
+			if liveCwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid)); err == nil && liveCwd != "" {
+				rt.CurrentPath = liveCwd
+			}
+		}
+		if content, err := e.adapter.CaptureTail(d.ID, 64*1024); err == nil {
+			rt.PromptPreview = model.ExtractPromptPreview(content)
+		}
+		rt.LastActivity = time.Now()
+		break
+	}
+	return rt
 }

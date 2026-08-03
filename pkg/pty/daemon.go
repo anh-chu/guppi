@@ -22,17 +22,19 @@ import (
 
 // Frame types for the daemon wire protocol.
 const (
-	FrameOutput      = 0x01 // daemon → client: raw PTY output
-	FrameInput       = 0x02 // client → daemon: raw bytes to write to PTY
-	FrameResize      = 0x03 // client → daemon: 4 bytes (cols u16 BE + rows u16 BE)
-	FrameClose       = 0x04 // client → daemon: kill shell
-	FrameReplay      = 0x05 // daemon → client: ring buffer contents on connect
-	FrameQueryBuffer = 0x06 // client → daemon: request ring buffer replay (0 payload)
+	FrameOutput        = 0x01 // daemon → client: raw PTY output
+	FrameInput         = 0x02 // client → daemon: raw bytes to write to PTY
+	FrameResize        = 0x03 // client → daemon: 4 bytes (cols u16 BE + rows u16 BE)
+	FrameClose         = 0x04 // client → daemon: kill shell
+	FrameReplay        = 0x05 // daemon → client: ring buffer contents on connect
+	FrameQueryBuffer   = 0x06 // client → daemon: request ring buffer replay (0 payload)
+	FrameQueryIdentity = 0x07 // client → daemon: request stable identity
+	FrameIdentity      = 0x08 // daemon → client: stable identity payload
 )
 
 // DaemonConfig configures a session daemon.
 type DaemonConfig struct {
-	ID          string // unique session identifier
+	ID          string // daemon/socket identifier (legacy; now the daemon key)
 	Shell       string // shell to spawn (default: $SHELL or /bin/bash)
 	Cols, Rows  uint16 // initial terminal size
 	Cwd         string // working directory
@@ -40,6 +42,14 @@ type DaemonConfig struct {
 	StateDir    string // directory for lifecycle state (default: XDG_STATE_HOME/termyard/sessions/)
 	SystemdUnit string // systemd scope unit name for cleanup (empty if not using systemd)
 	BufferSize  int    // ring buffer size in bytes (default: 8MB)
+
+	// Stable identity fields (v2). Empty values mean legacy mode; the daemon
+	// still binds the socket using ID, and the registry falls back to
+	// process/socket evidence for those sessions.
+	Owner     string
+	SessionID string
+	Generation string
+	CommandID string
 }
 
 // RunDaemon is the entry point for a session daemon process.
@@ -56,6 +66,12 @@ type sessionMeta struct {
 	Cols        uint16 `json:"cols"`
 	Rows        uint16 `json:"rows"`
 	SystemdUnit string `json:"systemd_unit,omitempty"`
+
+	// Stable identity fields (v2), omitted when running in legacy mode.
+	Owner      string `json:"owner,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Generation string `json:"generation,omitempty"`
+	CommandID  string `json:"command_id,omitempty"`
 }
 
 func RunDaemon(cfg DaemonConfig) error {
@@ -109,6 +125,19 @@ func RunDaemon(cfg DaemonConfig) error {
 	cmd.Env = append(cmd.Env, "TERM=xterm-256color")
 	cmd.Env = append(cmd.Env, "TERMYARD_SESSION="+cfg.ID)
 	cmd.Env = append(cmd.Env, "TERMYARD_PANE="+cfg.ID+":0.0")
+	// v2 stable identity environment variables.
+	if cfg.Owner != "" {
+		cmd.Env = append(cmd.Env, "TERMYARD_OWNER="+cfg.Owner)
+	}
+	if cfg.SessionID != "" {
+		cmd.Env = append(cmd.Env, "TERMYARD_SESSION_ID="+cfg.SessionID)
+	}
+	if cfg.Generation != "" {
+		cmd.Env = append(cmd.Env, "TERMYARD_GENERATION="+cfg.Generation)
+	}
+	if cfg.CommandID != "" {
+		cmd.Env = append(cmd.Env, "TERMYARD_COMMAND_ID="+cfg.CommandID)
+	}
 	if cfg.Cwd != "" {
 		cmd.Dir = cfg.Cwd
 	}
@@ -177,6 +206,10 @@ func RunDaemon(cfg DaemonConfig) error {
 		Cols:        cfg.Cols,
 		Rows:        cfg.Rows,
 		SystemdUnit: cfg.SystemdUnit,
+		Owner:       cfg.Owner,
+		SessionID:   cfg.SessionID,
+		Generation:  cfg.Generation,
+		CommandID:   cfg.CommandID,
 	}
 	metaBytes, _ := json.Marshal(meta)
 	if err := os.WriteFile(metadataPath, metaBytes, 0600); err != nil {
@@ -196,6 +229,10 @@ func RunDaemon(cfg DaemonConfig) error {
 		log.WithError(lcErr).Warn("cannot create lifecycle store — crash detection disabled")
 	} else {
 		pid := os.Getpid()
+		gen := cfg.Generation
+		if gen == "" {
+			gen = NewGeneration()
+		}
 		lr := LifecycleRecord{
 			ID:            cfg.ID,
 			Shell:         cfg.Shell,
@@ -204,8 +241,12 @@ func RunDaemon(cfg DaemonConfig) error {
 			Rows:          cfg.Rows,
 			DaemonPID:     pid,
 			SystemdUnit:   cfg.SystemdUnit,
-			Generation:    NewGeneration(),
+			Generation:    gen,
 			ProcStartTime: procStartTime(pid),
+			Owner:         cfg.Owner,
+			SessionID:     cfg.SessionID,
+			DaemonKey:     cfg.ID,
+			CommandID:     cfg.CommandID,
 		}
 		if err := lifecycleStore.RecordActive(lr); err != nil {
 			log.WithError(err).Warn("failed to write lifecycle record")
@@ -589,6 +630,22 @@ func (d *daemon) handleClient(conn net.Conn) {
 				replay = d.ring.Snapshot()
 			}
 			frame := encodeFrame(FrameReplay, replay)
+			select {
+			case writeCh <- frame:
+			default:
+			}
+		case FrameQueryIdentity:
+			reply, err := ReadyInfo{
+				Owner:      d.config.Owner,
+				SessionID:  d.config.SessionID,
+				Generation: d.config.Generation,
+				DaemonPID:  os.Getpid(),
+				ShellPID:   d.cmd.Process.Pid,
+			}.Marshal()
+			if err != nil {
+				continue
+			}
+			frame := encodeFrame(FrameIdentity, reply)
 			select {
 			case writeCh <- frame:
 			default:

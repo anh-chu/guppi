@@ -113,6 +113,11 @@ func (m *Manager) UpdateSessions(sessions []*model.Session) {
 		m.saveNames()
 	}
 
+	// Shadow-mode v2 comparison: log mismatches but do not change legacy state.
+	if m.v2Enabled {
+		m.compareV2Shadow()
+	}
+
 	// Broadcast a general refresh event
 	m.broadcast(StateEvent{Type: "sessions-changed"})
 }

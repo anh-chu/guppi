@@ -72,6 +72,13 @@ type Manager struct {
 	autoNameGate *namer.AutomaticGate
 	gateOnce     sync.Once
 
+	// v2 shadow catalog (Task 5). When enabled the legacy manager keeps
+	// running v1 routes but projects the v2 catalog for comparison logging.
+	v2Catalog    *Catalog
+	v2Reconciler *Reconciler
+	v2Enricher   RuntimeEnricher
+	v2Enabled    bool
+
 	// Subscribers for state changes.
 	subMu       sync.RWMutex
 	subscribers []chan StateEvent
@@ -136,6 +143,30 @@ const (
 // SetDaemonRegistry wires the daemon registry into the state manager.
 func (m *Manager) SetDaemonRegistry(reg DaemonRegistry) {
 	m.daemonReg = reg
+}
+
+// EnableV2Shadow wires the v2 catalog and reconciler into the legacy manager.
+// The legacy v1 session tree remains authoritative for routes; v2 is compared
+// and logged in shadow mode.
+func (m *Manager) EnableV2Shadow(catalog *Catalog, reconciler *Reconciler, enricher RuntimeEnricher) {
+	m.v2Catalog = catalog
+	m.v2Reconciler = reconciler
+	m.v2Enricher = enricher
+	m.v2Enabled = true
+}
+
+// V2Enabled reports whether v2 catalog shadow mode is enabled.
+func (m *Manager) V2Enabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.v2Enabled
+}
+
+// V2Catalog returns the v2 catalog when enabled, or nil.
+func (m *Manager) V2Catalog() *Catalog {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.v2Catalog
 }
 
 // NewManager creates a new state manager.

@@ -31,6 +31,10 @@ func executeSessionDaemon(ctx context.Context, c *cli.Command) error {
 		StateDir:    c.String("state-dir"),
 		SystemdUnit: c.String("systemd-unit"),
 		BufferSize:  int(c.Int("buffer-size")),
+		Owner:       c.String("owner"),
+		SessionID:   c.String("session-id"),
+		Generation:  c.String("generation"),
+		CommandID:   c.String("command-id"),
 	}
 
 	// Parse terminal size.

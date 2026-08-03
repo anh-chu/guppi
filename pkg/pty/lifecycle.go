@@ -16,6 +16,7 @@ import (
 
 // Lifecycle states for session daemons.
 const (
+	LifecycleStarting             = "starting"
 	LifecycleActive               = "active"
 	LifecycleTerminationRequested = "termination_requested"
 	LifecycleCleanlyEnded         = "cleanly_ended"
@@ -23,6 +24,13 @@ const (
 	LifecycleRecovered            = "recovered"
 	LifecycleDismissed            = "dismissed"
 )
+
+// terminalLifecycleStates are states where the daemon is no longer live.
+var terminalLifecycleStates = map[string]bool{
+	LifecycleTerminationRequested: true,
+	LifecycleCleanlyEnded:         true,
+	LifecycleDismissed:            true,
+}
 
 // LifecycleRecord holds durable state for a session daemon.
 // Written as a JSON file under the lifecycle store directory.
@@ -39,6 +47,14 @@ type LifecycleRecord struct {
 	SystemdUnit   string    `json:"systemd_unit,omitempty"` // systemd scope unit name (for cleanup)
 	Generation    string    `json:"generation"`
 	ProcStartTime int64     `json:"proc_start_time,omitempty"` // /proc/pid/stat field 22 (starttime in clock ticks)
+
+	// Stable identity fields support the v2 binding handshake. They are
+	// immutable for a given lifecycle record and are empty for legacy
+	// daemons created before the v2 transition.
+	Owner     string `json:"owner,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	DaemonKey string `json:"daemon_key,omitempty"`
+	CommandID string `json:"command_id,omitempty"`
 }
 
 // LifecycleStore persists LifecycleRecord files to a durable directory.
@@ -98,6 +114,9 @@ func (s *LifecycleStore) RecordActive(rec LifecycleRecord) error {
 	}
 	if rec.Generation == "" {
 		rec.Generation = NewGeneration()
+	}
+	if rec.DaemonKey == "" {
+		rec.DaemonKey = rec.ID
 	}
 	return s.writeAtomic(rec)
 }

@@ -113,7 +113,35 @@ func handleOpenTerminal(p OpenTerminalPayload, pc *PeerConnection, deps SessionD
 		log.WithError(err).Debug("set compression level ignored")
 	}
 
-	socketPath := deps.DaemonReg.SocketPath(p.Session)
+	// Resolve the daemon socket key. The immutable SessionID wins when the
+	// viewer supplied a stable identity; legacy name-only payloads (pre-v2
+	// peers or browsers that only know the display name) fall back to the
+	// session name, which is the daemon key for non-v2 sessions.
+	daemonKey := p.SessionID
+	if daemonKey == "" {
+		daemonKey = p.Session
+	}
+
+	// Generation-gated attach: when the viewer supplied a stable identity
+	// (session id + generation), refuse the bridge before streaming if the
+	// current generation differs. This is what stops a stale browser tab from
+	// splicing onto a recovered/restarted daemon over the peer relay.
+	if p.SessionID != "" || p.Generation != "" {
+		current := ""
+		if deps.DaemonReg != nil {
+			current = deps.DaemonReg.GenerationFor(daemonKey)
+		}
+		if current == "" {
+			log.WithField("generation", p.Generation).Debug("daemon attach refused: no current generation")
+			return
+		}
+		if p.Generation != "" && p.Generation != current {
+			log.WithFields(logrus.Fields{"want": p.Generation, "current": current}).Debug("daemon attach refused: stale generation")
+			return
+		}
+	}
+
+	socketPath := deps.DaemonReg.SocketPath(daemonKey)
 	ds, err := pty.NewDaemonSession(socketPath)
 	if err != nil {
 		log.WithError(err).Debug("failed to connect to daemon socket")

@@ -75,25 +75,28 @@ type DaemonRegistry interface {
 	Capture(name string) (string, error)
 	SocketPath(name string) string
 	List() []pty.SessionInfo
+	GenerationFor(name string) string
 }
 
 // SessionDeps groups the runtime dependencies needed by a peer session.
 type SessionDeps struct {
-	Manager     *Manager
-	LocalMgr    *state.Manager
-	Identity    *identity.Identity
-	ActTracker  *activity.Tracker
-	ToolTracker *toolevents.Tracker
-	PeerStore   *identity.PeerStore
-	DaemonReg   DaemonRegistry
-	StreamReg   *StreamRegistry
-	CaptureReg  *CaptureRegistry
-	FileReadReg *FileReadRegistry
-	AttrsSink   SessionAttrsSink
-	Launch      *sessionlaunch.Service
-	OrderSink   SessionOrderSink
-	GroupSink   GroupSink
-	BrowserHub  BrowserBroadcaster
+	Manager               *Manager
+	LocalMgr              *state.Manager
+	Identity              *identity.Identity
+	ActTracker            *activity.Tracker
+	ToolTracker           *toolevents.Tracker
+	PeerStore             *identity.PeerStore
+	DaemonReg             DaemonRegistry
+	StreamReg             *StreamRegistry
+	CaptureReg            *CaptureRegistry
+	FileReadReg           *FileReadRegistry
+	AttrsSink             SessionAttrsSink
+	Launch                *sessionlaunch.Service
+	OrderSink             SessionOrderSink
+	GroupSink             GroupSink
+	BrowserHub            BrowserBroadcaster
+	V2CommandSvc          *state.SessionCommandService
+	RemoteCreateCoordinator *state.RemoteCreateCoordinator
 }
 
 // connWriter serializes WebSocket writes from multiple goroutines.
@@ -139,6 +142,23 @@ func runSession(
 	pc := NewPeerConnection(peerID, 64)
 	pc.Role = role
 	pc.Caps = append([]string(nil), caps...)
+	pc.initV2Lazy()
+
+	var unsubWorkspace func()
+
+	// Subscribe to complete workspace snapshots after each accepted command
+	// so remote peers see the whole layout, never intermediate steps.
+	if cat := deps.Manager.localMgr.V2Catalog(); cat != nil {
+		unsubWorkspace = cat.SubscribeWorkspace(func(layout state.LayoutID, rec state.WorkspaceRecord) {
+			payload := V2WorkspaceSnapshotPayload{Owner: rec.Owner, Revision: rec.Revision, Workspace: rec}
+			msg, err := NewMessage(MsgV2WorkspaceSnapshot, payload)
+			if err != nil {
+				return
+			}
+			pc.EnqueueV2WorkspaceSnapshot(msg)
+		})
+	}
+
 	if !deps.Manager.TryRegisterPeer(peerID, peerInfo.Name, peerInfo.PublicKey, address, pc) {
 		return fmt.Errorf("peer already connected")
 	}
@@ -152,11 +172,25 @@ func runSession(
 	//   4. close pc — ends writer loop
 	//   5. wait for writer to drain
 	writerDone := make(chan struct{})
+	v2WritersDone := make(chan struct{})
 	defer func() {
+		if unsubWorkspace != nil {
+			unsubWorkspace()
+		}
 		cancel()
 		_ = conn.Close()
-		deps.Manager.UnregisterPeer(peerID)
+		deps.Manager.UnregisterPeerConn(peerID, pc)
 		pc.Close()
+		if pc.catalogSlot != nil {
+			pc.catalogSlot.close()
+		}
+		if pc.workspaceSlot != nil {
+			pc.workspaceSlot.close()
+		}
+		if pc.cmdQueue != nil {
+			pc.cmdQueue.close()
+		}
+		<-v2WritersDone
 		<-writerDone
 	}()
 
@@ -234,6 +268,15 @@ func runSession(
 	sendInitialSessionAttrs(pc, deps)
 	sendInitialSessionOrder(pc, deps)
 	sendInitialGroups(pc, deps)
+	if pc.HasV2() {
+		sendInitialV2Catalog(pc, deps)
+		sendInitialV2Workspace(pc, deps)
+	}
+
+	go func() {
+		defer close(v2WritersDone)
+		runV2Writers(sessionCtx, pc, log)
+	}()
 
 	// Background loops.
 	go pingLoop(sessionCtx, cw)
@@ -454,6 +497,12 @@ func handleSessionMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 
 	case MsgSessionAction:
 		handleActionMessage(msg, pc, deps, log)
+
+	case MsgV2CatalogSnapshot,
+		MsgV2WorkspaceSnapshot,
+		MsgV2CommandRequest,
+		MsgV2CommandReply:
+		handleV2Message(peerID, msg, pc, deps, log)
 
 	default:
 		log.WithField("type", msg.Type).Debug("unknown session message")

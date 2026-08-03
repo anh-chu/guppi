@@ -270,9 +270,15 @@ export interface TerminalPrefs {
 
 /** Identity for a pool entry. */
 export interface PoolIdentity {
+  /** Display label / legacy route name. Never part of the canonical key. */
   sessionName: string
   hostId?: string
   backend?: string
+  /** Stable identity (v2): immutable session ref fields. */
+  sessionId?: string
+  ownerId?: string
+  /** Daemon generation for generation-gated attach; empty = no gate. */
+  generation?: string
 }
 
 /** Factory callbacks for test injection. */
@@ -438,7 +444,13 @@ export class TerminalPool {
     callbacks: CheckoutCallbacks,
     factory?: PoolFactory,
   ): LeaseToken {
-    const key = TerminalPool.keyFor(identity.sessionName, identity.hostId)
+    // Canonical pool identity is the immutable SessionRef (sessionId/ownerId),
+    // NOT the display label. A rename must never rekey, dispose, or reconnect
+    // an open terminal; label-only changes hit the same pool entry.
+    const canonical = identity.sessionId
+      ? TerminalPool.keyFor(identity.sessionId, identity.ownerId ?? identity.hostId)
+      : TerminalPool.keyFor(identity.sessionName, identity.hostId)
+    const key = canonical
     const ef = factory ?? this.factory
     let entry = this.entries.get(key)
 
@@ -776,8 +788,11 @@ export class TerminalPool {
     this.entries.delete(key)
   }
 
-  /** Remove entries NOT in validKeys. */
-  disposeAbsent(validKeys: Set<string>): void {
+  /** Remove entries NOT in validKeys. skip when the server-side catalog is
+   *  transient/uncertain (reconnect, empty snapshot) so one stale response
+   *  cannot dispose active terminals. */
+  disposeAbsent(validKeys: Set<string>, catalogUncertain = false): void {
+    if (catalogUncertain) return
     for (const key of this.entries.keys()) {
       if (!validKeys.has(key)) {
         this.dispose(key)
@@ -798,15 +813,37 @@ export class TerminalPool {
 
     // Move entry to new key
     this.entries.delete(oldKey)
+    const sessionName = newKey.includes('/') ? newKey.slice(newKey.indexOf('/') + 1) : newKey
+    const hostId = newKey.includes('/') ? newKey.slice(0, newKey.indexOf('/')) : undefined
+    const prev = entry.identity
     entry.key = newKey
+    // Canonical identity is immutable (`sessionId`/`ownerId`/`generation`); a
+    // label change must NOT mutate them, so preserve them across a rename and
+    // only update the display key fields.
     entry.identity = {
-      sessionName: newKey.includes('/') ? newKey.slice(newKey.indexOf('/') + 1) : newKey,
-      hostId: newKey.includes('/') ? newKey.slice(0, newKey.indexOf('/')) : undefined,
-      backend: entry.identity.backend,
+      sessionName,
+      hostId,
+      backend: prev.backend,
+      sessionId: prev.sessionId,
+      ownerId: prev.ownerId,
+      generation: prev.generation,
     }
     // Update the lease token for current owner
     entry.generation++ // invalidate previous lease
     this.entries.set(newKey, entry)
+  }
+
+  /**
+   * Reconnect an existing pool entry in place after its daemon generation
+   * changed (recovery/restart). Same terminal instance, scrollback, and lease
+   * are preserved; only the WebSocket URL is rebuilt with the new generation.
+   * No-op for unknown keys or when the generation is unchanged.
+   */
+  updateGeneration(key: string, generation: string): void {
+    const entry = this.entries.get(key)
+    if (!entry || entry.identity.generation === generation) return
+    entry.identity = { ...entry.identity, generation }
+    entry.connection.connect(this.buildUrl({ key, identity: entry.identity }))
   }
 
   /** Reset all state (for tests). */
@@ -1008,7 +1045,18 @@ export class TerminalPool {
 
     const hostParam = hostId ? `&host=${encodeURIComponent(hostId)}` : ''
     if (backend === 'daemon') {
-      return `${protocol}//${window.location.host}/ws/daemon-session?name=${encodeURIComponent(sessionName)}&cols=${cols}&rows=${rows}${hostParam}&replay=1`
+      // The legacy `name` param (display label) is required by the remote/
+      // peer routing path (handleRemoteSession) and doubles as the daemon key
+      // for pre-v2 sessions. The immutable SessionID is emitted only when it
+      // is actually known (a real v2 stable id) so legacy display names that
+      // are not valid SessionIDs keep routing by name.
+      const idParam = target.identity.sessionId
+        ? `&sessionID=${encodeURIComponent(target.identity.sessionId)}`
+        : ''
+      const genParam = target.identity.generation
+        ? `&generation=${encodeURIComponent(target.identity.generation)}`
+        : ''
+      return `${protocol}//${window.location.host}/ws/daemon-session?name=${encodeURIComponent(sessionName)}${idParam}${genParam}&cols=${cols}&rows=${rows}${hostParam}&replay=1`
     }
     if (sessionName.startsWith('direct-pty:')) {
       return `${protocol}//${window.location.host}/ws/direct-session?cols=${cols}&rows=${rows}`

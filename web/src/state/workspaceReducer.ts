@@ -414,8 +414,17 @@ export function workspaceReducer(
       return { ...state, sessions: removeSessionByKey(state.sessions, action.key) }
     }
 
-    case 'groups/snapshot':
+    case 'groups/snapshot': {
+      // A full server snapshot is authoritative: absent groups are removed.
+      return {
+        ...state,
+        groups: action.groups,
+        groupsLoaded: true,
+      }
+    }
+
     case 'groups/delta': {
+      // Deltas merge into the existing map.
       return {
         ...state,
         groups: { ...state.groups, ...action.groups },

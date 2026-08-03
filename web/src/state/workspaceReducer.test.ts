@@ -40,6 +40,19 @@ function connection(live: boolean, livenessUnknown: boolean): WorkspaceAction {
 }
 
 describe('workspaceReducer', () => {
+  describe('local view navigation', () => {
+    it('selecting a session while on Overview transitions to the session view', () => {
+      // selectSession always dispatches view/select for local nav regardless
+      // of the v2 flag; the reducer must move currentView off Overview so the
+      // session view is rendered.
+      const s0 = reduce(createInitialWorkspaceState(), { type: 'view/setCurrentView', view: 'overview' })
+      expect(s0.view.currentView).toBe('overview')
+
+      const s1 = workspaceReducer(s0, { type: 'view/select', key: 'alpha' })
+      expect(s1.view.currentView).toBe('session')
+      expect(s1.view.singleView).toBe('alpha')
+    })
+  })
   it('first empty snapshot leaves sessions empty and loading false', () => {
     const s0 = createInitialWorkspaceState()
     expect(s0.loading).toBe(true)
@@ -228,6 +241,33 @@ describe('workspaceReducer', () => {
       expect(plan.groupRanks.map(r => r.id)).toEqual(['g1'])
       expect(plan.sessionRanks.map(r => r.key)).toEqual(['y'])
       expect(plan.order).toEqual(['g2', 'g1'])
+    })
+  })
+
+  describe('group snapshot vs delta', () => {
+    it('full group snapshot replaces the map and removes absent groups', () => {
+      const s0 = createInitialWorkspaceState()
+      const g1 = { tree: { type: 'leaf' as const, sessionKey: 'a' }, rank: 'a' }
+      const g2 = { tree: { type: 'leaf' as const, sessionKey: 'b' }, rank: 'b' }
+      const g3 = { tree: { type: 'leaf' as const, sessionKey: 'c' }, rank: 'c' }
+      const s1 = reduce(
+        s0,
+        { type: 'groups/snapshot', groups: { a: g1, b: g2 }, generation: 1 },
+        { type: 'groups/snapshot', groups: { b: g2, c: g3 }, generation: 2 },
+      )
+      expect(Object.keys(s1.groups)).toEqual(['b', 'c'])
+    })
+
+    it('group delta merges into the existing map', () => {
+      const s0 = createInitialWorkspaceState()
+      const g1 = { tree: { type: 'leaf' as const, sessionKey: 'a' }, rank: 'a' }
+      const g2 = { tree: { type: 'leaf' as const, sessionKey: 'b' }, rank: 'b' }
+      const s1 = reduce(
+        s0,
+        { type: 'groups/snapshot', groups: { a: g1 }, generation: 1 },
+        { type: 'groups/delta', groups: { b: g2 }, generation: 2 },
+      )
+      expect(Object.keys(s1.groups)).toEqual(['a', 'b'])
     })
   })
 

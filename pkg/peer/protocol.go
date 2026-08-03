@@ -6,6 +6,7 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/activity"
 	"github.com/anh-chu/termyard/pkg/model"
+	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
@@ -45,6 +46,14 @@ const (
 	MsgSessionAction = "session-action"
 	// MsgRequestState asks the peer for a full state refresh
 	MsgRequestState = "request-state"
+	// MsgV2CatalogSnapshot carries a full v2 owner catalog snapshot.
+	MsgV2CatalogSnapshot = "v2-catalog-snapshot"
+	// MsgV2WorkspaceSnapshot carries a full v2 owner workspace snapshot.
+	MsgV2WorkspaceSnapshot = "v2-workspace-snapshot"
+	// MsgV2CommandRequest is a reliable command RPC request.
+	MsgV2CommandRequest = "v2-command-request"
+	// MsgV2CommandReply is a reliable command RPC reply.
+	MsgV2CommandReply = "v2-command-reply"
 	// MsgForget notifies the receiver that the sender is forgetting them.
 	// Receiver should remove sender from its peer store and close the link.
 	MsgForget = "forget"
@@ -102,8 +111,21 @@ const CapPerStream = "per-stream"
 // CapUpload advertises dedicated /ws/peer-stream file-upload connections.
 const CapUpload = "upload"
 
+// CapV2Catalog advertises v2 owner-catalog snapshot exchange.
+const CapV2Catalog = "v2-catalog"
+
+// CapV2Command advertises the reliable v2 command RPC path.
+const CapV2Command = "v2-command"
+
 // localCapabilities is what this build advertises in the hello.
-var localCapabilities = []string{CapPerStream, CapUpload}
+var localCapabilities = []string{CapPerStream, CapUpload, CapV2Catalog, CapV2Command}
+
+// V2 command kinds carried by V2CommandRequestPayload.
+const (
+	V2CommandKindSession     = "session"
+	V2CommandKindWorkspace   = "workspace"
+	V2CommandKindRemoteCreate = "remote_create"
+)
 
 // Message is the envelope for all control WebSocket messages
 type Message struct {
@@ -131,7 +153,7 @@ type AuthOKPayload struct {
 // StateUpdatePayload carries a full session snapshot from a peer
 type StateUpdatePayload struct {
 	Sessions []*model.Session `json:"sessions"`
-	Version  string          `json:"version,omitempty"`
+	Version  string           `json:"version,omitempty"`
 }
 
 // StateEventPayload carries an incremental state change
@@ -169,7 +191,7 @@ type HostInfo struct {
 	Local    bool                   `json:"local,omitempty"`
 	Online   bool                   `json:"online"`
 	Address  string                 `json:"address,omitempty"`
-	Sessions []*model.Session        `json:"sessions"`
+	Sessions []*model.Session       `json:"sessions"`
 	Activity []*activity.Snapshot   `json:"activity,omitempty"`
 	Stats    map[string]interface{} `json:"stats,omitempty"`
 	LastSeen time.Time              `json:"last_seen"`
@@ -182,9 +204,14 @@ type PeerNotifyPayload struct {
 }
 
 // OpenTerminalPayload asks a peer to prepare a dedicated PTY data connection.
+// Session is the legacy display name; SessionID + Generation are the stable
+// identity used for generation-gated attach (a stale generation is refused
+// before any PTY bytes stream).
 type OpenTerminalPayload struct {
 	StreamID     string `json:"stream_id"`
 	Session      string `json:"session"`
+	SessionID    string `json:"session_id,omitempty"`
+	Generation   string `json:"generation,omitempty"`
 	Cols         uint16 `json:"cols"`
 	Rows         uint16 `json:"rows"`
 	Token        string `json:"token"`
@@ -295,6 +322,37 @@ type GroupDeltaPayload struct {
 type SessionActionPayload struct {
 	Action string          `json:"action"` // new, rename, select-window
 	Params json.RawMessage `json:"params"`
+}
+
+// V2CatalogSnapshotPayload is the v2 wire form of state.OwnerCatalogSnapshot.
+type V2CatalogSnapshotPayload struct {
+	Owner    state.OwnerID              `json:"owner"`
+	Revision int64                      `json:"revision"`
+	Sessions []state.LocalSessionRecord `json:"sessions"`
+	Layouts  []state.LayoutRecord       `json:"layouts,omitempty"`
+}
+
+// V2WorkspaceSnapshotPayload is the v2 wire form of a workspace snapshot.
+type V2WorkspaceSnapshotPayload struct {
+	Owner     state.OwnerID         `json:"owner"`
+	Revision  int64                 `json:"revision"`
+	Workspace state.WorkspaceRecord `json:"workspace"`
+}
+
+// V2CommandRequestPayload carries a reliable command RPC request.
+// ID is chosen by the caller and must be unique across retries.
+type V2CommandRequestPayload struct {
+	ID      string          `json:"id"`
+	Kind    string          `json:"kind"` // "session" | "workspace"
+	Command json.RawMessage `json:"command"`
+}
+
+// V2CommandReplyPayload carries a reliable command RPC reply.
+type V2CommandReplyPayload struct {
+	ID      string          `json:"id"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   string          `json:"error,omitempty"`
+	Handled bool            `json:"handled"`
 }
 
 // CapturePanePayload asks a peer to capture a session's primary pane buffer.

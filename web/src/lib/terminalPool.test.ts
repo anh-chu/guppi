@@ -290,6 +290,17 @@ function defId(name = 'test-session', host?: string, backend?: string): PoolIden
   return { sessionName: name, hostId: host, backend }
 }
 
+function defStableId(name = 'test-session', sessionId = 'sid-1', generation?: string, host?: string): PoolIdentity {
+  return {
+    sessionName: name, // display label, NOT part of canonical identity
+    hostId: host,
+    backend: 'daemon',
+    sessionId,
+    ownerId: host,
+    generation,
+  }
+}
+
 function noopCbs(): CheckoutCallbacks {
   return {
     onConnectionChange: () => {},
@@ -600,6 +611,120 @@ describe('TerminalPool', () => {
     expect(hasEntry(pool, 'b')).toBe(true)
   })
 
+  // ── Stable identity: label change must not rekey ──────────────────
+
+  it('label change does not dispose, recreate, reconnect, or invalidate lease', () => {
+    const container = fakeEl()
+    const lease = pool.checkout(
+      defStableId('old-label', 'sid-1', 'gen-1'),
+      defPrefs(),
+      container,
+      noopCbs(),
+    )
+    // Open the socket so reconnect would be observable.
+    const entry = getEntry(pool, lease.key)
+    const ws = entry?.connection?.socket as unknown as FakeWebSocket
+    ws?._open()
+    const tcB = terminalCreateCount
+    const tdB = terminalDisposeCount
+    const sockB = socketOpenCount
+    const closeB = socketCloseCount
+
+    // Rename = label only: same sessionId/generation, new sessionName label.
+    const lease2 = pool.checkout(
+      defStableId('new-label', 'sid-1', 'gen-1'),
+      defPrefs(),
+      container,
+      noopCbs(),
+    )
+
+    expect(lease2.key).toBe(lease.key) // same pool key (keyed by host/sessionName)
+    expect(terminalCreateCount).toBe(tcB)
+    expect(terminalDisposeCount).toBe(tdB)
+    expect(socketOpenCount).toBe(sockB)
+    expect(socketCloseCount).toBe(closeB)
+    // Lease still live (no dispose/invalidate of terminal).
+    const entry2 = getEntry(pool, lease2.key)
+    expect(entry2?.identity.sessionId).toBe('sid-1')
+  })
+
+  it('canonical stable identity preserved across rekey of the label', () => {
+    const container = fakeEl()
+    const lease = pool.checkout(
+      defStableId('old-label', 'sid-1', 'gen-1'),
+      defPrefs(),
+      container,
+      noopCbs(),
+    )
+    pool.rekey(lease.key, 'hostX/new-label')
+    const entry = getEntry(pool, 'hostX/new-label')
+    expect(entry.identity.sessionId).toBe('sid-1')
+    expect(entry.identity.generation).toBe('gen-1')
+    expect(terminalCreateCount).toBe(1)
+    expect(terminalDisposeCount).toBe(0)
+  })
+
+  it('generation change reconnects the SAME pool entry in place', () => {
+    const container = fakeEl()
+    const lease = pool.checkout(
+      defStableId('label', 'sid-1', 'gen-1'),
+      defPrefs(),
+      container,
+      noopCbs(),
+    )
+    const entry0 = getEntry(pool, lease.key)
+    const term0 = entry0.terminal
+    const tcB = terminalCreateCount
+    const tdB = terminalDisposeCount
+    const connexB = socketOpenCount
+
+    // Recovery bumps generation: reconnect the same entry (no dispose/recreate).
+    pool.updateGeneration(lease.key, 'gen-2')
+
+    expect(terminalCreateCount).toBe(tcB) // no new terminal
+    expect(terminalDisposeCount).toBe(tdB)
+    expect(socketOpenCount).toBeGreaterThan(connexB) // new socket with new URL
+    const entry1 = getEntry(pool, lease.key)
+    expect(entry1.terminal).toBe(term0) // same xterm instance preserved
+    expect(entry1.identity.generation).toBe('gen-2')
+    // New URL carries the new generation and the immutable session id.
+    const ws = entry1?.connection?.socket as unknown as FakeWebSocket
+    expect(ws?.url).toContain('sessionID=sid-1')
+    expect(ws?.url).toContain('generation=gen-2')
+  })
+
+  it('updateGeneration retains entry when generation unchanged', () => {
+    const container = fakeEl()
+    const lease = pool.checkout(
+      defStableId('label', 'sid-1', 'gen-1'),
+      defPrefs(),
+      container,
+      noopCbs(),
+    )
+    const connexB = socketOpenCount
+    pool.updateGeneration(lease.key, 'gen-1')
+    expect(socketOpenCount).toBe(connexB)
+  })
+
+  it('host-offline (disposeAbsent uncertain) retains entry + scrollback', () => {
+    const container = fakeEl()
+    const lease = pool.checkout(
+      defStableId('label', 'sid-1', 'gen-1', 'hostA'),
+      defPrefs(),
+      container,
+      noopCbs(),
+    )
+    const tdB = terminalDisposeCount
+    // Host offline: catalog uncertain => no sweep.
+    pool.disposeAbsent(new Set(['other']), true)
+    expect(terminalDisposeCount).toBe(tdB)
+    expect(pool.size).toBe(1)
+    // Authoritative disappearance (host online, session gone) still prunes.
+    pool.disposeAbsent(new Set(['other']), false)
+    expect(terminalDisposeCount).toBeGreaterThan(tdB)
+    expect(pool.size).toBe(0)
+  })
+
   // ── Dispose ────────────────────────────────────────────────────────
 
   it('dispose tears down entry once', () => {
@@ -639,6 +764,18 @@ describe('TerminalPool', () => {
     pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
     pool.disposeAbsent(new Set(['s1', 'extra']))
     expect(pool.size).toBe(1)
+  })
+
+  it('disposeAbsent skips while catalog is uncertain (reconnect/empty snapshot)', () => {
+    const container = fakeEl()
+    const l = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
+    pool.checkin(l)
+    expect(pool.size).toBe(1)
+    // An empty validKeys set during a reconnect/uncertain transient snapshot
+    // must not dispose the active terminal.
+    pool.disposeAbsent(new Set(), true)
+    expect(pool.size).toBe(1)
+    expect(hasEntry(pool, 's1')).toBe(true)
   })
 
   // ── Reset ──────────────────────────────────────────────────────────

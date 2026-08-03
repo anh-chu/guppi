@@ -36,6 +36,11 @@ import { applyTheme } from './theme'
 import { sessionSignal } from './lib/sessionState'
 import { generateKeyBetween } from 'fractional-indexing'
 import { terminalPool, keyFor as poolKeyFor } from './lib/terminalPool'
+import { useV2State } from './hooks/useV2State'
+import { isV2StateEnabled } from './lib/featureFlags'
+import { keyToSessionRef, splitIdAtPath } from './state/v2/paneTreeAdapter'
+import type { SessionRef } from './state/v2/types'
+import { sessionRefToKey } from './state/v2/paneTreeAdapter'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
 
@@ -70,6 +75,11 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
 }
 
 function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
+  // v2 state stream: default OFF. Only session creation is migrated to this
+  // path so far (Task 12, first slice) -- rendering still reads exclusively
+  // from the legacy workspace/session hooks below.
+  const v2Enabled = authenticated && isV2StateEnabled()
+  const v2State = useV2State({ enabled: v2Enabled })
   const workspace = useWorkspace(authenticated)
   const { state: workspaceState, actions: workspaceActions, groupSync } = workspace
   const { sessions, loading: sessionsLoading, groups: syncedGroups, groupsLoaded, view } = workspaceState
@@ -97,7 +107,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const { hosts, refresh: refreshHosts } = useHosts()
   const { ranks: sessionOrderRanks, loaded: sessionOrderLoaded, refresh: refreshSessionOrder, setRank: setSessionOrderRank } = useSessionOrder(authenticated)
   const migrationStartedRef = useRef(false)
-  const selectedSession = singleView ?? activeKey
+  const selectedSession = v2Enabled ? v2State.activeKey : (singleView ?? activeKey)
   const { prefs } = usePreferences()
   const wikiEnabled = !prefs.wiki_disabled
   // Wiki open/close/target nonce/history live in a small controller so the UI
@@ -320,8 +330,13 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   }, [detachFromOtherGroups, singleView, paneTree, activeGroupId, syncedGroups, setGroupTree, setGroupRank])
 
   const closePane = useCallback((sessKey: string) => {
+    if (v2Enabled && v2State.layoutId) {
+      void v2State.workspaceCommand(v2State.layoutId, { action: 'remove', ref: keyToSessionRef(sessKey) })
+        .catch(err => console.error('v2 remove command failed:', err))
+      return
+    }
     workspaceActions.closePane(sessKey)
-  }, [workspaceActions])
+  }, [workspaceActions, v2Enabled, v2State])
 
   // Synchronous removal for a deliberately killed session: drop its leaf from
   // the active tree, any background group, and singleView at once, so the pane
@@ -551,6 +566,19 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const migrateSessionKey = useCallback((oldKey: string, newKey: string) => {
     if (!oldKey || !newKey || oldKey === newKey) return
 
+    // v2: mirror the rename into the workspace tree via the typed rename
+    // command (pkg/state/workspace.go WorkspaceActionRename, old/new
+    // SessionRef) instead of the legacy in-place reducer key swap. Fire and
+    // forget -- the authoritative tree update arrives back over the state
+    // stream, same pattern as other v2 layout mutations below.
+    if (v2Enabled && v2State.layoutId) {
+      void v2State.workspaceCommand(v2State.layoutId, {
+        action: 'rename',
+        old: keyToSessionRef(oldKey),
+        new: keyToSessionRef(newKey),
+      }).catch(err => console.error('v2 rename command failed:', err))
+    }
+
     workspaceActions.renameSession(oldKey, newKey)
 
     // Rekey pool entry: preserve terminal/WS, update reconnect identity.
@@ -673,7 +701,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
 
     // Authoritative sweep: dispose pool entries for sessions gone from the
     // server list.
-    terminalPool.disposeAbsent(validKeys)
+    terminalPool.disposeAbsent(validKeys, pruningSuspended)
 
     if (paneTree) {
       workspaceActions.pruneMissing([...validKeys], Date.now())
@@ -772,11 +800,19 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
       : `/session/${encodeURIComponent(name)}`
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
+    // Local navigation always drives the rendered view (Overview -> session),
+    // regardless of the v2 flag. The v2 server `select` command is an
+    // independent, additional signal (it keeps the server-side active key in
+    // sync), not a replacement for local nav state.
     workspaceActions.selectSession(sk)
+    if (v2Enabled && v2State.layoutId) {
+      void v2State.workspaceCommand(v2State.layoutId, { action: 'select', ref: keyToSessionRef(sk) })
+        .catch(err => console.error('v2 select command failed:', err))
+    }
     // Refocus even when activeKey didn't change — Terminal auto-focus
     // on inactive panes may have stolen visual focus from the intended one.
     setTimeout(refocusTerminal, 150)
-  }, [workspaceActions, refocusTerminal])
+  }, [workspaceActions, refocusTerminal, v2Enabled, v2State])
   selectSessionRef.current = selectSession
 
   const handleSessionSelect = (session: Session) => {
@@ -952,25 +988,63 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     }
 
     try {
-      const res = await fetch('/api/session/new', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, path, command, host: hostId || undefined, agent_type: agentType || undefined, worktree_branch: worktreeBranch || undefined }),
-      })
-      if (!res.ok) {
-        if (!worktreeBranch) {
-          workspaceActions.removeOptimistic(name, hostId || localHostId)
-          if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
+      // v2 slice: route creation through the typed session-command endpoint
+      // when enabled, instead of the legacy per-field create call. Only the
+      // create action is migrated so far -- everything else below (optimistic
+      // stub, pane placement, reconciliation) is unchanged.
+      let resolvedName: string
+      if (v2Enabled && !hostId) {
+        try {
+          const result = await v2State.createSession({ name, shell: command || undefined, cwd: path, worktreeBranch: worktreeBranch || undefined, layoutId: target ? (v2State.layoutId ?? undefined) : undefined })
+          const r = result as { Ref?: { owner?: string | null; session?: string; window?: number; pane?: number }; DisplayName?: string } | null
+          resolvedName = r?.Ref?.session || r?.DisplayName || name
+          if (target && v2State.layoutId && r?.Ref?.session) {
+            const newRef: SessionRef = {
+              owner: r.Ref.owner ?? null,
+              session: r.Ref.session,
+              window: r.Ref.window ?? 0,
+              pane: r.Ref.pane ?? 0,
+            }
+            void v2State.workspaceCommand(v2State.layoutId, {
+              action: 'split',
+              target: keyToSessionRef(target.key),
+              direction: target.direction,
+              new: newRef,
+              new_first: target.newFirst,
+            }).catch(err => console.error('v2 split command failed:', err))
+          }
+        } catch (err) {
+          if (!worktreeBranch) {
+            workspaceActions.removeOptimistic(name, hostId || localHostId)
+            if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
+          }
+          if (worktreeBranch) {
+            return err instanceof Error ? err.message : 'Failed to create worktree'
+          }
+          return null
         }
-        if (worktreeBranch) {
-          const msg = await res.text().catch(() => 'Failed to create worktree')
-          return msg
+        if (worktreeBranch) setNewSessionModalOpen(false)
+      } else {
+        const res = await fetch('/api/session/new', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, path, command, host: hostId || undefined, agent_type: agentType || undefined, worktree_branch: worktreeBranch || undefined }),
+        })
+        if (!res.ok) {
+          if (!worktreeBranch) {
+            workspaceActions.removeOptimistic(name, hostId || localHostId)
+            if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
+          }
+          if (worktreeBranch) {
+            const msg = await res.text().catch(() => 'Failed to create worktree')
+            return msg
+          }
+          return null
         }
-        return null
+        if (worktreeBranch) setNewSessionModalOpen(false)
+        const payload = await res.json().catch(() => null)
+        resolvedName = payload?.name || name
       }
-      if (worktreeBranch) setNewSessionModalOpen(false)
-      const payload = await res.json().catch(() => null)
-      const resolvedName = payload?.name || name
       if (resolvedName !== name && !worktreeBranch) {
         // Server deduped the name — migrate the optimistic key to the real one.
         // Don't upsert a fresh stub: the real record is already on its way via
@@ -990,7 +1064,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       }
     }
     return null
-  }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions])
+  }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions, v2Enabled, v2State])
 
   const handleQuickShell = useCallback(() => {
     const name = `shell-${Date.now()}`
@@ -1091,6 +1165,18 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   }, [currentView])
 
   const layoutGroups = useMemo<LayoutGroup[]>(() => {
+    // v2: no groups/singleView -- the state stream tracks exactly one
+    // layout, rendered as a single (always-active) group.
+    if (v2Enabled) {
+      if (!v2State.paneTree) return []
+      return [{
+        id: v2State.layoutId ?? 'v2',
+        leaves: getLeaves(v2State.paneTree),
+        isActive: true,
+        activeKey: v2State.activeKey,
+        name: undefined,
+      }]
+    }
     const ids = new Set<string>(Object.keys(syncedGroups))
     if (paneTree) ids.add(activeGroupId)
     return Array.from(ids).map(id => {
@@ -1113,7 +1199,19 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       if (ar !== br) return ar.localeCompare(br)
       return a.id.localeCompare(b.id)
     })
-  }, [syncedGroups, paneTree, activeGroupId, activeKey, currentView, singleView, activeGroup?.rank, activeGroupName])
+  }, [v2Enabled, v2State.paneTree, v2State.layoutId, v2State.activeKey, syncedGroups, paneTree, activeGroupId, activeKey, currentView, singleView, activeGroup?.rank, activeGroupName])
+
+  const v2SessionKeys = useMemo(() => {
+    if (!v2Enabled) return null
+    const keys = new Set<string>()
+    for (const rec of v2State.state.catalog.sessionsByRef.values()) keys.add(sessionRefToKey(rec.ref))
+    return keys
+  }, [v2Enabled, v2State.state.catalog])
+
+  const renderSessions = v2Enabled && v2SessionKeys ? sessions.filter(s => v2SessionKeys.has(sessionKey(s))) : sessions
+  const renderPaneTree = v2Enabled ? v2State.paneTree : paneTree
+  const renderActiveKey = v2Enabled ? v2State.activeKey : activeKey
+  const renderSingleView = v2Enabled ? null : singleView
 
   const showingTerminal = currentView === 'session' && !!selectedSession
 
@@ -1206,7 +1304,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
           onJumpToSession={jumpToSession}
           onDismiss={dismissEvent}
           onDismissAll={dismissAllEvents}
-          panesCount={paneTree ? getLeaves(paneTree).length : 0}
+          panesCount={renderPaneTree ? getLeaves(renderPaneTree).length : 0}
           onSplitPane={(direction) => {
             if (activeKey !== null) {
               splitTargetRef.current = { key: activeKey, direction }
@@ -1223,7 +1321,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       <div className="flex-1 flex overflow-hidden">
         {!terminalFullscreen && (
           <Sidebar
-            sessions={sessions}
+            sessions={renderSessions}
             selectedSession={selectedSession}
             collapsed={sidebarCollapsed}
             selfUpdateAvailable={selfUpdate.status?.update_available ?? false}
@@ -1344,35 +1442,59 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
           )}
           {(currentView as View) === 'setup' ? (
             <Setup onComplete={() => navigateTo(null)} />
-          ) : currentView === 'session' && singleView ? (
+          ) : currentView === 'session' && renderSingleView ? (
             <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
               <Terminal
-                sessionName={parseSessionKey(singleView).name}
-                hostId={parseSessionKey(singleView).host || undefined}
-                backend={sessions.find(s => sessionKey(s) === singleView)?.backend}
+                sessionName={parseSessionKey(renderSingleView).name}
+                hostId={parseSessionKey(renderSingleView).host || undefined}
+                backend={sessions.find(s => sessionKey(s) === renderSingleView)?.backend}
                 fullscreen={terminalFullscreen}
                 onToggleFullscreen={toggleFullscreen}
                 onOpenFile={(path) => wiki.openFile(
                   path,
-                  singleView ? cwdForKey(singleView) : undefined,
-                  sessions.find(s => sessionKey(s) === singleView)?.host,
-                  singleView ? parseSessionKey(singleView).name : undefined,
+                  renderSingleView ? cwdForKey(renderSingleView) : undefined,
+                  sessions.find(s => sessionKey(s) === renderSingleView)?.host,
+                  renderSingleView ? parseSessionKey(renderSingleView).name : undefined,
                 )}
               />
             </div>
-          ) : currentView === 'session' && paneTree ? (
+          ) : currentView === 'session' && renderPaneTree ? (
             <TiledView
-              tree={paneTree}
-              activeKey={activeKey}
-              onActivate={(key) => { setActiveKey(key); refocusTerminal() }}
+              tree={renderPaneTree}
+              activeKey={renderActiveKey}
+              onActivate={(key) => {
+                if (v2Enabled && v2State.layoutId) {
+                  void v2State.workspaceCommand(v2State.layoutId, { action: 'select', ref: keyToSessionRef(key) })
+                    .catch(err => console.error('v2 select command failed:', err))
+                } else {
+                  setActiveKey(key)
+                }
+                refocusTerminal()
+              }}
               onClose={closePane}
               onKill={killPane}
-              onPopOut={popOutPane}
+              onPopOut={(key) => {
+                if (v2Enabled && v2State.layoutId) {
+                  void v2State.workspaceCommand(v2State.layoutId, { action: 'pop_out', ref: keyToSessionRef(key) })
+                    .catch(err => console.error('v2 pop_out command failed:', err))
+                  return
+                }
+                popOutPane(key)
+              }}
               onSplit={(key, direction) => {
                 splitTargetRef.current = { key, direction }
                 openNewSessionModal()
               }}
               onRatioChange={(path, ratio) => {
+                if (v2Enabled && v2State.layoutId) {
+                  const record = v2State.state.workspace.record
+                  const splitId = record ? splitIdAtPath(record.tree, path) : undefined
+                  if (splitId) {
+                    void v2State.workspaceCommand(v2State.layoutId, { action: 'resize', split_id: splitId, ratio })
+                      .catch(err => console.error('v2 resize command failed:', err))
+                  }
+                  return
+                }
                 setPaneTree((prev: PaneTree | null) => {
                   if (prev === null) return null
                   return updateRatio(prev, path, ratio)
@@ -1383,10 +1505,26 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
               terminalContainerRef={terminalContainerRef}
               onDropSession={handleDropSession}
               onDropNewSession={handleDropNewSession}
-              onSwapPanes={(a, b) => setPaneTree((prev: PaneTree | null) => prev ? swapLeaves(prev, a, b) : prev)}
-              onMovePanes={(sourceKey, targetKey, edge) =>
+              onSwapPanes={(a, b) => {
+                if (v2Enabled && v2State.layoutId) {
+                  void v2State.workspaceCommand(v2State.layoutId, { action: 'swap', a: keyToSessionRef(a), b: keyToSessionRef(b) })
+                    .catch(err => console.error('v2 swap command failed:', err))
+                  return
+                }
+                setPaneTree((prev: PaneTree | null) => prev ? swapLeaves(prev, a, b) : prev)
+              }}
+              onMovePanes={(sourceKey, targetKey, edge) => {
+                if (v2Enabled && v2State.layoutId) {
+                  void v2State.workspaceCommand(v2State.layoutId, {
+                    action: 'move',
+                    source: keyToSessionRef(sourceKey),
+                    target: keyToSessionRef(targetKey),
+                    edge,
+                  }).catch(err => console.error('v2 move command failed:', err))
+                  return
+                }
                 setPaneTree((prev: PaneTree | null) => prev ? movePane(prev, sourceKey, targetKey, edge) : prev)
-              }
+              }}
               getBackend={(key) => sessions.find(s => sessionKey(s) === key)?.backend}
               getCwd={cwdForKey}
               onOpenFile={wiki.openFile}

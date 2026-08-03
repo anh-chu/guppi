@@ -3,6 +3,8 @@ package peer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -68,6 +70,11 @@ type PeerConnection struct {
 	lo     chan wireFrame
 	done   chan struct{}
 	closed bool
+
+	// v2 coalescing snapshot slots and reliable command queue.
+	catalogSlot   *snapshotSlot
+	workspaceSlot *snapshotSlot
+	cmdQueue      *reliableCommandQueue
 }
 
 // NewPeerConnection constructs a PeerConnection with buffered priority lanes.
@@ -81,6 +88,18 @@ func NewPeerConnection(hostID string, bufSize int) *PeerConnection {
 		hi:     make(chan wireFrame, hiQueueDepth),
 		lo:     make(chan wireFrame, bufSize),
 		done:   make(chan struct{}),
+	}
+}
+
+// initV2Lazy lazily initializes v2 slots/queue. It is safe to call multiple
+// times because a real PeerConnection is created once per connection.
+func (pc *PeerConnection) initV2Lazy() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pc.catalogSlot == nil {
+		pc.catalogSlot = newSnapshotSlot()
+		pc.workspaceSlot = newSnapshotSlot()
+		pc.cmdQueue = newReliableCommandQueue(32)
 	}
 }
 
@@ -167,6 +186,54 @@ type Manager struct {
 	// Subscribers for state changes (browser WebSocket hub subscribes here)
 	subMu       sync.RWMutex
 	subscribers []chan state.StateEvent
+
+	// v2 remote catalog caches, keyed by owner ID. They survive reconnects
+	// until explicitly forgotten.
+	catalogMu      sync.RWMutex
+	remoteCatalogs map[state.OwnerID]remoteCatalogCache
+
+	// remoteRevs tracks the last-accepted snapshot revision per peer for the
+	// peer's current connection. A new connection (re-registration) resets the
+	// baseline so a restarted peer with a fresh revision counter is accepted;
+	// within one connection, non-increasing revisions (stale or delayed
+	// snapshots) are rejected to stop cache regression. Guarded by catalogMu.
+	remoteRevs map[string]*remoteRevisionState
+
+	// ownerBinding enforces one owner per peer and one peer per owner so a
+	// peer cannot publish state under another peer's established owner.
+	// Guarded by catalogMu. Owner is a v2 OwnerID (random base32), which is
+	// distinct from the peer fingerprint.
+	peerOwner map[string]state.OwnerID
+	ownerPeer map[state.OwnerID]string
+
+	// v2 reliable command waiters.
+	cmdMu          sync.Mutex
+	commandWaiters map[string]*commandWaiter
+
+	// remoteStore persists remote catalog caches across restarts.
+	remoteStore *state.Store
+
+	// v2RemoteCreate runs local owner-side remote-create sagas and resumes
+	// pending creates after restart.
+	v2RemoteCreate *state.RemoteCreateCoordinator
+}
+
+// remoteCatalogCache is an immutable, owner-keyed view received from a peer.
+type remoteCatalogCache struct {
+	Owner        state.OwnerID
+	PeerID       string
+	Snapshot     state.OwnerCatalogSnapshot
+	Workspace    *state.WorkspaceRecord
+	ReceivedAt   time.Time
+	CatalogRev   int64
+	WorkspaceRev int64
+}
+
+// remoteRevisionState is the per-peer, per-connection revision baseline for
+// v2 snapshot streams. -1 means "no baseline yet" (fresh connection).
+type remoteRevisionState struct {
+	catalog   int64
+	workspace map[state.LayoutID]int64
 }
 
 // NewManager creates a new peer manager
@@ -189,6 +256,12 @@ func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr *
 		Connected: true,
 		LastSeen:  time.Now(),
 	}
+
+	m.remoteCatalogs = make(map[state.OwnerID]remoteCatalogCache)
+	m.remoteRevs = make(map[string]*remoteRevisionState)
+	m.peerOwner = make(map[string]state.OwnerID)
+	m.ownerPeer = make(map[state.OwnerID]string)
+	m.commandWaiters = make(map[string]*commandWaiter)
 
 	return m
 }
@@ -283,7 +356,9 @@ func (m *Manager) broadcast(evt state.StateEvent) {
 	}
 }
 
-// GetAllSessions returns sessions from all hosts, with host fields stamped
+// GetAllSessions returns sessions from all hosts, with host fields stamped.
+// The returned slice and session values are copies so callers cannot mutate
+// internal manager state.
 func (m *Manager) GetAllSessions() []*model.Session {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -291,13 +366,44 @@ func (m *Manager) GetAllSessions() []*model.Session {
 	var all []*model.Session
 	for _, h := range m.hosts {
 		for _, s := range h.Sessions {
-			s.Host = h.ID
-			s.HostName = h.Name
-			s.HostOnline = h.Connected
-			all = append(all, s)
+			copyS := copySession(s)
+			copyS.Host = h.ID
+			copyS.HostName = h.Name
+			copyS.HostOnline = h.Connected
+			all = append(all, copyS)
 		}
 	}
 	return all
+}
+
+func copySession(s *model.Session) *model.Session {
+	if s == nil {
+		return nil
+	}
+	c := *s
+	if len(s.Windows) > 0 {
+		c.Windows = make([]*model.Window, 0, len(s.Windows))
+		for _, w := range s.Windows {
+			if w == nil {
+				c.Windows = append(c.Windows, nil)
+				continue
+			}
+			cw := *w
+			if len(w.Panes) > 0 {
+				cw.Panes = make([]*model.Pane, 0, len(w.Panes))
+				for _, p := range w.Panes {
+					if p == nil {
+						cw.Panes = append(cw.Panes, nil)
+						continue
+					}
+					cp := *p
+					cw.Panes = append(cw.Panes, &cp)
+				}
+			}
+			c.Windows = append(c.Windows, &cw)
+		}
+	}
+	return &c
 }
 
 // GetLocalSessions returns only this node's sessions
@@ -305,13 +411,18 @@ func (m *Manager) GetLocalSessions() []*model.Session {
 	return m.localMgr.GetSessions()
 }
 
-// GetHosts returns info about all known hosts
+// GetHosts returns info about all known hosts. Session slices are copied so
+// callers cannot mutate internal state.
 func (m *Manager) GetHosts() []HostInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	hosts := make([]HostInfo, 0, len(m.hosts))
 	for _, h := range m.hosts {
+		sessions := make([]*model.Session, len(h.Sessions))
+		for i, s := range h.Sessions {
+			sessions[i] = copySession(s)
+		}
 		hosts = append(hosts, HostInfo{
 			ID:       h.ID,
 			Name:     h.Name,
@@ -319,7 +430,7 @@ func (m *Manager) GetHosts() []HostInfo {
 			Local:    h.ID == m.localID,
 			Online:   h.Connected,
 			Address:  h.Address,
-			Sessions: h.Sessions,
+			Sessions: sessions,
 			Activity: h.Activity,
 			Stats:    h.Stats,
 			LastSeen: h.LastSeen,
@@ -377,6 +488,14 @@ func (m *Manager) LocalManager() *state.Manager {
 	return m.localMgr
 }
 
+// SetRemoteStore wires the app-state store used to persist remote catalog
+// caches. It is safe to call before any peer connects.
+func (m *Manager) SetRemoteStore(store *state.Store) {
+	m.catalogMu.Lock()
+	defer m.catalogMu.Unlock()
+	m.remoteStore = store
+}
+
 // RegisterPeer registers a newly connected peer
 func (m *Manager) RegisterPeer(id, name, publicKey string, conn *PeerConnection) {
 	m.RegisterPeerWithAddress(id, name, publicKey, "", conn)
@@ -395,6 +514,12 @@ func (m *Manager) RegisterPeerWithAddress(id, name, publicKey, address string, c
 		Conn:      conn,
 	}
 	m.mu.Unlock()
+
+	// A new connection is a new snapshot-stream generation: reset the
+	// revision baseline so a restarted peer's re-emitted snapshots are
+	// accepted even though their revisions are lower than the last ones seen
+	// on the previous connection.
+	m.resetRemoteRevisions(id)
 
 	m.broadcast(state.StateEvent{
 		Type:     "peer-connected",
@@ -428,6 +553,8 @@ func (m *Manager) TryRegisterPeer(id, name, publicKey, address string, conn *Pee
 	}
 	m.mu.Unlock()
 
+	m.resetRemoteRevisions(id)
+
 	m.broadcast(state.StateEvent{
 		Type:     "peer-connected",
 		Host:     id,
@@ -441,10 +568,27 @@ func (m *Manager) TryRegisterPeer(id, name, publicKey, address string, conn *Pee
 	return true
 }
 
+// UnregisterPeer marks the peer offline unconditionally. Prefer
+// UnregisterPeerConn to prevent a stale connection from unregistering a
+// replacement.
 func (m *Manager) UnregisterPeer(id string) {
+	m.UnregisterPeerConn(id, nil)
+}
+
+// UnregisterPeerConn marks the peer offline only if conn is the currently
+// registered connection. A nil conn acts as an unconditional unregister.
+func (m *Manager) UnregisterPeerConn(id string, conn *PeerConnection) {
 	m.mu.Lock()
 	h, ok := m.hosts[id]
 	if ok {
+		if conn != nil && h.Conn != conn {
+			m.mu.Unlock()
+			logrus.WithFields(logrus.Fields{
+				"peer": h.Name,
+				"id":   id,
+			}).Debug("stale connection ignored during unregister")
+			return
+		}
 		h.Connected = false
 		h.Conn = nil
 		h.LastSeen = time.Now()
@@ -479,6 +623,7 @@ func (m *Manager) RemoveHost(id string) {
 	m.mu.Unlock()
 
 	if ok {
+		m.forgetRemoteCatalogsForPeer(id)
 		m.broadcast(state.StateEvent{
 			Type:     "peer-disconnected",
 			Host:     id,
@@ -488,6 +633,311 @@ func (m *Manager) RemoveHost(id string) {
 			"peer": h.Name,
 			"id":   id,
 		}).Info("host removed")
+	}
+}
+
+// bindRemoteOwner enforces the ownership binding: one owner per peer and one
+// peer per owner. The first snapshot a peer publishes establishes its sole
+// owner; a later snapshot from the same peer under a different owner, or a
+// second peer claiming an already-bound owner, is a spoof and is dropped.
+// Caller must hold catalogMu. The v2 catalog Owner is a random base32 id, NOT
+// the peer fingerprint, so an explicit cross-peer binding map is the sound
+// integrity mechanism here.
+func (m *Manager) bindRemoteOwner(peerID string, owner state.OwnerID) bool {
+	if peerID == "" || owner == "" {
+		return false
+	}
+	if p, ok := m.ownerPeer[owner]; ok && p != peerID {
+		logrus.WithFields(logrus.Fields{"peer": peerID, "owner": string(owner), "boundPeer": p}).Warn("dropping v2 snapshot: owner already bound to another peer")
+		return false
+	}
+	if o, ok := m.peerOwner[peerID]; ok && o != owner {
+		logrus.WithFields(logrus.Fields{"peer": peerID, "owner": string(owner), "boundOwner": string(o)}).Warn("dropping v2 snapshot: peer switched owners")
+		return false
+	}
+	m.peerOwner[peerID] = owner
+	m.ownerPeer[owner] = peerID
+	return true
+}
+
+// UpdateRemoteCatalog replaces the cached catalog for the snapshot's owner.
+// The previous cache (if any) is overwritten, not merged. The owner must be
+// the peer's bound owner and the revision must be increasing within the
+// peer's current connection (stale/delayed snapshots are rejected). If a
+// remote store is wired, the complete set of accepted remote catalogs is
+// persisted.
+func (m *Manager) UpdateRemoteCatalog(peerID string, snap state.OwnerCatalogSnapshot) {
+	m.catalogMu.Lock()
+	if !m.bindRemoteOwner(peerID, snap.Owner) {
+		m.catalogMu.Unlock()
+		return
+	}
+	rs := m.remoteRevs[peerID]
+	if rs == nil {
+		rs = &remoteRevisionState{catalog: -1}
+		m.remoteRevs[peerID] = rs
+	}
+	if rs.catalog >= 0 && snap.Revision <= rs.catalog {
+		m.catalogMu.Unlock()
+		logrus.WithFields(logrus.Fields{"peer": peerID, "rev": snap.Revision, "last": rs.catalog}).Debug("dropping stale v2 catalog snapshot")
+		return
+	}
+	rs.catalog = snap.Revision
+	m.remoteCatalogs[snap.Owner] = remoteCatalogCache{
+		Owner:      snap.Owner,
+		PeerID:     peerID,
+		Snapshot:   snap,
+		ReceivedAt: time.Now(),
+		CatalogRev: snap.Revision,
+	}
+	m.catalogMu.Unlock()
+	m.persistRemoteCatalogs()
+}
+
+// UpdateRemoteWorkspace replaces the cached workspace for owner. The owner
+// must be the peer's bound owner, and the workspace revision must be
+// increasing within the current connection (keyed per layout id).
+func (m *Manager) UpdateRemoteWorkspace(peerID string, rec state.WorkspaceRecord) {
+	m.catalogMu.Lock()
+	if !m.bindRemoteOwner(peerID, rec.Owner) {
+		m.catalogMu.Unlock()
+		return
+	}
+	rs := m.remoteRevs[peerID]
+	if rs == nil {
+		rs = &remoteRevisionState{catalog: -1}
+		m.remoteRevs[peerID] = rs
+	}
+	if rs.workspace == nil {
+		rs.workspace = make(map[state.LayoutID]int64)
+	}
+	if last, seen := rs.workspace[rec.ID]; seen && rec.Revision <= last {
+		m.catalogMu.Unlock()
+		logrus.WithFields(logrus.Fields{"peer": peerID, "layout": string(rec.ID), "rev": rec.Revision, "last": last}).Debug("dropping stale v2 workspace snapshot")
+		return
+	}
+	rs.workspace[rec.ID] = rec.Revision
+	cache := m.remoteCatalogs[rec.Owner]
+	cache.Owner = rec.Owner
+	cache.PeerID = peerID
+	cache.Workspace = &rec
+	cache.ReceivedAt = time.Now()
+	cache.WorkspaceRev = rec.Revision
+	m.remoteCatalogs[rec.Owner] = cache
+	m.catalogMu.Unlock()
+	m.persistRemoteCatalogs()
+}
+
+// RemoteCatalogSnapshot returns the latest cached catalog for owner, if any.
+func (m *Manager) RemoteCatalogSnapshot(owner state.OwnerID) (state.OwnerCatalogSnapshot, bool) {
+	m.catalogMu.RLock()
+	defer m.catalogMu.RUnlock()
+	c, ok := m.remoteCatalogs[owner]
+	if !ok {
+		return state.OwnerCatalogSnapshot{}, false
+	}
+	return cloneOwnerCatalogSnapshot(c.Snapshot), true
+}
+
+// RemoteWorkspaceSnapshot returns the latest cached workspace for owner, if any.
+func (m *Manager) RemoteWorkspaceSnapshot(owner state.OwnerID) (*state.WorkspaceRecord, bool) {
+	m.catalogMu.RLock()
+	defer m.catalogMu.RUnlock()
+	c, ok := m.remoteCatalogs[owner]
+	if !ok || c.Workspace == nil {
+		return nil, false
+	}
+	w := *c.Workspace
+	return &w, true
+}
+
+// ForgetRemoteCatalog removes the cached catalog and workspace for owner.
+func (m *Manager) ForgetRemoteCatalog(owner state.OwnerID) {
+	m.catalogMu.Lock()
+	delete(m.remoteCatalogs, owner)
+	m.catalogMu.Unlock()
+	m.persistRemoteCatalogs()
+}
+
+// SetRemoteCreateCoordinator wires the v2 owner-side remote create coordinator.
+func (m *Manager) SetRemoteCreateCoordinator(c *state.RemoteCreateCoordinator) {
+	m.v2RemoteCreate = c
+}
+
+// WorkspaceAuthority returns the owning owner for layout and, when the owner is
+// remote, the peer ID that last advertised it. The empty peerID means this node
+// is the authority.
+func (m *Manager) WorkspaceAuthority(layout state.LayoutID) (state.OwnerID, string, error) {
+	if cat := m.localMgr.V2Catalog(); cat != nil {
+		if rec, ok := cat.Layout(layout); ok {
+			return rec.Owner, "", nil
+		}
+	}
+	m.catalogMu.RLock()
+	defer m.catalogMu.RUnlock()
+	for owner, cache := range m.remoteCatalogs {
+		for _, l := range cache.Snapshot.Layouts {
+			if l.ID == layout {
+				return owner, cache.PeerID, nil
+			}
+		}
+		if cache.Workspace != nil && cache.Workspace.ID == layout {
+			return owner, cache.PeerID, nil
+		}
+	}
+	return "", "", state.StateError{Code: state.ErrUnknownLayout, Field: "layout", Detail: fmt.Sprintf("workspace authority not found for layout %q", layout)}
+}
+
+// IsWorkspaceOwnerOnline reports whether owner is reachable for v2 commands.
+func (m *Manager) IsWorkspaceOwnerOnline(owner state.OwnerID) bool {
+	if owner == state.OwnerID(m.localID) {
+		return true
+	}
+	peerID := m.peerIDForOwner(owner)
+	if peerID == "" {
+		return false
+	}
+	pc := m.GetPeerConnection(peerID)
+	return pc != nil && pc.HasV2()
+}
+
+// ProxyWorkspaceCommand routes a workspace command to the layout's owner.
+// Local authority applies directly; remote authority is sent over the v2
+// command RPC. Legacy or offline owners return typed errors.
+func (m *Manager) ProxyWorkspaceCommand(ctx context.Context, cmd state.WorkspaceCommand) error {
+	owner, peerID, err := m.WorkspaceAuthority(cmd.Layout)
+	if err != nil {
+		return err
+	}
+	if owner == state.OwnerID(m.localID) {
+		cat := m.localMgr.V2Catalog()
+		if cat == nil {
+			return fmt.Errorf("v2 catalog not enabled")
+		}
+		return cat.ApplyWorkspaceCommand(cmd)
+	}
+	pc := m.GetPeerConnection(peerID)
+	if pc == nil {
+		return state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "owner", Detail: fmt.Sprintf("workspace owner %q is offline", owner)}
+	}
+	if !pc.HasV2() {
+		return state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %q does not support v2 workspace commands", peerID)}
+	}
+	return m.SendWorkspaceCommand(ctx, peerID, cmd)
+}
+
+// RequestRemoteCreate routes a remote create to the workspace owner. The local
+// owner path runs directly in the coordinator; remote owners are reached over
+// the v2 remote-create RPC.
+func (m *Manager) RequestRemoteCreate(ctx context.Context, owner state.OwnerID, req state.RemoteCreateRequest) (state.RemoteCreateResult, error) {
+	if owner == "" || owner == state.OwnerID(m.localID) {
+		if m.v2RemoteCreate == nil {
+			return state.RemoteCreateResult{}, fmt.Errorf("remote create coordinator not available")
+		}
+		return m.v2RemoteCreate.ExecuteRemoteCreate(ctx, req)
+	}
+	peerID := m.peerIDForOwner(owner)
+	if peerID == "" {
+		return state.RemoteCreateResult{}, state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "owner", Detail: fmt.Sprintf("workspace owner %q is offline", owner)}
+	}
+	pc := m.GetPeerConnection(peerID)
+	if pc == nil {
+		return state.RemoteCreateResult{}, state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "owner", Detail: fmt.Sprintf("workspace owner %q is offline", owner)}
+	}
+	if !pc.HasV2() {
+		return state.RemoteCreateResult{}, state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %q does not support v2 remote creates", peerID)}
+	}
+	return m.SendRemoteCreate(ctx, peerID, req)
+}
+
+func (m *Manager) peerIDForOwner(owner state.OwnerID) string {
+	m.catalogMu.RLock()
+	defer m.catalogMu.RUnlock()
+	if c, ok := m.remoteCatalogs[owner]; ok {
+		return c.PeerID
+	}
+	return ""
+}
+
+// LoadRemoteCatalogCache loads persisted remote catalogs into memory. It is
+// idempotent and ignores missing sidecar files.
+func (m *Manager) LoadRemoteCatalogCache() error {
+	if m.remoteStore == nil {
+		return nil
+	}
+	catalogs, err := m.remoteStore.LoadRemoteCatalogs()
+	if err != nil {
+		return err
+	}
+	m.catalogMu.Lock()
+	defer m.catalogMu.Unlock()
+	for _, c := range catalogs {
+		m.remoteCatalogs[c.Owner] = remoteCatalogCache{
+			Owner:      c.Owner,
+			Snapshot:   c,
+			ReceivedAt: time.Now(),
+			CatalogRev: c.Revision,
+		}
+	}
+	return nil
+}
+
+func (m *Manager) persistRemoteCatalogs() {
+	m.catalogMu.RLock()
+	store := m.remoteStore
+	if store == nil {
+		m.catalogMu.RUnlock()
+		return
+	}
+	catalogs := make([]state.OwnerCatalogSnapshot, 0, len(m.remoteCatalogs))
+	for _, c := range m.remoteCatalogs {
+		catalogs = append(catalogs, cloneOwnerCatalogSnapshot(c.Snapshot))
+	}
+	m.catalogMu.RUnlock()
+
+	sort.Slice(catalogs, func(i, j int) bool { return catalogs[i].Owner < catalogs[j].Owner })
+	if err := store.SaveRemoteCatalogs(catalogs); err != nil {
+		logrus.WithError(err).Warn("failed to persist remote catalog caches")
+	}
+}
+
+func (m *Manager) forgetRemoteCatalogsForPeer(peerID string) {
+	m.catalogMu.Lock()
+	for owner, c := range m.remoteCatalogs {
+		if c.PeerID == peerID {
+			delete(m.remoteCatalogs, owner)
+		}
+	}
+	// Clear the ownership binding so a subsequently re-added peer starts
+	// clean instead of being latched to a stale owner.
+	if owner, ok := m.peerOwner[peerID]; ok {
+		delete(m.ownerPeer, owner)
+		delete(m.peerOwner, peerID)
+	}
+	m.catalogMu.Unlock()
+	// Persist the removal so a forgotten peer does not reappear after a
+	// restart (the sidecar is written from the in-memory map).
+	m.persistRemoteCatalogs()
+}
+
+// resetRemoteRevisions clears the per-connection revision baseline for a
+// peer. Called whenever a new connection registers.
+func (m *Manager) resetRemoteRevisions(peerID string) {
+	m.catalogMu.Lock()
+	delete(m.remoteRevs, peerID)
+	m.catalogMu.Unlock()
+}
+
+func cloneOwnerCatalogSnapshot(s state.OwnerCatalogSnapshot) state.OwnerCatalogSnapshot {
+	sessions := make([]state.LocalSessionRecord, len(s.Sessions))
+	copy(sessions, s.Sessions)
+	layouts := make([]state.LayoutRecord, len(s.Layouts))
+	copy(layouts, s.Layouts)
+	return state.OwnerCatalogSnapshot{
+		Owner:    s.Owner,
+		Revision: s.Revision,
+		Sessions: sessions,
+		Layouts:  layouts,
 	}
 }
 
@@ -628,7 +1078,9 @@ func (m *Manager) IsLocal(hostID string) bool {
 	return hostID == "" || hostID == m.localID
 }
 
-// pruneOffline removes peers that have been offline for too long
+// pruneOffline marks long-offline peers as offline. It deliberately does not
+// delete v2 remote catalog caches; those are retained through reconnects and
+// only dropped on explicit forget.
 func (m *Manager) pruneOffline() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -639,11 +1091,13 @@ func (m *Manager) pruneOffline() {
 			continue
 		}
 		if !h.Connected && now.Sub(h.LastSeen) > OfflineTimeout {
-			delete(m.hosts, id)
+			// Keep the host entry so its cached catalog remains addressable by
+			// peer ID; only mark it as stale.
+			h.Connected = false
 			logrus.WithFields(logrus.Fields{
 				"peer": h.Name,
 				"id":   id,
-			}).Info("pruned offline peer")
+			}).Debug("peer offline timeout reached; catalog retained")
 		}
 	}
 }

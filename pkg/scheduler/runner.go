@@ -21,6 +21,7 @@ type CreateSessionReq struct {
 	AgentType      string
 	WorktreeBranch string
 	ScheduleID     string
+	CommandID      string // stable command id derived from schedule identity
 }
 
 // CreateSessionFunc spawns one session.
@@ -40,6 +41,7 @@ type Runner struct {
 	capFn    func(job Job)
 	log      *logrus.Entry
 	nowFn    func() time.Time
+	Owner    string // v2 owner id used to derive stable command IDs
 }
 
 // SetCapEnforcer installs an optional pre-spawn hook that prunes a schedule's
@@ -96,7 +98,7 @@ func (r *Runner) runOnce(now time.Time) {
 		if job.NextRun.After(now) {
 			continue
 		}
-		schedule, err := cron.ParseStandard(job.CronSpec)
+			schedule, err := cron.ParseStandard(job.CronSpec)
 		if err != nil {
 			r.log.WithError(err).WithField("job_id", job.ID).Warn("scheduler job disabled: invalid cron")
 			if disErr := r.store.disable(job.ID); disErr != nil {
@@ -107,6 +109,11 @@ func (r *Runner) runOnce(now time.Time) {
 		next := schedule.Next(now)
 		if next.IsZero() {
 			next = now.Add(time.Minute)
+		}
+
+		cmdID := ""
+		if r.Owner != "" {
+			cmdID = string(state.NewCommandIDFromSchedule(state.OwnerID(r.Owner), job.ID, now))
 		}
 
 		if job.Host != "" && r.peerMgr != nil && !r.peerMgr.IsLocal(job.Host) {
@@ -135,6 +142,7 @@ func (r *Runner) runOnce(now time.Time) {
 			AgentType:      job.AgentType,
 			WorktreeBranch: job.WorktreeBranch,
 			ScheduleID:     job.ID,
+			CommandID:      cmdID,
 		}
 		if job.MaxConcurrency > 0 && r.capFn != nil {
 			r.capFn(job)
