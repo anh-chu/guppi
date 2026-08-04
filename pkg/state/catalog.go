@@ -352,20 +352,29 @@ func (c *Catalog) apply(reason string, mutate func(*AppDocument) error) error {
 			*target = doc
 			return nil
 		}); err != nil {
-			if !errors.Is(err, errSyncDirFailedAfterRename) {
-				c.mu.Unlock()
-				return err
+			// Regardless of which failure this is, Store.Update may have
+			// already adopted its own new document into memory (it does so
+			// specifically for errSyncDirFailedAfterRename, see store.go).
+			// Resync the catalog's maps/revision from Store.Snapshot() so
+			// this process's own read-side state never diverges from what
+			// Store itself now believes on-disk, even though the command is
+			// about to fail closed below.
+			if resetErr := c.resetLocked(c.store.Snapshot()); resetErr != nil {
+				logrus.WithError(resetErr).WithField("reason", reason).Warn("failed to resync catalog after store commit error")
 			}
-			// The rename that made the new document durably visible on disk
-			// already succeeded; only the directory-entry fsync is uncertain.
-			// Store.Update has already adopted the new document into its own
-			// in-memory state for exactly this reason (see
-			// errSyncDirFailedAfterRename in store.go). The catalog must do the
-			// same instead of returning early, or its maps/revision and every
-			// subscriber fed by it would silently diverge from what is already
-			// on disk and from Store.Snapshot(). Treat this as success: adopt,
-			// publish, and only log a warning about the fsync uncertainty.
-			logrus.WithError(err).WithField("reason", reason).Warn("catalog commit durable but directory fsync uncertain after rename")
+			c.mu.Unlock()
+			if errors.Is(err, errSyncDirFailedAfterRename) {
+				// The rename that made the new document durably visible on
+				// disk already succeeded; only the directory-entry fsync is
+				// uncertain. Durability of this write cannot be confirmed,
+				// so the command must NOT be acknowledged as a success: fail
+				// closed and let the caller retry/replay. Silently treating
+				// this as success (the prior behavior) risks reporting a
+				// mutation as committed when a crash before the directory
+				// fsync completes could still lose it.
+				logrus.WithError(err).WithField("reason", reason).Warn("catalog commit durable-write succeeded but directory fsync uncertain after rename; failing closed")
+			}
+			return err
 		}
 		doc = c.store.Snapshot()
 	} else {

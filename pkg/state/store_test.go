@@ -857,7 +857,7 @@ func makeFailingSyncDirHookOnCall(call int) func(string) error {
 // Store.Snapshot() both already held the new one. This test drives the exact
 // fault through Catalog.apply (via PutSession, not raw Store.Update) and
 // asserts the catalog adopts the change and publishes it.
-func TestCatalogApplyAdoptsSyncDirFailureAfterRename(t *testing.T) {
+func TestCatalogApplyFailsClosedOnSyncDirFailureAfterRename(t *testing.T) {
 	dir := t.TempDir()
 	store := mustOpenEmptyInDir(t, dir)
 	owner := store.Owner()
@@ -890,11 +890,16 @@ func TestCatalogApplyAdoptsSyncDirFailureAfterRename(t *testing.T) {
 		Phase:   SessionPhaseActive,
 		Desired: DesiredRun,
 	}
-	if err := cat.PutSession(rec); err != nil {
-		t.Fatalf("expected Catalog.apply to treat the post-rename directory-fsync failure as adopted-success (per errSyncDirFailedAfterRename), got error: %v", err)
+	// Per the fail-closed durability contract, a directory-fsync failure
+	// after a successful rename must NOT be reported as success: the caller
+	// needs a non-nil error so it never treats this mutation as durably
+	// acknowledged.
+	if err := cat.PutSession(rec); err == nil {
+		t.Fatal("expected Catalog.apply to fail closed (non-nil error) on a post-rename directory-fsync failure, got nil")
 	}
 
-	// The rename already made the new document durably visible on disk.
+	// The rename already made the new document durably visible on disk, even
+	// though the command above was correctly failed closed.
 	diskDoc, derr := store.readDocument(store.currentPath())
 	if derr != nil {
 		t.Fatalf("read current from disk: %v", derr)
@@ -911,8 +916,10 @@ func TestCatalogApplyAdoptsSyncDirFailureAfterRename(t *testing.T) {
 		t.Fatalf("store snapshot diverged from disk:\nstore=%+v\ndisk=%+v", storeSnap, diskDoc)
 	}
 
-	// The catalog's own in-memory maps/revision must match what is actually
-	// on disk -- this is the assertion the prior, narrower fix missed.
+	// Even though the command failed closed, the catalog's own in-memory
+	// maps/revision must still match what is actually on disk/Store -- it
+	// must never silently diverge from Store.Snapshot() just because the
+	// command it was resyncing for was itself rejected.
 	if cat.Revision() != diskDoc.Revision {
 		t.Fatalf("catalog revision diverged from disk after syncdir failure: catalog=%d disk=%d", cat.Revision(), diskDoc.Revision)
 	}
@@ -921,23 +928,17 @@ func TestCatalogApplyAdoptsSyncDirFailureAfterRename(t *testing.T) {
 	}
 	catSessions := cat.Sessions()
 	if len(catSessions) != 1 || catSessions[0].ID != rec.ID {
-		t.Fatalf("expected catalog to adopt the new session into its maps, got %+v", catSessions)
+		t.Fatalf("expected catalog to resync the new session into its maps despite failing the command closed, got %+v", catSessions)
 	}
 
-	// A snapshot reflecting the NEW state must have been published to
-	// subscribers -- not silently dropped, and not a stale snapshot of the
-	// old state.
+	// Because the command failed closed, no snapshot should have been
+	// published to subscribers for it -- publishing would look exactly like
+	// an acknowledged success to anything downstream (e.g. the browser state
+	// stream), which is precisely what the fail-closed contract forbids.
 	mu.Lock()
 	defer mu.Unlock()
-	if len(published) == 0 {
-		t.Fatal("expected a catalog snapshot to be published after the syncdir-failure commit, got none")
-	}
-	last := published[len(published)-1]
-	if last.Revision != diskDoc.Revision {
-		t.Fatalf("published snapshot revision %d does not match disk revision %d", last.Revision, diskDoc.Revision)
-	}
-	if len(last.Sessions) != 1 || last.Sessions[0].ID != rec.ID {
-		t.Fatalf("published snapshot does not reflect the new session, got %+v", last.Sessions)
+	if len(published) != 0 {
+		t.Fatalf("expected no catalog snapshot to be published for a command that failed closed, got %d: %+v", len(published), published)
 	}
 }
 

@@ -13,29 +13,45 @@ import (
 // catalogs. It is intentionally separate from AppDocument so remote cache
 // persistence never advances the local owner's revision.
 type RemoteCatalogsDocument struct {
-	Schema   int                    `json:"schema"`
-	Catalogs []OwnerCatalogSnapshot `json:"catalogs"`
+	Schema   int                       `json:"schema"`
+	Catalogs []RemoteCatalogCacheEntry `json:"catalogs"`
 }
 
-const remoteCatalogsSchema = 1
+// RemoteCatalogCacheEntry pairs a cached remote-owner catalog snapshot with
+// the authenticated peer fingerprint it was received from. PeerID is the
+// peer-connection identity (e.g. the TLS/noise handshake fingerprint
+// string) and is NOT derivable from Snapshot.Owner: OwnerID lives in a
+// separate, one-way-derived identifier space (see
+// state.OwnerIDFromFingerprint), so the fingerprint must be persisted
+// explicitly or the owner<->peer binding is lost across a restart.
+type RemoteCatalogCacheEntry struct {
+	PeerID   string               `json:"peer_id"`
+	Snapshot OwnerCatalogSnapshot `json:"snapshot"`
+}
+
+const remoteCatalogsSchema = 2
 
 // remoteCatalogsPath returns the sidecar path for remote catalog caches.
 func (s *Store) remoteCatalogsPath() string {
 	return filepath.Join(s.path, s.nodeID+".remote-catalogs.json")
 }
 
-// SaveRemoteCatalogs persists the supplied remote owner catalogs atomically.
+// SaveRemoteCatalogs persists the supplied remote owner catalogs, together
+// with the authenticated peer fingerprint each was received from, atomically.
 // The local owner's catalog revision is unaffected.
-func (s *Store) SaveRemoteCatalogs(catalogs []OwnerCatalogSnapshot) error {
+func (s *Store) SaveRemoteCatalogs(entries []RemoteCatalogCacheEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	doc := RemoteCatalogsDocument{
 		Schema:   remoteCatalogsSchema,
-		Catalogs: make([]OwnerCatalogSnapshot, len(catalogs)),
+		Catalogs: make([]RemoteCatalogCacheEntry, len(entries)),
 	}
-	for i, c := range catalogs {
-		doc.Catalogs[i] = cloneOwnerCatalogSnapshot(c)
+	for i, e := range entries {
+		doc.Catalogs[i] = RemoteCatalogCacheEntry{
+			PeerID:   e.PeerID,
+			Snapshot: cloneOwnerCatalogSnapshot(e.Snapshot),
+		}
 	}
 
 	data, err := json.Marshal(doc)
@@ -59,8 +75,8 @@ func (s *Store) SaveRemoteCatalogs(catalogs []OwnerCatalogSnapshot) error {
 	return nil
 }
 
-// LoadRemoteCatalogs loads the persisted remote owner catalogs, returning an
-// empty slice if the sidecar does not exist.
+// cloneOwnerCatalogSnapshot returns a deep copy of c's slice fields so
+// persisted/cached snapshots never alias caller-owned backing arrays.
 func cloneOwnerCatalogSnapshot(c OwnerCatalogSnapshot) OwnerCatalogSnapshot {
 	sessions := make([]LocalSessionRecord, len(c.Sessions))
 	copy(sessions, c.Sessions)
@@ -74,7 +90,10 @@ func cloneOwnerCatalogSnapshot(c OwnerCatalogSnapshot) OwnerCatalogSnapshot {
 	}
 }
 
-func (s *Store) LoadRemoteCatalogs() ([]OwnerCatalogSnapshot, error) {
+// LoadRemoteCatalogs loads the persisted remote owner catalogs (with their
+// bound peer fingerprints), returning an empty slice if the sidecar does
+// not exist.
+func (s *Store) LoadRemoteCatalogs() ([]RemoteCatalogCacheEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -94,10 +113,13 @@ func (s *Store) LoadRemoteCatalogs() ([]OwnerCatalogSnapshot, error) {
 		return nil, fmt.Errorf("unsupported remote catalogs schema %d", doc.Schema)
 	}
 
-	out := make([]OwnerCatalogSnapshot, len(doc.Catalogs))
-	for i, c := range doc.Catalogs {
-		out[i] = cloneOwnerCatalogSnapshot(c)
+	out := make([]RemoteCatalogCacheEntry, len(doc.Catalogs))
+	for i, e := range doc.Catalogs {
+		out[i] = RemoteCatalogCacheEntry{
+			PeerID:   e.PeerID,
+			Snapshot: cloneOwnerCatalogSnapshot(e.Snapshot),
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Owner < out[j].Owner })
+	sort.Slice(out, func(i, j int) bool { return out[i].Snapshot.Owner < out[j].Snapshot.Owner })
 	return out, nil
 }

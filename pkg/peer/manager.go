@@ -1285,17 +1285,35 @@ func (m *Manager) LoadRemoteCatalogCache() error {
 	if m.remoteStore == nil {
 		return nil
 	}
-	catalogs, err := m.remoteStore.LoadRemoteCatalogs()
+	entries, err := m.remoteStore.LoadRemoteCatalogs()
 	if err != nil {
 		return err
 	}
 	m.catalogMu.Lock()
 	defer m.catalogMu.Unlock()
-	for _, c := range catalogs {
-		// Derive the peer ID from the owner ID (they are the same by architecture).
-		// The persisted catalog's Owner was set by a peer matching its fingerprint,
-		// so restore that binding without requiring the peer to be connected.
-		peerID := string(c.Owner)
+	for _, e := range entries {
+		c := e.Snapshot
+		// Restore the peer fingerprint exactly as persisted alongside the
+		// snapshot. It must NOT be re-derived from c.Owner: OwnerID and peer
+		// fingerprints live in different, non-invertible identifier spaces
+		// (see state.OwnerIDFromFingerprint), so any live connection from
+		// this peer after a restart would never resolve if the binding were
+		// reconstructed from the owner string instead of the real
+		// fingerprint that was authenticated at connect time.
+		peerID := e.PeerID
+		if peerID == "" {
+			// No fingerprint was ever recorded for this cache entry (e.g. an
+			// older on-disk cache or manual edit). Skip restoring the
+			// ownership binding rather than guessing one, but keep the
+			// catalog snapshot available for display.
+			m.remoteCatalogs[c.Owner] = remoteCatalogCache{
+				Owner:      c.Owner,
+				Snapshot:   c,
+				ReceivedAt: time.Now(),
+				CatalogRev: c.Revision,
+			}
+			continue
+		}
 		m.remoteCatalogs[c.Owner] = remoteCatalogCache{
 			Owner:      c.Owner,
 			PeerID:     peerID,
@@ -1317,14 +1335,17 @@ func (m *Manager) persistRemoteCatalogs() {
 		m.catalogMu.RUnlock()
 		return
 	}
-	catalogs := make([]state.OwnerCatalogSnapshot, 0, len(m.remoteCatalogs))
+	entries := make([]state.RemoteCatalogCacheEntry, 0, len(m.remoteCatalogs))
 	for _, c := range m.remoteCatalogs {
-		catalogs = append(catalogs, cloneOwnerCatalogSnapshot(c.Snapshot))
+		entries = append(entries, state.RemoteCatalogCacheEntry{
+			PeerID:   c.PeerID,
+			Snapshot: cloneOwnerCatalogSnapshot(c.Snapshot),
+		})
 	}
 	m.catalogMu.RUnlock()
 
-	sort.Slice(catalogs, func(i, j int) bool { return catalogs[i].Owner < catalogs[j].Owner })
-	if err := store.SaveRemoteCatalogs(catalogs); err != nil {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Snapshot.Owner < entries[j].Snapshot.Owner })
+	if err := store.SaveRemoteCatalogs(entries); err != nil {
 		logrus.WithError(err).Warn("failed to persist remote catalog caches")
 	}
 }

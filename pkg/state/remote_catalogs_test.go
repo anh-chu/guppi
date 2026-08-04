@@ -15,17 +15,20 @@ func TestStore_RemoteCatalogsPersistAndLoad(t *testing.T) {
 
 	owner := NewOwnerID()
 	sessionID := NewSessionID()
-	catalogs := []OwnerCatalogSnapshot{
+	entries := []RemoteCatalogCacheEntry{
 		{
-			Owner:    owner,
-			Revision: 7,
-			Sessions: []LocalSessionRecord{
-				{ID: sessionID, Owner: owner, Ref: SessionRef{Owner: owner, Session: sessionID}},
+			PeerID: "peer-fingerprint-abc",
+			Snapshot: OwnerCatalogSnapshot{
+				Owner:    owner,
+				Revision: 7,
+				Sessions: []LocalSessionRecord{
+					{ID: sessionID, Owner: owner, Ref: SessionRef{Owner: owner, Session: sessionID}},
+				},
 			},
 		},
 	}
 
-	if err := s.SaveRemoteCatalogs(catalogs); err != nil {
+	if err := s.SaveRemoteCatalogs(entries); err != nil {
 		t.Fatalf("SaveRemoteCatalogs: %v", err)
 	}
 
@@ -44,8 +47,11 @@ func TestStore_RemoteCatalogsPersistAndLoad(t *testing.T) {
 	if len(loaded) != 1 {
 		t.Fatalf("expected 1 catalog, got %d", len(loaded))
 	}
-	if loaded[0].Revision != 7 || len(loaded[0].Sessions) != 1 {
+	if loaded[0].Snapshot.Revision != 7 || len(loaded[0].Snapshot.Sessions) != 1 {
 		t.Fatalf("unexpected loaded catalog: %+v", loaded[0])
+	}
+	if loaded[0].PeerID != "peer-fingerprint-abc" {
+		t.Fatalf("peer fingerprint not round-tripped: got %q, want %q", loaded[0].PeerID, "peer-fingerprint-abc")
 	}
 }
 
