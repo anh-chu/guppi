@@ -123,6 +123,14 @@ type v2SessionCommandRequest struct {
 	Ref    state.SessionRef `json:"ref,omitempty"`
 	Action string           `json:"action"`
 	Params json.RawMessage  `json:"params,omitempty"`
+
+	// TargetOwner is ONLY meaningful for action=create. It names the owner
+	// the browser wants the new session created on (populated from the host
+	// the user picked in the New Session modal); empty (the common case)
+	// means "create locally", matching the existing unchanged behavior.
+	// Every other action already carries its target via Ref.Owner (see the
+	// forwarding branch below) and ignores this field.
+	TargetOwner state.OwnerID `json:"target_owner,omitempty"`
 }
 
 func handleV2SessionCommand(w http.ResponseWriter, r *http.Request, opts *Options) {
@@ -156,6 +164,60 @@ func handleV2SessionCommand(w http.ResponseWriter, r *http.Request, opts *Option
 		Ref:    req.Ref,
 		Action: req.Action,
 		Params: req.Params,
+	}
+
+	// A create targeting a different owner (the browser's New Session modal
+	// lets the user pick any known host) must be routed through the
+	// distributed remote-create coordinator/RPC (peer.Manager.
+	// RequestRemoteCreate), never executed against this node's own catalog:
+	// that would silently create the session on the WRONG node while the
+	// browser believes it asked for TargetOwner. Without this branch,
+	// TargetOwner was accepted from the wire but never consulted, so every
+	// remote-host create silently fell back to local.
+	if req.Action == state.ActionCreate && req.TargetOwner != "" && req.TargetOwner != opts.V2CommandSvc.Owner() {
+		if opts.PeerMgr == nil {
+			writeV2Error(w, http.StatusServiceUnavailable, "peer_offline", "target_owner", "this node has no peer manager configured; cannot reach remote owner")
+			return
+		}
+		var params state.CreateParams
+		if len(req.Params) > 0 {
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				writeV2Error(w, http.StatusBadRequest, "invalid_input", "params", "malformed create params: "+err.Error())
+				return
+			}
+		}
+		remoteReq := state.RemoteCreateRequest{
+			IntentID:       id,
+			Requester:      opts.V2CommandSvc.Owner(),
+			Name:           params.Name,
+			Shell:          params.Shell,
+			Cwd:            params.Cwd,
+			WorktreeBranch: params.WorktreeBranch,
+			Cols:           params.Cols,
+			Rows:           params.Rows,
+			LayoutID:       params.LayoutID,
+			Direction:      params.Direction,
+			NewFirst:       params.NewFirst,
+			AgentType:      params.AgentType,
+		}
+		if params.Target != nil {
+			remoteReq.Target = *params.Target
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), v2RemoteCommandTimeout)
+		defer cancel()
+		result, err := opts.PeerMgr.RequestRemoteCreate(ctx, req.TargetOwner, remoteReq)
+		if err != nil {
+			var se state.StateError
+			if !errors.As(err, &se) {
+				writeV2Error(w, http.StatusServiceUnavailable, "peer_offline", "target_owner", "remote create failed: "+err.Error())
+				return
+			}
+			writeV2CommandError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+		return
 	}
 
 	// Forward to the remote peer that actually owns this ref instead of
@@ -322,6 +384,15 @@ func mapV2ErrorCode(code state.ErrorCode) (int, string) {
 		return http.StatusConflict, "generation_mismatch"
 	case state.ErrUnknownLayout, state.ErrMissingTarget:
 		return http.StatusNotFound, "not_found"
+	case state.ErrWorkspaceOwnerOffline, state.ErrLegacyPeerUnsupported:
+		// Both mean "the remote owner/peer this command needed to reach is
+		// not currently usable" (no live connection bound to that owner, or
+		// the bound peer doesn't speak v2) -- the same transient,
+		// retry-later condition as the plain-error peer_offline branch each
+		// remote-forwarding call site already handles for transport
+		// failures. Mapping these to 400 invalid_input would tell the
+		// browser this was a malformed request, which it was not.
+		return http.StatusServiceUnavailable, "peer_offline"
 	default:
 		return http.StatusBadRequest, "invalid_input"
 	}

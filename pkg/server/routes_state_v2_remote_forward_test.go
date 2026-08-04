@@ -129,3 +129,114 @@ func TestV2SessionCommand_RemoteRefRouting(t *testing.T) {
 		}
 	})
 }
+
+// TestV2SessionCommand_CreateTargetOwnerRouting is the HTTP-level proof that
+// a create command carrying a top-level target_owner naming a DIFFERENT
+// owner than this node's own must be routed through
+// peer.Manager.RequestRemoteCreate, never silently executed against this
+// node's own local catalog. Before this fix, target_owner (populated from
+// the host the browser's New Session modal selected) was accepted on the
+// wire but never consulted at all: every remote-host create silently
+// created the session locally instead.
+func TestV2SessionCommand_CreateTargetOwnerRouting(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	_ = os.MkdirAll(filepath.Join(tmpHome, ".config", "termyard"), 0o700)
+
+	catalog, svc := newV2TestCatalog(t)
+	localOwner := catalog.Owner()
+	remoteOwner := state.NewOwnerID()
+
+	post := func(r http.Handler, payload []byte) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v2/session-commands", bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	createBody := func(targetOwner state.OwnerID) []byte {
+		b, _ := json.Marshal(map[string]any{
+			"action":       state.ActionCreate,
+			"target_owner": targetOwner,
+			"params":       map[string]any{"name": "should-not-run-locally"},
+		})
+		return b
+	}
+
+	t.Run("no PeerMgr configured: remote target_owner must not silently create locally", func(t *testing.T) {
+		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+		r := newV2TestRouter(opts)
+		w := post(r, createBody(remoteOwner))
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 (remote owner unreachable, not silently created locally), got %d: %s", w.Code, w.Body.String())
+		}
+		var errResp v2ErrorResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("decode error response: %v", err)
+		}
+		if errResp.Code != "peer_offline" {
+			t.Fatalf("expected peer_offline error code, got %q", errResp.Code)
+		}
+		// Prove the create did NOT silently land on this node's own catalog.
+		for _, s := range catalog.Sessions() {
+			if s.Compat.Name == "should-not-run-locally" {
+				t.Fatal("REMOTE-CREATE-ROUTING BUG: create with a remote target_owner silently executed against " +
+					"the local catalog instead of failing to reach the remote owner")
+			}
+		}
+	})
+
+	t.Run("PeerMgr configured but owner not bound to any live peer: still not silently local", func(t *testing.T) {
+		localID, err := identity.Generate("node-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		peerStore, err := identity.NewPeerStore()
+		if err != nil {
+			t.Fatal(err)
+		}
+		peerMgr := peer.NewManager(localID, peerStore, state.NewManager())
+		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc, PeerMgr: peerMgr}
+		r := newV2TestRouter(opts)
+		w := post(r, createBody(remoteOwner))
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+		}
+		for _, s := range catalog.Sessions() {
+			if s.Compat.Name == "should-not-run-locally" {
+				t.Fatal("REMOTE-CREATE-ROUTING BUG: create with a remote target_owner silently executed against " +
+					"the local catalog instead of failing to reach the remote owner")
+			}
+		}
+	})
+
+	t.Run("target_owner matches this node's own owner: executes locally as before", func(t *testing.T) {
+		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+		r := newV2TestRouter(opts)
+		w := post(r, createBody(localOwner))
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for own-owner target_owner, got %d: %s", w.Code, w.Body.String())
+		}
+		var result state.CommandResult
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+			t.Fatalf("decode create result: %v", err)
+		}
+		if !result.Accepted || result.Ref.Owner != localOwner {
+			t.Fatalf("expected accepted local create, got %+v", result)
+		}
+	})
+
+	t.Run("no target_owner at all: executes locally as before (unchanged default)", func(t *testing.T) {
+		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+		r := newV2TestRouter(opts)
+		b, _ := json.Marshal(map[string]any{
+			"action": state.ActionCreate,
+			"params": map[string]any{"name": "no-target-owner-default"},
+		})
+		w := post(r, b)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}

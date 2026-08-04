@@ -94,6 +94,41 @@ describe('V2CommandClient', () => {
     expect('ref' in capturedBody).toBe(false)
   })
 
+  it('createSession sends target_owner as a TOP-LEVEL wire field, never nested in params', async () => {
+    let capturedBody: any = null
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string)
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const client = new V2CommandClient({ fetchImpl, genId: () => 'builtin-id' })
+    await client.createSession({ action: 'create', name: 'alpha', cwd: '/tmp', target_owner: 'remotehostfingerprint123' })
+
+    // target_owner must be a sibling of action/params (matching
+    // v2SessionCommandRequest.TargetOwner in pkg/server/routes_state_v2.go),
+    // NOT folded into params -- the server never looks for it there.
+    expect(capturedBody).toEqual({
+      id: 'builtin-id',
+      action: 'create',
+      target_owner: 'remotehostfingerprint123',
+      params: { name: 'alpha', cwd: '/tmp' },
+    })
+    expect('target_owner' in capturedBody.params).toBe(false)
+  })
+
+  it('createSession omits target_owner entirely when not supplied (local create, unchanged default)', async () => {
+    let capturedBody: any = null
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string)
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const client = new V2CommandClient({ fetchImpl, genId: () => 'builtin-id' })
+    await client.createSession({ action: 'create', name: 'alpha' })
+
+    expect('target_owner' in capturedBody).toBe(false)
+  })
+
   it('sessionCommand generates a fresh id per call when none supplied', async () => {
     const ids: unknown[] = []
     const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {

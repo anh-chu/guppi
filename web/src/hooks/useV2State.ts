@@ -43,9 +43,10 @@ export type UseV2StateResult = {
     cwd?: string
     worktreeBranch?: string
     layoutId?: LayoutID
-    // Target host selected by the caller. Accepted here for forward
-    // compatibility with the frontend API boundary, but NOT yet placed on
-    // the wire -- see the TODO in createSession's implementation below.
+    // Target host (owner fingerprint) selected by the caller in the New
+    // Session modal. Sent as the top-level target_owner wire field; the
+    // server routes the create through peer.Manager.RequestRemoteCreate when
+    // this differs from the local owner. Omitted means "create locally".
     hostId?: string
     // When set (together with layoutId), the new session is placed by
     // splitting the target leaf in one atomic step on the server -- see
@@ -150,14 +151,14 @@ export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
         splitDirection?: SplitDirection
         splitNewFirst?: boolean
       }) => {
-        // TODO(v2 remote create): params.hostId identifies the caller's
-        // selected target host, but the v2 session-command wire contract has
-        // no field to carry it yet. The RemoteCreateCoordinator
-        // (pkg/state/remote_create.go) that would route a create to the right
-        // peer is only reachable from pkg/peer/session_state.go today, not
-        // from this HTTP command path, so a remote-host create silently
-        // creates locally. Once the backend exposes a target-owner field on
-        // this endpoint, wire params.hostId into that field here.
+        // params.hostId identifies the caller's selected target host and is
+        // sent as the top-level target_owner wire field (see
+        // v2SessionCommandRequest in pkg/server/routes_state_v2.go); when set
+        // to a different owner than this node's own, the server forwards the
+        // create through peer.Manager.RequestRemoteCreate (the same
+        // RemoteCreateCoordinator/RPC path pkg/peer/session_state.go already
+        // used for peer-originated creates) instead of running it locally.
+        // Omitted (undefined) means "create locally", unchanged from before.
         //
         // Note: a create carries NO SessionRef on the wire -- the server
         // assigns the SessionID (executeCreate synthesizes one when ref is
@@ -173,6 +174,7 @@ export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
           target: params.splitTarget,
           direction: params.splitDirection,
           new_first: params.splitNewFirst,
+          target_owner: params.hostId,
         })
       },
     [commandClient],

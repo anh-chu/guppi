@@ -12,7 +12,7 @@
  * happened.
  */
 
-import type { CommandID, LayoutID, SessionRef, SplitDirection } from './types'
+import type { CommandID, LayoutID, OwnerID, SessionRef, SplitDirection } from './types'
 import type { CommandResult, CommandResultWire, V2ErrorResponse } from './wireTypes'
 import { decodeCommandResult, encodeSessionRefWire } from './wireCodec'
 
@@ -29,7 +29,7 @@ import { decodeCommandResult, encodeSessionRefWire } from './wireCodec'
 // single-step replacement for the old create-then-split-command sequence
 // (see V2CommandClient.createSession and App.tsx's handleCreateSession).
 export type SessionCommandAction =
-  | { action: 'create'; name?: string; shell?: string; cwd?: string; worktree_branch?: string; cols?: number; rows?: number; layout_id?: LayoutID; agent_type?: string; target?: SessionRef; direction?: SplitDirection; new_first?: boolean }
+  | { action: 'create'; name?: string; shell?: string; cwd?: string; worktree_branch?: string; cols?: number; rows?: number; layout_id?: LayoutID; agent_type?: string; target?: SessionRef; direction?: SplitDirection; new_first?: boolean; target_owner?: OwnerID }
   | { action: 'kill' }
   | { action: 'label'; label: string }
   | { action: 'recover' }
@@ -197,11 +197,20 @@ export class V2CommandClient {
    */
   async createSession(cmd: CreateSessionCommand, id?: CommandID): Promise<CommandResult> {
     const commandId = id ?? this.genId()
-    const { action, target, ...rest } = cmd
+    // target_owner is a TOP-LEVEL wire field (see v2SessionCommandRequest in
+    // pkg/server/routes_state_v2.go), not part of params: it selects which
+    // owner's catalog should execute the create (server-side remote-create
+    // forwarding via peer.Manager.RequestRemoteCreate), so it must sit
+    // alongside `action`, not nested inside the create's own params.
+    const { action, target, target_owner, ...rest } = cmd
     const params = target !== undefined ? { ...rest, target: encodeSessionRefWire(target) } : rest
+    const body: Record<string, unknown> = { id: commandId, action, params }
+    if (target_owner) {
+      body.target_owner = target_owner
+    }
     const raw = await postWithRetry(
       '/api/v2/session-commands',
-      { id: commandId, action, params },
+      body,
       { fetchImpl: this.fetchImpl, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs },
     )
     return decodeCommandResult(raw as CommandResultWire)

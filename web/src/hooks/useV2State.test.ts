@@ -103,6 +103,38 @@ describe('useV2State', () => {
     expect(sessionBefore).toBeDefined()
   })
 
+  it('threads hostId through to the top-level target_owner wire field on create', async () => {
+    const { result } = renderHook(() => useV2State({ enabled: true }))
+    await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
+
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse({ Ref: { owner: 'remote-host-fingerprint', session: 'new-1' }, Accepted: true }))
+    await act(async () => {
+      await result.current.createSession({ name: 'new-1', hostId: 'remote-host-fingerprint' })
+    })
+
+    const lastCall = vi.mocked(fetch).mock.calls[vi.mocked(fetch).mock.calls.length - 1]
+    const body = JSON.parse((lastCall[1] as RequestInit).body as string)
+    expect(body.target_owner).toBe('remote-host-fingerprint')
+    // Must be a sibling of action/params, not nested inside params -- the
+    // server (pkg/server/routes_state_v2.go's v2SessionCommandRequest) only
+    // ever looks for it at the top level.
+    expect('target_owner' in body.params).toBe(false)
+  })
+
+  it('omits target_owner entirely when no hostId is given (local create, unchanged default)', async () => {
+    const { result } = renderHook(() => useV2State({ enabled: true }))
+    await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
+
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse({ Ref: { owner: 'me', session: 'new-1' }, Accepted: true }))
+    await act(async () => {
+      await result.current.createSession({ name: 'new-1' })
+    })
+
+    const lastCall = vi.mocked(fetch).mock.calls[vi.mocked(fetch).mock.calls.length - 1]
+    const body = JSON.parse((lastCall[1] as RequestInit).body as string)
+    expect('target_owner' in body).toBe(false)
+  })
+
   it('does not mutate the normalized workspace/catalog when moving a pane (layout mutation)', async () => {
     const { result } = renderHook(() => useV2State({ enabled: true }))
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
