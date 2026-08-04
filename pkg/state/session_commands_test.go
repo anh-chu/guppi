@@ -24,6 +24,11 @@ type testBackend struct {
 	terminated     map[string]bool
 	terminateCalls []pty.StableBinding
 	terminateOut   pty.TerminateOutcome
+
+	// See Start() for how these are used to force deterministic concurrent
+	// overlap in tests.
+	startEnteredCh chan struct{}
+	startReleaseCh chan struct{}
 }
 
 func newTestBackend() *testBackend {
@@ -35,7 +40,25 @@ func newTestBackend() *testBackend {
 	}
 }
 
+// startEnteredCh and startReleaseCh let a test deterministically force two
+// concurrent Start() calls to overlap without relying on sleeps: if set,
+// every Start() call signals entry on startEnteredCh (before recording
+// itself in startCalls) and then blocks on startReleaseCh until the test
+// releases it. This proves genuine concurrent overlap rather than a timing
+// coincidence.
 func (b *testBackend) Start(ctx context.Context, req pty.StartRequest) (pty.ReadyInfo, error) {
+	b.mu.Lock()
+	entered := b.startEnteredCh
+	release := b.startReleaseCh
+	b.mu.Unlock()
+
+	if entered != nil {
+		entered <- struct{}{}
+	}
+	if release != nil {
+		<-release
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.startCalls = append(b.startCalls, req)
@@ -894,4 +917,115 @@ func initGitRepo(t *testing.T) string {
 		}
 	}
 	return dir
+}
+
+// TestConcurrentDuplicateRecoverStartsBackendOnlyOnce is a regression proof
+// that two truly concurrent ExecuteSessionCommand calls carrying the SAME
+// command ID for a non-idempotent side effect (recover -> backend.Start,
+// which spawns a new daemon process/generation) execute that side effect
+// exactly once, with the second caller waiting for and reusing the first
+// caller's exact result rather than independently invoking Start.
+//
+// Before the fix, executeRecover's own comment on commitSessionReceipt
+// acknowledged this precisely: "It does NOT undo an external side effect...
+// that may have already run for both racers... this race only matters for
+// kill/label/recover/dismiss, whose side effects are themselves safe to
+// invoke more than once." That reasoning was wrong for recover: calling
+// backend.Start twice for one logical recover leaks an orphaned daemon
+// process that no catalog record ever references (only one of the two
+// Start results can win the PutSession/commitSessionReceipt race).
+//
+// Deterministic proof of genuine overlap (no sleeps): goroutine 1 is
+// launched first and blocked *inside* backend.Start via startReleaseCh;
+// only once that entry is confirmed is goroutine 2 launched with the same
+// command ID, so goroutine 2's call unambiguously overlaps goroutine 1's
+// still-in-flight command. With the runSingleFlight fix, goroutine 2 never
+// enters backend.Start at all -- it waits for goroutine 1 to finish and
+// reuses its result -- so backend.Start is called exactly once.
+func TestConcurrentDuplicateRecoverStartsBackendOnlyOnce(t *testing.T) {
+	svc, catalog, backend, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("crashconcurrent1234"), "gen-old")
+	rec.Phase = SessionPhaseCrashed
+	rec.Desired = DesiredStop
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	backend.mu.Lock()
+	backend.startEnteredCh = make(chan struct{}, 2)
+	backend.startReleaseCh = make(chan struct{})
+	backend.mu.Unlock()
+
+	cmd := SessionCommand{ID: NewCommandID(), Ref: rec.Ref, Action: ActionRecover}
+
+	type outcome struct {
+		result CommandResult
+		err    error
+	}
+	results := make(chan outcome, 2)
+
+	// Goroutine 1: enters backend.Start and blocks there until released.
+	go func() {
+		res, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+		results <- outcome{res, err}
+	}()
+
+	select {
+	case <-backend.startEnteredCh:
+		// Confirmed: goroutine 1 is now genuinely inside backend.Start,
+		// blocked on startReleaseCh.
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first recover to enter backend.Start")
+	}
+
+	// Goroutine 2: same command ID, launched while goroutine 1's command is
+	// still provably in-flight inside backend.Start.
+	go func() {
+		res, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+		results <- outcome{res, err}
+	}()
+
+	// Goroutine 2 must NOT independently enter backend.Start (that would be
+	// exactly the bug this test guards against): give it a bounded window to
+	// prove it doesn't, then release goroutine 1 to let both complete.
+	select {
+	case <-backend.startEnteredCh:
+		t.Fatal("second concurrent recover with the same command ID entered backend.Start independently " +
+			"instead of waiting for the first in-flight execution -- this is the leaked-daemon-process bug")
+	case <-time.After(150 * time.Millisecond):
+		// Expected: goroutine 2 is blocked waiting on the in-flight entry,
+		// not inside Start.
+	}
+
+	close(backend.startReleaseCh)
+
+	var o1, o2 outcome
+	select {
+	case o1 = <-results:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first recover to complete")
+	}
+	select {
+	case o2 = <-results:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second recover to complete")
+	}
+
+	if o1.err != nil {
+		t.Fatalf("first recover returned error: %v", o1.err)
+	}
+	if o2.err != nil {
+		t.Fatalf("second recover returned error: %v", o2.err)
+	}
+	if o1.result != o2.result {
+		t.Fatalf("two racing identical-ID recovers returned different results: %+v vs %+v", o1.result, o2.result)
+	}
+
+	if got := backend.startCount(); got != 1 {
+		t.Fatalf("LEAKED DAEMON PROCESS: backend.Start was called %d times for two concurrent recovers sharing "+
+			"the same command ID, want exactly 1 -- the losing racer's daemon process/generation is now orphaned "+
+			"with no catalog record pointing at it", got)
+	}
 }

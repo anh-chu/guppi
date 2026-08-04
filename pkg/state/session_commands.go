@@ -115,6 +115,26 @@ type SessionCommandService struct {
 	owner    OwnerID
 	opts     SessionCommandServiceOptions
 	mu       sync.Mutex
+
+	// inFlight de-duplicates truly concurrent calls sharing the same command
+	// ID so at most one goroutine ever runs a command's mutation/side-effect
+	// body. Receipt-based replay (peekReceipt/commitSessionReceipt) alone is
+	// not sufficient: two callers can both race past the "does a receipt
+	// already exist" check before either commits one, and for actions with a
+	// non-idempotent side effect (recover's backend.Start spawns a brand new
+	// daemon process/generation on every call) that would leak a duplicate,
+	// unreferenced daemon. inFlight closes that window by making the second
+	// caller wait for the first to finish and reuse its exact result instead
+	// of independently invoking the side effect.
+	inFlight map[CommandID]*inFlightCommand
+}
+
+// inFlightCommand is the single in-progress execution shared by every
+// concurrent caller presenting the same command ID.
+type inFlightCommand struct {
+	done   chan struct{}
+	result CommandResult
+	err    error
 }
 
 // SessionCommandServiceOptions configures timing, retry policy, and test
@@ -171,22 +191,55 @@ func (s *SessionCommandService) ExecuteSessionCommand(ctx context.Context, cmd S
 	if err := cmd.ID.Validate(); err != nil {
 		return CommandResult{}, StateError{Code: ErrInvalidIdentity, Field: "id", Detail: err.Error()}
 	}
-	switch cmd.Action {
-	case ActionCreate:
-		return s.executeCreate(ctx, cmd)
-	case ActionKill:
-		return s.executeKill(ctx, cmd)
-	case ActionLabel:
-		return s.executeLabel(ctx, cmd)
-	case ActionRecover:
-		return s.executeRecover(ctx, cmd)
-	case ActionDismiss:
-		return s.executeDismiss(ctx, cmd)
-	case ActionRetry:
-		return s.executeRetry(ctx, cmd)
-	default:
-		return CommandResult{}, StateError{Code: ErrMalformedSplit, Field: "action", Detail: fmt.Sprintf("unknown session action %q", cmd.Action)}
+	return s.runSingleFlight(cmd.ID, func() (CommandResult, error) {
+		switch cmd.Action {
+		case ActionCreate:
+			return s.executeCreate(ctx, cmd)
+		case ActionKill:
+			return s.executeKill(ctx, cmd)
+		case ActionLabel:
+			return s.executeLabel(ctx, cmd)
+		case ActionRecover:
+			return s.executeRecover(ctx, cmd)
+		case ActionDismiss:
+			return s.executeDismiss(ctx, cmd)
+		case ActionRetry:
+			return s.executeRetry(ctx, cmd)
+		default:
+			return CommandResult{}, StateError{Code: ErrMalformedSplit, Field: "action", Detail: fmt.Sprintf("unknown session action %q", cmd.Action)}
+		}
+	})
+}
+
+// runSingleFlight ensures at most one goroutine executes fn for a given
+// command ID at a time. Concurrent callers presenting the same ID block on
+// the first caller's in-progress execution and receive its exact result
+// instead of independently re-running fn (and any side effect it performs).
+// The in-flight entry is removed once fn returns, so a later, non-concurrent
+// replay of the same ID takes the normal peekReceipt/commitSessionReceipt
+// fast path unchanged; this only closes the narrow true-concurrency window.
+func (s *SessionCommandService) runSingleFlight(id CommandID, fn func() (CommandResult, error)) (CommandResult, error) {
+	s.mu.Lock()
+	if s.inFlight == nil {
+		s.inFlight = make(map[CommandID]*inFlightCommand)
 	}
+	if existing, ok := s.inFlight[id]; ok {
+		s.mu.Unlock()
+		<-existing.done
+		return existing.result, existing.err
+	}
+	entry := &inFlightCommand{done: make(chan struct{})}
+	s.inFlight[id] = entry
+	s.mu.Unlock()
+
+	entry.result, entry.err = fn()
+
+	s.mu.Lock()
+	delete(s.inFlight, id)
+	s.mu.Unlock()
+	close(entry.done)
+
+	return entry.result, entry.err
 }
 
 // ExecuteSessionCommandFromPeer applies a session command that arrived over
