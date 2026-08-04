@@ -1477,7 +1477,35 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   // Simpler than AppLegacy: only one layout (no groups/singleView).
   const v2State = useV2State({ enabled: true })
   const { state, paneTree, activeKey, layoutId } = v2State
-  const currentView: View = paneTree ? 'session' : 'overview'
+
+  // Local navigation state. Unlike AppLegacy (whose currentView comes from
+  // useWorkspace's reducer), v2 has no reducer of its own, so the view mode
+  // is tracked locally and kept in sync with the URL. It must NOT be derived
+  // purely from paneTree existence: once any session/layout has ever been
+  // created, paneTree is permanently non-null, which would make "Overview"
+  // unreachable forever (this was the original bug -- clicking Overview only
+  // changed the URL without changing what was rendered).
+  const [viewMode, setViewMode] = useState<'overview' | 'session'>(() =>
+    window.location.pathname.startsWith('/session/') || window.location.pathname === '/session' ? 'session' : 'overview',
+  )
+  const [settingsOpen, setSettingsOpen] = useState(() => window.location.pathname === '/settings')
+  useEffect(() => {
+    const onPopState = () => {
+      const path = window.location.pathname
+      setSettingsOpen(path === '/settings')
+      if (path === '/' || path === '') setViewMode('overview')
+      else if (path.startsWith('/session')) setViewMode('session')
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+  // Fall back to overview if there is genuinely no session to show yet
+  // (e.g. before the first session is ever created), even if the URL claims
+  // otherwise.
+  const currentView: View = viewMode === 'session' && paneTree ? 'session' : 'overview'
+  // Remembers which pane a "split" create should attach beside; set by
+  // TiledView's onSplit, consumed and cleared by handleCreateSession.
+  const splitTargetRef = useRef<{ key: string; direction: 'h' | 'v'; newFirst?: boolean } | null>(null)
 
   // Shared non-session hooks (same as AppLegacy)
   const { prefs } = usePreferences()
@@ -1673,28 +1701,90 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
       ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
       : `/session/${encodeURIComponent(name)}`
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
+    setViewMode('session')
     if (layoutId && activeKey !== key) {
-      v2State.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
+      void v2State.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
+        .catch(err => console.error('v2 select command failed:', err))
     }
     setTimeout(refocusTerminal, 150)
   }
 
-  const handleCreateSession = useCallback(async (name: string, path: string, command: string, hostId?: string, _wb?: string, _ag?: string): Promise<string | null> => {
-    setNewSessionModalOpen(false)
+  // Real session list backing Sidebar/Overview/QuickSwitcher/NewSessionModal
+  // and getBackend below. Previously these components were passed sessions={[]}
+  // unconditionally, which made them appear to work while showing nothing.
+  const sessions = useMemo<Session[]>(
+    () => Array.from(state.catalog.sessionsByRef.values()).map(s => ({
+      id: s.id,
+      name: s._compat?.name || s.id,
+      host: s.owner,
+      windows: [],
+      created: s.created_at,
+      attached: true,
+      last_activity: new Date().toISOString(),
+    } as Session)),
+    [state.catalog.sessionsByRef],
+  )
+
+  const handleJumpToSession = useCallback((sessionName: string, _windowIndex?: number, _pane?: string) => {
+    const found = sessions.find(s => sessionKey(s) === sessionName || s.name === sessionName)
+    if (found) handleSessionSelect(found)
+  }, [sessions, layoutId, activeKey])
+
+  const handleKillSession = useCallback((key: string) => {
+    const ref = keyToSessionRef(key)
+    void v2State.sessionCommand(ref, { action: 'kill' })
+      .catch(err => console.error('v2 kill command failed:', err))
+  }, [v2State])
+
+  const handleQuickShell = useCallback(() => {
+    void v2State.createSession({}).then(result => {
+      const r = result as { Ref?: { session?: string } } | null
+      if (r?.Ref?.session) setTimeout(refocusTerminal, 150)
+    }).catch(err => console.error('v2 quick shell create failed:', err))
+  }, [v2State, refocusTerminal])
+
+  const handleCreateSession = useCallback(async (name: string, path: string, command: string, _hostId?: string, worktreeBranch?: string, _agentType?: string): Promise<string | null> => {
+    // v2 has no remote/hostId-based creation yet; only local creation is
+    // routed through the v2 session-command endpoint. Session creation on
+    // a remote peer is a known unmigrated gap (peer-attach cases aside).
+    if (!worktreeBranch) setNewSessionModalOpen(false)
+    const target = splitTargetRef.current
+    splitTargetRef.current = null
     try {
-      const res = await fetch('/api/session/new', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, path, command, host: hostId || undefined }),
+      const result = await v2State.createSession({
+        name,
+        shell: command || undefined,
+        cwd: path,
+        worktreeBranch: worktreeBranch || undefined,
+        layoutId: target ? (layoutId ?? undefined) : undefined,
       })
-      if (!res.ok) return null
-      const payload = await res.json().catch(() => null)
-      return payload?.name || name
+      const r = result as { Ref?: { owner?: string | null; session?: string; window?: number; pane?: number }; DisplayName?: string } | null
+      const resolvedName = r?.Ref?.session || r?.DisplayName || name
+      if (target && layoutId && r?.Ref?.session) {
+        const newRef: SessionRef = {
+          owner: r.Ref.owner ?? null,
+          session: r.Ref.session,
+          window: r.Ref.window ?? 0,
+          pane: r.Ref.pane ?? 0,
+        }
+        await v2State.workspaceCommand(layoutId, {
+          action: 'split',
+          target: keyToSessionRef(target.key),
+          direction: target.direction,
+          new: newRef,
+          new_first: target.newFirst,
+        }).catch(err => console.error('v2 split command failed:', err))
+      }
+      if (worktreeBranch) setNewSessionModalOpen(false)
+      setViewMode('session')
+      setTimeout(refocusTerminal, 150)
+      return resolvedName
     } catch (err) {
       console.error('Failed to create session:', err)
+      if (worktreeBranch) return err instanceof Error ? err.message : 'Failed to create worktree'
       return null
     }
-  }, [])
+  }, [v2State, layoutId, refocusTerminal])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
@@ -1719,10 +1809,17 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
 
   const openSettings = useCallback(() => {
     if (window.location.pathname !== '/settings') window.history.pushState(null, '', '/settings')
+    setSettingsOpen(true)
   }, [])
 
   const closeSettings = useCallback(() => {
     window.history.pushState(null, '', '/')
+    setSettingsOpen(false)
+  }, [])
+
+  const goToOverview = useCallback(() => {
+    if (window.location.pathname !== '/') window.history.pushState(null, '', '/')
+    setViewMode('overview')
   }, [])
 
   return (
@@ -1741,10 +1838,16 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
       {schedulesOpen && <ScheduleModal onClose={() => setSchedulesOpen(false)} />}
       {quickSwitcherOpen && (
         <QuickSwitcher
-          sessions={[]}
+          sessions={sessions}
           waitingEvents={allToolEvents}
-          onSelect={() => setQuickSwitcherOpen(false)}
-          onOverview={() => setQuickSwitcherOpen(false)}
+          onSelect={(sessionName, windowIndex) => {
+            handleJumpToSession(sessionName, windowIndex)
+            setQuickSwitcherOpen(false)
+          }}
+          onOverview={() => {
+            goToOverview()
+            setQuickSwitcherOpen(false)
+          }}
           onCreateSession={() => {
             openNewSessionModal()
             setQuickSwitcherOpen(false)
@@ -1755,7 +1858,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
       {newSessionModalOpen && (
         <NewSessionModal
           hosts={hosts}
-          sessions={[]}
+          sessions={sessions}
           onCreateSession={handleCreateSession}
           onClose={() => setNewSessionModalOpen(false)}
         />
@@ -1763,13 +1866,13 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
       {(!terminalFullscreen) && (
         <TopBar
           currentView={currentView}
-          settingsActive={false}
+          settingsActive={settingsOpen}
           selfUpdateAvailable={selfUpdate.status?.update_available ?? false}
           updateVersion={selfUpdate.status?.latest_version}
           onApplyUpdate={selfUpdate.apply}
           updateApplying={selfUpdate.applying}
           onDismissUpdate={selfUpdate.dismiss}
-          onOverview={() => window.history.pushState(null, '', '/')}
+          onOverview={goToOverview}
           onSettings={openSettings}
           onWiki={wikiEnabled ? wiki.togglePanel : undefined}
           onHelp={() => setHelpOpen(true)}
@@ -1778,7 +1881,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
           onSchedules={() => setSchedulesOpen(true)}
           events={allToolEvents}
           connected={connected === true}
-          onJumpToSession={() => {}}
+          onJumpToSession={handleJumpToSession}
           onDismiss={dismissEvent}
           onDismissAll={dismissAllEvents}
           panesCount={paneTree ? getLeaves(paneTree).length : 0}
@@ -1789,15 +1892,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
       <div className="flex-1 flex overflow-hidden">
         {!terminalFullscreen && (
           <Sidebar
-            sessions={Array.from(state.catalog.sessionsByRef.values()).map(s => ({
-              id: s.id,
-              name: s._compat?.name || s.id,
-              host: s.owner,
-              windows: [],
-              created: s.created_at,
-              attached: true,
-              last_activity: new Date().toISOString(),
-            } as Session))}
+            sessions={sessions}
             selectedSession={activeKey}
             collapsed={sidebarCollapsed}
             selfUpdateAvailable={selfUpdate.status?.update_available ?? false}
@@ -1824,11 +1919,11 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
             namingGroupId={null}
             onPairSessions={() => {}}
             onRemoveFromSplit={() => {}}
-            onSessionKilled={() => {}}
+            onSessionKilled={handleKillSession}
             sessionAttrs={sessionAttrs}
             setSessionAttr={setSessionAttr}
             pruningSuspended={false}
-            onQuickShell={() => {}}
+            onQuickShell={handleQuickShell}
             crashedCount={crashedHook.crashedSessions.length}
             onCrashedClick={() => crashedHook.refresh()}
           />
@@ -1840,39 +1935,63 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
               activeKey={activeKey}
               onActivate={(key) => {
                 if (layoutId && activeKey !== key) {
-                  v2State.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
+                  void v2State.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
+                    .catch(err => console.error('v2 select command failed:', err))
                 }
                 refocusTerminal()
               }}
               onClose={(key) => {
                 if (layoutId) {
-                  v2State.workspaceCommand(layoutId, { action: 'remove', ref: keyToSessionRef(key) })
+                  void v2State.workspaceCommand(layoutId, { action: 'remove', ref: keyToSessionRef(key) })
+                    .catch(err => console.error('v2 remove command failed:', err))
                 }
               }}
-              onPopOut={() => {}}
-              onSplit={() => { openNewSessionModal() }}
-              onRatioChange={() => {}}
+              onKill={handleKillSession}
+              onPopOut={(key) => {
+                if (layoutId) {
+                  void v2State.workspaceCommand(layoutId, { action: 'pop_out', ref: keyToSessionRef(key) })
+                    .catch(err => console.error('v2 pop_out command failed:', err))
+                }
+              }}
+              onSplit={(key, direction) => {
+                splitTargetRef.current = { key, direction }
+                openNewSessionModal()
+              }}
+              onRatioChange={(path, ratio) => {
+                if (layoutId) {
+                  const record = state.workspace.record
+                  const splitId = record ? splitIdAtPath(record.tree, path) : undefined
+                  if (splitId) {
+                    void v2State.workspaceCommand(layoutId, { action: 'resize', split_id: splitId, ratio })
+                      .catch(err => console.error('v2 resize command failed:', err))
+                  }
+                }
+              }}
               fullscreen={terminalFullscreen}
               onToggleFullscreen={toggleFullscreen}
               terminalContainerRef={terminalContainerRef}
-              onDropSession={() => {}}
-              onDropNewSession={() => {}}
-              onSwapPanes={() => {}}
-              onMovePanes={() => {}}
+              onSwapPanes={(a, b) => {
+                if (layoutId) {
+                  void v2State.workspaceCommand(layoutId, { action: 'swap', a: keyToSessionRef(a), b: keyToSessionRef(b) })
+                    .catch(err => console.error('v2 swap command failed:', err))
+                }
+              }}
+              onMovePanes={(sourceKey, targetKey, edge) => {
+                if (layoutId) {
+                  void v2State.workspaceCommand(layoutId, {
+                    action: 'move',
+                    source: keyToSessionRef(sourceKey),
+                    target: keyToSessionRef(targetKey),
+                    edge,
+                  }).catch(err => console.error('v2 move command failed:', err))
+                }
+              }}
               getTerminalIdentity={getTerminalIdentity}
               onOpenFile={wiki.openFile}
             />
           ) : (
             <Overview
-              sessions={Array.from(state.catalog.sessionsByRef.values()).map(s => ({
-                id: s.id,
-                name: s._compat?.name || s.id,
-                host: s.owner,
-                windows: [],
-                created: s.created_at,
-                attached: true,
-                last_activity: new Date().toISOString(),
-              } as Session))}
+              sessions={sessions}
               onOpenFile={wiki.openFile}
               hosts={hosts}
               hiddenSet={sessionAttrs.hidden}
@@ -1882,16 +2001,16 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
               getSessionEvents={getSessionEvents}
               getSessionActivity={getSessionActivity}
               isSessionInActiveTurn={isSessionInActiveTurn}
-              onJumpToSession={() => {}}
+              onJumpToSession={handleJumpToSession}
               onDismissAlert={dismissEvent}
               setSessionAttr={setSessionAttr}
-              onSessionKilled={() => {}}
+              onSessionKilled={handleKillSession}
               layoutGroups={layoutGroups}
             />
           )}
           <div id="mobile-keybar-slot" className="flex-none" />
           <SettingsDrawer
-            open={false}
+            open={settingsOpen}
             onClose={closeSettings}
             pushState={pushState}
             onPushSubscribe={pushSubscribe}
