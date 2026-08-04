@@ -1085,7 +1085,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		json.NewEncoder(w).Encode(map[string]bool{"installing": true})
 	})
 
-// Session-attribute endpoints -- server-authoritative, mesh-wide shared
+	// Session-attribute endpoints -- server-authoritative, mesh-wide shared
 	// per-session UI bits (backgrounded / hidden). Keys are global and
 	// host-qualified ("<owner-fp>/<name>"), identical to the frontend's
 	// sessionKey(). No localStorage source of truth, no namespace

@@ -14,8 +14,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-
-
 	"github.com/anh-chu/termyard/pkg/auth"
 	"github.com/anh-chu/termyard/pkg/groupsync"
 	"github.com/anh-chu/termyard/pkg/portforward"
