@@ -154,6 +154,52 @@ func TestRefreshDaemonState_ClassifiesBeforePublishing(t *testing.T) {
 	}
 }
 
+// TestRefreshSessionsFunc_V2ModeSkipsLegacyWrite proves the shadow-write fix:
+// refreshSessionsFunc (wired into opts.RefreshSessions / launchSvc.Refresh and
+// called unconditionally by several v2-mode code paths -- local v2 create,
+// crashed-session recovery, WS teardown, rename) must not write into the
+// legacy state.Manager when the runtime is in v2 mode.
+func TestRefreshSessionsFunc_V2ModeSkipsLegacyWrite(t *testing.T) {
+	reg := &fakeRegistry{sessions: []pty.SessionInfo{{ID: "live"}}}
+	adapter := &daemonAdapter{reg: reg}
+	adapter.refresh()
+
+	rt := &Runtime{
+		adapter:  adapter,
+		stateMgr: state.NewManager(),
+		v2Mode:   true,
+	}
+
+	rt.refreshSessionsFunc()
+
+	sessions := rt.stateMgr.GetSessions()
+	if len(sessions) != 0 {
+		t.Fatalf("expected legacy state.Manager to remain empty in v2 mode, got %+v", sessions)
+	}
+}
+
+// TestRefreshSessionsFunc_LegacyModeUnaffected proves legacy mode (v2Mode
+// false) behaves exactly as before: refreshSessionsFunc still publishes the
+// daemon snapshot into the legacy state.Manager.
+func TestRefreshSessionsFunc_LegacyModeUnaffected(t *testing.T) {
+	reg := &fakeRegistry{sessions: []pty.SessionInfo{{ID: "live"}}}
+	adapter := &daemonAdapter{reg: reg}
+	adapter.refresh()
+
+	rt := &Runtime{
+		adapter:  adapter,
+		stateMgr: state.NewManager(),
+		v2Mode:   false,
+	}
+
+	rt.refreshSessionsFunc()
+
+	sessions := rt.stateMgr.GetSessions()
+	if len(sessions) != 1 || sessions[0].Name != "live" {
+		t.Fatalf("expected legacy state.Manager to be populated in legacy mode, got %+v", sessions)
+	}
+}
+
 // TestV2RuntimeEnricherPreviewReturnsImmediately verifies that previewFor returns
 // cached values immediately without blocking on PTY captures. The enricher must
 // not delay catalog snapshot publication by waiting for capture operations.

@@ -233,7 +233,7 @@ func handleV2Message(peerID string, msg *Message, pc *PeerConnection, deps Sessi
 			log.WithError(err).Debug("invalid v2 command reply")
 			return
 		}
-		deps.Manager.deliverCommandReply(p)
+		deps.Manager.deliverCommandReply(peerID, pc, p)
 	}
 }
 
@@ -241,18 +241,23 @@ func handleV2CommandRequest(peerID string, req V2CommandRequestPayload, pc *Peer
 	reply := V2CommandReplyPayload{ID: req.ID}
 	switch req.Kind {
 	case V2CommandKindSession:
-		handleV2SessionCommandRequest(req, pc, deps, &reply)
+		handleV2SessionCommandRequest(peerID, req, pc, deps, &reply)
 	case V2CommandKindWorkspace:
-		handleV2WorkspaceCommandRequest(req, pc, deps, &reply)
+		handleV2WorkspaceCommandRequest(peerID, req, pc, deps, &reply)
 	case V2CommandKindRemoteCreate:
-		handleV2RemoteCreateRequest(req, pc, deps, &reply)
+		handleV2RemoteCreateRequest(peerID, req, pc, deps, &reply)
 	default:
 		reply.Error = fmt.Sprintf("unknown command kind %q", req.Kind)
 	}
 	sendV2CommandReply(pc, reply)
 }
 
-func handleV2SessionCommandRequest(req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
+// handleV2SessionCommandRequest executes a session command received from an
+// authenticated peer connection. peerID (the sender's authenticated
+// identity) is threaded into ExecuteSessionCommandFromPeer so the command's
+// Ref.Owner is verified against this node's own catalog owner before any
+// mutation; a forged/mismatched owner is rejected, never silently ignored.
+func handleV2SessionCommandRequest(peerID string, req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
 	if deps.V2CommandSvc == nil {
 		reply.Error = "v2 command service unavailable"
 		return
@@ -262,7 +267,7 @@ func handleV2SessionCommandRequest(req V2CommandRequestPayload, pc *PeerConnecti
 		reply.Error = "malformed command"
 		return
 	}
-	res, err := deps.V2CommandSvc.ExecuteSessionCommand(context.Background(), cmd)
+	res, err := deps.V2CommandSvc.ExecuteSessionCommandFromPeer(context.Background(), cmd, peerID)
 	if err != nil {
 		reply.Error = err.Error()
 		return
@@ -276,7 +281,12 @@ func handleV2SessionCommandRequest(req V2CommandRequestPayload, pc *PeerConnecti
 	reply.Result = data
 }
 
-func handleV2WorkspaceCommandRequest(req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
+// handleV2WorkspaceCommandRequest executes a workspace command received from
+// an authenticated peer connection. peerID is threaded into
+// ApplyWorkspaceCommandFromPeer so every SessionRef embedded in the command's
+// params is verified against this node's own catalog owner before any
+// mutation; a forged/foreign ref is rejected, never silently ignored.
+func handleV2WorkspaceCommandRequest(peerID string, req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
 	cat := deps.LocalMgr.V2Catalog()
 	if cat == nil {
 		reply.Error = "v2 catalog not enabled"
@@ -287,14 +297,19 @@ func handleV2WorkspaceCommandRequest(req V2CommandRequestPayload, pc *PeerConnec
 		reply.Error = "malformed workspace command"
 		return
 	}
-	if err := cat.ApplyWorkspaceCommand(cmd); err != nil {
+	if err := cat.ApplyWorkspaceCommandFromPeer(cmd, peerID); err != nil {
 		reply.Error = err.Error()
 		return
 	}
 	reply.Handled = true
 }
 
-func handleV2RemoteCreateRequest(req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
+// handleV2RemoteCreateRequest executes a remote-create request received from
+// an authenticated peer connection. peerID is threaded into
+// ExecuteRemoteCreateFromPeer so the request's Requester is verified against
+// the authenticated sender before any mutation; a spoofed Requester is
+// rejected, never silently ignored.
+func handleV2RemoteCreateRequest(peerID string, req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
 	if deps.RemoteCreateCoordinator == nil {
 		reply.Error = "remote create coordinator unavailable"
 		return
@@ -304,7 +319,7 @@ func handleV2RemoteCreateRequest(req V2CommandRequestPayload, pc *PeerConnection
 		reply.Error = "malformed remote create request"
 		return
 	}
-	res, err := deps.RemoteCreateCoordinator.ExecuteRemoteCreate(context.Background(), r)
+	res, err := deps.RemoteCreateCoordinator.ExecuteRemoteCreateFromPeer(context.Background(), r, peerID)
 	if err != nil {
 		reply.Error = err.Error()
 		return

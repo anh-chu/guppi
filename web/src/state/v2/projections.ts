@@ -20,9 +20,12 @@ export {
   selectAllLayouts,
   selectPresentation,
   selectAllPresentations,
+  selectRemoteOwners,
+  selectIsLocalOwner,
   type CatalogDiff,
   type NormalizedCatalog,
   type NormalizedWorkspace,
+  type OwnerCatalogMeta,
 } from './store'
 
 import { selectSessionByRef, selectPresentation } from './store'

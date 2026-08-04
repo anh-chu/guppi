@@ -71,7 +71,27 @@ describe('V2CommandClient', () => {
 
     const client = new V2CommandClient({ fetchImpl, genId: () => 'fixed-id' })
     await client.sessionCommand(ref, { action: 'label', label: 'a' })
-    expect(capturedBody).toEqual({ id: 'fixed-id', ref, action: 'label', params: { label: 'a' } })
+    expect(capturedBody).toEqual({ id: 'fixed-id', ref: 'o/s:0.0', action: 'label', params: { label: 'a' } })
+  })
+
+  it('createSession omits ref entirely: a create carries no placeholder ref on the wire', async () => {
+    let capturedUrl = ''
+    let capturedBody: any = null
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      capturedUrl = url
+      capturedBody = JSON.parse(init.body as string)
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const client = new V2CommandClient({ fetchImpl, genId: () => 'builtin-id' })
+    await client.createSession({ action: 'create', name: 'alpha', cwd: '/tmp' })
+
+    expect(capturedUrl).toBe('/api/v2/session-commands')
+    // The `ref` member must be absent entirely -- the server assigns the
+    // SessionID. Sending any ref-shaped placeholder gets rejected server-side
+    // with "missing session id" once wire-encoded.
+    expect(capturedBody).toEqual({ id: 'builtin-id', action: 'create', params: { name: 'alpha', cwd: '/tmp' } })
+    expect('ref' in capturedBody).toBe(false)
   })
 
   it('sessionCommand generates a fresh id per call when none supplied', async () => {

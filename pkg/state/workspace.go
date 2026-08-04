@@ -130,6 +130,110 @@ func (c *Catalog) ApplyWorkspaceCommand(cmd WorkspaceCommand) error {
 	return err
 }
 
+// ApplyWorkspaceCommandFromPeer applies a workspace command that arrived over
+// an authenticated peer connection. peerID must be the connection's
+// authenticated identity (empty means "trusted local caller", which is left
+// to ApplyWorkspaceCommand's existing, unchanged behavior). Because this
+// catalog always mutates its own local layouts, every SessionRef embedded in
+// a peer-originated command's params (split target/new, move source/target,
+// swap a/b, pop_out/remove/select ref, rename old/new) must be owned by this
+// node; a forged or foreign Owner is rejected BEFORE any mutation. Refs that
+// are expected to already exist in the tree (target/source/old/ref, but not
+// the brand-new refs introduced by split/rename) are additionally required to
+// resolve to a real leaf in the local trusted layout, not just be nonempty;
+// that existence check already happens inside ApplyWorkspaceCommand via
+// findLeaf, so this method only adds the ownership check ahead of it. Local
+// (non-peer) callers must keep calling ApplyWorkspaceCommand directly so this
+// check is never applied to already-trusted local paths.
+func (c *Catalog) ApplyWorkspaceCommandFromPeer(cmd WorkspaceCommand, peerID string) error {
+	if peerID != "" {
+		if err := c.validatePeerWorkspaceRefOwnership(cmd); err != nil {
+			return err
+		}
+	}
+	return c.ApplyWorkspaceCommand(cmd)
+}
+
+// validatePeerWorkspaceRefOwnership checks that every SessionRef embedded in
+// cmd's params is owned by this catalog before any mutation is attempted. It
+// intentionally does not duplicate the existence check that
+// applyLayoutTreeCommand already performs via findLeaf.
+func (c *Catalog) validatePeerWorkspaceRefOwnership(cmd WorkspaceCommand) error {
+	owner := c.Owner()
+	checkRef := func(field string, ref SessionRef) error {
+		if ref.Session == "" {
+			return nil
+		}
+		if ref.Owner == "" || ref.Owner != owner {
+			return StateError{
+				Code:   ErrOwnershipMismatch,
+				Field:  field,
+				Detail: fmt.Sprintf("ref owner %q does not match this node's owner %q", ref.Owner, owner),
+			}
+		}
+		return nil
+	}
+	switch cmd.Action {
+	case WorkspaceActionSplit:
+		var p workspaceSplitParams
+		if err := json.Unmarshal(cmd.Params, &p); err != nil {
+			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
+		}
+		if err := checkRef("target", p.Target); err != nil {
+			return err
+		}
+		return checkRef("new", p.New)
+	case WorkspaceActionMove:
+		var p workspaceMoveParams
+		if err := json.Unmarshal(cmd.Params, &p); err != nil {
+			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
+		}
+		if err := checkRef("source", p.Source); err != nil {
+			return err
+		}
+		return checkRef("target", p.Target)
+	case WorkspaceActionSwap:
+		var p workspaceSwapParams
+		if err := json.Unmarshal(cmd.Params, &p); err != nil {
+			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
+		}
+		if err := checkRef("a", p.A); err != nil {
+			return err
+		}
+		return checkRef("b", p.B)
+	case WorkspaceActionPopOut:
+		var p workspacePopOutParams
+		if err := json.Unmarshal(cmd.Params, &p); err != nil {
+			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
+		}
+		return checkRef("ref", p.Ref)
+	case WorkspaceActionRemove:
+		var p workspaceRemoveParams
+		if err := json.Unmarshal(cmd.Params, &p); err != nil {
+			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
+		}
+		return checkRef("ref", p.Ref)
+	case WorkspaceActionRename:
+		var p workspaceRenameParams
+		if err := json.Unmarshal(cmd.Params, &p); err != nil {
+			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
+		}
+		if err := checkRef("old", p.Old); err != nil {
+			return err
+		}
+		return checkRef("new", p.New)
+	case WorkspaceActionSelect:
+		var p workspaceSelectParams
+		if err := json.Unmarshal(cmd.Params, &p); err != nil {
+			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
+		}
+		return checkRef("ref", p.Ref)
+	default:
+		// Reorder/present/etc. carry no SessionRef to check here.
+		return nil
+	}
+}
+
 // WorkspaceSnapshot returns the active workspace view for a layout. If the
 // document has no active WorkspaceRecord for that layout, the snapshot is
 // synthesized from the persisted LayoutRecord.

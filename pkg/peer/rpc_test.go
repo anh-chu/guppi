@@ -81,7 +81,7 @@ func TestSendCommand_Success(t *testing.T) {
 
 	// Deliver reply as the remote would.
 	data, _ := json.Marshal(state.CommandResult{ID: cmd.ID, Ref: cmd.Ref, Accepted: true})
-	mgr.deliverCommandReply(V2CommandReplyPayload{
+	mgr.deliverCommandReply(peerID, pc, V2CommandReplyPayload{
 		ID:      req.ID,
 		Handled: true,
 		Result:  data,
@@ -155,7 +155,7 @@ func TestSendCommand_LostReplyRetryReturnsSameReceipt(t *testing.T) {
 			t.Errorf("retry command id mismatch: %s", req.ID)
 		}
 		resultData, _ := json.Marshal(state.CommandResult{ID: cmd.ID, Ref: cmd.Ref, Accepted: true})
-		mgr.deliverCommandReply(V2CommandReplyPayload{
+		mgr.deliverCommandReply(peerID, pc, V2CommandReplyPayload{
 			ID:      string(cmd.ID),
 			Handled: true,
 			Result:  resultData,
@@ -228,13 +228,15 @@ func TestCatalogSlot_CoalescesSlowQueue(t *testing.T) {
 func TestCommandWaiter_RegisterBeforeSend(t *testing.T) {
 	mgr := makeTestV2Manager(t)
 	cmdID := "race-id"
+	peerID := "remotea"
+	pc := newV2PeerConnection(peerID)
 
 	// Register waiter before the reply exists.
 	done := make(chan commandResult, 1)
-	mgr.registerCommandWaiter(cmdID, done)
+	mgr.registerCommandWaiter(cmdID, peerID, pc, done)
 
 	// Reply races in before send.
-	mgr.deliverCommandReply(V2CommandReplyPayload{ID: cmdID, Handled: true})
+	mgr.deliverCommandReply(peerID, pc, V2CommandReplyPayload{ID: cmdID, Handled: true})
 
 	select {
 	case res := <-done:

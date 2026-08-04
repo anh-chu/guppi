@@ -18,6 +18,7 @@ import { V2Store, type V2StoreState } from '../state/v2/store'
 import { StateStreamClient } from '../state/v2/stateStream'
 import { V2CommandClient, type SessionCommandAction, type WorkspaceCommandAction } from '../state/v2/commands'
 import { paneNodeToPaneTree, sessionRefToKey } from '../state/v2/paneTreeAdapter'
+import { decodeBootstrapResponse } from '../state/v2/wireCodec'
 import type { SessionRef, LayoutID } from '../state/v2/types'
 import type { V2BootstrapResponse } from '../state/v2/wireTypes'
 import type { PaneTree } from '../lib/paneTree'
@@ -78,9 +79,13 @@ export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
     const client = new StateStreamClient({
       url: wsURL('/ws/v2/state'),
       callbacks: {
-        onCatalog: (snapshot, gen) => {
+        onCatalog: (snapshot, gen, isLocal) => {
           if (disposed) return
-          store.replaceCatalog(snapshot, gen)
+          store.replaceCatalog(snapshot, gen, isLocal)
+        },
+        onCatalogRemoved: (owner) => {
+          if (disposed) return
+          store.removeOwnerCatalog(owner)
         },
         onWorkspace: (snapshot, gen) => {
           if (disposed) return
@@ -97,11 +102,12 @@ export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
       try {
         const res = await fetch('/api/v2/bootstrap')
         if (res.ok && !disposed) {
-          const body = (await res.json()) as V2BootstrapResponse
-          store.replaceCatalog(
-            { owner: body.owner, revision: body.revision, sessions: body.sessions, layouts: body.layouts },
-            generation,
-          )
+          const rawBody = await res.json()
+          const body: V2BootstrapResponse = decodeBootstrapResponse(rawBody)
+          store.replaceCatalog(body.local, generation, true)
+          for (const remoteSnapshot of body.remote ?? []) {
+            store.replaceCatalog(remoteSnapshot, generation, false)
+          }
           if (body.workspace) {
             store.replaceWorkspace(body.workspace, generation, body.presentations)
           }
@@ -134,20 +140,18 @@ export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
       }) => {
         // TODO(v2 remote create): params.hostId identifies the caller's
         // selected target host, but the v2 session-command wire contract has
-        // no field to carry it yet -- pkg/state/session_commands.go's
-        // executeCreate hard-rejects any SessionRef.Owner that doesn't match
-        // the local catalog owner (ref.Owner != s.owner -> ErrInvalidIdentity),
-        // and the RemoteCreateCoordinator (pkg/state/remote_create.go,
-        // ExecuteRemoteCreate) that would route this to the right peer is only
-        // reachable from pkg/peer/session_state.go today, not from this HTTP
-        // command path. Deliberately NOT placing hostId on the SessionRef sent
-        // below: doing so would make every remote-host create fail with
-        // invalid_identity instead of the current (also wrong, but at least
-        // non-fatal) behavior of silently creating locally. Once the backend
-        // exposes a target-owner field on this endpoint, wire params.hostId
-        // into that field here.
-        const ref: SessionRef = { owner: null, session: '', window: 0, pane: 0 }
-        return commandClient.sessionCommand(ref, {
+        // no field to carry it yet. The RemoteCreateCoordinator
+        // (pkg/state/remote_create.go) that would route a create to the right
+        // peer is only reachable from pkg/peer/session_state.go today, not
+        // from this HTTP command path, so a remote-host create silently
+        // creates locally. Once the backend exposes a target-owner field on
+        // this endpoint, wire params.hostId into that field here.
+        //
+        // Note: a create carries NO SessionRef on the wire -- the server
+        // assigns the SessionID (executeCreate synthesizes one when ref is
+        // absent). Never send a placeholder ref here; see
+        // V2CommandClient.createSession in state/v2/commands.ts.
+        return commandClient.createSession({
           action: 'create',
           name: params.name,
           shell: params.shell,

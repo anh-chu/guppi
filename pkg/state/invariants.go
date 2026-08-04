@@ -30,6 +30,13 @@ const (
 	ErrWorkspaceOwnerOffline    ErrorCode = "workspace_owner_offline"
 	ErrLegacyPeerUnsupported    ErrorCode = "legacy_peer_unsupported"
 	ErrGenerationMismatch       ErrorCode = "generation_mismatch"
+	// ErrOwnershipMismatch is returned when a peer-originated command's
+	// stated owner/requester/target ref does not match the authenticated
+	// identity that must own it (e.g. a remote peer's SessionCommand.Ref.Owner
+	// does not match this node's own catalog owner, or a RemoteCreateRequest's
+	// Requester does not match the authenticated sender). This is a peer-trust
+	// violation, not a client input mistake, and must never be silently ignored.
+	ErrOwnershipMismatch        ErrorCode = "ownership_mismatch"
 )
 
 // StateError reports a typed contract violation.

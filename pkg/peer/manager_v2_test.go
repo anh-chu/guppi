@@ -240,10 +240,12 @@ func TestHandleV2CatalogSnapshot_UpdatesCache(t *testing.T) {
 
 func TestHandleV2CommandReply_DeliversToWaiter(t *testing.T) {
 	mgr := makeV2Manager(t)
+	peerID := "peer-a"
+	pc := NewPeerConnection(peerID, 8)
 	done := make(chan commandResult, 1)
-	mgr.registerCommandWaiter("cmd-1", done)
+	mgr.registerCommandWaiter("cmd-1", peerID, pc, done)
 
-	mgr.deliverCommandReply(V2CommandReplyPayload{ID: "cmd-1", Handled: true})
+	mgr.deliverCommandReply(peerID, pc, V2CommandReplyPayload{ID: "cmd-1", Handled: true})
 
 	select {
 	case res := <-done:
@@ -252,6 +254,52 @@ func TestHandleV2CommandReply_DeliversToWaiter(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout")
+	}
+}
+
+// TestHandleV2CommandReply_WrongPeerRejected proves that a reply arriving
+// from a different authenticated peer (or a different connection for the
+// same peer, e.g. a stale/superseded connection) cannot satisfy another
+// peer's in-flight command waiter, even if it guesses/replays the exact
+// CommandID.
+func TestHandleV2CommandReply_WrongPeerRejected(t *testing.T) {
+	mgr := makeV2Manager(t)
+	victimPeer := "peer-victim"
+	victimConn := NewPeerConnection(victimPeer, 8)
+	done := make(chan commandResult, 1)
+	mgr.registerCommandWaiter("cmd-shared", victimPeer, victimConn, done)
+
+	// A different authenticated peer attempts to satisfy the victim's waiter.
+	attackerPeer := "peer-attacker"
+	attackerConn := NewPeerConnection(attackerPeer, 8)
+	if delivered := mgr.deliverCommandReply(attackerPeer, attackerConn, V2CommandReplyPayload{ID: "cmd-shared", Handled: true}); delivered {
+		t.Fatal("expected reply from a different peer to be rejected")
+	}
+
+	// The same peer identity but a different (stale/superseded) connection
+	// must also be rejected.
+	staleConn := NewPeerConnection(victimPeer, 8)
+	if delivered := mgr.deliverCommandReply(victimPeer, staleConn, V2CommandReplyPayload{ID: "cmd-shared", Handled: true}); delivered {
+		t.Fatal("expected reply from a stale connection of the same peer to be rejected")
+	}
+
+	select {
+	case <-done:
+		t.Fatal("waiter must not receive a reply from the wrong peer/connection")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The legitimate reply from the correct peer/connection still works.
+	if delivered := mgr.deliverCommandReply(victimPeer, victimConn, V2CommandReplyPayload{ID: "cmd-shared", Handled: true}); !delivered {
+		t.Fatal("expected reply from the correct peer/connection to be delivered")
+	}
+	select {
+	case res := <-done:
+		if !res.payload.Handled {
+			t.Fatal("expected handled")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for legitimate reply")
 	}
 }
 

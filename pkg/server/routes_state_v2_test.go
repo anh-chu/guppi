@@ -62,7 +62,7 @@ func TestV2BootstrapReturnsOneCompleteSnapshot(t *testing.T) {
 	if resp.Pending == nil {
 		t.Error("expected pending field to be present (even if empty)")
 	}
-	if len(resp.Layouts) == 0 {
+	if len(resp.Local.Layouts) == 0 {
 		t.Error("expected at least one layout after create")
 	}
 	if resp.Workspace == nil {
@@ -257,17 +257,164 @@ func TestV2BootstrapIncludesPerSessionDaemonGeneration(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if len(resp.Sessions) == 0 {
+	if len(resp.Local.Sessions) == 0 {
 		t.Fatalf("expected at least one session in bootstrap response (worker did not activate in time); body=%s", w.Body.String())
 	}
 
 	// Verify the session includes per-session daemon generation in _compat
-	session := resp.Sessions[0]
+	session := resp.Local.Sessions[0]
 	if session.Compat.Generation == "" {
 		t.Error("expected session.Compat.Generation to be non-empty (should be 'gen-test' from noopBackend)")
 	}
 	if session.Compat.Generation != "gen-test" {
 		t.Errorf("expected session.Compat.Generation='gen-test', got %q", session.Compat.Generation)
+	}
+}
+
+// TestV2CommandBodyAsBrowserWouldProduceIt feeds literal JSON bytes shaped
+// exactly like web/src/state/v2/commands.ts's V2CommandClient produces (ref
+// as a canonical STRING, e.g. "owner/session:0.0", never a JSON object; all
+// non-action fields nested under "params") through the real route handlers.
+// This is the end-to-end proof that the browser wire contract actually
+// decodes: pkg/state.SessionRef's UnmarshalJSON only accepts a JSON string,
+// so if commands.ts ever regressed to sending an object-shaped ref (the bug
+// this fix addresses), this test would fail with invalid_input.
+func TestV2CommandBodyAsBrowserWouldProduceIt(t *testing.T) {
+	catalog, svc := newV2TestCatalog(t)
+	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	r := newV2TestRouter(opts)
+
+	// 1. Seed a real session/layout via the service directly (create's own
+	// empty-ref placeholder semantics are a separate, pre-existing concern
+	// unrelated to the string-vs-object wire format this test covers).
+	params, _ := json.Marshal(state.CreateParams{Name: "browser-created"})
+	if _, err := svc.ExecuteSessionCommand(t.Context(), state.SessionCommand{
+		ID: state.NewCommandID(), Action: state.ActionCreate, Params: params,
+	}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+
+	layouts := catalog.Layouts()
+	if len(layouts) != 1 {
+		t.Fatalf("expected one layout after create, got %d", len(layouts))
+	}
+	layoutID := layouts[0].ID
+	pending := catalog.PendingCreates()
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending create, got %d", len(pending))
+	}
+	realRef := pending[0].Ref
+	wireRef := realRef.String()
+
+	// 2. Workspace command: select, exactly as V2CommandClient.workspaceCommand
+	// would serialize { id, layout, action, params: { ref, expected_revision? } }
+	// -- this is encodeWorkspaceCommandAction's 'select' case in commands.ts.
+	selectBody := []byte(`{"id":"cmdbrowser3","layout":"` + string(layoutID) + `","action":"select","params":{"ref":"` + wireRef + `"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v2/workspace-commands", bytes.NewReader(selectBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("select: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result v2WorkspaceCommandResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode select result: %v", err)
+	}
+	if !result.Accepted {
+		t.Error("expected select command to be accepted")
+	}
+
+	// 3. Session command: kill, targeting the real ref by its canonical wire
+	// string, exactly as V2CommandClient.sessionCommand would serialize it.
+	killBody := []byte(`{"id":"cmdbrowser2","ref":"` + wireRef + `","action":"kill","params":{}}`)
+	req = httptest.NewRequest(http.MethodPost, "/v2/session-commands", bytes.NewReader(killBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("kill: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 4. Negative control: an object-shaped ref (the bug this test guards
+	// against) must be rejected as invalid_input, not silently accepted.
+	objectRefBody := []byte(`{"id":"cmdbrowser4","ref":{"owner":"","session":"x","window":0,"pane":0},"action":"kill","params":{}}`)
+	req = httptest.NewRequest(http.MethodPost, "/v2/session-commands", bytes.NewReader(objectRefBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("object-shaped ref: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestV2CreateCommandBodyAsBrowserWouldProduceIt feeds the exact JSON bytes
+// V2CommandClient.createSession (web/src/state/v2/commands.ts) produces for a
+// create: { id, action: "create", params } with NO `ref` member at all. A
+// create cannot know its SessionID before the server assigns one, and
+// executeCreate synthesizes it (NewSessionID) when cmd.Ref is the zero value.
+//
+// Before this test, useV2State sent a placeholder ref {session:''} which, once
+// wire-encoded to its canonical string ":0.0", was rejected by ParseSessionRef
+// with "missing session id" (invalid_input) -- breaking browser session create.
+func TestV2CreateCommandBodyAsBrowserWouldProduceIt(t *testing.T) {
+	catalog, svc := newV2TestCatalog(t)
+	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	r := newV2TestRouter(opts)
+
+	// Exact shape V2CommandClient.createSession produces. Crucially there is
+	// NO "ref" member -- sending the old placeholder would be rejected with
+	// invalid_input ("missing session id") by SessionRef.UnmarshalJSON.
+	body := []byte(`{"id":"cmdbrowsercreate1","action":"create","params":{"name":"browser-create","cwd":"/tmp"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v2/session-commands", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var result state.CommandResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode create result: %v", err)
+	}
+	if !result.Accepted {
+		t.Error("expected create to be accepted")
+	}
+	if result.Ref.Session == "" {
+		t.Error("expected server-assigned session id in result.Ref.Session")
+	}
+	if result.Ref.Owner != catalog.Owner() {
+		t.Errorf("expected owner %q in result.Ref.Owner, got %q", catalog.Owner(), result.Ref.Owner)
+	}
+
+	// The durable intent is committed before the reply: the pending create
+	// must already exist in the catalog under the returned ref.
+	pending := catalog.PendingCreates()
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending create, got %d", len(pending))
+	}
+	if pending[0].Ref.Session != result.Ref.Session {
+		t.Errorf("expected pending create ref %q to match result ref %q", pending[0].Ref, result.Ref)
+	}
+
+	// Negative control: sending a placeholder ref shaped like the pre-fix
+	// browser ({session:''} encoded to ":0.0") must be rejected as
+	// invalid_input, not silently accepted.
+	oldPlaceholder := []byte(`{"id":"cmdbrowsercreate2","ref":":0.0","action":"create","params":{}}`)
+	req = httptest.NewRequest(http.MethodPost, "/v2/session-commands", bytes.NewReader(oldPlaceholder))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("placeholder ref: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var errResp v2ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errResp.Code != "invalid_input" {
+		t.Fatalf("expected invalid_input, got %q", errResp.Code)
 	}
 }
 

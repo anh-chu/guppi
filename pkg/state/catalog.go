@@ -267,10 +267,45 @@ func (c *Catalog) publishCatalog(snap OwnerCatalogSnapshot) {
 	}
 }
 
-// AggregateCatalogSnapshot returns the local snapshot. In later tasks it will
-// merge peer caches; today it is an alias for LocalCatalogSnapshot.
+// AggregateCatalogSnapshot returns the local, owner-authoritative snapshot
+// only. It intentionally does not know about peers; multi-owner aggregation
+// (local + cached remote-owner catalogs) is done by the package-level
+// AggregateCatalog, which composes this with a RemoteCatalogSource.
 func (c *Catalog) AggregateCatalogSnapshot() OwnerCatalogSnapshot {
 	return c.LocalCatalogSnapshot()
+}
+
+// RemoteCatalogSource is implemented by anything that exposes cached
+// catalog snapshots received from peers (e.g. pkg/peer.Manager). It is a
+// read-only accessor: implementations must not perform validation or
+// storage here -- that happens exclusively where the snapshots are
+// accepted (e.g. peer.Manager.UpdateRemoteCatalog).
+type RemoteCatalogSource interface {
+	// AllRemoteCatalogSnapshots returns the latest cached snapshot for every
+	// known remote owner. Implementations return defensive copies.
+	AllRemoteCatalogSnapshots() []OwnerCatalogSnapshot
+}
+
+// MultiOwnerCatalogSnapshot combines this node's local catalog with the
+// catalogs cached from its peers. Each owner (local and every remote owner)
+// carries its own independent Revision -- revisions are never conflated
+// across owners, since they are produced by independent, unrelated catalogs.
+type MultiOwnerCatalogSnapshot struct {
+	Local  OwnerCatalogSnapshot   `json:"local"`
+	Remote []OwnerCatalogSnapshot `json:"remote,omitempty"`
+}
+
+// AggregateCatalog combines local's own snapshot with whatever remote-owner
+// catalogs source currently has cached. A nil source yields Remote == nil,
+// i.e. identical behavior to a single-node deployment. This is the single
+// place local and remote catalog projections are merged for downstream
+// (bootstrap/state-stream) consumption.
+func AggregateCatalog(local *Catalog, source RemoteCatalogSource) MultiOwnerCatalogSnapshot {
+	snap := MultiOwnerCatalogSnapshot{Local: local.AggregateCatalogSnapshot()}
+	if source != nil {
+		snap.Remote = source.AllRemoteCatalogSnapshots()
+	}
+	return snap
 }
 
 // apply runs a mutation against the current document. If the mutation does

@@ -300,7 +300,14 @@ func runSession(
 		go forwardStateEvents(sessionCtx, pc, deps)
 	}
 	go forwardToolEvents(sessionCtx, pc, deps, peerID)
-	go forwardPeerStateChanges(sessionCtx, pc, deps, peerID)
+	// forwardPeerStateChanges subscribes to deps.Manager's legacy state event
+	// channel and pushes a peer-state snapshot on every change. In v2-only
+	// mode that legacy channel carries no meaningful state (same reasoning as
+	// forwardStateEvents above); skip it entirely instead of forwarding
+	// shadow updates to the remote peer.
+	if deps.V2CommandSvc == nil {
+		go forwardPeerStateChanges(sessionCtx, pc, deps, peerID)
+	}
 
 	for {
 		_, raw, err := conn.ReadMessage()
@@ -492,12 +499,24 @@ func handleSessionMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 	switch msg.Type {
 	case MsgStateUpdate,
 		MsgStateEvent,
-		MsgActivityUpdate,
-		MsgStats,
 		MsgPeerState,
-		MsgPeerConnected,
-		MsgPeerDisconnected,
 		MsgRequestState:
+		// These carry legacy session/state.Manager data. A v2-only node must
+		// never process them -- a peer sending one is either a bug or a
+		// downgrade attempt. Log and drop instead of dispatching to the
+		// legacy handler.
+		if deps.V2CommandSvc != nil {
+			log.WithField("type", msg.Type).Debug("dropping legacy state message: node is v2-only")
+			return
+		}
+		handleStateMessage(peerID, msg, pc, deps, log)
+
+	case MsgActivityUpdate,
+		MsgStats,
+		MsgPeerConnected,
+		MsgPeerDisconnected:
+		// Activity/stats/host-registration messages are not legacy session
+		// state and must keep working regardless of v2 mode.
 		handleStateMessage(peerID, msg, pc, deps, log)
 
 	case MsgOpenTerminal,
@@ -517,6 +536,14 @@ func handleSessionMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 		handleAttrsMessage(peerID, msg, pc, deps, log)
 
 	case MsgSessionAction:
+		// Legacy session-action messages (kill/rename/etc dispatched to the
+		// legacy manager). A v2-only node should reject these rather than
+		// silently mutate a shim manager -- v2 peers exchange session
+		// commands via MsgV2CommandRequest/MsgV2CommandReply instead.
+		if deps.V2CommandSvc != nil {
+			log.WithField("type", msg.Type).Debug("dropping legacy session-action message: node is v2-only")
+			return
+		}
 		handleActionMessage(msg, pc, deps, log)
 
 	case MsgV2CatalogSnapshot,

@@ -130,6 +130,28 @@ func NewRemoteCreateCoordinator(catalog *Catalog, backend DaemonBackend, opts Re
 	}
 }
 
+// ExecuteRemoteCreateFromPeer applies a remote create request that arrived
+// over an authenticated peer connection. peerID must be the connection's
+// authenticated identity (empty means "trusted local caller", which is left
+// to ExecuteRemoteCreate's existing, unchanged behavior). req.Requester
+// records who is asking for the create and must equal the authenticated
+// sender; a peer cannot claim to be requesting on behalf of a different
+// owner. The check runs BEFORE any mutation. Local (non-peer) callers must
+// keep calling ExecuteRemoteCreate directly so this check is never applied to
+// already-trusted local paths.
+func (c *RemoteCreateCoordinator) ExecuteRemoteCreateFromPeer(ctx context.Context, req RemoteCreateRequest, peerID string) (RemoteCreateResult, error) {
+	if peerID != "" {
+		if req.Requester == "" || req.Requester != OwnerID(peerID) {
+			return RemoteCreateResult{}, StateError{
+				Code:   ErrOwnershipMismatch,
+				Field:  "requester",
+				Detail: fmt.Sprintf("requester %q does not match authenticated peer %q", req.Requester, peerID),
+			}
+		}
+	}
+	return c.ExecuteRemoteCreate(ctx, req)
+}
+
 // ExecuteRemoteCreate applies one remote create request. Accepted requests are
 // durable before the method returns; daemon work is driven by Run.
 func (c *RemoteCreateCoordinator) ExecuteRemoteCreate(ctx context.Context, req RemoteCreateRequest) (RemoteCreateResult, error) {

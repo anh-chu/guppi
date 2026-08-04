@@ -222,7 +222,7 @@ func TestStateStreamEnqueueCloseRaceNoPanic(t *testing.T) {
 			defer wg.Done()
 			base := int64(worker) * 10000
 			for j := int64(0); j < 2000; j++ {
-				c.enqueue(&c.catalog, base+j, []byte("payload"))
+				c.publishCatalogKeyed(localCatalogSlotKey, base+j, []byte("payload"))
 			}
 		}(i)
 	}

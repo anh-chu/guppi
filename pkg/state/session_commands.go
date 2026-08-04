@@ -162,6 +162,28 @@ func (s *SessionCommandService) ExecuteSessionCommand(ctx context.Context, cmd S
 	}
 }
 
+// ExecuteSessionCommandFromPeer applies a session command that arrived over
+// an authenticated peer connection. peerID must be the connection's
+// authenticated identity (empty means "trusted local caller", which is left
+// to ExecuteSessionCommand's existing, unchanged behavior). Because this
+// service always mutates its own local catalog, a peer-originated command may
+// only target a ref owned by this node; a forged or mismatched Ref.Owner is
+// rejected with a typed error BEFORE any mutation is attempted. Local
+// (non-peer) callers must keep calling ExecuteSessionCommand directly so this
+// check is never applied to already-trusted local paths.
+func (s *SessionCommandService) ExecuteSessionCommandFromPeer(ctx context.Context, cmd SessionCommand, peerID string) (CommandResult, error) {
+	if peerID != "" {
+		if cmd.Ref.Owner == "" || cmd.Ref.Owner != s.owner {
+			return CommandResult{}, StateError{
+				Code:   ErrOwnershipMismatch,
+				Field:  "ref.owner",
+				Detail: fmt.Sprintf("ref owner %q does not match this node's owner %q", cmd.Ref.Owner, s.owner),
+			}
+		}
+	}
+	return s.ExecuteSessionCommand(ctx, cmd)
+}
+
 // LookupRefByDisplayName returns the canonical session ref for a display name
 // or session id. It is used by v1 route adapters that only know the UI label.
 func (s *SessionCommandService) LookupRefByDisplayName(name string) (SessionRef, bool) {

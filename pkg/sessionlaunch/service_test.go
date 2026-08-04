@@ -273,6 +273,58 @@ func TestCreateRemoteLegacyModeUnaffected(t *testing.T) {
 	}
 }
 
+// fakeV2CommanderWithDisplayName is a V2Commander stub that echoes back a
+// DisplayName so createLocalV2's post-create AgentType branch can be
+// exercised deterministically.
+type fakeV2CommanderWithDisplayName struct {
+	displayName string
+	calls       []state.SessionCommand
+}
+
+func (f *fakeV2CommanderWithDisplayName) ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error) {
+	f.calls = append(f.calls, cmd)
+	return state.CommandResult{DisplayName: f.displayName}, nil
+}
+
+// TestCreateLocalV2SkipsLegacyAgentTypeWrite proves the shadow-write fix in
+// createLocalV2: once V2Commander is set, AgentType must not be written into
+// the legacy StateMgr (the v2 catalog already carries it via CreateParams).
+func TestCreateLocalV2SkipsLegacyAgentTypeWrite(t *testing.T) {
+	s, _, st, _, _ := newService()
+	v2 := &fakeV2CommanderWithDisplayName{displayName: "foo"}
+	s.V2Commander = v2
+
+	res, err := s.Create(context.Background(), Request{Name: "foo", AgentType: "claude"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Name != "foo" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if len(v2.calls) != 1 {
+		t.Fatalf("expected exactly one v2 create command, got %d", len(v2.calls))
+	}
+	if len(st.agentTypes) != 0 {
+		t.Fatalf("legacy StateMgr.SetSessionAgentType must not be called in v2 mode, got %+v", st.agentTypes)
+	}
+}
+
+// TestCreateLocalLegacyModeStillWritesAgentType proves legacy-mode local
+// creation (V2Commander nil) is unaffected: AgentType is still written into
+// the legacy StateMgr exactly as before.
+func TestCreateLocalLegacyModeStillWritesAgentType(t *testing.T) {
+	s, _, st, _, _ := newService()
+	// V2Commander intentionally left nil: this is a legacy-mode Service.
+
+	_, err := s.Create(context.Background(), Request{Name: "foo", Path: "/tmp", Command: "bash", AgentType: "claude"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if st.agentTypes["foo"] != "claude" {
+		t.Fatalf("expected legacy StateMgr to record agent type, got %+v", st.agentTypes)
+	}
+}
+
 func TestCreateLocalHostQualifiedRequestUsesLocalDaemon(t *testing.T) {
 	s, d, _, a, h := newService()
 

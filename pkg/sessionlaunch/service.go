@@ -301,7 +301,10 @@ func (s *Service) createLocalV2(ctx context.Context, req Request) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
-	if s.StateMgr != nil && req.AgentType != "" {
+	// Skip the legacy StateMgr write when v2 is authoritative: the v2 catalog
+	// already carries AgentType via CreateParams above, so writing it into
+	// the legacy manager here would be a shadow write.
+	if s.StateMgr != nil && req.AgentType != "" && s.V2Commander == nil {
 		s.StateMgr.SetSessionAgentType(res.DisplayName, req.AgentType)
 	}
 	if s.Attrs != nil && req.ScheduleID != "" {

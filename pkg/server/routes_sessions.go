@@ -33,6 +33,27 @@ import (
 	"github.com/anh-chu/termyard/pkg/ws"
 )
 
+// lookupRemoteSessionRef resolves a display name (or raw session id) to a
+// SessionRef within a connected v2 peer's cached catalog. A remote peer's
+// v2 OwnerID is always equal to its authenticated fingerprint (peerID) --
+// enforced in pkg/peer/manager.go's bindRemoteOwner -- so no separate
+// peerID->owner lookup is required.
+func lookupRemoteSessionRef(peerMgr *peer.Manager, peerID, name string) (state.SessionRef, bool) {
+	if peerMgr == nil || name == "" {
+		return state.SessionRef{}, false
+	}
+	snap, ok := peerMgr.RemoteCatalogSnapshot(state.OwnerID(peerID))
+	if !ok {
+		return state.SessionRef{}, false
+	}
+	for _, rec := range snap.Sessions {
+		if rec.Compat.Name == name || string(rec.ID) == name {
+			return rec.Ref, true
+		}
+	}
+	return state.SessionRef{}, false
+}
+
 // registerSessionsRoutes mounts the protected session/activity/stats/sync
 // endpoints under /api. Callers must apply auth middleware separately.
 func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *groupNamingCoordinator) {
@@ -210,9 +231,40 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			return
 		}
 
-		// Remote host -- forward via peer connection. The new label propagates
-		// back through the peer's state update broadcast.
+		// Remote host -- forward via peer connection.
 		if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
+			// When this node is v2, route through the reliable v2 command RPC
+			// instead of a legacy peer message so the remote node's own v2
+			// catalog (its single source of truth) applies the label directly.
+			if opts.V2CommandSvc != nil {
+				ref, ok := lookupRemoteSessionRef(opts.PeerMgr, req.Host, req.Session)
+				if !ok {
+					http.Error(w, "session not found", http.StatusNotFound)
+					return
+				}
+				label := req.DisplayName
+				if req.Clear {
+					label = string(ref.Session)
+				}
+				params, _ := json.Marshal(state.LabelParams{Label: label})
+				ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+				_, err := opts.PeerMgr.SendCommand(ctx, req.Host, state.SessionCommand{
+					ID:     state.NewCommandID(),
+					Ref:    ref,
+					Action: state.ActionLabel,
+					Params: params,
+				})
+				cancel()
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
+			// Legacy peer message path. The new label propagates back through
+			// the peer's state update broadcast.
 			peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
 			if peerConn == nil {
 				http.Error(w, "peer not connected", http.StatusBadGateway)
@@ -284,6 +336,15 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		// configured) and forward the chosen name to the peer to apply. The
 		// applied name propagates back via the peer's state update.
 		if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
+			// No v2 command equivalent exists for "regenerate name" (v2 naming
+			// flows through create/label commands only). Rather than silently
+			// sending a legacy MsgSessionAction a v2-only peer may reject or
+			// mishandle, return an explicit not-supported error.
+			if opts.V2CommandSvc != nil {
+				http.Error(w, "regenerate-name is not supported in v2 mode for remote sessions", http.StatusNotImplemented)
+				return
+			}
+
 			peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
 			if peerConn == nil {
 				http.Error(w, "peer not connected", http.StatusBadGateway)
@@ -343,6 +404,14 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"name": name})
+			return
+		}
+
+		// v2 naming flows through create/label commands only; there is no v2
+		// "regenerate" equivalent yet. Return an honest not-supported response
+		// instead of falling back to a legacy StateMgr write.
+		if opts.V2CommandSvc != nil {
+			http.Error(w, "regenerate-name is not supported in v2 mode", http.StatusNotImplemented)
 			return
 		}
 
@@ -422,6 +491,31 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 
 		// Remote host -- forward via peer connection
 		if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
+			// When this node is v2, route through the reliable v2 command RPC
+			// instead of a legacy peer message.
+			if opts.V2CommandSvc != nil {
+				ref, ok := lookupRemoteSessionRef(opts.PeerMgr, req.Host, req.OldName)
+				if !ok {
+					http.Error(w, "session not found", http.StatusNotFound)
+					return
+				}
+				params, _ := json.Marshal(state.LabelParams{Label: req.NewName})
+				ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+				_, err := opts.PeerMgr.SendCommand(ctx, req.Host, state.SessionCommand{
+					ID:     state.NewCommandID(),
+					Ref:    ref,
+					Action: state.ActionLabel,
+					Params: params,
+				})
+				cancel()
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
 			peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
 			if peerConn == nil {
 				http.Error(w, "peer not connected", http.StatusBadGateway)
@@ -440,6 +534,27 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			} else {
 				http.Error(w, "peer send queue full", http.StatusBadGateway)
 			}
+			return
+		}
+
+		// Local v2 path: route through V2CommandSvc (matches /session/display-name).
+		if opts.V2CommandSvc != nil && opts.V2Catalog != nil {
+			ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(req.OldName)
+			if !ok {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			params, _ := json.Marshal(state.LabelParams{Label: req.NewName})
+			if _, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+				ID:     state.NewCommandID(),
+				Ref:    ref,
+				Action: state.ActionLabel,
+				Params: params,
+			}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
@@ -465,6 +580,15 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 
 		// Remote host -- forward via peer connection
 		if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
+			// No v2 command equivalent exists for "select window" (daemon
+			// sessions are single-window/single-pane; this is a legacy tmux-era
+			// concept). Return an explicit not-supported error instead of
+			// silently sending a legacy message a v2-only peer may mishandle.
+			if opts.V2CommandSvc != nil {
+				http.Error(w, "select-window is not supported in v2 mode for remote sessions", http.StatusNotImplemented)
+				return
+			}
+
 			peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
 			if peerConn == nil {
 				http.Error(w, "peer not connected", http.StatusBadGateway)
@@ -505,6 +629,29 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 
 		// Remote host -- forward via peer connection
 		if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
+			// When this node is v2, route through the reliable v2 command RPC
+			// instead of a legacy peer message.
+			if opts.V2CommandSvc != nil {
+				ref, ok := lookupRemoteSessionRef(opts.PeerMgr, req.Host, req.Name)
+				if !ok {
+					http.Error(w, "session not found", http.StatusNotFound)
+					return
+				}
+				ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+				_, err := opts.PeerMgr.SendCommand(ctx, req.Host, state.SessionCommand{
+					ID:     state.NewCommandID(),
+					Ref:    ref,
+					Action: state.ActionKill,
+				})
+				cancel()
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
 			peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
 			if peerConn == nil {
 				http.Error(w, "peer not connected", http.StatusBadGateway)

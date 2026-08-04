@@ -1,0 +1,25 @@
+{
+  "description": "Cross-language golden fixture for SessionRef wire encoding. pkg/state/ids_test.go and web/src/state/v2/wireCodec.test.ts both read this exact file and must agree that MarshalJSON/UnmarshalJSON (Go) and encodeSessionRef/decodeSessionRef (TS) produce/accept exactly these strings.",
+  "cases": [
+    {
+      "name": "owner_and_pane",
+      "wire": "ownerfixture1234567890ab/sessionfixture1234567890:1.2",
+      "decoded": { "owner": "ownerfixture1234567890ab", "session": "sessionfixture1234567890", "window": 1, "pane": 2 }
+    },
+    {
+      "name": "owner_default_window_pane",
+      "wire": "ownerfixture1234567890ab/sessionfixture1234567890:0.0",
+      "decoded": { "owner": "ownerfixture1234567890ab", "session": "sessionfixture1234567890", "window": 0, "pane": 0 }
+    },
+    {
+      "name": "no_owner",
+      "wire": "sessionabc:1.2",
+      "decoded": { "owner": null, "session": "sessionabc", "window": 1, "pane": 2 }
+    },
+    {
+      "name": "high_window_pane",
+      "wire": "ownerfixture1234567890ab/sessionfixture1234567890:65535.65535",
+      "decoded": { "owner": "ownerfixture1234567890ab", "session": "sessionfixture1234567890", "window": 65535, "pane": 65535 }
+    }
+  ]
+}

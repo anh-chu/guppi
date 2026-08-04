@@ -222,6 +222,25 @@ type Manager struct {
 	// v2RemoteCreate runs local owner-side remote-create sagas and resumes
 	// pending creates after restart.
 	v2RemoteCreate *state.RemoteCreateCoordinator
+
+	// remoteCatalogSubs notifies observers (e.g. the browser state stream)
+	// whenever a remote-owner catalog cache is updated or forgotten. This is
+	// read-only fan-out over data UpdateRemoteCatalog/ForgetRemoteCatalog
+	// already validated and stored; it does not affect validation/storage.
+	// Guarded by its own mutex so a slow subscriber never blocks catalogMu.
+	remoteCatalogSubMu  sync.RWMutex
+	remoteCatalogSubs   []remoteCatalogSubscription
+	nextRemoteCatalogID int
+}
+
+// remoteCatalogSubscription is one registered observer of remote catalog
+// cache changes. removed is true when the owner's cache was forgotten
+// (peer removed / catalog explicitly forgotten), in which case snap is the
+// zero value and callers must treat it as an explicit removal signal, not
+// silence.
+type remoteCatalogSubscription struct {
+	id int
+	fn func(owner state.OwnerID, snap state.OwnerCatalogSnapshot, removed bool)
 }
 
 // remoteCatalogCache is an immutable, owner-keyed view received from a peer.
@@ -973,6 +992,7 @@ func (m *Manager) UpdateRemoteCatalog(peerID string, conn *PeerConnection, snap 
 	m.remoteCatalogs[snap.Owner] = cache
 	m.catalogMu.Unlock()
 	m.persistRemoteCatalogs()
+	m.notifyRemoteCatalog(snap.Owner, cloneOwnerCatalogSnapshot(snap), false)
 }
 
 // UpdateRemoteWorkspace merges the cached workspace for owner. The owner
@@ -1044,6 +1064,59 @@ func (m *Manager) RemoteCatalogSnapshot(owner state.OwnerID) (state.OwnerCatalog
 	return cloneOwnerCatalogSnapshot(c.Snapshot), true
 }
 
+// AllRemoteCatalogSnapshots returns a defensive-copy, owner-sorted list of
+// every cached remote-owner catalog. This is the read-only accessor the
+// browser-facing aggregation (pkg/state.AggregateCatalog) uses to combine
+// this node's local catalog with what its peers have published; it does not
+// participate in validation or storage, which remain exclusively in
+// UpdateRemoteCatalog.
+func (m *Manager) AllRemoteCatalogSnapshots() []state.OwnerCatalogSnapshot {
+	m.catalogMu.RLock()
+	defer m.catalogMu.RUnlock()
+	out := make([]state.OwnerCatalogSnapshot, 0, len(m.remoteCatalogs))
+	for _, c := range m.remoteCatalogs {
+		out = append(out, cloneOwnerCatalogSnapshot(c.Snapshot))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Owner < out[j].Owner })
+	return out
+}
+
+// SubscribeRemoteCatalogs registers fn to be called whenever a remote-owner
+// catalog cache is updated (removed=false, snap is the new cached snapshot)
+// or forgotten (removed=true, snap is the zero value -- an explicit removal
+// signal, e.g. the peer disconnected and was forgotten, distinct from mere
+// silence). The returned function unsubscribes. fn is invoked synchronously
+// and outside catalogMu; a slow subscriber can delay other subscribers but
+// never blocks catalog validation/storage.
+func (m *Manager) SubscribeRemoteCatalogs(fn func(owner state.OwnerID, snap state.OwnerCatalogSnapshot, removed bool)) func() {
+	m.remoteCatalogSubMu.Lock()
+	m.nextRemoteCatalogID++
+	id := m.nextRemoteCatalogID
+	m.remoteCatalogSubs = append(m.remoteCatalogSubs, remoteCatalogSubscription{id: id, fn: fn})
+	m.remoteCatalogSubMu.Unlock()
+	return func() {
+		m.remoteCatalogSubMu.Lock()
+		defer m.remoteCatalogSubMu.Unlock()
+		filtered := m.remoteCatalogSubs[:0]
+		for _, s := range m.remoteCatalogSubs {
+			if s.id != id {
+				filtered = append(filtered, s)
+			}
+		}
+		m.remoteCatalogSubs = filtered
+	}
+}
+
+func (m *Manager) notifyRemoteCatalog(owner state.OwnerID, snap state.OwnerCatalogSnapshot, removed bool) {
+	m.remoteCatalogSubMu.RLock()
+	subs := make([]remoteCatalogSubscription, len(m.remoteCatalogSubs))
+	copy(subs, m.remoteCatalogSubs)
+	m.remoteCatalogSubMu.RUnlock()
+	for _, s := range subs {
+		s.fn(owner, snap, removed)
+	}
+}
+
 // RemoteWorkspaceSnapshot returns the latest cached workspace for owner, if any.
 func (m *Manager) RemoteWorkspaceSnapshot(owner state.OwnerID) (*state.WorkspaceRecord, bool) {
 	m.catalogMu.RLock()
@@ -1062,6 +1135,7 @@ func (m *Manager) ForgetRemoteCatalog(owner state.OwnerID) {
 	delete(m.remoteCatalogs, owner)
 	m.catalogMu.Unlock()
 	m.persistRemoteCatalogs()
+	m.notifyRemoteCatalog(owner, state.OwnerCatalogSnapshot{}, true)
 }
 
 // SetRemoteCreateCoordinator wires the v2 owner-side remote create coordinator.
@@ -1218,9 +1292,11 @@ func (m *Manager) persistRemoteCatalogs() {
 
 func (m *Manager) forgetRemoteCatalogsForPeer(peerID string) {
 	m.catalogMu.Lock()
+	var removedOwners []state.OwnerID
 	for owner, c := range m.remoteCatalogs {
 		if c.PeerID == peerID {
 			delete(m.remoteCatalogs, owner)
+			removedOwners = append(removedOwners, owner)
 		}
 	}
 	// Clear the ownership binding so a subsequently re-added peer starts
@@ -1233,6 +1309,9 @@ func (m *Manager) forgetRemoteCatalogsForPeer(peerID string) {
 	// Persist the removal so a forgotten peer does not reappear after a
 	// restart (the sidecar is written from the in-memory map).
 	m.persistRemoteCatalogs()
+	for _, owner := range removedOwners {
+		m.notifyRemoteCatalog(owner, state.OwnerCatalogSnapshot{}, true)
+	}
 }
 
 // resetRemoteRevisions increments the connection generation for a peer and

@@ -123,6 +123,71 @@ func TestWorkspaceMissingTarget(t *testing.T) {
 	}
 }
 
+func TestApplyWorkspaceCommandFromPeer_SplitForeignOwnerRejected(t *testing.T) {
+	c, owner, cleanup := mustNewWorkspaceCatalog(t)
+	defer cleanup()
+	foreignOwner := OwnerID("foreignownerabcd12345")
+	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
+
+	// The split target is a real, correctly-owned local leaf (so the
+	// pre-existing findLeaf check alone would happily accept this), but the
+	// peer claims the brand-new leaf being introduced by the split is owned
+	// by a different owner than this catalog's own owner. findLeaf cannot
+	// catch this because the new leaf does not exist yet; the ownership check
+	// must reject it before any mutation.
+	cmd := WorkspaceCommand{
+		ID:     NewCommandID(),
+		Layout: lID,
+		Action: WorkspaceActionSplit,
+		Params: workspaceParams(map[string]interface{}{
+			"target":    ref(owner, "s1"),
+			"direction": DirectionHorizontal,
+			"new":       ref(foreignOwner, "s2"),
+		}),
+	}
+	before := c.Revision()
+	err := c.ApplyWorkspaceCommandFromPeer(cmd, "attacker-peer")
+	assertCode(t, err, ErrOwnershipMismatch)
+	if c.Revision() != before {
+		t.Fatal("revision changed on ownership-mismatched peer command")
+	}
+
+	// The same command, unchanged, is accepted from a trusted local caller
+	// (peerID == ""), proving the check is only added on the peer path and
+	// local behavior is unaffected.
+	localErr := c.ApplyWorkspaceCommandFromPeer(cmd, "")
+	if localErr != nil {
+		t.Fatalf("expected local caller to bypass ownership check, got: %v", localErr)
+	}
+}
+
+func TestApplyWorkspaceCommandFromPeer_SplitNonexistentRefRejected(t *testing.T) {
+	c, owner, cleanup := mustNewWorkspaceCatalog(t)
+	defer cleanup()
+	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
+
+	// Owner matches, but the target leaf does not exist in the local trusted
+	// layout tree. The pre-existing findLeaf check inside
+	// ApplyWorkspaceCommand must still catch this once the ownership gate
+	// passes.
+	cmd := WorkspaceCommand{
+		ID:     NewCommandID(),
+		Layout: lID,
+		Action: WorkspaceActionSplit,
+		Params: workspaceParams(map[string]interface{}{
+			"target":    ref(owner, "doesnotexist"),
+			"direction": DirectionHorizontal,
+			"new":       ref(owner, "s2"),
+		}),
+	}
+	before := c.Revision()
+	err := c.ApplyWorkspaceCommandFromPeer(cmd, "some-peer")
+	assertCode(t, err, ErrMissingTarget)
+	if c.Revision() != before {
+		t.Fatal("revision changed on nonexistent-ref peer command")
+	}
+}
+
 func TestWorkspaceDuplicateMembership(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()

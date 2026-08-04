@@ -411,6 +411,95 @@ func TestKillDoesNotRemoveLiveUnconfirmedGeneration(t *testing.T) {
 	}
 }
 
+func TestExecuteSessionCommandFromPeer_KillOwnershipMismatchRejected(t *testing.T) {
+	svc, catalog, backend, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("liveme"), "gen-live")
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	// Peer B forges Ref.Owner while pointing at a session ID that is genuinely
+	// owned locally (owner == testOwner()). Because ExecuteSessionCommand
+	// always mutates this node's own catalog, the forged owner must be
+	// rejected before the kill is even attempted.
+	forgedRef := rec.Ref
+	forgedRef.Owner = OwnerID("peer-b")
+	_, err := svc.ExecuteSessionCommandFromPeer(context.Background(), SessionCommand{
+		ID:     NewCommandID(),
+		Ref:    forgedRef,
+		Action: ActionKill,
+	}, "peer-b")
+
+	var se StateError
+	if !errors.As(err, &se) || se.Code != ErrOwnershipMismatch {
+		t.Fatalf("expected ownership_mismatch error, got %v", err)
+	}
+	if backend.terminateCount() != 0 {
+		t.Fatal("kill must not be attempted when ownership check fails")
+	}
+	got, ok := catalog.Session(rec.ID)
+	if !ok || got.Phase != SessionPhaseActive || got.Desired != DesiredRun {
+		t.Fatalf("session must be unchanged after rejected kill: %+v", got)
+	}
+
+	// The same command, with the correct owner, is accepted.
+	_, err = svc.ExecuteSessionCommandFromPeer(context.Background(), SessionCommand{
+		ID:     NewCommandID(),
+		Ref:    rec.Ref,
+		Action: ActionKill,
+	}, "peer-b")
+	if err != nil {
+		t.Fatalf("expected correctly-owned kill to succeed, got: %v", err)
+	}
+
+	// A local (non-peer) caller using the un-gated entrypoint is unaffected by
+	// this check even with a forged owner, proving local paths stay trusted.
+	rec2 := activeRecord(SessionID("liveme2"), "gen-live2")
+	if err := catalog.PutSession(rec2); err != nil {
+		t.Fatal(err)
+	}
+	forgedRef2 := rec2.Ref
+	forgedRef2.Owner = OwnerID("peer-c")
+	if _, err := svc.ExecuteSessionCommand(context.Background(), SessionCommand{
+		ID:     NewCommandID(),
+		Ref:    forgedRef2,
+		Action: ActionKill,
+	}); err != nil {
+		t.Fatalf("local caller must not be affected by the peer ownership check: %v", err)
+	}
+}
+
+func TestExecuteSessionCommandFromPeer_LabelOwnershipMismatchRejected(t *testing.T) {
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("labelme"), "gen-label")
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	forgedRef := rec.Ref
+	forgedRef.Owner = OwnerID("peer-b")
+	params, _ := json.Marshal(LabelParams{Label: "renamed"})
+	_, err := svc.ExecuteSessionCommandFromPeer(context.Background(), SessionCommand{
+		ID:     NewCommandID(),
+		Ref:    forgedRef,
+		Action: ActionLabel,
+		Params: params,
+	}, "peer-b")
+
+	var se StateError
+	if !errors.As(err, &se) || se.Code != ErrOwnershipMismatch {
+		t.Fatalf("expected ownership_mismatch error, got %v", err)
+	}
+	got, _ := catalog.Session(rec.ID)
+	if got.Compat.Name == "renamed" {
+		t.Fatal("label must not be applied when ownership check fails")
+	}
+}
+
 func TestLabelOnlyMutatesCompatName(t *testing.T) {
 	svc, catalog, _, _, cleanup := newTestCommandService(t)
 	defer cleanup()

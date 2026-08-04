@@ -34,8 +34,7 @@ describe('useV2State', () => {
         okResponse({
           owner: 'me',
           revision: 1,
-          sessions: [],
-          layouts: [],
+          local: { owner: 'me', revision: 1, sessions: [], layouts: [] },
           hosts: [],
           pending: [],
         }),
@@ -75,7 +74,7 @@ describe('useV2State', () => {
     const socket = FakeSocket.instances[0]
 
     const existingSession = {
-      ref: { owner: 'me', session: 'existing', window: 0, pane: 0 },
+      ref: 'me/existing:0.0',
       owner: 'me',
       phase: 'running',
     }
@@ -90,7 +89,7 @@ describe('useV2State', () => {
     })
 
     await waitFor(() => expect(result.current.state.catalog.sessionsByRef.size).toBe(1))
-    const sessionBefore = result.current.state.catalog.sessionsByRef.get('me/existing/0/0')
+    const sessionBefore = result.current.state.catalog.sessionsByRef.get('me/existing:0.0')
 
     // Creating a new session (command call only, no snapshot) must not
     // change the reference identity of the already-known session.
@@ -99,8 +98,9 @@ describe('useV2State', () => {
       await result.current.createSession({ name: 'new-1' })
     })
 
-    const sessionAfter = result.current.state.catalog.sessionsByRef.get('me/existing/0/0')
+    const sessionAfter = result.current.state.catalog.sessionsByRef.get('me/existing:0.0')
     expect(sessionAfter).toBe(sessionBefore)
+    expect(sessionBefore).toBeDefined()
   })
 
   it('does not mutate the normalized workspace/catalog when moving a pane (layout mutation)', async () => {
@@ -121,8 +121,8 @@ describe('useV2State', () => {
               id: 'sp1',
               direction: 'h',
               ratio: 0.5,
-              first: { type: 'leaf', ref: { owner: 'me', session: 'a', window: 0, pane: 0 } },
-              second: { type: 'leaf', ref: { owner: 'me', session: 'b', window: 0, pane: 0 } },
+              first: { type: 'leaf', ref: 'me/a:0.0' },
+              second: { type: 'leaf', ref: 'me/b:0.0' },
             },
           },
         }),
@@ -153,5 +153,73 @@ describe('useV2State', () => {
     expect(result.current.state.catalog).toBe(catalogBefore)
     expect(result.current.state.workspace).toBe(workspaceBefore)
     expect(result.current.paneTree).toBe(paneTreeBefore)
+  })
+
+  it('surfaces a remote peer catalog from bootstrap, keeps it separate from local, and removes it on catalog_owner_removed', async () => {
+    vi.mocked(fetch).mockReset()
+    vi.mocked(fetch).mockResolvedValueOnce(
+      okResponse({
+        owner: 'me',
+        revision: 1,
+        local: {
+          owner: 'me',
+          revision: 1,
+          sessions: [{ ref: 'me/local-1:0.0', owner: 'me', phase: 'active' }],
+          layouts: [],
+        },
+        remote: [
+          {
+            owner: 'peer-b',
+            revision: 9,
+            sessions: [{ ref: 'peer-b/remote-1:0.0', owner: 'peer-b', phase: 'active' }],
+          },
+        ],
+        hosts: [],
+        pending: [],
+      }),
+    )
+
+    const { result } = renderHook(() => useV2State({ enabled: true }))
+    await waitFor(() => expect(result.current.state.catalog.sessionsByRef.size).toBe(2))
+
+    // Bootstrap surfaced both the local and the remote peer's session, each
+    // still keyed by its own ref.
+    expect(result.current.state.catalog.sessionsByRef.has('me/local-1:0.0')).toBe(true)
+    expect(result.current.state.catalog.sessionsByRef.has('peer-b/remote-1:0.0')).toBe(true)
+    expect(result.current.state.catalog.localOwner).toBe('me')
+
+    const socket = FakeSocket.instances[FakeSocket.instances.length - 1]
+
+    // A live update to the remote owner's catalog must not touch the local
+    // session.
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'catalog_snapshot',
+          snapshot: {
+            owner: 'peer-b',
+            revision: 10,
+            sessions: [
+              { ref: 'peer-b/remote-1:0.0', owner: 'peer-b', phase: 'active' },
+              { ref: 'peer-b/remote-2:0.0', owner: 'peer-b', phase: 'active' },
+            ],
+          },
+          is_local: false,
+        }),
+      } as MessageEvent)
+    })
+    await waitFor(() => expect(result.current.state.catalog.sessionsByRef.size).toBe(3))
+    expect(result.current.state.catalog.sessionsByRef.has('me/local-1:0.0')).toBe(true)
+
+    // An explicit removal signal for the remote owner drops ONLY that
+    // owner's sessions -- the local session is unaffected.
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'catalog_owner_removed', owner: 'peer-b' }),
+      } as MessageEvent)
+    })
+    await waitFor(() => expect(result.current.state.catalog.sessionsByRef.size).toBe(1))
+    expect(result.current.state.catalog.sessionsByRef.has('me/local-1:0.0')).toBe(true)
+    expect(result.current.state.catalog.sessionsByRef.has('peer-b/remote-1:0.0')).toBe(false)
   })
 })

@@ -131,7 +131,10 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *gr
 			}).Debug("received tool event via API")
 
 			opts.Tracker.Record(&evt)
-			if opts.StateMgr != nil {
+			// In v2 mode, session metadata enrichment happens via the v2
+			// runtime enricher (v2RuntimeEnricher); writing into the legacy
+			// StateMgr here would be a shadow write.
+			if opts.StateMgr != nil && opts.V2CommandSvc == nil {
 				opts.StateMgr.UpdateSessionMetadataFromEvent(&evt)
 			}
 			w.WriteHeader(http.StatusNoContent)

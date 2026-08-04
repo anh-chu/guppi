@@ -44,11 +44,19 @@ export type PendingRemoteCreateRecord = {
 // v2BootstrapResponse mirrors server.v2BootstrapResponse. hosts is left
 // unopinionated (interface{} server-side); callers should treat it as
 // opaque unless/until a typed host contract is frozen.
+//
+// Local carries this node's own owner-authoritative catalog; Remote carries
+// the latest cached catalog for every peer this node currently has a
+// snapshot for (may be empty/absent). Each entry's revision is independent
+// -- never conflated across owners. A remote owner absent from Remote on a
+// fresh bootstrap read simply is not currently known (offline, or never
+// connected); the LIVE stream (see CatalogOwnerRemovedMessage below) is what
+// carries an explicit removal signal distinct from silence.
 export type V2BootstrapResponse = {
   owner: OwnerID
   revision: number
-  sessions: LocalSessionRecord[]
-  layouts: LayoutRecord[]
+  local: OwnerCatalogSnapshot
+  remote?: OwnerCatalogSnapshot[]
   hosts: unknown
   workspace?: WorkspaceRecord
   presentations?: PresentationRecord[]
@@ -56,9 +64,22 @@ export type V2BootstrapResponse = {
   pending_remote?: PendingRemoteCreateRecord[]
 }
 
+// CatalogSnapshotMessage carries one owner's complete catalog. is_local
+// tells the browser whether snapshot.owner is this node's own owner (true)
+// or a cached remote peer's owner (false) -- carried explicitly rather than
+// inferred from message order.
 export type CatalogSnapshotMessage = {
   type: 'catalog_snapshot'
   snapshot: OwnerCatalogSnapshot
+  is_local: boolean
+}
+
+// CatalogOwnerRemovedMessage is an explicit removal signal for a remote
+// owner's catalog (e.g. the peer disconnected and was forgotten). Never sent
+// for the local owner.
+export type CatalogOwnerRemovedMessage = {
+  type: 'catalog_owner_removed'
+  owner: OwnerID
 }
 
 export type WorkspaceSnapshotMessage = {
@@ -66,12 +87,15 @@ export type WorkspaceSnapshotMessage = {
   workspace: WorkspaceRecord
 }
 
-export type V2StateStreamMessage = CatalogSnapshotMessage | WorkspaceSnapshotMessage
+export type V2StateStreamMessage =
+  | CatalogSnapshotMessage
+  | CatalogOwnerRemovedMessage
+  | WorkspaceSnapshotMessage
 
 export function isV2StateStreamMessage(v: unknown): v is V2StateStreamMessage {
   if (typeof v !== 'object' || v === null) return false
   const t = (v as { type?: unknown }).type
-  return t === 'catalog_snapshot' || t === 'workspace_snapshot'
+  return t === 'catalog_snapshot' || t === 'catalog_owner_removed' || t === 'workspace_snapshot'
 }
 
 export type V2ErrorResponse = {

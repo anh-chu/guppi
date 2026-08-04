@@ -92,8 +92,17 @@ func (h *Hub) SetActivityTracker(at *activity.Tracker, peerActivity ActivitySour
 // Run starts broadcasting state events and tool events to connected clients.
 // Blocks until ctx is cancelled or its subscriptions are closed.
 func (h *Hub) Run(ctx context.Context) {
-	stateCh := h.stateMgr.Subscribe()
-	defer h.stateMgr.Unsubscribe(stateCh)
+	// In v2 mode the legacy state.Manager is a neutered shim that receives no
+	// real writes (see the v2-mode gating throughout pkg/commands/server and
+	// pkg/peer); subscribing to it and rebroadcasting its (empty) events to
+	// /ws/events clients would just be shadow-mode noise. Leave stateCh nil
+	// so its select case below never fires. Tool-event and activity
+	// broadcasts on this same hub are unaffected.
+	var stateCh chan state.StateEvent
+	if h.stateMgr.V2Catalog() == nil {
+		stateCh = h.stateMgr.Subscribe()
+		defer h.stateMgr.Unsubscribe(stateCh)
+	}
 
 	toolCh := h.tracker.Subscribe()
 	defer h.tracker.Unsubscribe(toolCh)

@@ -2,8 +2,11 @@ import { describe, it, expect } from 'vitest'
 import {
   V2Store,
   initialV2StoreState,
+  removeOwnerCatalog,
   replaceCatalog,
   replaceWorkspace,
+  selectIsLocalOwner,
+  selectRemoteOwners,
   selectSessionByRef,
   selectSessionsByLifecycle,
   selectPresentation,
@@ -73,7 +76,7 @@ describe('replaceCatalog', () => {
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(5, [session('a')]), 1)
     const { state: s2, diff } = replaceCatalog(s1, catalogSnapshot(3, [session('a'), session('b')]), 1)
     expect(s2).toBe(s1) // unchanged
-    expect(s2.catalog.revision).toBe(5)
+    expect(s2.catalog.ownerMeta.get(owner)?.revision).toBe(5)
     expect(diff.removed).toEqual([])
     expect(diff.generationChanged).toBe(false)
   })
@@ -82,7 +85,7 @@ describe('replaceCatalog', () => {
     const s0 = initialV2StoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(50, [session('a')]), 1)
     const { state: s2, diff } = replaceCatalog(s1, catalogSnapshot(1, [session('b')]), 2)
-    expect(s2.catalog.revision).toBe(1)
+    expect(s2.catalog.ownerMeta.get(owner)?.revision).toBe(1)
     expect(selectSessionByRef(s2.catalog, ref('b'))).toBeDefined()
     expect(selectSessionByRef(s2.catalog, ref('a'))).toBeUndefined()
     expect(diff.generationChanged).toBe(true)
@@ -129,6 +132,82 @@ describe('replaceWorkspace', () => {
     const { state: s3 } = replaceWorkspace(s1, workspaceRecord('L1', 1), 2, [pres('b', true)])
     expect(s3.workspace.revision).toBe(1)
     expect(selectPresentation(s3.workspace, ref('b'))).toBeDefined()
+  })
+})
+
+describe('multi-owner catalog (local + remote peers)', () => {
+  const remoteOwner = 'owner2'
+  function remoteRef(session: string): SessionRef {
+    return { owner: remoteOwner, session, window: 0, pane: 0 }
+  }
+  function remoteSession(s: string): LocalSessionRecord {
+    return {
+      id: s,
+      owner: remoteOwner,
+      ref: remoteRef(s),
+      phase: 'active',
+      desired: 'run',
+      revision: 1,
+      created_at: '2025-01-01T00:00:00Z',
+    }
+  }
+
+  it('keeps local and remote owners in separate, independently-revisioned slices of one flat session map', () => {
+    const s0 = initialV2StoreState()
+    const { state: s1 } = replaceCatalog(s0, catalogSnapshot(1, [session('a')]), 1, true)
+    const { state: s2 } = replaceCatalog(
+      s1,
+      { owner: remoteOwner, revision: 99, sessions: [remoteSession('r1')] },
+      1,
+      false,
+    )
+
+    // Both owners' sessions coexist in the same flat map.
+    expect(selectSessionByRef(s2.catalog, ref('a'))).toBeDefined()
+    expect(selectSessionByRef(s2.catalog, remoteRef('r1'))).toBeDefined()
+
+    // Local/remote identity is queryable and distinguishable.
+    expect(selectIsLocalOwner(s2.catalog, owner)).toBe(true)
+    expect(selectIsLocalOwner(s2.catalog, remoteOwner)).toBe(false)
+    expect(selectRemoteOwners(s2.catalog)).toEqual([remoteOwner])
+
+    // Each owner's revision is tracked independently -- the remote owner's
+    // revision (99) is far ahead of the local owner's (1) and neither
+    // overwrites the other.
+    expect(s2.catalog.ownerMeta.get(owner)?.revision).toBe(1)
+    expect(s2.catalog.ownerMeta.get(remoteOwner)?.revision).toBe(99)
+
+    // Updating the LOCAL owner's catalog must never touch the remote
+    // owner's sessions.
+    const { state: s3 } = replaceCatalog(s2, catalogSnapshot(2, [session('a'), session('b')]), 1, true)
+    expect(selectSessionByRef(s3.catalog, remoteRef('r1'))).toBeDefined()
+    expect(selectSessionByRef(s3.catalog, ref('b'))).toBeDefined()
+  })
+
+  it('removeOwnerCatalog is an explicit removal of one remote owner only, distinct from silence', () => {
+    const s0 = initialV2StoreState()
+    const { state: s1 } = replaceCatalog(s0, catalogSnapshot(1, [session('a')]), 1, true)
+    const { state: s2 } = replaceCatalog(
+      s1,
+      { owner: remoteOwner, revision: 1, sessions: [remoteSession('r1')] },
+      1,
+      false,
+    )
+    expect(selectRemoteOwners(s2.catalog)).toEqual([remoteOwner])
+
+    const { state: s3, diff } = removeOwnerCatalog(s2, remoteOwner)
+    expect(selectRemoteOwners(s3.catalog)).toEqual([])
+    expect(selectSessionByRef(s3.catalog, remoteRef('r1'))).toBeUndefined()
+    expect(diff.removed).toEqual([expect.stringContaining('r1')])
+    // The local owner's session is completely unaffected by a remote removal.
+    expect(selectSessionByRef(s3.catalog, ref('a'))).toBeDefined()
+  })
+
+  it('removeOwnerCatalog on an unknown owner is a no-op (same state reference)', () => {
+    const s0 = initialV2StoreState()
+    const { state: s1, diff } = removeOwnerCatalog(s0, remoteOwner)
+    expect(s1).toBe(s0)
+    expect(diff.removed).toEqual([])
   })
 })
 

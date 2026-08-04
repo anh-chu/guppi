@@ -262,6 +262,12 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 			logrus.WithError(err).Warn("failed to load remote catalog cache")
 		}
 	}
+	if rt.v2StateStream != nil {
+		// Multi-node: stream cached remote-owner catalogs (peer.Manager's
+		// already-validated remoteCatalogs cache) to the browser alongside
+		// this node's own local catalog.
+		rt.v2StateStream.AttachRemoteCatalogSource(rt.peerMgr)
+	}
 	rt.detector.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.silenceMonitor.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.reconciler.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
@@ -608,6 +614,15 @@ func (rt *Runtime) Options() *server.Options {
 // pushes it to the state manager. It is a narrow helper for the launch service
 // and recovery callbacks.
 func (rt *Runtime) refreshSessionsFunc() {
+	// In v2 mode, writing session snapshots into the legacy state.Manager is a
+	// shadow write: v2 mode has its own reconciler/catalog as the single
+	// source of truth. Callers (sessionlaunch.Service.Refresh, WS teardown
+	// paths, recover/rename handlers) invoke this unconditionally today, so
+	// the no-op guard must live here, not just at the periodic-refresh call
+	// site (refreshDaemonState).
+	if rt.v2Mode {
+		return
+	}
 	rt.refreshSessions(rt.adapter.List())
 }
 

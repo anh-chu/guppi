@@ -40,7 +40,7 @@ describe('StateStreamClient', () => {
     const onWorkspace = vi.fn()
     const client = new StateStreamClient({
       url: 'ws://x',
-      callbacks: { onCatalog, onWorkspace },
+      callbacks: { onCatalog, onCatalogRemoved: vi.fn(), onWorkspace },
       createSocket: () => {
         const s = new FakeSocket()
         sockets.push(s)
@@ -51,12 +51,42 @@ describe('StateStreamClient', () => {
     })
     client.start()
     sockets[0].open()
-    sockets[0].message({ type: 'catalog_snapshot', snapshot: { owner: 'o', revision: 1, sessions: [] } })
-    sockets[0].message({ type: 'workspace_snapshot', workspace: { id: 'L1', owner: 'o', revision: 1, tree: { type: 'leaf', ref: { owner: 'o', session: 's', window: 0, pane: 0 } } } })
+    sockets[0].message({ type: 'catalog_snapshot', snapshot: { owner: 'o', revision: 1, sessions: [] }, is_local: true })
+    sockets[0].message({ type: 'workspace_snapshot', workspace: { id: 'L1', owner: 'o', revision: 1, tree: { type: 'leaf', ref: 'o/s:0.0' } } })
 
     expect(onCatalog).toHaveBeenCalledTimes(1)
     expect(onWorkspace).toHaveBeenCalledTimes(1)
     expect(onCatalog.mock.calls[0][1]).toBe(client.currentGeneration())
+    expect(onCatalog.mock.calls[0][2]).toBe(true) // is_local
+    client.dispose()
+  })
+
+  it('tags a remote-owner snapshot is_local=false and dispatches catalog_owner_removed separately', () => {
+    const sockets: FakeSocket[] = []
+    const onCatalog = vi.fn()
+    const onCatalogRemoved = vi.fn()
+    const client = new StateStreamClient({
+      url: 'ws://x',
+      callbacks: { onCatalog, onCatalogRemoved, onWorkspace: vi.fn() },
+      createSocket: () => {
+        const s = new FakeSocket()
+        sockets.push(s)
+        return s as unknown as WebSocket
+      },
+      isDocumentHidden: () => false,
+      addVisibilityListener: () => () => {},
+    })
+    client.start()
+    sockets[0].open()
+    sockets[0].message({ type: 'catalog_snapshot', snapshot: { owner: 'peer-b', revision: 1, sessions: [] }, is_local: false })
+    expect(onCatalog).toHaveBeenCalledTimes(1)
+    expect(onCatalog.mock.calls[0][0].owner).toBe('peer-b')
+    expect(onCatalog.mock.calls[0][2]).toBe(false) // is_local
+
+    sockets[0].message({ type: 'catalog_owner_removed', owner: 'peer-b' })
+    expect(onCatalogRemoved).toHaveBeenCalledTimes(1)
+    expect(onCatalogRemoved.mock.calls[0][0]).toBe('peer-b')
+    expect(onCatalogRemoved.mock.calls[0][1]).toBe(client.currentGeneration())
     client.dispose()
   })
 
@@ -66,7 +96,7 @@ describe('StateStreamClient', () => {
     const onCatalog = vi.fn()
     const client = new StateStreamClient({
       url: 'ws://x',
-      callbacks: { onCatalog, onWorkspace: vi.fn() },
+      callbacks: { onCatalog, onCatalogRemoved: vi.fn(), onWorkspace: vi.fn() },
       createSocket: () => {
         const s = new FakeSocket()
         sockets.push(s)
@@ -104,7 +134,7 @@ describe('StateStreamClient', () => {
     const onConnectionChange = vi.fn()
     const client = new StateStreamClient({
       url: 'ws://x',
-      callbacks: { onCatalog: vi.fn(), onWorkspace: vi.fn(), onConnectionChange },
+      callbacks: { onCatalog: vi.fn(), onCatalogRemoved: vi.fn(), onWorkspace: vi.fn(), onConnectionChange },
       createSocket: () => {
         const s = new FakeSocket()
         sockets.push(s)
@@ -131,7 +161,7 @@ describe('StateStreamClient', () => {
     let hidden = false
     const client = new StateStreamClient({
       url: 'ws://x',
-      callbacks: { onCatalog: vi.fn(), onWorkspace: vi.fn() },
+      callbacks: { onCatalog: vi.fn(), onCatalogRemoved: vi.fn(), onWorkspace: vi.fn() },
       createSocket: () => {
         const s = new FakeSocket()
         sockets.push(s)

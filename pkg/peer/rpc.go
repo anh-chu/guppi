@@ -20,10 +20,16 @@ var ErrCommandQueueFull = errors.New("peer command queue full")
 // in time.
 var ErrCommandTimeout = errors.New("peer command timeout")
 
-// commandWaiter is a pending command RPC awaiting its reply.
+// commandWaiter is a pending command RPC awaiting its reply. It is keyed by
+// command ID but also records the peer identity and connection it was
+// registered against, so a reply arriving from a different peer or a
+// superseded connection (e.g. one attacker-controlled peer guessing another
+// peer's in-flight CommandID) cannot satisfy it.
 type commandWaiter struct {
-	id   string
-	done chan commandResult
+	id     string
+	peerID string
+	conn   *PeerConnection
+	done   chan commandResult
 }
 
 type commandResult struct {
@@ -200,7 +206,7 @@ func (m *Manager) SendCommand(ctx context.Context, peerID string, cmd state.Sess
 
 	// Register waiter first to avoid lost-reply races.
 	done := make(chan commandResult, 1)
-	m.registerCommandWaiter(reqPayload.ID, done)
+	m.registerCommandWaiter(reqPayload.ID, peerID, pc, done)
 	defer m.unregisterCommandWaiter(reqPayload.ID)
 
 	if !pc.enqueueCommand(reqPayload) {
@@ -261,7 +267,7 @@ func (m *Manager) SendWorkspaceCommand(ctx context.Context, peerID string, cmd s
 	}
 
 	done := make(chan commandResult, 1)
-	m.registerCommandWaiter(reqPayload.ID, done)
+	m.registerCommandWaiter(reqPayload.ID, peerID, pc, done)
 	defer m.unregisterCommandWaiter(reqPayload.ID)
 
 	if !pc.enqueueCommand(reqPayload) {
@@ -319,7 +325,7 @@ func (m *Manager) SendRemoteCreate(ctx context.Context, peerID string, req state
 	}
 
 	done := make(chan commandResult, 1)
-	m.registerCommandWaiter(reqPayload.ID, done)
+	m.registerCommandWaiter(reqPayload.ID, peerID, pc, done)
 	defer m.unregisterCommandWaiter(reqPayload.ID)
 
 	if !pc.enqueueCommand(reqPayload) {
@@ -361,13 +367,13 @@ func buildV2RemoteCreateRequest(req state.RemoteCreateRequest) (*V2CommandReques
 	}, nil
 }
 
-func (m *Manager) registerCommandWaiter(id string, done chan commandResult) {
+func (m *Manager) registerCommandWaiter(id, peerID string, conn *PeerConnection, done chan commandResult) {
 	m.cmdMu.Lock()
 	defer m.cmdMu.Unlock()
 	if m.commandWaiters == nil {
 		m.commandWaiters = make(map[string]*commandWaiter)
 	}
-	m.commandWaiters[id] = &commandWaiter{id: id, done: done}
+	m.commandWaiters[id] = &commandWaiter{id: id, peerID: peerID, conn: conn, done: done}
 }
 
 func (m *Manager) unregisterCommandWaiter(id string) {
@@ -376,13 +382,26 @@ func (m *Manager) unregisterCommandWaiter(id string) {
 	delete(m.commandWaiters, id)
 }
 
-// deliverCommandReply routes a v2 command reply to its waiter. It returns
-// true if a waiter was found.
-func (m *Manager) deliverCommandReply(reply V2CommandReplyPayload) bool {
+// deliverCommandReply routes a v2 command reply to its waiter. peerID and conn
+// identify the authenticated connection the reply arrived on; the reply is
+// only delivered if it matches the peer identity and connection the waiter
+// was registered against, so a different (or reconnected) peer cannot
+// satisfy another peer's in-flight waiter by guessing or replaying a
+// CommandID. It returns true if a waiter was found and the reply was
+// delivered to it.
+func (m *Manager) deliverCommandReply(peerID string, conn *PeerConnection, reply V2CommandReplyPayload) bool {
 	m.cmdMu.Lock()
 	w, ok := m.commandWaiters[reply.ID]
 	m.cmdMu.Unlock()
 	if !ok {
+		return false
+	}
+	if w.peerID != peerID || w.conn != conn {
+		logrus.WithFields(logrus.Fields{
+			"command_id":  reply.ID,
+			"waiter_peer": w.peerID,
+			"reply_peer":  peerID,
+		}).Warn("dropping v2 command reply: peer/connection identity mismatch")
 		return false
 	}
 	select {

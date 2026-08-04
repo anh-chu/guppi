@@ -150,3 +150,76 @@ func TestIDRejectsPathSeparator(t *testing.T) {
 		}
 	}
 }
+
+// sessionRefFixtureCase mirrors one entry of testdata/session_ref_fixtures.json,
+// the cross-language golden fixture also read by
+// web/src/state/v2/wireCodec.test.ts. Both sides must agree that this exact
+// wire string is what MarshalJSON produces (Go) / encodeSessionRef produces
+// (TS), and that UnmarshalJSON (Go) / decodeSessionRef (TS) parses it back to
+// this exact decoded shape. This is the test that would have caught the
+// object-vs-string SessionRef wire mismatch bug.
+type sessionRefFixtureCase struct {
+	Name    string `json:"name"`
+	Wire    string `json:"wire"`
+	Decoded struct {
+		Owner   *string `json:"owner"`
+		Session string  `json:"session"`
+		Window  uint16  `json:"window"`
+		Pane    uint16  `json:"pane"`
+	} `json:"decoded"`
+}
+
+type sessionRefFixtureFile struct {
+	Cases []sessionRefFixtureCase `json:"cases"`
+}
+
+func loadSessionRefFixtures(t *testing.T) sessionRefFixtureFile {
+	t.Helper()
+	data, err := os.ReadFile("../../testdata/session_ref_fixtures.json")
+	if err != nil {
+		t.Fatalf("read session_ref_fixtures.json: %v", err)
+	}
+	var f sessionRefFixtureFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		t.Fatalf("parse session_ref_fixtures.json: %v", err)
+	}
+	return f
+}
+
+func TestSessionRefGoldenFixture(t *testing.T) {
+	f := loadSessionRefFixtures(t)
+	if len(f.Cases) == 0 {
+		t.Fatal("no fixture cases loaded")
+	}
+	for _, c := range f.Cases {
+		c := c
+		t.Run(c.Name, func(t *testing.T) {
+			want := SessionRef{
+				Session: SessionID(c.Decoded.Session),
+				Window:  c.Decoded.Window,
+				Pane:    c.Decoded.Pane,
+			}
+			if c.Decoded.Owner != nil {
+				want.Owner = OwnerID(*c.Decoded.Owner)
+			}
+
+			// UnmarshalJSON of the wire string must produce the decoded shape.
+			var got SessionRef
+			if err := json.Unmarshal([]byte(`"`+c.Wire+`"`), &got); err != nil {
+				t.Fatalf("unmarshal %q: %v", c.Wire, err)
+			}
+			if got != want {
+				t.Errorf("unmarshal(%q) = %+v, want %+v", c.Wire, got, want)
+			}
+
+			// MarshalJSON of the decoded shape must produce exactly the wire string.
+			data, err := json.Marshal(want)
+			if err != nil {
+				t.Fatalf("marshal %+v: %v", want, err)
+			}
+			if string(data) != `"`+c.Wire+`"` {
+				t.Errorf("marshal(%+v) = %s, want %q", want, data, c.Wire)
+			}
+		})
+	}
+}

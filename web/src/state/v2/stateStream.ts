@@ -17,10 +17,18 @@
  */
 
 import { isV2StateStreamMessage } from './wireTypes'
-import type { OwnerCatalogSnapshot, WorkspaceRecord } from './types'
+import {
+  decodeCatalogOwnerRemovedMessage,
+  decodeCatalogSnapshotMessage,
+  decodeWorkspaceSnapshotMessage,
+} from './wireCodec'
+import type { OwnerCatalogSnapshot, OwnerID, WorkspaceRecord } from './types'
 
 export type StateStreamCallbacks = {
-  onCatalog: (snapshot: OwnerCatalogSnapshot, generation: number) => void
+  onCatalog: (snapshot: OwnerCatalogSnapshot, generation: number, isLocal: boolean) => void
+  // Explicit removal signal for a remote owner's catalog (peer forgotten /
+  // disconnected). Never fired for the local owner.
+  onCatalogRemoved: (owner: OwnerID, generation: number) => void
   onWorkspace: (snapshot: WorkspaceRecord, generation: number) => void
   // Called whenever the socket transitions open/closed. `generation` is the
   // generation this transition belongs to; callers should ignore it if it
@@ -172,10 +180,19 @@ export class StateStreamClient {
     }
     if (!isV2StateStreamMessage(parsed)) return
     if (this.generation !== generation) return
-    if (parsed.type === 'catalog_snapshot') {
-      this.opts.callbacks.onCatalog(parsed.snapshot, generation)
-    } else if (parsed.type === 'workspace_snapshot') {
-      this.opts.callbacks.onWorkspace(parsed.workspace, generation)
+    try {
+      if (parsed.type === 'catalog_snapshot') {
+        const decoded = decodeCatalogSnapshotMessage(parsed)
+        this.opts.callbacks.onCatalog(decoded.snapshot, generation, decoded.is_local)
+      } else if (parsed.type === 'catalog_owner_removed') {
+        const decoded = decodeCatalogOwnerRemovedMessage(parsed)
+        this.opts.callbacks.onCatalogRemoved(decoded.owner, generation)
+      } else if (parsed.type === 'workspace_snapshot') {
+        const decoded = decodeWorkspaceSnapshotMessage(parsed)
+        this.opts.callbacks.onWorkspace(decoded.workspace, generation)
+      }
+    } catch (err) {
+      this.opts.callbacks.onError?.(err)
     }
   }
 

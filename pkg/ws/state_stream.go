@@ -3,6 +3,7 @@ package ws
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -11,6 +12,25 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/state"
 )
+
+// localCatalogSlotKey is the fixed slot key for this node's own catalog.
+const localCatalogSlotKey = "local"
+
+// remoteCatalogSlotKey returns the per-remote-owner slot key so each peer's
+// catalog coalesces independently of every other owner's.
+func remoteCatalogSlotKey(owner state.OwnerID) string {
+	return "remote:" + string(owner)
+}
+
+// RemoteCatalogNotifier is implemented by pkg/peer.Manager. It supplies the
+// cached remote-owner catalogs for a client's initial connect burst and
+// notifies on every subsequent update or explicit removal (peer forgotten /
+// disconnected). StateStreamHub only reads from it; it performs no
+// validation or storage of its own.
+type RemoteCatalogNotifier interface {
+	state.RemoteCatalogSource
+	SubscribeRemoteCatalogs(fn func(owner state.OwnerID, snap state.OwnerCatalogSnapshot, removed bool)) func()
+}
 
 var stateStreamUpgrader = websocket.Upgrader{
 	CheckOrigin:     CheckSameOrigin,
@@ -33,17 +53,22 @@ type encodedSnapshot struct {
 	bytes    []byte
 }
 
-// stateStreamClient holds at most one pending catalog snapshot and one
-// pending workspace snapshot, coalesced by revision, and drains them from a
-// single writer goroutine. A later publish with a lower-or-equal revision is
-// dropped, so a slow client never accumulates backlog and can never block the
-// publisher or any other client.
+// stateStreamClient holds at most one pending snapshot per catalog slot
+// (the local owner plus one slot per remote owner it has seen) and one
+// pending workspace snapshot, each coalesced independently by a
+// monotonically increasing sequence number, and drains them from a single
+// writer goroutine. A later publish to a slot with a lower-or-equal sequence
+// is dropped, so a slow client never accumulates backlog and can never block
+// the publisher or any other client. Sequence numbers are hub-assigned and
+// global (not the domain revision), so they remain strictly comparable even
+// though different owners' catalog revisions are never conflated with each
+// other.
 type stateStreamClient struct {
 	conn *websocket.Conn
 
-	mu        sync.Mutex
-	catalog   *encodedSnapshot
-	workspace *encodedSnapshot
+	mu           sync.Mutex
+	catalogSlots map[string]*encodedSnapshot
+	workspace    *encodedSnapshot
 
 	signal chan struct{}
 	// done is closed exactly once by close(). It is only ever closed, never
@@ -65,17 +90,40 @@ type stateStreamClient struct {
 
 func newStateStreamClient(conn *websocket.Conn, metrics *StateStreamMetrics) *stateStreamClient {
 	c := &stateStreamClient{
-		conn:    conn,
-		signal:  make(chan struct{}, 1),
-		done:    make(chan struct{}),
-		metrics: metrics,
+		conn:         conn,
+		catalogSlots: make(map[string]*encodedSnapshot),
+		signal:       make(chan struct{}, 1),
+		done:         make(chan struct{}),
+		metrics:      metrics,
 	}
 	go c.writeLoop()
 	return c
 }
 
-func (c *stateStreamClient) publishCatalog(rev int64, encoded []byte) {
-	c.enqueue(&c.catalog, rev, encoded)
+// publishCatalogKeyed enqueues a catalog-related message (a snapshot for key,
+// or an owner-removal message) into the per-key slot. seq must be strictly
+// increasing across ALL calls for a given key (callers use a hub-wide
+// monotonic counter) so a removal always supersedes an older snapshot and
+// vice versa.
+func (c *stateStreamClient) publishCatalogKeyed(key string, seq int64, encoded []byte) {
+	if c.closed.Load() {
+		return
+	}
+	c.mu.Lock()
+	cur := c.catalogSlots[key]
+	if cur != nil && seq <= cur.revision {
+		c.mu.Unlock()
+		if c.metrics != nil {
+			atomic.AddInt64(&c.metrics.CoalescedSnapshots, 1)
+		}
+		return
+	}
+	if cur != nil && c.metrics != nil {
+		atomic.AddInt64(&c.metrics.CoalescedSnapshots, 1)
+	}
+	c.catalogSlots[key] = &encodedSnapshot{revision: seq, bytes: encoded}
+	c.mu.Unlock()
+	c.wake()
 }
 
 func (c *stateStreamClient) publishWorkspace(rev int64, encoded []byte) {
@@ -130,14 +178,24 @@ func (c *stateStreamClient) writeLoop() {
 				}
 			}
 			c.mu.Lock()
-			cat := c.catalog
-			c.catalog = nil
+			pending := c.catalogSlots
+			c.catalogSlots = make(map[string]*encodedSnapshot, len(pending))
 			wsSnap := c.workspace
 			c.workspace = nil
 			c.mu.Unlock()
 
-			if cat != nil && !c.write(cat.bytes) {
-				return
+			// Drain catalog slots in a deterministic (sorted-key) order so the
+			// local snapshot -- key "local" sorts before any "remote:..." key --
+			// is always written before remote-owner snapshots in the same burst.
+			keys := make([]string, 0, len(pending))
+			for k := range pending {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				if !c.write(pending[k].bytes) {
+					return
+				}
 			}
 			if wsSnap != nil && !c.write(wsSnap.bytes) {
 				return
@@ -171,9 +229,27 @@ func (c *stateStreamClient) close() {
 	}
 }
 
+// catalogSnapshotMessage carries one owner's complete catalog. IsLocal tells
+// the browser whether Snapshot.Owner is this node's own owner (true) or a
+// cached remote peer's owner (false) -- carried explicitly on the envelope
+// rather than inferred from message order, since a client's own local
+// snapshot and any remote snapshots are otherwise indistinguishable on the
+// wire.
 type catalogSnapshotMessage struct {
 	Type     string                     `json:"type"`
 	Snapshot state.OwnerCatalogSnapshot `json:"snapshot"`
+	IsLocal  bool                       `json:"is_local"`
+}
+
+// catalogOwnerRemovedMessage is an explicit removal signal for a remote
+// owner's catalog -- e.g. the peer disconnected and its cache was forgotten.
+// This is never sent for the local owner (this node's own catalog is never
+// "removed"). A missing owner in a later bootstrap read is an equivalent
+// signal for a fresh page load; this message exists so a LIVE connection
+// does not have to distinguish "peer went offline" from ordinary silence.
+type catalogOwnerRemovedMessage struct {
+	Type  string        `json:"type"`
+	Owner state.OwnerID `json:"owner"`
 }
 
 type workspaceSnapshotMessage struct {
@@ -195,17 +271,33 @@ type StateStreamHub struct {
 	// or it returns "", the first known layout is used.
 	primaryLayout func() state.LayoutID
 
+	// remoteSource supplies cached remote-owner catalogs, if this node has a
+	// peer manager wired up (see AttachRemoteCatalogSource). Nil on a
+	// single-node deployment, in which case only the local catalog streams --
+	// unchanged from pre-multi-node behavior.
+	remoteSource RemoteCatalogNotifier
+	// catalogSeq is a hub-wide monotonic counter assigned to every emitted
+	// catalog-related message (local or remote, snapshot or removal). It is
+	// intentionally NOT the domain revision -- different owners' revisions
+	// are independent and never compared to each other -- it only orders
+	// per-client per-key coalescing (see stateStreamClient).
+	catalogSeq atomic.Int64
+
 	mu      sync.RWMutex
 	clients map[*stateStreamClient]struct{}
 
 	unsubscribeCatalog   func()
 	unsubscribeWorkspace func()
+	unsubscribeRemote    func()
 
 	Metrics StateStreamMetrics
 }
 
 // NewStateStreamHub creates a hub bound to one catalog and subscribes to its
-// catalog/workspace publication streams immediately.
+// catalog/workspace publication streams immediately. Call
+// AttachRemoteCatalogSource separately to also stream cached remote-owner
+// catalogs (multi-node); a hub with no remote source behaves exactly as a
+// single-node hub always has.
 func NewStateStreamHub(catalog *state.Catalog, primaryLayout func() state.LayoutID) *StateStreamHub {
 	h := &StateStreamHub{
 		catalog:       catalog,
@@ -217,6 +309,20 @@ func NewStateStreamHub(catalog *state.Catalog, primaryLayout func() state.Layout
 	return h
 }
 
+// AttachRemoteCatalogSource wires source (typically a *peer.Manager) so
+// every connected and future client also receives every cached remote-owner
+// catalog, kept live via source's own update/removal notifications. Safe to
+// call at most once; a nil source is a no-op.
+func (h *StateStreamHub) AttachRemoteCatalogSource(source RemoteCatalogNotifier) {
+	if source == nil {
+		return
+	}
+	h.mu.Lock()
+	h.remoteSource = source
+	h.mu.Unlock()
+	h.unsubscribeRemote = source.SubscribeRemoteCatalogs(h.onRemoteCatalog)
+}
+
 // Close unsubscribes from the catalog. Connected clients are left to
 // disconnect naturally when their underlying connection closes.
 func (h *StateStreamHub) Close() {
@@ -225,6 +331,9 @@ func (h *StateStreamHub) Close() {
 	}
 	if h.unsubscribeWorkspace != nil {
 		h.unsubscribeWorkspace()
+	}
+	if h.unsubscribeRemote != nil {
+		h.unsubscribeRemote()
 	}
 }
 
@@ -241,15 +350,41 @@ func (h *StateStreamHub) setTestWaitBeforeDrain(gate chan struct{}) {
 }
 
 func (h *StateStreamHub) onCatalog(snap state.OwnerCatalogSnapshot) {
-	encoded, err := json.Marshal(catalogSnapshotMessage{Type: "catalog_snapshot", Snapshot: snap})
+	encoded, err := json.Marshal(catalogSnapshotMessage{Type: "catalog_snapshot", Snapshot: snap, IsLocal: true})
 	if err != nil {
 		logrus.WithError(err).Warn("v2 state stream: failed to encode catalog snapshot")
 		return
 	}
+	seq := h.catalogSeq.Add(1)
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for c := range h.clients {
-		c.publishCatalog(snap.Revision, encoded)
+		c.publishCatalogKeyed(localCatalogSlotKey, seq, encoded)
+	}
+}
+
+// onRemoteCatalog fans out an update to (removed=false) or removal of
+// (removed=true) one remote owner's cached catalog to every connected
+// client. It is registered with remoteSource via AttachRemoteCatalogSource
+// and never touches the local catalog slot.
+func (h *StateStreamHub) onRemoteCatalog(owner state.OwnerID, snap state.OwnerCatalogSnapshot, removed bool) {
+	var encoded []byte
+	var err error
+	if removed {
+		encoded, err = json.Marshal(catalogOwnerRemovedMessage{Type: "catalog_owner_removed", Owner: owner})
+	} else {
+		encoded, err = json.Marshal(catalogSnapshotMessage{Type: "catalog_snapshot", Snapshot: snap, IsLocal: false})
+	}
+	if err != nil {
+		logrus.WithError(err).Warn("v2 state stream: failed to encode remote catalog message")
+		return
+	}
+	seq := h.catalogSeq.Add(1)
+	key := remoteCatalogSlotKey(owner)
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		c.publishCatalogKeyed(key, seq, encoded)
 	}
 }
 
@@ -303,8 +438,18 @@ func (h *StateStreamHub) HandleState(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt64(&h.Metrics.ConnectedClients, 1)
 
 	catSnap := h.catalog.AggregateCatalogSnapshot()
-	if encoded, err := json.Marshal(catalogSnapshotMessage{Type: "catalog_snapshot", Snapshot: catSnap}); err == nil {
-		c.publishCatalog(catSnap.Revision, encoded)
+	if encoded, err := json.Marshal(catalogSnapshotMessage{Type: "catalog_snapshot", Snapshot: catSnap, IsLocal: true}); err == nil {
+		c.publishCatalogKeyed(localCatalogSlotKey, h.catalogSeq.Add(1), encoded)
+	}
+	h.mu.RLock()
+	remoteSource := h.remoteSource
+	h.mu.RUnlock()
+	if remoteSource != nil {
+		for _, rsnap := range remoteSource.AllRemoteCatalogSnapshots() {
+			if encoded, err := json.Marshal(catalogSnapshotMessage{Type: "catalog_snapshot", Snapshot: rsnap, IsLocal: false}); err == nil {
+				c.publishCatalogKeyed(remoteCatalogSlotKey(rsnap.Owner), h.catalogSeq.Add(1), encoded)
+			}
+		}
 	}
 	if layoutID := h.currentLayout(); layoutID != "" {
 		if wsRes, err := h.catalog.WorkspaceSnapshot(layoutID); err == nil {

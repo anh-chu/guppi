@@ -14,6 +14,7 @@
 
 import type { CommandID, LayoutID, SessionRef, SplitDirection } from './types'
 import type { V2ErrorResponse } from './wireTypes'
+import { encodeSessionRefWire } from './wireCodec'
 
 // SessionCommandAction mirrors pkg/state/session_commands.go's ExecuteSessionCommand
 // switch: create/kill/label/recover/dismiss/retry are the only session-scoped
@@ -29,6 +30,15 @@ export type SessionCommandAction =
   | { action: 'dismiss' }
   | { action: 'retry' }
 
+// CreateSessionCommand is the create variant of SessionCommandAction. Create is
+// the one session command that structurally carries NO SessionRef: the server
+// assigns the SessionID (executeCreate calls NewSessionID on the zero ref), so
+// sending any ref -- even a placeholder -- is wrong and is rejected by
+// ParseSessionRef once wire-encoded ("missing session id"). Use
+// V2CommandClient.createSession (which omits `ref` from the body), never
+// sessionCommand, for creates.
+export type CreateSessionCommand = Extract<SessionCommandAction, { action: 'create' }>
+
 // WorkspaceCommandAction mirrors pkg/state/workspace.go's ApplyWorkspaceCommand
 // switch (WorkspaceActionSplit/Move/Swap/PopOut/Resize/Rename/Select/
 // ReorderLayouts/Present) exactly, including backend field names -- these are
@@ -42,6 +52,31 @@ export type WorkspaceCommandAction =
   | { action: 'resize'; split_id: string; ratio: number; expected_revision?: number }
   | { action: 'rename'; old: SessionRef; new: SessionRef; expected_revision?: number }
   | { action: 'select'; ref: SessionRef; expected_revision?: number }
+
+// encodeWorkspaceCommandAction re-encodes every nested SessionRef field on a
+// WorkspaceCommandAction into its canonical wire string. This must cover
+// every action variant that carries a SessionRef -- see
+// pkg/state/workspace.go's workspace*Params structs, which this mirrors.
+function encodeWorkspaceCommandAction(cmd: WorkspaceCommandAction): Record<string, unknown> {
+  switch (cmd.action) {
+    case 'split':
+      return { ...cmd, target: encodeSessionRefWire(cmd.target), new: encodeSessionRefWire(cmd.new) }
+    case 'move':
+      return { ...cmd, source: encodeSessionRefWire(cmd.source), target: encodeSessionRefWire(cmd.target) }
+    case 'swap':
+      return { ...cmd, a: encodeSessionRefWire(cmd.a), b: encodeSessionRefWire(cmd.b) }
+    case 'pop_out':
+      return { ...cmd, ref: encodeSessionRefWire(cmd.ref) }
+    case 'remove':
+      return { ...cmd, ref: encodeSessionRefWire(cmd.ref) }
+    case 'resize':
+      return { ...cmd }
+    case 'rename':
+      return { ...cmd, old: encodeSessionRefWire(cmd.old), new: encodeSessionRefWire(cmd.new) }
+    case 'select':
+      return { ...cmd, ref: encodeSessionRefWire(cmd.ref) }
+  }
+}
 
 export class V2CommandError extends Error {
   code: V2ErrorResponse['code']
@@ -135,14 +170,29 @@ export class V2CommandClient {
     const { action, ...params } = cmd
     return postWithRetry(
       '/api/v2/session-commands',
-      { id: commandId, ref, action, params },
+      { id: commandId, ref: encodeSessionRefWire(ref), action, params },
+      { fetchImpl: this.fetchImpl, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs },
+    )
+  }
+
+  /**
+   * Posts a create-session command. Unlike sessionCommand, this NEVER includes
+   * a `ref` member: a create cannot know its SessionID before the server
+   * assigns one, so the wire body is exactly { id, action: 'create', params }.
+   */
+  async createSession(cmd: CreateSessionCommand, id?: CommandID): Promise<unknown> {
+    const commandId = id ?? this.genId()
+    const { action, ...params } = cmd
+    return postWithRetry(
+      '/api/v2/session-commands',
+      { id: commandId, action, params },
       { fetchImpl: this.fetchImpl, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs },
     )
   }
 
   async workspaceCommand(layout: LayoutID, cmd: WorkspaceCommandAction, id?: CommandID): Promise<unknown> {
     const commandId = id ?? this.genId()
-    const { action, ...params } = cmd
+    const { action, ...params } = encodeWorkspaceCommandAction(cmd)
     return postWithRetry(
       '/api/v2/workspace-commands',
       { id: commandId, layout, action, params },

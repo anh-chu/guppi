@@ -1604,10 +1604,11 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
     const ref = keyToSessionRef(legacyKey)
     const session = selectSessionByRef(state.catalog, ref)
     if (!session) {
-      return state.catalog.owner ? { ownerId: state.catalog.owner } : {}
+      return state.catalog.localOwner ? { ownerId: state.catalog.localOwner } : {}
     }
     // generation is the per-session daemon binding generation from the session's
-    // compat field, NOT the websocket connection generation (state.catalog.generation).
+    // compat field, NOT the websocket connection generation (tracked per-owner in
+    // state.catalog.ownerMeta).
     // If the session has no daemon generation yet (e.g., pending), we return empty
     // string; this triggers the invariant check in terminalPool.checkout().
     const sessionGeneration = session._compat?.generation ?? ''

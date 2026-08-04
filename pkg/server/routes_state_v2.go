@@ -18,11 +18,20 @@ const v2MaxCommandBodyBytes = 64 * 1024
 // v2BootstrapResponse is the single complete runtime-snapshot response the
 // browser needs to render durable UI state without any further sessions,
 // hosts, groups, order, or attrs fetches.
+//
+// Local carries this node's own owner-authoritative catalog. Remote carries
+// the latest cached catalog for every peer this node currently has a
+// snapshot for (may be empty). Each entry -- Local and every Remote element
+// -- carries its own independent Revision; they are never conflated. A peer
+// that has gone offline (or been forgotten) simply does not appear in
+// Remote on the NEXT bootstrap call; /ws/v2/state is the stream that carries
+// an explicit removal signal for a live connection (see catalogRemovedMessage
+// in pkg/ws/state_stream.go).
 type v2BootstrapResponse struct {
 	Owner         state.OwnerID                     `json:"owner"`
 	Revision      int64                             `json:"revision"`
-	Sessions      []state.LocalSessionRecord        `json:"sessions"`
-	Layouts       []state.LayoutRecord              `json:"layouts"`
+	Local         state.OwnerCatalogSnapshot        `json:"local"`
+	Remote        []state.OwnerCatalogSnapshot      `json:"remote,omitempty"`
 	Hosts         interface{}                       `json:"hosts"`
 	Workspace     *state.WorkspaceRecord            `json:"workspace,omitempty"`
 	Presentations []state.PresentationRecord        `json:"presentations,omitempty"`
@@ -61,12 +70,16 @@ func handleV2Bootstrap(w http.ResponseWriter, r *http.Request, opts *Options) {
 		return
 	}
 
-	snap := opts.V2Catalog.AggregateCatalogSnapshot()
+	var remoteSource state.RemoteCatalogSource
+	if opts.PeerMgr != nil {
+		remoteSource = opts.PeerMgr
+	}
+	agg := state.AggregateCatalog(opts.V2Catalog, remoteSource)
 	resp := v2BootstrapResponse{
-		Owner:         snap.Owner,
-		Revision:      snap.Revision,
-		Sessions:      snap.Sessions,
-		Layouts:       snap.Layouts,
+		Owner:         agg.Local.Owner,
+		Revision:      agg.Local.Revision,
+		Local:         agg.Local,
+		Remote:        agg.Remote,
 		Pending:       opts.V2Catalog.PendingCreates(),
 		PendingRemote: opts.V2Catalog.PendingRemoteCreates(),
 	}
@@ -75,8 +88,8 @@ func handleV2Bootstrap(w http.ResponseWriter, r *http.Request, opts *Options) {
 	} else {
 		resp.Hosts = []interface{}{}
 	}
-	if len(snap.Layouts) > 0 {
-		if wsRes, err := opts.V2Catalog.WorkspaceSnapshot(snap.Layouts[0].ID); err == nil {
+	if len(agg.Local.Layouts) > 0 {
+		if wsRes, err := opts.V2Catalog.WorkspaceSnapshot(agg.Local.Layouts[0].ID); err == nil {
 			ws := wsRes.Record
 			resp.Workspace = &ws
 			resp.Presentations = wsRes.Presentations
@@ -89,9 +102,15 @@ func handleV2Bootstrap(w http.ResponseWriter, r *http.Request, opts *Options) {
 
 // v2SessionCommandRequest is the strict tagged-union envelope decoded from
 // POST /api/v2/session-commands. Unknown fields are rejected.
+//
+// Ref is OPTIONAL: a create command carries no SessionRef at all (the server
+// assigns the SessionID in executeCreate), so the browser never sends `ref`
+// for action=create. Actions that target an existing session
+// (kill/label/recover/dismiss/retry) must send it; each execute* method
+// validates ref.Session and rejects an empty one with a typed error.
 type v2SessionCommandRequest struct {
 	ID     string           `json:"id,omitempty"`
-	Ref    state.SessionRef `json:"ref"`
+	Ref    state.SessionRef `json:"ref,omitempty"`
 	Action string           `json:"action"`
 	Params json.RawMessage  `json:"params,omitempty"`
 }
