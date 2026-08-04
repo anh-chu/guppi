@@ -31,6 +31,9 @@ interface OverviewProps {
   // Tiled layout groups (sessionKeys per group). Used to fold non-agent
   // "tool" panes (build/dev terminals) into the agent card they were tiled with.
   layoutGroups?: { leaves: string[]; activeKey: string | null }[]
+  // Threaded through to SessionActionsMenu: see its v2Mode/onRenameSession doc.
+  v2Mode?: boolean
+  onRenameSession?: (key: string, label: string) => void
 }
 
 interface SystemStats {
@@ -254,7 +257,7 @@ function SessionCard({
   )
 }
 
-export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, onOpenFile, layoutGroups }: OverviewProps) {
+export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, onOpenFile, layoutGroups, v2Mode, onRenameSession }: OverviewProps) {
   const { schedules } = useSchedules()
   const scheduleById = useMemo(() => new Map(schedules.map(s => [s.id, s])), [schedules])
   const scheduleIdFor = useCallback((session: Session) => (
@@ -558,6 +561,8 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
           setSessionAttr={setSessionAttr}
           onSessionKilled={onSessionKilled}
           onClose={() => setMenu(null)}
+          v2Mode={v2Mode}
+          onRenameSession={onRenameSession}
         />
       )}
     </div>

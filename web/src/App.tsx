@@ -1600,24 +1600,47 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   // with no sessionId, which trips that invariant deliberately instead of
   // silently degrading to legacy routing.
   const getTerminalIdentity = useCallback((legacyKey: string) => {
-    if (!legacyKey) return {}
+    // v2 sessions are always daemon-backed; backend is a fixed constant here,
+    // never resolved separately (TiledView must not fall back to legacy
+    // name-based routing for any v2 pane). ready=false gates TiledView into
+    // rendering a loading state instead of mounting Terminal with a partial
+    // identity that terminalPool could misroute.
+    if (!legacyKey) return { ready: false, backend: 'daemon' as const }
     const ref = keyToSessionRef(legacyKey)
     const session = selectSessionByRef(state.catalog, ref)
-    if (!session) {
-      return state.catalog.localOwner ? { ownerId: state.catalog.localOwner } : {}
-    }
+    if (!session) return { ready: false, backend: 'daemon' as const }
     // generation is the per-session daemon binding generation from the session's
     // compat field, NOT the websocket connection generation (tracked per-owner in
-    // state.catalog.ownerMeta).
-    // If the session has no daemon generation yet (e.g., pending), we return empty
-    // string; this triggers the invariant check in terminalPool.checkout().
-    const sessionGeneration = session._compat?.generation ?? ''
+    // state.catalog.ownerMeta). If the session has no daemon generation yet
+    // (e.g., still pending), it is not ready to attach.
+    const sessionGeneration = session._compat?.generation
+    if (!sessionGeneration) return { ready: false, backend: 'daemon' as const }
     return {
+      ready: true,
+      backend: 'daemon' as const,
       sessionId: session.id,
       ownerId: session.owner,
       generation: String(sessionGeneration),
     }
   }, [state.catalog])
+
+  // Friendly pane-header label: mirrors sessionLabel() (display_name -> name)
+  // instead of parsing the immutable canonical session id out of the key.
+  // Reads state.catalog directly (not the `sessions` memo, which is declared
+  // later in this component) so this resolver is safe to construct here.
+  const getSessionLabel = useCallback((legacyKey: string) => {
+    const ref = keyToSessionRef(legacyKey)
+    const session = selectSessionByRef(state.catalog, ref)
+    if (!session) return legacyKey
+    const label = session._compat?.name
+    return label && label.trim() !== '' ? label : session.id
+  }, [state.catalog])
+
+  const handleRenameSession = useCallback((legacyKey: string, label: string) => {
+    const ref = keyToSessionRef(legacyKey)
+    void v2State.sessionCommand(ref, { action: 'label', label })
+      .catch(err => console.error('v2 label command failed:', err))
+  }, [v2State])
 
   const [toasts, setToasts] = useState<Toast[]>([])
   const toastIdRef = useRef(0)
@@ -1916,7 +1939,12 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
           onDismiss={dismissEvent}
           onDismissAll={dismissAllEvents}
           panesCount={paneTree ? getLeaves(paneTree).length : 0}
-          onSplitPane={() => { openNewSessionModal() }}
+          onSplitPane={(direction) => {
+            if (activeKey !== null) {
+              splitTargetRef.current = { key: activeKey, direction }
+            }
+            openNewSessionModal()
+          }}
           glance={glance}
         />
       )}
@@ -1957,6 +1985,8 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
             onQuickShell={handleQuickShell}
             crashedCount={crashedHook.crashedSessions.length}
             onCrashedClick={() => crashedHook.refresh()}
+            v2Mode
+            onRenameSession={handleRenameSession}
           />
         )}
         <div className="flex-1 flex flex-col overflow-hidden relative">
@@ -2018,6 +2048,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
                 }
               }}
               getTerminalIdentity={getTerminalIdentity}
+              getSessionLabel={getSessionLabel}
               onOpenFile={wiki.openFile}
             />
           ) : (
@@ -2037,6 +2068,8 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
               setSessionAttr={v2NoopSetSessionAttr}
               onSessionKilled={handleKillSession}
               layoutGroups={layoutGroups}
+              v2Mode
+              onRenameSession={handleRenameSession}
             />
           )}
           <div id="mobile-keybar-slot" className="flex-none" />

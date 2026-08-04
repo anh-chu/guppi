@@ -23,6 +23,8 @@ export function SessionActionsMenu({
   setSessionAttr,
   onSessionKilled,
   onClose,
+  v2Mode,
+  onRenameSession,
 }: {
   target: SessionMenuTarget
   x: number
@@ -32,6 +34,12 @@ export function SessionActionsMenu({
   setSessionAttr: (key: string, next: { background?: boolean; hidden?: boolean }) => void
   onSessionKilled?: (key: string) => void
   onClose: () => void
+  // When true, this menu is rendered under the v2 (AppV2) state path: legacy
+  // REST session-action routes (kill/rename/AI-rename) must not also fire
+  // alongside the v2 callback, and features with no v2 equivalent yet
+  // (AI rename, hide, background, worktree removal) are hidden.
+  v2Mode?: boolean
+  onRenameSession?: (key: string, label: string) => void
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -57,7 +65,10 @@ export function SessionActionsMenu({
 
   const submitRename = () => {
     const next = renameValue.trim()
-    if (next && next !== target.label) renameSession(target.name, next, target.host)
+    if (next && next !== target.label) {
+      if (v2Mode) onRenameSession?.(target.key, next)
+      else renameSession(target.name, next, target.host)
+    }
     onClose()
   }
 
@@ -69,7 +80,9 @@ export function SessionActionsMenu({
   const kill = (removeWorktree: boolean) => {
     onClose()
     onSessionKilled?.(target.key)
-    killSession(target.id, target.name, target.host, removeWorktree)
+    // In v2 mode, onSessionKilled already IS the real kill (routed through
+    // v2State.sessionCommand). Don't also fire the legacy REST route.
+    if (!v2Mode) killSession(target.id, target.name, target.host, removeWorktree)
   }
 
   const item = 'px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink'
@@ -96,15 +109,22 @@ export function SessionActionsMenu({
       ) : (
         <>
           <div className={item} onClick={() => setRenaming(true)}>Rename</div>
-          <div className={item} onClick={aiName}>AI rename</div>
+          {/* AI rename has no v2 equivalent (POST /api/group/name is legacy-only). */}
+          {!v2Mode && <div className={item} onClick={aiName}>AI rename</div>}
         </>
       )}
-      <div className={item} onClick={() => { setSessionAttr(target.key, { hidden: !hiddenSet.has(target.key) }); onClose() }}>
-        {hiddenSet.has(target.key) ? 'Unhide' : 'Hide'}
-      </div>
-      <div className={item} onClick={() => { setSessionAttr(target.key, { background: !backgroundSet.has(target.key) }); onClose() }}>
-        {backgroundSet.has(target.key) ? 'Foreground' : 'Background'}
-      </div>
+      {/* Hide/Background are server-authoritative session attrs v2 does not
+          support yet — hide rather than show a click with no durable effect. */}
+      {!v2Mode && (
+        <div className={item} onClick={() => { setSessionAttr(target.key, { hidden: !hiddenSet.has(target.key) }); onClose() }}>
+          {hiddenSet.has(target.key) ? 'Unhide' : 'Hide'}
+        </div>
+      )}
+      {!v2Mode && (
+        <div className={item} onClick={() => { setSessionAttr(target.key, { background: !backgroundSet.has(target.key) }); onClose() }}>
+          {backgroundSet.has(target.key) ? 'Foreground' : 'Background'}
+        </div>
+      )}
       <div className="my-1 border-t border-hairline" />
       <div
         className="px-3 py-1.5 text-sm cursor-pointer text-red-400 hover:bg-red-500/10"
@@ -112,7 +132,9 @@ export function SessionActionsMenu({
       >
         {confirmKill ? 'Confirm kill?' : 'Kill'}
       </div>
-      {target.isWorktree && (
+      {/* Worktree removal has no v2 route — hide rather than fire a legacy call
+          that bypasses v2 authority. */}
+      {target.isWorktree && !v2Mode && (
         <div
           className="px-3 py-1.5 text-sm cursor-pointer text-red-400 hover:bg-red-500/10"
           onClick={() => { if (confirmWorktreeKill) kill(true); else setConfirmWorktreeKill(true) }}

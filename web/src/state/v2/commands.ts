@@ -40,9 +40,16 @@ export type SessionCommandAction =
 export type CreateSessionCommand = Extract<SessionCommandAction, { action: 'create' }>
 
 // WorkspaceCommandAction mirrors pkg/state/workspace.go's ApplyWorkspaceCommand
-// switch (WorkspaceActionSplit/Move/Swap/PopOut/Resize/Rename/Select/
-// ReorderLayouts/Present) exactly, including backend field names -- these are
-// nested under `params` on the wire, not spread flat (see postWithRetry).
+// switch (WorkspaceActionSplit/Move/Swap/PopOut/Resize/Select/ReorderLayouts/
+// Present) exactly, including backend field names -- these are nested under
+// `params` on the wire, not spread flat (see postWithRetry).
+//
+// NOTE: WorkspaceActionRename is intentionally NOT represented here. The
+// backend unconditionally rejects it (ErrDeprecatedAction --
+// pkg/state/workspace.go's WorkspaceActionRename case: "workspace 'rename'
+// action is removed; use the session label command to change a session's
+// display name instead"). Use SessionCommandAction's `label` action for all
+// rename UI.
 export type WorkspaceCommandAction =
   | { action: 'split'; target: SessionRef; direction: SplitDirection; new: SessionRef; new_first?: boolean; expected_revision?: number }
   | { action: 'move'; source: SessionRef; target: SessionRef; edge: string; expected_revision?: number }
@@ -50,7 +57,6 @@ export type WorkspaceCommandAction =
   | { action: 'pop_out'; ref: SessionRef; expected_revision?: number }
   | { action: 'remove'; ref: SessionRef; expected_revision?: number }
   | { action: 'resize'; split_id: string; ratio: number; expected_revision?: number }
-  | { action: 'rename'; old: SessionRef; new: SessionRef; expected_revision?: number }
   | { action: 'select'; ref: SessionRef; expected_revision?: number }
 
 // encodeWorkspaceCommandAction re-encodes every nested SessionRef field on a
@@ -71,8 +77,6 @@ function encodeWorkspaceCommandAction(cmd: WorkspaceCommandAction): Record<strin
       return { ...cmd, ref: encodeSessionRefWire(cmd.ref) }
     case 'resize':
       return { ...cmd }
-    case 'rename':
-      return { ...cmd, old: encodeSessionRefWire(cmd.old), new: encodeSessionRefWire(cmd.new) }
     case 'select':
       return { ...cmd, ref: encodeSessionRefWire(cmd.ref) }
   }

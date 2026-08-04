@@ -206,7 +206,8 @@ vi.mock('./components/NewSessionModal', () => ({
 vi.mock('./components/PortForwardModal', () => ({ PortForwardModal: () => null }))
 vi.mock('./components/ScheduleModal', () => ({ ScheduleModal: () => null }))
 vi.mock('./components/TopBar', () => ({ TopBar: (props: any) => { mockTopBarProps = props; return null } }))
-vi.mock('./components/TiledView', () => ({ TiledView: () => null }))
+let mockTiledViewProps: any = null
+vi.mock('./components/TiledView', () => ({ TiledView: (props: any) => { mockTiledViewProps = props; return null } }))
 vi.mock('./components/WikiPanel', () => ({ WikiPanel: () => null }))
 vi.mock('./components/SettingsDrawer', () => ({ SettingsDrawer: () => null }))
 vi.mock('./components/HelpModal', () => ({ HelpModal: () => null }))
@@ -516,6 +517,141 @@ describe('App: mode-splitting', () => {
       expect(createSession).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'my-session', hostId: 'remote-host-fingerprint' }),
       )
+    })
+
+    it('getTerminalIdentity resolver passed to TiledView always includes backend="daemon" and never surfaces an empty generation as ready', async () => {
+      const readySessionId = 'sess-ready'
+      const pendingSessionId = 'sess-pending'
+      const readySession: any = {
+        id: readySessionId,
+        owner: null,
+        ref: { owner: null, session: readySessionId, window: 0, pane: 0 },
+        phase: 'active',
+        desired: 'run',
+        revision: 1,
+        created_at: '2025-01-01T00:00:00Z',
+        _compat: { generation: 'daemon-gen-1' },
+      }
+      const pendingSession: any = {
+        id: pendingSessionId,
+        owner: null,
+        ref: { owner: null, session: pendingSessionId, window: 0, pane: 0 },
+        phase: 'pending',
+        desired: 'run',
+        revision: 1,
+        created_at: '2025-01-01T00:00:00Z',
+        _compat: {}, // no daemon generation assigned yet
+      }
+      const sessionsByRef = new Map([
+        [encodeSessionRef(readySession.ref), readySession],
+        [encodeSessionRef(pendingSession.ref), pendingSession],
+      ])
+      mockV2State = {
+        state: {
+          catalog: { owner: null, revision: 2, generation: 1, sessionsByRef, layoutsById: new Map() },
+          workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          connectionGeneration: 1,
+          connectionOnline: true,
+          catalogBootstrapped: true,
+          workspaceBootstrapped: false,
+        },
+        bootstrapped: true,
+        connected: true,
+        paneTree: { type: 'leaf', sessionKey: readySessionId } as any,
+        activeKey: readySessionId,
+        layoutId: null,
+        createSession: vi.fn().mockResolvedValue({}),
+        sessionCommand: vi.fn(),
+        workspaceCommand: vi.fn(),
+      }
+
+      window.history.pushState(null, '', '/session')
+      v2Enabled = true
+      const { render } = await import('@testing-library/react')
+      const App = (await import('./App')).default
+      render(<App />)
+
+      expect(mockTiledViewProps).not.toBeNull()
+      const getTerminalIdentity = mockTiledViewProps.getTerminalIdentity
+      expect(typeof getTerminalIdentity).toBe('function')
+
+      // Ready session: complete identity, backend always 'daemon', generation nonempty.
+      const readyIdentity = getTerminalIdentity(readySessionId)
+      expect(readyIdentity).toEqual({
+        ready: true,
+        backend: 'daemon',
+        sessionId: readySessionId,
+        ownerId: null,
+        generation: 'daemon-gen-1',
+      })
+
+      // Pending session (no daemon generation yet): never ready, and critically
+      // never carries an empty-string generation alongside backend='daemon' --
+      // TiledView must render a loading state instead of letting Terminal (and
+      // therefore terminalPool.checkout) see this identity at all.
+      const pendingIdentity = getTerminalIdentity(pendingSessionId)
+      expect(pendingIdentity.ready).toBe(false)
+      expect(pendingIdentity.backend).toBe('daemon')
+      expect(pendingIdentity.generation).toBeUndefined()
+
+      // Unknown key: also not ready, same shape -- never falls through to a
+      // legacy-routable partial identity.
+      const unknownIdentity = getTerminalIdentity('does-not-exist')
+      expect(unknownIdentity).toEqual({ ready: false, backend: 'daemon' })
+    })
+
+    it('top-bar split action records the target pane + direction so the created session is spliced in, not created standalone', async () => {
+      const workspaceCommand = vi.fn().mockResolvedValue({})
+      const createSession = vi.fn().mockResolvedValue({ Ref: { owner: null, session: 'new-sess', window: 0, pane: 0 } })
+      const activeSessionId = 'active-sess'
+      const activeSession: any = {
+        id: activeSessionId,
+        owner: null,
+        ref: { owner: null, session: activeSessionId, window: 0, pane: 0 },
+        phase: 'active',
+        desired: 'run',
+        revision: 1,
+        created_at: '2025-01-01T00:00:00Z',
+        _compat: { generation: 'gen-1' },
+      }
+      const sessionsByRef = new Map([[encodeSessionRef(activeSession.ref), activeSession]])
+      mockV2State = {
+        state: {
+          catalog: { owner: null, revision: 1, generation: 1, sessionsByRef, layoutsById: new Map() },
+          workspace: { layoutId: 'layout-1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          connectionGeneration: 1,
+          connectionOnline: true,
+          catalogBootstrapped: true,
+          workspaceBootstrapped: true,
+        },
+        bootstrapped: true,
+        connected: true,
+        paneTree: { type: 'leaf', sessionKey: activeSessionId } as any,
+        activeKey: activeSessionId,
+        layoutId: 'layout-1',
+        createSession,
+        sessionCommand: vi.fn(),
+        workspaceCommand,
+      }
+
+      window.history.pushState(null, '', '/session')
+      v2Enabled = true
+      const { render, act } = await import('@testing-library/react')
+      const App = (await import('./App')).default
+      render(<App />)
+
+      expect(mockTopBarProps).not.toBeNull()
+      act(() => { mockTopBarProps.onSplitPane('v') })
+
+      expect(mockNewSessionModalProps).not.toBeNull()
+      await mockNewSessionModalProps.onCreateSession('split-session', '/tmp', '')
+
+      expect(workspaceCommand).toHaveBeenCalledWith('layout-1', expect.objectContaining({
+        action: 'split',
+        target: { owner: null, session: activeSessionId, window: 0, pane: 0 },
+        direction: 'v',
+        new: { owner: null, session: 'new-sess', window: 0, pane: 0 },
+      }))
     })
   })
 })

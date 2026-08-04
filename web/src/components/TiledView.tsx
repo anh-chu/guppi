@@ -22,7 +22,23 @@ interface TiledViewProps {
   onMovePanes?: (sourceKey: string, targetKey: string, edge: 'left'|'right'|'top'|'bottom') => void
   getBackend?: (key: string) => string | undefined
   getCwd?: (key: string) => string | undefined
-  getTerminalIdentity?: (key: string) => { sessionId?: string; ownerId?: string; generation?: string }
+  // v2 terminal identity resolver. Unlike getBackend (legacy, optional,
+  // per-field), this returns ONE complete identity object so a v2 pane can
+  // never fall through to terminalPool's legacy name-based routing:
+  //   - backend is always 'daemon' for v2 sessions (v2 only supports
+  //     daemon-backed sessions).
+  //   - ready=false means the session is known but not yet attachable (e.g.
+  //     still pending/starting, no daemon generation assigned yet) — the pane
+  //     renders a loading state instead of mounting a Terminal at all.
+  //   - When ready=true, sessionId/ownerId/generation are all guaranteed
+  //     nonempty.
+  // Do NOT also pass getBackend for v2 panes: this resolver is the single
+  // source of truth for backend in that path.
+  getTerminalIdentity?: (key: string) => { ready: boolean; backend: string; sessionId?: string; ownerId?: string; generation?: string }
+  // Friendly display label for a pane header (mirrors sessionLabel()). Falls
+  // back to parsing the raw session key when absent (legacy behavior, where
+  // the key IS already the display name).
+  getSessionLabel?: (key: string) => string
   onOpenFile?: (path: string, cwd?: string, hostId?: string, sessionName?: string) => boolean
 }
 
@@ -47,6 +63,7 @@ export function TiledView({
   getBackend,
   getCwd,
   getTerminalIdentity,
+  getSessionLabel,
   onOpenFile,
 }: TiledViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -315,7 +332,7 @@ export function TiledView({
               }}
             >
             <span className="text-[11px] font-medium text-ink truncate min-w-0 mr-2 select-none">
-              {name}
+              {getSessionLabel?.(sessionKey) ?? name}
             </span>
             <div className="flex items-center gap-1">
               {/* Split horizontal */}
@@ -468,15 +485,27 @@ export function TiledView({
           className="flex-1 flex flex-col overflow-hidden"
         >
           {(() => {
-            const identity = getTerminalIdentity?.(sessionKey) ?? {}
+            const identity = getTerminalIdentity?.(sessionKey)
+            // A v2 identity resolver was supplied but the session isn't yet
+            // attachable (pending/starting, no daemon generation assigned).
+            // Render an explicit loading state instead of ever letting the
+            // Terminal mount with a partial identity that terminalPool could
+            // misroute through the legacy name-based path.
+            if (identity && !identity.ready) {
+              return (
+                <div className="flex-1 flex items-center justify-center text-mute text-xs">
+                  Connecting…
+                </div>
+              )
+            }
             return (
               <Terminal
                 sessionName={name}
                 hostId={host || undefined}
-                backend={getBackend?.(sessionKey)}
-                sessionId={identity.sessionId}
-                ownerId={identity.ownerId}
-                generation={identity.generation}
+                backend={identity ? identity.backend : getBackend?.(sessionKey)}
+                sessionId={identity?.sessionId}
+                ownerId={identity?.ownerId}
+                generation={identity?.generation}
                 fullscreen={isActive ? fullscreen : false}
                 onOpenFile={(path) => onOpenFile?.(path, getCwd?.(sessionKey), host || undefined, name) ?? false}
                 onToggleFullscreen={isActive ? onToggleFullscreen : undefined}

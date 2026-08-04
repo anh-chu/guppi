@@ -118,3 +118,85 @@ describe('Sidebar group AI naming', () => {
     )
   })
 })
+
+describe('Sidebar v2Mode kill/rename routing', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve('') }))
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  function openContextMenuForRow() {
+    const row = document.querySelector('[data-session-key="s1"] [role="button"]') as HTMLElement
+    fireEvent.contextMenu(row)
+  }
+
+  it('v2Mode kill calls onSessionKilled exactly once and never hits the legacy kill route', async () => {
+    const onSessionKilled = vi.fn()
+    renderSidebar({ v2Mode: true, onSessionKilled })
+
+    openContextMenuForRow()
+    fireEvent.click(screen.getByText('Kill'))
+    fireEvent.click(screen.getByText('Confirm kill?'))
+
+    expect(onSessionKilled).toHaveBeenCalledTimes(1)
+    expect(onSessionKilled).toHaveBeenCalledWith('s1')
+    // The legacy REST kill route (/api/session/kill) must never be hit in v2
+    // mode -- onSessionKilled already performed the real (v2) kill.
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/session/kill', expect.anything())
+  })
+
+  it('non-v2Mode kill calls both onSessionKilled and the legacy kill route (unchanged legacy behavior)', async () => {
+    const onSessionKilled = vi.fn()
+    renderSidebar({ v2Mode: false, onSessionKilled })
+
+    openContextMenuForRow()
+    fireEvent.click(screen.getByText('Kill'))
+    fireEvent.click(screen.getByText('Confirm kill?'))
+
+    expect(onSessionKilled).toHaveBeenCalledTimes(1)
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
+    expect(fetchMock).toHaveBeenCalledWith('/api/session/kill', expect.anything())
+  })
+
+  it('v2Mode rename calls onRenameSession instead of the legacy display-name route', async () => {
+    const onRenameSession = vi.fn()
+    renderSidebar({ v2Mode: true, onRenameSession })
+
+    openContextMenuForRow()
+    fireEvent.click(screen.getByText('Rename'))
+    const input = screen.getByDisplayValue('s1')
+    fireEvent.change(input, { target: { value: 'new-label' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(onRenameSession).toHaveBeenCalledWith('s1', 'new-label'))
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/session/display-name', expect.anything())
+  })
+
+  it('v2Mode hides AI rename, Hide/Background, and worktree-removal controls', () => {
+    renderSidebar({ v2Mode: true })
+
+    openContextMenuForRow()
+    expect(screen.queryByText('AI rename')).toBeNull()
+    expect(screen.queryByText('Hide')).toBeNull()
+    expect(screen.queryByText('Background')).toBeNull()
+  })
+})

@@ -62,6 +62,13 @@ interface SidebarProps {
   onSessionKilled?: (key: string) => void
   sessionAttrs: SessionAttrSets
   setSessionAttr: (key: string, next: { background?: boolean; hidden?: boolean }) => void
+  // When true, this Sidebar is rendered under the v2 (AppV2) state path: the
+  // shared legacy REST session-action routes (kill/rename) must NOT also be
+  // invoked alongside the v2 callback (that would double-kill/double-write),
+  // and features with no v2 equivalent yet (AI rename, hide, background,
+  // worktree removal) must be hidden rather than shown as dead controls.
+  v2Mode?: boolean
+  onRenameSession?: (key: string, label: string) => void
   // True while the session list is still converging after a WS (re)connect.
   // Pruning per-device ordering then would delete entries for sessions that
   // simply haven't reappeared yet.
@@ -207,6 +214,8 @@ export function Sidebar({
   sessionAttrs,
   setSessionAttr,
   pruningSuspended,
+  v2Mode,
+  onRenameSession,
 
   onQuickShell,
   crashedCount = 0,
@@ -443,7 +452,10 @@ export function Sidebar({
     setConfirmKillKey(null)
     setConfirmWorktreeKillKey(null)
     onSessionKilled?.(host ? `${host}/${name}` : name)
-    killSessionApi(id, name, host)
+    // In v2 mode, onSessionKilled already IS the real kill (routed through
+    // v2State.sessionCommand). Calling the legacy REST route too would fire
+    // a second, redundant kill attempt down a different path.
+    if (!v2Mode) killSessionApi(id, name, host)
   }
 
   const killSessionAndWorktree = (id: string, name: string, host?: string) => {
@@ -451,7 +463,7 @@ export function Sidebar({
     setConfirmKillKey(null)
     setConfirmWorktreeKillKey(null)
     onSessionKilled?.(host ? `${host}/${name}` : name)
-    killSessionApi(id, name, host, true)
+    if (!v2Mode) killSessionApi(id, name, host, true)
   }
 
   const submitRename = async () => {
@@ -459,7 +471,11 @@ export function Sidebar({
       setRenamingSession(null)
       return
     }
-    await renameSession(renamingSession.name, renameValue.trim(), renamingSession.host)
+    if (v2Mode) {
+      onRenameSession?.(renamingSession.key, renameValue.trim())
+    } else {
+      await renameSession(renamingSession.name, renameValue.trim(), renamingSession.host)
+    }
     setRenamingSession(null)
   }
 
@@ -1820,27 +1836,38 @@ export function Sidebar({
           >
             Rename
           </div>
-          <div
-            onClick={() => canRenameContextTarget && aiNameSession(contextMenu.name, contextMenu.host)}
-            className={cn(
-              'px-3 py-1.5 text-sm text-ink hover:bg-surface-card hover:text-ink',
-              canRenameContextTarget ? 'cursor-pointer' : 'cursor-not-allowed opacity-50',
-            )}
-          >
-            AI rename
-          </div>
-          <div
-            onClick={() => toggleHide(contextMenu.key)}
-            className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
-          >
-            {hiddenSet.has(contextMenu.key) ? 'Unhide' : 'Hide'}
-          </div>
-          <div
-            onClick={() => toggleBackground(contextMenu.key)}
-            className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
-          >
-            {backgroundSet.has(contextMenu.key) ? 'Foreground' : 'Background'}
-          </div>
+          {/* AI rename has no v2 equivalent (POST /api/group/name is legacy-only);
+              hide rather than show a control that silently no-ops. */}
+          {!v2Mode && (
+            <div
+              onClick={() => canRenameContextTarget && aiNameSession(contextMenu.name, contextMenu.host)}
+              className={cn(
+                'px-3 py-1.5 text-sm text-ink hover:bg-surface-card hover:text-ink',
+                canRenameContextTarget ? 'cursor-pointer' : 'cursor-not-allowed opacity-50',
+              )}
+            >
+              AI rename
+            </div>
+          )}
+          {/* Hide/Background are server-authoritative session attrs v2 does not
+              support yet (setSessionAttr is a fixed no-op in v2 mode) — hide
+              these controls rather than show a click with no durable effect. */}
+          {!v2Mode && (
+            <div
+              onClick={() => toggleHide(contextMenu.key)}
+              className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
+            >
+              {hiddenSet.has(contextMenu.key) ? 'Unhide' : 'Hide'}
+            </div>
+          )}
+          {!v2Mode && (
+            <div
+              onClick={() => toggleBackground(contextMenu.key)}
+              className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
+            >
+              {backgroundSet.has(contextMenu.key) ? 'Foreground' : 'Background'}
+            </div>
+          )}
           <div className="my-1 border-t border-hairline" />
           <div
             onClick={() => {
@@ -1854,7 +1881,10 @@ export function Sidebar({
           >
             {confirmKillKey === contextMenu.key ? 'Confirm kill?' : 'Kill'}
           </div>
-          {contextMenu.isWorktree && (
+          {/* Worktree removal has no v2 route (killSessionApi(..., true) is
+              legacy-only) — hide rather than fire a legacy call that bypasses
+              v2 authority. */}
+          {contextMenu.isWorktree && !v2Mode && (
             <div
               onClick={() => {
                 if (confirmWorktreeKillKey === contextMenu.key) {
