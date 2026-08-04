@@ -262,9 +262,17 @@ func runSession(
 		}
 	}()
 
-	// Initial pushes — both sides advertise themselves.
-	sendStateUpdate(pc, deps)
-	sendInitialPeerState(pc, deps, peerID)
+	// Initial pushes — both sides advertise themselves. In v2-only mode
+	// (deps.V2CommandSvc != nil), the legacy state.Manager backing
+	// sendStateUpdate/sendInitialPeerState is a neutered shim that never
+	// carries real session state (see v2Mode gating in
+	// pkg/commands/server/runtime.go), so both are skipped entirely; the v2
+	// catalog/workspace snapshot pushes below are the real state sync for
+	// this node.
+	if deps.V2CommandSvc == nil {
+		sendStateUpdate(pc, deps)
+		sendInitialPeerState(pc, deps, peerID)
+	}
 	sendInitialSessionAttrs(pc, deps)
 	sendInitialSessionOrder(pc, deps)
 	sendInitialGroups(pc, deps)
@@ -282,7 +290,15 @@ func runSession(
 	go pingLoop(sessionCtx, cw)
 	go periodicActivity(sessionCtx, pc, deps)
 	go periodicStats(sessionCtx, pc, deps)
-	go forwardStateEvents(sessionCtx, pc, deps)
+	// forwardStateEvents subscribes to the legacy state.Manager's event
+	// channel and re-sends sendStateUpdate on every event. In v2-only mode
+	// that channel never fires (the legacy manager is a neutered shim, see
+	// v2Mode gating in pkg/commands/server/runtime.go), so starting it would
+	// only leak a Subscribe() channel and goroutine for the life of the
+	// connection; skip it entirely instead.
+	if deps.V2CommandSvc == nil {
+		go forwardStateEvents(sessionCtx, pc, deps)
+	}
 	go forwardToolEvents(sessionCtx, pc, deps, peerID)
 	go forwardPeerStateChanges(sessionCtx, pc, deps, peerID)
 
@@ -352,8 +368,13 @@ func periodicActivity(ctx context.Context, pc *PeerConnection, deps SessionDeps)
 
 func collectStats(deps SessionDeps) map[string]interface{} {
 	s := stats.SystemStats()
-	sessions := deps.LocalMgr.GetSessions()
-	s["processes"] = stats.ProcessCountsFromSessions(sessions)
+	// In v2-only mode deps.LocalMgr is a neutered shim that always reports
+	// zero sessions; skip the call rather than publish a misleading
+	// always-zero process count.
+	if deps.V2CommandSvc == nil {
+		sessions := deps.LocalMgr.GetSessions()
+		s["processes"] = stats.ProcessCountsFromSessions(sessions)
+	}
 	return s
 }
 

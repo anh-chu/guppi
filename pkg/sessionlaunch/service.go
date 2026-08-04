@@ -129,6 +129,15 @@ type Service struct {
 	Names       ExistingNames
 	Refresh     RefreshFunc
 	V2Commander V2Commander // nil keeps legacy path
+
+	// V2Remote dispatches a remote-host create through the reliable v2
+	// remote-create coordinator + command RPC (pkg/state.RemoteCreateCoordinator,
+	// pkg/peer's Manager.SendRemoteCreate), instead of the legacy fire-and-forget
+	// Remote path. When V2Commander and V2Remote are both non-nil, createRemote
+	// prefers V2Remote unconditionally: this node is v2-only, so the legacy
+	// Remote path (if even constructed) must not be used. nil keeps the legacy
+	// path for any remote target.
+	V2Remote RemoteLauncher
 }
 
 // Create validates, resolves, and launches one session.
@@ -173,34 +182,55 @@ func (s *Service) validate(req Request) error {
 }
 
 func (s *Service) createRemote(ctx context.Context, req Request) (Result, error) {
+	req.Name = s.resolveName(req)
+
+	// v2-only nodes must never fall back to the legacy fire-and-forget
+	// RemoteLauncher: it reports success once the frame is merely enqueued on
+	// the peer connection, not once the remote session genuinely exists. When
+	// this node runs v2 state (V2Commander != nil) and a v2 remote-create path
+	// is wired (V2Remote != nil), always prefer it for any non-local target.
+	if s.V2Commander != nil && s.V2Remote != nil {
+		res, err := s.V2Remote(ctx, req)
+		if err != nil {
+			return Result{}, err
+		}
+		res.Remote = true
+		s.applyRemoteScheduleAttr(req, res)
+		return res, nil
+	}
+
 	if s.Remote == nil {
 		return Result{}, fmt.Errorf("%w: %s", ErrPeerUnavailable, req.Host)
 	}
-
-	req.Name = s.resolveName(req)
 
 	res, err := s.Remote(ctx, req)
 	if err != nil {
 		return Result{}, err
 	}
 	res.Remote = true
-
-	if s.Attrs != nil && req.ScheduleID != "" {
-		key := sessionKey(req.Host, res.Name)
-		attr, err := s.Attrs.SetScheduleID(key, req.ScheduleID)
-		if err != nil {
-			logrus.WithError(err).Warn("failed to store schedule id for remote session")
-		} else {
-			if s.Fanout != nil {
-				s.Fanout(key, attr)
-			}
-			if s.Hub != nil {
-				s.Hub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": key})
-			}
-		}
-	}
-
+	s.applyRemoteScheduleAttr(req, res)
 	return res, nil
+}
+
+// applyRemoteScheduleAttr records and fans out schedule ownership for a
+// remotely-created session. Shared by both the legacy and v2 remote-create
+// paths.
+func (s *Service) applyRemoteScheduleAttr(req Request, res Result) {
+	if s.Attrs == nil || req.ScheduleID == "" {
+		return
+	}
+	key := sessionKey(req.Host, res.Name)
+	attr, err := s.Attrs.SetScheduleID(key, req.ScheduleID)
+	if err != nil {
+		logrus.WithError(err).Warn("failed to store schedule id for remote session")
+		return
+	}
+	if s.Fanout != nil {
+		s.Fanout(key, attr)
+	}
+	if s.Hub != nil {
+		s.Hub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": key})
+	}
 }
 
 func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) {

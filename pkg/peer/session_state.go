@@ -121,7 +121,12 @@ func handleStateMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 		deps.Manager.UnregisterPeer(p.ID)
 
 	case MsgRequestState:
-		sendStateUpdate(pc, deps)
+		// In v2-only mode, deps.LocalMgr is a neutered shim carrying no real
+		// session state; skip the legacy reply so we don't advertise an
+		// always-empty legacy session list in response to a peer's request.
+		if deps.V2CommandSvc == nil {
+			sendStateUpdate(pc, deps)
+		}
 	}
 }
 

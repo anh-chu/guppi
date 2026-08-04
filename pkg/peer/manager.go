@@ -274,20 +274,36 @@ func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr *
 	return m
 }
 
-// updateLocalStats collects system stats and process counts for the local host
+// updateLocalStats collects system stats and process counts for the local host.
+// In v2-only mode (localMgr carries no session state -- see v2Mode gating in
+// runtime.go) the legacy GetSessions() call would always return an empty
+// slice, so it is skipped entirely rather than reported as zero processes.
 func (m *Manager) updateLocalStats() {
 	s := stats.SystemStats()
-	sessions := m.localMgr.GetSessions()
-	s["processes"] = stats.ProcessCountsFromSessions(sessions)
+	if m.localMgr.V2Catalog() == nil {
+		sessions := m.localMgr.GetSessions()
+		s["processes"] = stats.ProcessCountsFromSessions(sessions)
+	}
 	m.UpdatePeerStats(m.localID, s)
 }
 
 // Run starts forwarding local state events to peer manager subscribers
 // and pruning offline peers. Blocks until ctx is cancelled.
+//
+// In v2-only mode, the legacy state.Manager (m.localMgr) is a neutered shim
+// that never receives session updates (see v2Mode gating in
+// pkg/commands/server/runtime.go), so its event channel would never fire.
+// Subscribing anyway would hold open a channel and goroutine registration for
+// the lifetime of the runtime for no purpose, so the subscription is skipped
+// entirely when a v2 catalog is present.
 func (m *Manager) Run(ctx context.Context) {
-	// Forward local state events
-	localCh := m.localMgr.Subscribe()
-	defer m.localMgr.Unsubscribe(localCh)
+	v2Only := m.localMgr.V2Catalog() != nil
+
+	var localCh chan state.StateEvent
+	if !v2Only {
+		localCh = m.localMgr.Subscribe()
+		defer m.localMgr.Unsubscribe(localCh)
+	}
 
 	pruneTimer := time.NewTicker(30 * time.Second)
 	defer pruneTimer.Stop()
@@ -300,6 +316,8 @@ func (m *Manager) Run(ctx context.Context) {
 
 	for {
 		select {
+		// localCh is nil in v2-only mode; a receive on a nil channel never
+		// becomes ready, so this case is simply never selected there.
 		case evt, ok := <-localCh:
 			if !ok {
 				return

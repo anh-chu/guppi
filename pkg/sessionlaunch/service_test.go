@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anh-chu/termyard/pkg/model"
+	"github.com/anh-chu/termyard/pkg/state"
 )
 
 type fakeDaemon struct {
@@ -193,6 +194,82 @@ func TestCreateRemoteSuccess(t *testing.T) {
 	}
 	if len(h.broadcasts) != 1 || h.broadcasts[0]["key"] != "peer-1/foo" {
 		t.Fatalf("unexpected broadcasts: %+v", h.broadcasts)
+	}
+}
+
+// fakeV2Commander is a minimal V2Commander stub used only to make
+// s.V2Commander non-nil in routing tests; createRemote's routing decision
+// only checks V2Commander != nil, it never calls it directly (session
+// creation via V2Commander is exercised by createLocal's own tests).
+type fakeV2Commander struct{}
+
+func (fakeV2Commander) ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error) {
+	return state.CommandResult{}, nil
+}
+
+// TestCreateRemoteV2ModePrefersV2RemoteOverLegacy proves the Finding-3 fix:
+// once this node is v2-only (V2Commander set) and a v2 remote-create path is
+// wired (V2Remote set), createRemote must always route through V2Remote and
+// must never fall back to the legacy fire-and-forget Remote launcher, even
+// though both are configured on the Service.
+func TestCreateRemoteV2ModePrefersV2RemoteOverLegacy(t *testing.T) {
+	s, _, _, a, h := newService()
+	s.V2Commander = fakeV2Commander{}
+	s.Fanout = (&fanoutSpy{}).Fanout
+
+	legacyRemote := &fakeRemote{result: Result{Name: "should-not-be-used"}}
+	s.Remote = legacyRemote.Launch
+
+	v2Remote := &fakeRemote{result: Result{Name: "foo", Host: "peer-1"}}
+	s.V2Remote = v2Remote.Launch
+
+	res, err := s.Create(context.Background(), Request{Host: "peer-1", LocalHost: "local-fingerprint", Name: "foo", ScheduleID: "sched-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Remote {
+		t.Fatalf("expected remote result")
+	}
+	if len(legacyRemote.called) != 0 {
+		t.Fatalf("legacy Remote launcher must not be called when V2Remote is configured, got %d calls", len(legacyRemote.called))
+	}
+	if len(v2Remote.called) != 1 {
+		t.Fatalf("expected exactly one V2Remote call, got %d", len(v2Remote.called))
+	}
+	// Schedule-metadata fanout must still work through the v2 remote path.
+	if len(a.calls) != 1 || a.calls[0].key != "peer-1/foo" || a.calls[0].scheduleID != "sched-1" {
+		t.Fatalf("unexpected attr calls: %+v", a.calls)
+	}
+	if len(h.broadcasts) != 1 || h.broadcasts[0]["key"] != "peer-1/foo" {
+		t.Fatalf("unexpected broadcasts: %+v", h.broadcasts)
+	}
+}
+
+// TestCreateRemoteLegacyModeUnaffected proves legacy-mode remote creation
+// (V2Commander nil) is completely unchanged: it must still use the legacy
+// Remote launcher exactly as before, even if a V2Remote happens to be set.
+func TestCreateRemoteLegacyModeUnaffected(t *testing.T) {
+	s, _, _, _, _ := newService()
+	// V2Commander intentionally left nil: this is a legacy-mode Service.
+
+	legacyRemote := &fakeRemote{result: Result{Name: "foo", Host: "peer-1"}}
+	s.Remote = legacyRemote.Launch
+
+	v2Remote := &fakeRemote{result: Result{Name: "should-not-be-used"}}
+	s.V2Remote = v2Remote.Launch
+
+	res, err := s.Create(context.Background(), Request{Host: "peer-1", LocalHost: "local-fingerprint", Name: "foo"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Remote {
+		t.Fatalf("expected remote result")
+	}
+	if len(v2Remote.called) != 0 {
+		t.Fatalf("V2Remote must not be called in legacy mode, got %d calls", len(v2Remote.called))
+	}
+	if len(legacyRemote.called) != 1 {
+		t.Fatalf("expected exactly one legacy Remote call, got %d", len(legacyRemote.called))
 	}
 }
 

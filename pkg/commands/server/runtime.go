@@ -266,6 +266,67 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	rt.silenceMonitor.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.reconciler.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 
+	// Legacy fire-and-forget remote launcher: only constructed in legacy
+	// mode. In v2 mode, remote creates must go through the reliable v2
+	// remote-create coordinator (v2RemoteLauncher below); constructing this
+	// path anyway would let v2-only nodes silently fall back to a launcher
+	// that reports success once a frame is merely enqueued, not once the
+	// remote session actually exists.
+	var legacyRemoteLauncher sessionlaunch.RemoteLauncher
+	if !v2Mode {
+		legacyRemoteLauncher = func(ctx context.Context, req sessionlaunch.Request) (sessionlaunch.Result, error) {
+			peerConn := rt.peerMgr.GetPeerConnection(req.Host)
+			if peerConn == nil {
+				return sessionlaunch.Result{}, sessionlaunch.ErrPeerUnavailable
+			}
+			params, _ := json.Marshal(map[string]string{
+				"name":            req.Name,
+				"path":            req.Path,
+				"command":         req.Command,
+				"worktree_branch": req.WorktreeBranch,
+				"schedule_id":     req.ScheduleID,
+			})
+			msg, _ := peer.NewMessage(peer.MsgSessionAction, peer.SessionActionPayload{
+				Action: "new",
+				Params: params,
+			})
+			if !peerConn.Enqueue(msg) {
+				return sessionlaunch.Result{}, sessionlaunch.ErrPeerQueueFull
+			}
+			return sessionlaunch.Result{Name: req.Name, Host: req.Host}, nil
+		}
+	}
+
+	// v2 remote launcher: routes through RemoteCreateCoordinator on the
+	// remote owner via the reliable command RPC (pkg/peer's
+	// Manager.SendRemoteCreate), which blocks for a genuine ack/nack instead
+	// of merely enqueuing a frame. Only constructed in v2 mode.
+	var v2RemoteLauncher sessionlaunch.RemoteLauncher
+	if v2Mode {
+		v2RemoteLauncher = func(ctx context.Context, req sessionlaunch.Request) (sessionlaunch.Result, error) {
+			cmdID := state.CommandID(req.CommandID)
+			if cmdID == "" {
+				cmdID = state.NewCommandID()
+			}
+			rreq := state.RemoteCreateRequest{
+				IntentID:       cmdID,
+				Requester:      rt.v2Catalog.Owner(),
+				Name:           req.Name,
+				Shell:          req.Command,
+				Cwd:            req.Path,
+				WorktreeBranch: req.WorktreeBranch,
+				Cols:           req.Cols,
+				Rows:           req.Rows,
+				AgentType:      req.AgentType,
+			}
+			res, err := rt.peerMgr.SendRemoteCreate(ctx, req.Host, rreq)
+			if err != nil {
+				return sessionlaunch.Result{}, err
+			}
+			return sessionlaunch.Result{Name: res.DisplayName, Host: req.Host, Path: res.Path, Remote: true}, nil
+		}
+	}
+
 	launchSvc := &sessionlaunch.Service{
 		DaemonReg: rt.daemonReg,
 		StateMgr:  rt.stateMgr,
@@ -286,27 +347,8 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		}),
 		Identity: nodeIdentity,
 		Refresh:  rt.refreshSessionsFunc,
-		Remote: func(ctx context.Context, req sessionlaunch.Request) (sessionlaunch.Result, error) {
-			peerConn := rt.peerMgr.GetPeerConnection(req.Host)
-			if peerConn == nil {
-				return sessionlaunch.Result{}, sessionlaunch.ErrPeerUnavailable
-			}
-			params, _ := json.Marshal(map[string]string{
-				"name":            req.Name,
-				"path":            req.Path,
-				"command":         req.Command,
-				"worktree_branch": req.WorktreeBranch,
-				"schedule_id":     req.ScheduleID,
-			})
-			msg, _ := peer.NewMessage(peer.MsgSessionAction, peer.SessionActionPayload{
-				Action: "new",
-				Params: params,
-			})
-			if !peerConn.Enqueue(msg) {
-				return sessionlaunch.Result{}, sessionlaunch.ErrPeerQueueFull
-			}
-			return sessionlaunch.Result{Name: req.Name, Host: req.Host}, nil
-		},
+		Remote:   legacyRemoteLauncher,
+		V2Remote: v2RemoteLauncher,
 		Fanout: func(key string, attr sessionlaunch.ScheduleAttr) {
 			if rt.peerMgr == nil || nodeIdentity == nil {
 				return
