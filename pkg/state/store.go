@@ -76,6 +76,17 @@ type Store struct {
 	nodeID string
 	opts   StoreOptions
 	doc    AppDocument
+
+	// durabilityUncertain is set when a prior commit's post-rename directory
+	// fsync failed (see errSyncDirFailedAfterRename): the in-memory document
+	// (including any command receipts it records) was adopted so reads never
+	// go stale relative to disk, but its durability was never confirmed. While
+	// set, Update refuses all further writes -- including no-op writes -- until
+	// a real directory fsync of the current document succeeds and clears it.
+	// This prevents a receipt recorded under an unconfirmed write from being
+	// replayed as authoritative success by a command-ID retry without ever
+	// re-attempting durability.
+	durabilityUncertain bool
 }
 
 // OpenStore opens or creates a node store in path using nodeID as the filename stem.
@@ -153,6 +164,16 @@ func (s *Store) Update(reason string, mutate func(*AppDocument) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// A prior write left durability uncertain: reject this write outright
+	// (even the no-op fast path below) until a fresh attempt to durably
+	// commit the current document succeeds. Falling through to the caller's
+	// mutate/no-op logic here would let a receipt recorded under the
+	// unconfirmed write be re-served as success without ever retrying the
+	// fsync.
+	if err := s.revalidateLocked(); err != nil {
+		return fmt.Errorf("update %q rejected: %w", reason, err)
+	}
+
 	proposed, err := cloneDoc(&s.doc)
 	if err != nil {
 		return fmt.Errorf("clone current document: %w", err)
@@ -193,12 +214,17 @@ func (s *Store) Update(reason string, mutate func(*AppDocument) error) error {
 			// document into memory so a subsequent Update never proceeds
 			// from a stale base and rewrites the backup with an out-of-date
 			// "old" document or overwrites the already-visible current file.
+			// Durability of this write is unconfirmed, though: mark it
+			// uncertain so it can never be treated as authoritative success
+			// until a real fsync succeeds.
 			s.doc = proposed
+			s.durabilityUncertain = true
 		}
 		return fmt.Errorf("commit %q failed: %w", reason, err)
 	}
 
 	s.doc = proposed
+	s.durabilityUncertain = false
 
 	if s.opts.OnChange != nil {
 		snapshot, _ := cloneDoc(&s.doc)
@@ -211,6 +237,40 @@ func (s *Store) Update(reason string, mutate func(*AppDocument) error) error {
 		})
 	}
 
+	return nil
+}
+
+// Revalidate re-attempts a durability write for the store's current
+// document if a prior write left durability uncertain (see
+// errSyncDirFailedAfterRename); otherwise it is a cheap no-op. Callers that
+// read Snapshot() and may treat its contents (e.g. command receipts) as
+// authoritative success -- such as idempotent command replay -- must call
+// Revalidate first. Otherwise a receipt recorded under an unconfirmed write
+// could be served as success on retry without ever attempting durability
+// again.
+func (s *Store) Revalidate() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revalidateLocked()
+}
+
+// DurabilityUncertain reports whether the store's in-memory document has an
+// unconfirmed durable write pending (see Revalidate).
+func (s *Store) DurabilityUncertain() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.durabilityUncertain
+}
+
+// revalidateLocked must be called with s.mu held.
+func (s *Store) revalidateLocked() error {
+	if !s.durabilityUncertain {
+		return nil
+	}
+	if err := s.commit(&s.doc); err != nil {
+		return fmt.Errorf("durability uncertain from a prior write, revalidation fsync failed: %w", err)
+	}
+	s.durabilityUncertain = false
 	return nil
 }
 

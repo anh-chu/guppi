@@ -77,8 +77,9 @@ func TestCatalogSyncDirFailureDoesNotAcknowledgeOrPublish(t *testing.T) {
 	svc := NewSessionCommandService(catalog, backend, nil, SessionCommandServiceOptions{Owner: owner})
 
 	params, _ := json.Marshal(CreateParams{Name: "durability-probe"})
+	cmdID := NewCommandID()
 	result, err := svc.ExecuteSessionCommand(t.Context(), SessionCommand{
-		ID:     NewCommandID(),
+		ID:     cmdID,
 		Action: ActionCreate,
 		Params: params,
 	})
@@ -93,5 +94,34 @@ func TestCatalogSyncDirFailureDoesNotAcknowledgeOrPublish(t *testing.T) {
 			"the command was falsely acknowledged as durably successful. Catalog.apply's "+
 			"errSyncDirFailedAfterRename branch currently swallows this error and returns nil instead of "+
 			"failing closed. result=%+v", syncDirCalls, result)
+	}
+
+	// The first attempt left the store's in-memory document -- including the
+	// success receipt executeCreate wrote for this exact CommandID -- adopted
+	// but with durability unconfirmed (see Store.durabilityUncertain). A
+	// caller retry with the SAME CommandID (e.g. an HTTP client retrying
+	// after a timeout/5xx) must NOT be able to find that receipt and report
+	// success without the store ever re-attempting a real fsync: that would
+	// silently upgrade an explicitly-failed write to acknowledged success.
+	// The injected SyncDirHook keeps failing every call, so the retry's
+	// mandatory revalidation attempt must also fail closed.
+	sameCmd := SessionCommand{
+		ID:     cmdID,
+		Action: ActionCreate,
+		Params: params,
+	}
+
+	retryCallsBefore := syncDirCalls
+	retryResult, retryErr := svc.ExecuteSessionCommand(t.Context(), sameCmd)
+
+	if syncDirCalls <= retryCallsBefore {
+		t.Fatal("test setup broken: retry never re-attempted a directory fsync, this run proves nothing")
+	}
+
+	if retryErr == nil && retryResult.Accepted {
+		t.Fatalf("FAIL-CLOSED VIOLATION: retrying the SAME CommandID after a durability-uncertain write "+
+			"returned Accepted=true with nil error without ever confirming a successful fsync -- the uncertain "+
+			"receipt was replayed as authoritative success instead of re-attempting (and failing) durability. "+
+			"retryResult=%+v", retryResult)
 	}
 }

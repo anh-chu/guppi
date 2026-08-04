@@ -333,6 +333,18 @@ func AggregateCatalog(local *Catalog, source RemoteCatalogSource) MultiOwnerCata
 // complete resulting catalog snapshot is published to CatalogSubscribers
 // after the lock is released so a slow subscriber cannot stall mutations.
 func (c *Catalog) apply(reason string, mutate func(*AppDocument) error) error {
+	if c.store != nil {
+		// If a prior write left durability uncertain, re-attempt it BEFORE
+		// taking a snapshot for mutate. Otherwise a command-ID replay's
+		// mutate closure (e.g. executeCreate's findCommandReceipt check)
+		// would read the unconfirmed document, find its own receipt, and
+		// report success without Store.Update ever being invoked again --
+		// silently upgrading an uncertain write to acknowledged success.
+		if err := c.store.Revalidate(); err != nil {
+			return fmt.Errorf("catalog commit %q rejected: %w", reason, err)
+		}
+	}
+
 	c.mu.Lock()
 
 	var doc AppDocument
