@@ -247,3 +247,77 @@ func TestCommandWaiter_RegisterBeforeSend(t *testing.T) {
 		t.Fatal("waiter did not receive racing reply")
 	}
 }
+
+// TestPeerIDForOwner_RoutesSendCommandToLiveOwnerBoundPeer proves the exact
+// integration handleV2SessionCommand (pkg/server/routes_state_v2.go) relies
+// on: once a peer's catalog snapshot has bound it to an owner (via
+// UpdateRemoteCatalog, the same call the real peer-link layer makes for every
+// inbound v2 catalog frame), PeerIDForOwner resolves that owner back to the
+// live peer connection, and SendCommand using that resolved peerID actually
+// reaches the connection's command queue and returns the delivered reply.
+// Before Finding 8's remote-command-forwarding fix, no code path ever called
+// PeerIDForOwner for a session command at all -- every command silently ran
+// against the LOCAL catalog regardless of Ref.Owner. This test pins the two
+// primitives (PeerIDForOwner + SendCommand) working together so a regression
+// in either one is caught here, independent of the HTTP route wiring (covered
+// separately in pkg/server's TestV2SessionCommand_RemoteRefRouting).
+func TestPeerIDForOwner_RoutesSendCommandToLiveOwnerBoundPeer(t *testing.T) {
+	mgr := makeTestV2Manager(t)
+	peerID := "remote-node-b"
+	pc := newV2PeerConnection(peerID)
+	mgr.RegisterPeer(peerID, "node-b", "", pc)
+
+	owner := state.OwnerIDFromFingerprint(peerID)
+	sessionID := state.NewSessionID()
+	mgr.UpdateRemoteCatalog(peerID, pc, state.OwnerCatalogSnapshot{
+		Owner:    owner,
+		Revision: 1,
+		Sessions: []state.LocalSessionRecord{
+			{ID: sessionID, Owner: owner, Ref: state.SessionRef{Owner: owner, Session: sessionID}, Phase: state.SessionPhaseActive},
+		},
+	})
+
+	// This is the exact lookup handleV2SessionCommand performs before
+	// forwarding: given a ref's owner, resolve which live peer connection
+	// owns it.
+	resolvedPeerID := mgr.PeerIDForOwner(owner)
+	if resolvedPeerID != peerID {
+		t.Fatalf("PeerIDForOwner(%q) = %q, want %q", owner, resolvedPeerID, peerID)
+	}
+
+	cmd := state.SessionCommand{
+		ID:     validCommandID3,
+		Ref:    state.SessionRef{Owner: owner, Session: sessionID},
+		Action: "label",
+	}
+
+	done := make(chan state.CommandResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		res, err := mgr.SendCommand(context.Background(), resolvedPeerID, cmd)
+		errCh <- err
+		done <- res
+	}()
+
+	var req *V2CommandRequestPayload
+	select {
+	case req = <-pc.cmdQueue.ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for forwarded command request")
+	}
+	if req.ID != string(cmd.ID) {
+		t.Fatalf("forwarded command id %q, want %q", req.ID, cmd.ID)
+	}
+
+	data, _ := json.Marshal(state.CommandResult{ID: cmd.ID, Ref: cmd.Ref, Accepted: true, DisplayName: "node-b-session"})
+	mgr.deliverCommandReply(peerID, pc, V2CommandReplyPayload{ID: req.ID, Handled: true, Result: data})
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("SendCommand: %v", err)
+	}
+	res := <-done
+	if !res.Accepted || res.DisplayName != "node-b-session" {
+		t.Fatalf("expected accepted result with node B's reply, got %+v", res)
+	}
+}
+

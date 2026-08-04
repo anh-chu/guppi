@@ -211,6 +211,13 @@ func (s *SessionCommandService) ExecuteSessionCommandFromPeer(ctx context.Contex
 	return s.ExecuteSessionCommand(ctx, cmd)
 }
 
+// Owner returns this node's own catalog owner ID. Callers (route handlers)
+// use it to decide whether an inbound command's Ref.Owner targets this
+// node's own catalog or must be forwarded to a remote peer.
+func (s *SessionCommandService) Owner() OwnerID {
+	return s.owner
+}
+
 // LookupRefByDisplayName returns the canonical session ref for a display name
 // or session id. It is used by v1 route adapters that only know the UI label.
 func (s *SessionCommandService) LookupRefByDisplayName(name string) (SessionRef, bool) {

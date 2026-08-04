@@ -1267,6 +1267,16 @@ func (m *Manager) peerIDForOwner(owner state.OwnerID) string {
 	return ""
 }
 
+// PeerIDForOwner is the exported form of peerIDForOwner, used by route
+// handlers outside this package (e.g. handleV2SessionCommand) to resolve
+// which live peer connection currently owns a given remote catalog owner,
+// so a v2 session command targeting that owner can be forwarded via
+// SendCommand instead of executed locally. Returns "" if no peer is
+// currently known to own that owner ID (e.g. never seen, or forgotten).
+func (m *Manager) PeerIDForOwner(owner state.OwnerID) string {
+	return m.peerIDForOwner(owner)
+}
+
 // LoadRemoteCatalogCache loads persisted remote catalogs into memory. It is
 // idempotent and ignores missing sidecar files. For each loaded catalog,
 // restores the peer ownership binding based on the owner value (which is

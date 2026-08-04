@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -14,6 +16,14 @@ import (
 // workspace commands carry small, bounded params (refs, ratios, labels); this
 // is generous headroom while still rejecting abusive payloads.
 const v2MaxCommandBodyBytes = 64 * 1024
+
+// v2RemoteCommandTimeout bounds how long handleV2SessionCommand waits for a
+// forwarded command's reply from a remote peer over the v2 command RPC
+// (pkg/peer/rpc.go's SendCommand) before giving up and returning an error to
+// the browser. Matches the timeout already used by the legacy REST
+// label/rename/kill routes' equivalent remote forwarding in
+// routes_sessions.go.
+const v2RemoteCommandTimeout = 10 * time.Second
 
 // v2BootstrapResponse is the single complete runtime-snapshot response the
 // browser needs to render durable UI state without any further sessions,
@@ -141,12 +151,56 @@ func handleV2SessionCommand(w http.ResponseWriter, r *http.Request, opts *Option
 		id = state.NewCommandID()
 	}
 
-	result, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+	cmd := state.SessionCommand{
 		ID:     id,
 		Ref:    req.Ref,
 		Action: req.Action,
 		Params: req.Params,
-	})
+	}
+
+	// Forward to the remote peer that actually owns this ref instead of
+	// running it against our own catalog. Session commands sent by the
+	// browser can target ANY session currently rendered in the sidebar,
+	// including remote-owned ones (see App.tsx's remote-pane rendering);
+	// only action=create structurally has no Ref (see v2SessionCommandRequest
+	// doc comment above) and is always local. Without this branch, every
+	// kill/label/recover/dismiss/retry against a remote session silently
+	// mutated (or 404'd against) the WRONG node's catalog -- the local one --
+	// even though the session was already visibly attached and usable in the
+	// browser.
+	if req.Ref.Owner != "" && req.Ref.Owner != opts.V2CommandSvc.Owner() {
+		if opts.PeerMgr == nil {
+			writeV2Error(w, http.StatusServiceUnavailable, "peer_offline", "ref.owner", "this node has no peer manager configured; cannot reach remote owner")
+			return
+		}
+		peerID := opts.PeerMgr.PeerIDForOwner(req.Ref.Owner)
+		if peerID == "" {
+			writeV2Error(w, http.StatusServiceUnavailable, "peer_offline", "ref.owner", "remote owner is not currently reachable")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), v2RemoteCommandTimeout)
+		defer cancel()
+		result, err := opts.PeerMgr.SendCommand(ctx, peerID, cmd)
+		if err != nil {
+			// SendCommand's own transport failures (dead connection, full
+			// queue, RPC timeout) are plain errors, not state.StateError --
+			// writeV2CommandError's fallback would otherwise misreport them
+			// as a 500 invalid_input server bug rather than the transient
+			// peer-reachability issue they actually are.
+			var se state.StateError
+			if !errors.As(err, &se) {
+				writeV2Error(w, http.StatusServiceUnavailable, "peer_offline", "ref.owner", "remote command failed: "+err.Error())
+				return
+			}
+			writeV2CommandError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+		return
+	}
+
+	result, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), cmd)
 	if err != nil {
 		writeV2CommandError(w, err)
 		return
