@@ -34,17 +34,21 @@ type commandWaiterKey struct {
 	id     string
 }
 
-// commandWaiter is a pending command RPC awaiting its reply. It is keyed by
-// the composite commandWaiterKey (peer identity + connection + command ID),
-// so a reply arriving from a different peer or a superseded connection (e.g.
-// one attacker-controlled peer guessing another peer's in-flight CommandID)
-// cannot satisfy it, and registrations for genuinely distinct (peer, conn,
-// id) tuples can never collide with each other.
+// commandWaiter is the single in-flight RPC for one exact (peer, conn, id)
+// key. It carries every subscriber's result channel: the first caller for a
+// key (the "leader") creates it and actually sends the request; any
+// concurrent caller presenting the EXACT SAME key (same peer, same live
+// connection, same CommandID) joins the same waiter instead of sending a
+// second request, and every subscriber receives an identical copy of the
+// eventual result. A reply arriving from a different peer or a superseded
+// connection (e.g. one attacker-controlled peer guessing another peer's
+// in-flight CommandID) cannot satisfy it, and registrations for genuinely
+// distinct (peer, conn, id) tuples can never collide with each other.
 type commandWaiter struct {
 	id     string
 	peerID string
 	conn   *PeerConnection
-	done   chan commandResult
+	dones  []chan commandResult
 }
 
 type commandResult struct {
@@ -219,13 +223,16 @@ func (m *Manager) SendCommand(ctx context.Context, peerID string, cmd state.Sess
 		return result, fmt.Errorf("peer %s: %w", peerID, errors.New("v2 command not supported"))
 	}
 
-	// Register waiter first to avoid lost-reply races.
+	// Register waiter first to avoid lost-reply races. Only the leader for
+	// this exact (peer, conn, CommandID) key actually enqueues a request; a
+	// concurrent joiner for the exact same key shares the leader's in-flight
+	// request and result instead of sending a second one.
 	done := make(chan commandResult, 1)
-	m.registerCommandWaiter(reqPayload.ID, peerID, pc, done)
-	defer m.unregisterCommandWaiter(reqPayload.ID, peerID, pc)
+	isLeader := m.registerCommandWaiter(reqPayload.ID, peerID, pc, done)
+	defer m.unregisterCommandWaiter(reqPayload.ID, peerID, pc, done)
 
-	if !pc.enqueueCommand(reqPayload) {
-		return result, ErrCommandQueueFull
+	if isLeader && !pc.enqueueCommand(reqPayload) {
+		m.failCommandWaiters(reqPayload.ID, peerID, pc, ErrCommandQueueFull)
 	}
 
 	select {
@@ -314,11 +321,11 @@ func (m *Manager) SendWorkspaceCommand(ctx context.Context, peerID string, cmd s
 	}
 
 	done := make(chan commandResult, 1)
-	m.registerCommandWaiter(reqPayload.ID, peerID, pc, done)
-	defer m.unregisterCommandWaiter(reqPayload.ID, peerID, pc)
+	isLeader := m.registerCommandWaiter(reqPayload.ID, peerID, pc, done)
+	defer m.unregisterCommandWaiter(reqPayload.ID, peerID, pc, done)
 
-	if !pc.enqueueCommand(reqPayload) {
-		return ErrCommandQueueFull
+	if isLeader && !pc.enqueueCommand(reqPayload) {
+		m.failCommandWaiters(reqPayload.ID, peerID, pc, ErrCommandQueueFull)
 	}
 
 	select {
@@ -372,11 +379,11 @@ func (m *Manager) SendRemoteCreate(ctx context.Context, peerID string, req state
 	}
 
 	done := make(chan commandResult, 1)
-	m.registerCommandWaiter(reqPayload.ID, peerID, pc, done)
-	defer m.unregisterCommandWaiter(reqPayload.ID, peerID, pc)
+	isLeader := m.registerCommandWaiter(reqPayload.ID, peerID, pc, done)
+	defer m.unregisterCommandWaiter(reqPayload.ID, peerID, pc, done)
 
-	if !pc.enqueueCommand(reqPayload) {
-		return result, ErrCommandQueueFull
+	if isLeader && !pc.enqueueCommand(reqPayload) {
+		m.failCommandWaiters(reqPayload.ID, peerID, pc, ErrCommandQueueFull)
 	}
 
 	select {
@@ -414,62 +421,124 @@ func buildV2RemoteCreateRequest(req state.RemoteCreateRequest) (*V2CommandReques
 	}, nil
 }
 
-// registerCommandWaiter registers w under its exact (peerID, conn, id)
-// composite key. Two registrations for genuinely different keys (different
-// peer, different connection, or different id) never collide. A second
-// registration for the EXACT SAME key (concurrent callers racing the same
-// peer/connection/CommandID -- possible when a caller retries a timed-out
-// RPC on the same still-live connection before the first attempt's waiter is
-// unregistered) replaces the map entry, matching the pre-existing single-
-// outbound-request-per-ID design: only one request for that exact key is
-// ever actually sent/in flight, so only the most recent registration should
-// receive the eventual reply. The superseded waiter's caller either already
-// timed out (its ctx.Done() case) or is about to, since deliverCommandReply
-// can now only deliver to the current registration.
-func (m *Manager) registerCommandWaiter(id, peerID string, conn *PeerConnection, done chan commandResult) {
+// registerCommandWaiter joins or creates the single in-flight waiter for the
+// exact (peerID, conn, id) composite key. Two registrations for genuinely
+// different keys (different peer, different connection, or different id)
+// never collide -- each gets its own waiter and its own outbound request.
+// A second registration for the EXACT SAME key (concurrent callers racing
+// the same peer/connection/CommandID, e.g. one caller retrying while an
+// earlier identical call is still in flight) does NOT send a second
+// request: it attaches done as an additional subscriber on the existing
+// waiter and returns isLeader=false. The caller that created the waiter
+// (isLeader=true) is the only one that may enqueue the outbound request;
+// every subscriber -- leader and joiners alike -- receives an identical
+// copy of the eventual result via deliverCommandReply/failCommandWaiters.
+func (m *Manager) registerCommandWaiter(id, peerID string, conn *PeerConnection, done chan commandResult) (isLeader bool) {
 	m.cmdMu.Lock()
 	defer m.cmdMu.Unlock()
 	if m.commandWaiters == nil {
 		m.commandWaiters = make(map[commandWaiterKey]*commandWaiter)
 	}
 	key := commandWaiterKey{peerID: peerID, conn: conn, id: id}
-	m.commandWaiters[key] = &commandWaiter{id: id, peerID: peerID, conn: conn, done: done}
+	if w, ok := m.commandWaiters[key]; ok {
+		w.dones = append(w.dones, done)
+		return false
+	}
+	m.commandWaiters[key] = &commandWaiter{id: id, peerID: peerID, conn: conn, dones: []chan commandResult{done}}
+	return true
 }
 
-// unregisterCommandWaiter removes exactly the waiter registered under
-// (peerID, conn, id) -- it never wildcard-deletes by id alone, so it cannot
-// remove a different peer's or a different connection's still-pending
-// waiter that happens to share the same CommandID.
-func (m *Manager) unregisterCommandWaiter(id, peerID string, conn *PeerConnection) {
+// unregisterCommandWaiter removes exactly this caller's done channel from
+// the waiter registered under (peerID, conn, id) -- it never wildcard-
+// deletes by id alone, so it cannot remove a different peer's or a
+// different connection's still-pending waiter that happens to share the
+// same CommandID. Other subscribers on the same waiter (joiners sharing the
+// exact same key) are left untouched; the map entry itself is only removed
+// once every subscriber has unregistered (or once deliverCommandReply /
+// failCommandWaiters has already resolved and removed it). This is a
+// no-op if the entry was already removed by delivery/failure.
+func (m *Manager) unregisterCommandWaiter(id, peerID string, conn *PeerConnection, done chan commandResult) {
 	m.cmdMu.Lock()
 	defer m.cmdMu.Unlock()
-	delete(m.commandWaiters, commandWaiterKey{peerID: peerID, conn: conn, id: id})
+	key := commandWaiterKey{peerID: peerID, conn: conn, id: id}
+	w, ok := m.commandWaiters[key]
+	if !ok {
+		return
+	}
+	filtered := w.dones[:0]
+	for _, d := range w.dones {
+		if d != done {
+			filtered = append(filtered, d)
+		}
+	}
+	w.dones = filtered
+	if len(w.dones) == 0 {
+		delete(m.commandWaiters, key)
+	}
 }
 
-// deliverCommandReply routes a v2 command reply to its waiter. peerID and conn
-// identify the authenticated connection the reply arrived on and form part of
-// the lookup key (along with reply.ID), so a different (or reconnected) peer
-// cannot satisfy another peer's in-flight waiter by guessing or replaying a
-// CommandID, and a reply cannot be misdelivered to an unrelated peer's
-// registration that happens to share the same CommandID. It returns true if
-// a waiter was found and the reply was delivered to it.
+// deliverCommandReply routes a v2 command reply to every subscriber of its
+// waiter. peerID and conn identify the authenticated connection the reply
+// arrived on and form part of the lookup key (along with reply.ID), so a
+// different (or reconnected) peer cannot satisfy another peer's in-flight
+// waiter by guessing or replaying a CommandID, and a reply cannot be
+// misdelivered to an unrelated peer's registration that happens to share
+// the same CommandID. The waiter is removed from the map atomically with
+// lookup so a reply is delivered at most once; every current subscriber
+// (the leader and any joiners for the exact same key) receives an
+// identical copy of the reply. It returns true if a waiter was found and
+// the reply was delivered to at least one subscriber.
 func (m *Manager) deliverCommandReply(peerID string, conn *PeerConnection, reply V2CommandReplyPayload) bool {
-	m.cmdMu.Lock()
-	w, ok := m.commandWaiters[commandWaiterKey{peerID: peerID, conn: conn, id: reply.ID}]
-	m.cmdMu.Unlock()
-	if !ok {
+	w := m.takeCommandWaiter(peerID, conn, reply.ID)
+	if w == nil {
 		logrus.WithFields(logrus.Fields{
 			"command_id": reply.ID,
 			"peer":       peerID,
 		}).Debug("dropping v2 command reply: no matching waiter for this peer/connection/command id")
 		return false
 	}
-	select {
-	case w.done <- commandResult{payload: reply}:
-		return true
-	default:
-		return false
+	delivered := false
+	for _, d := range w.dones {
+		select {
+		case d <- commandResult{payload: reply}:
+			delivered = true
+		default:
+		}
 	}
+	return delivered
+}
+
+// failCommandWaiters removes the waiter for (peerID, conn, id), if any, and
+// delivers err to every one of its subscribers. It is used when the leader
+// fails to even enqueue the outbound request (e.g. ErrCommandQueueFull):
+// without this, any joiner attached to the same key would wait forever for
+// a reply to a request that was never actually sent.
+func (m *Manager) failCommandWaiters(id, peerID string, conn *PeerConnection, err error) {
+	w := m.takeCommandWaiter(peerID, conn, id)
+	if w == nil {
+		return
+	}
+	for _, d := range w.dones {
+		select {
+		case d <- commandResult{err: err}:
+		default:
+		}
+	}
+}
+
+// takeCommandWaiter atomically looks up and removes the waiter for the exact
+// (peerID, conn, id) key, so it can be resolved (delivered or failed)
+// exactly once.
+func (m *Manager) takeCommandWaiter(peerID string, conn *PeerConnection, id string) *commandWaiter {
+	m.cmdMu.Lock()
+	defer m.cmdMu.Unlock()
+	key := commandWaiterKey{peerID: peerID, conn: conn, id: id}
+	w, ok := m.commandWaiters[key]
+	if !ok {
+		return nil
+	}
+	delete(m.commandWaiters, key)
+	return w
 }
 
 // getPeerConnectionLocked returns the live PeerConnection for id, or nil.

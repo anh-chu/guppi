@@ -490,3 +490,114 @@ func TestPeerIDForOwner_RoutesSendCommandToLiveOwnerBoundPeer(t *testing.T) {
 		t.Fatalf("expected accepted result with node B's reply, got %+v", res)
 	}
 }
+
+// TestSendCommand_SamePeerSameConnSameCommandIDSingleFlight is the real-
+// boundary proof for round-8 Finding B: two concurrent SendCommand calls
+// to the SAME peer, over the SAME live connection, carrying the EXACT SAME
+// CommandID. Before the single-flight fix, the composite (peer, conn, id)
+// waiter key from commit 7546b83 still let the second registerCommandWaiter
+// call replace the first waiter's map entry (registerCommandWaiter is a
+// map[key]=w assignment, not an insert-if-absent), so BOTH calls
+// independently enqueued an outbound request and only whichever waiter was
+// currently registered when the (single, coalesced) reply arrived could
+// ever be satisfied -- the other caller hung until ctx.Done(). This test
+// proves: (1) exactly ONE request is ever observed on the connection's
+// outbound command queue for the shared key, and (2) both concurrent
+// callers receive the identical successful result, neither timing out.
+func TestSendCommand_SamePeerSameConnSameCommandIDSingleFlight(t *testing.T) {
+	mgr := makeTestV2Manager(t)
+	const sharedCmdID = state.CommandID("single-flight-shared-id")
+
+	peerID := "peer-single-flight"
+	pc := newV2PeerConnection(peerID)
+	mgr.RegisterPeer(peerID, "peer-single-flight", "", pc)
+
+	ref := state.SessionRef{Owner: validOwnerID, Session: validSessionID}
+	cmd := state.SessionCommand{ID: sharedCmdID, Ref: ref, Action: "kill"}
+
+	// Fire two concurrent SendCommand calls for the exact same
+	// (peer, conn, CommandID) key, using a start gate so both calls race
+	// registerCommandWaiter genuinely concurrently rather than sequentially.
+	start := make(chan struct{})
+	res1Ch := make(chan state.CommandResult, 1)
+	err1Ch := make(chan error, 1)
+	res2Ch := make(chan state.CommandResult, 1)
+	err2Ch := make(chan error, 1)
+
+	go func() {
+		<-start
+		res, err := mgr.SendCommand(context.Background(), peerID, cmd)
+		err1Ch <- err
+		res1Ch <- res
+	}()
+	go func() {
+		<-start
+		res, err := mgr.SendCommand(context.Background(), peerID, cmd)
+		err2Ch <- err
+		res2Ch <- res
+	}()
+	close(start)
+
+	// Exactly one request must land on the connection's outbound queue for
+	// this shared key: drain the first, then prove no second one ever
+	// arrives (a short, bounded wait -- if the bug is present, a second
+	// request from the other caller shows up here).
+	var req *V2CommandRequestPayload
+	select {
+	case req = <-pc.cmdQueue.ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for the single expected outbound request")
+	}
+	if req.ID != string(sharedCmdID) {
+		t.Fatalf("request id = %q, want %q", req.ID, sharedCmdID)
+	}
+	select {
+	case second := <-pc.cmdQueue.ch:
+		t.Fatalf("FINDING B VIOLATION: a SECOND outbound request was enqueued for the exact same "+
+			"(peer, conn, CommandID) key -- single-flight is not deduplicating concurrent identical "+
+			"requests. second=%+v", second)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: no second request.
+	}
+
+	// Deliver exactly one reply for the one request that was actually sent.
+	resultData, err := json.Marshal(state.CommandResult{ID: sharedCmdID, Ref: ref, Accepted: true, DisplayName: "single-flight-result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := mgr.deliverCommandReply(peerID, pc, V2CommandReplyPayload{ID: req.ID, Handled: true, Result: resultData})
+	if !delivered {
+		t.Fatal("deliverCommandReply reported no waiter delivered to -- expected at least one (both) subscribers")
+	}
+
+	// Both concurrent callers must receive the identical successful result;
+	// neither may time out waiting for a reply that was routed only to the
+	// other one.
+	var err1, err2 error
+	var res1, res2 state.CommandResult
+	select {
+	case err1 = <-err1Ch:
+	case <-time.After(time.Second):
+		t.Fatal("FINDING B VIOLATION: first concurrent caller timed out waiting for the shared reply")
+	}
+	select {
+	case err2 = <-err2Ch:
+	case <-time.After(time.Second):
+		t.Fatal("FINDING B VIOLATION: second concurrent caller timed out waiting for the shared reply")
+	}
+	res1 = <-res1Ch
+	res2 = <-res2Ch
+
+	if err1 != nil {
+		t.Fatalf("first caller: unexpected error: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("second caller: unexpected error: %v", err2)
+	}
+	if res1 != res2 {
+		t.Fatalf("concurrent callers for the same key received DIFFERENT results: res1=%+v res2=%+v", res1, res2)
+	}
+	if !res1.Accepted || res1.DisplayName != "single-flight-result" {
+		t.Fatalf("unexpected result: %+v", res1)
+	}
+}
