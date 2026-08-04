@@ -96,6 +96,12 @@ type Runtime struct {
 	// Task 10 durable v2 browser state stream.
 	v2StateStream *ws.StateStreamHub
 
+	// v2Enricher supplies runtime metadata (cwd, pid, prompt preview, activity)
+	// for catalog projection. Its /proc-derived fields are refreshed on the
+	// same cadence as the daemon adapter snapshot (see refreshDaemonState) so
+	// catalog enrichment itself never performs blocking I/O.
+	v2Enricher *v2RuntimeEnricher
+
 	// Test hook: if set, overrides DetectAndCleanupCrashes in runDaemonRefresh.
 	detectCrashesFn func() []pty.LifecycleRecord
 }
@@ -239,6 +245,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		}
 
 		enricher := &v2RuntimeEnricher{adapter: rt.adapter, actTracker: rt.actTracker}
+		rt.v2Enricher = enricher
 		rt.v2Reconciler = state.NewReconciler(rt.v2Catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
 		rt.v2CommandSvc = state.NewSessionCommandService(rt.v2Catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.v2Catalog.Owner()})
 		rt.v2RemoteCreate = state.NewRemoteCreateCoordinator(rt.v2Catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.v2Catalog.Owner()})
@@ -682,6 +689,13 @@ func (rt *Runtime) refreshDaemonState() {
 	if !rt.v2Mode {
 		rt.refreshSessions(infos)
 	}
+	// Refresh the v2 enricher's runtime metadata cache (cwd, pid, command) on
+	// the same cadence as the daemon adapter snapshot. This is the only place
+	// that performs the blocking /proc/<pid>/cwd read; Enrich itself only does
+	// an in-memory map lookup, keeping catalog projection off the I/O path.
+	if rt.v2Enricher != nil {
+		rt.v2Enricher.refreshRuntimeCache()
+	}
 }
 
 // runDaemonRefresh keeps an up-to-date snapshot of daemon sessions and runs
@@ -945,6 +959,29 @@ type v2RuntimeEnricher struct {
 
 	previewMu    sync.Mutex
 	previewCache map[string]*v2PreviewCacheEntry
+
+	runtimeMu    sync.RWMutex
+	runtimeCache map[string]v2RuntimeCacheEntry
+}
+
+// v2RuntimeCacheEntry holds the process-derived fields for one session
+// (daemon adapter snapshot fields plus the live /proc/<pid>/cwd read) as of
+// the last background refresh. Consumers of this cache may see values that
+// are up to v2RuntimeCacheInterval stale; this mirrors the accepted staleness
+// of the throttled prompt-preview cache above and is a deliberate trade for
+// keeping catalog projection free of blocking I/O.
+type v2RuntimeCacheEntry struct {
+	daemonPID      int
+	shellPID       int
+	currentCommand string
+	currentPath    string
+}
+
+// readProcCwd reads the live working directory of a process from /proc. It is
+// a package-level var (not a direct os.Readlink call) so tests can substitute
+// a fake implementation without touching the real filesystem.
+var readProcCwd = func(pid int) (string, error) {
+	return os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
 }
 
 // v2PreviewCacheEntry holds a throttled prompt-preview snapshot for a single
@@ -1018,33 +1055,77 @@ func (e *v2RuntimeEnricher) refreshPreview(sessionID string) {
 	e.previewMu.Unlock()
 }
 
-func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionRecord) state.SessionRuntime {
-	var rt state.SessionRuntime
-	for _, d := range e.adapter.List() {
-		if d.ID != string(ref.Session) {
-			continue
+// refreshRuntimeCache rebuilds the process-derived runtime metadata cache
+// (daemon PID, shell PID, current command, cwd) from the daemon adapter's
+// snapshot. This is the only place that performs the (up to N, one per
+// session) blocking /proc/<pid>/cwd reads; it must only be called from a
+// periodic background loop (see Runtime.refreshDaemonState), never from
+// Enrich / catalog projection. Building a whole new map and swapping it in
+// under the lock keeps readers lock-free of any in-progress refresh.
+func (e *v2RuntimeEnricher) refreshRuntimeCache() {
+	infos := e.adapter.List()
+	next := make(map[string]v2RuntimeCacheEntry, len(infos))
+	for _, d := range infos {
+		entry := v2RuntimeCacheEntry{
+			daemonPID:      d.Pid,
+			shellPID:       d.ShellPid,
+			currentCommand: d.Shell,
+			currentPath:    d.Cwd,
 		}
-		rt.DaemonPID = d.Pid
-		rt.ShellPID = d.ShellPid
-		rt.CurrentCommand = d.Shell
-		rt.CurrentPath = d.Cwd
 
 		pid := d.ShellPid
 		if pid == 0 {
 			pid = d.Pid
 		}
 		if pid > 0 {
-			if liveCwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid)); err == nil && liveCwd != "" {
-				rt.CurrentPath = liveCwd
+			if liveCwd, err := readProcCwd(pid); err == nil && liveCwd != "" {
+				entry.currentPath = liveCwd
 			}
 		}
-		rt.PromptPreview = e.previewFor(d.ID)
-		if e.actTracker != nil {
-			if snap := e.actTracker.Get(d.ID); snap != nil && snap.IdleSeconds >= 0 {
-				rt.LastActivity = snap.LastActive
-			}
+		next[d.ID] = entry
+	}
+
+	e.runtimeMu.Lock()
+	e.runtimeCache = next
+	e.runtimeMu.Unlock()
+}
+
+// cachedRuntime returns the last background-refreshed metadata for a session
+// ID. It is a pure in-memory map lookup: no /proc reads, no daemon adapter
+// calls.
+func (e *v2RuntimeEnricher) cachedRuntime(id string) (v2RuntimeCacheEntry, bool) {
+	e.runtimeMu.RLock()
+	defer e.runtimeMu.RUnlock()
+	entry, ok := e.runtimeCache[id]
+	return entry, ok
+}
+
+// Enrich returns runtime fields for a session from in-memory caches only. It
+// performs zero /proc reads and zero daemon-adapter list/snapshot calls on
+// this path: process metadata comes from the background-refreshed
+// runtimeCache (see refreshRuntimeCache), the prompt preview comes from the
+// throttled previewFor cache, and activity comes from actTracker's own O(1)
+// lookup. This keeps catalog projection (called once per session per
+// snapshot, potentially hundreds of times per call) off the blocking I/O
+// path entirely; enriched fields may lag reality by up to one background
+// refresh interval, which mirrors the accepted staleness of the prompt
+// preview cache.
+func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionRecord) state.SessionRuntime {
+	var rt state.SessionRuntime
+	id := string(ref.Session)
+
+	if cached, ok := e.cachedRuntime(id); ok {
+		rt.DaemonPID = cached.daemonPID
+		rt.ShellPID = cached.shellPID
+		rt.CurrentCommand = cached.currentCommand
+		rt.CurrentPath = cached.currentPath
+	}
+
+	rt.PromptPreview = e.previewFor(id)
+	if e.actTracker != nil {
+		if snap := e.actTracker.Get(id); snap != nil && snap.IdleSeconds >= 0 {
+			rt.LastActivity = snap.LastActive
 		}
-		break
 	}
 	return rt
 }

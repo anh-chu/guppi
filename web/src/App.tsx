@@ -28,6 +28,7 @@ import { useAuth } from './hooks/useAuth'
 import { useSessionAttrs, type SessionAttrSets } from './hooks/useSessionAttrs'
 import { useSessionOrder } from './hooks/useSessionOrder'
 import { useWikiController } from './hooks/useWikiController'
+import { WIKI_HISTORY_MAX, type WikiTarget, type WikiState } from './state/workspaceReducer'
 import { Toasts, Toast } from './components/Toasts'
 import { RecoveryPanel } from './components/RecoveryPanel'
 import { useCrashedSessions } from './hooks/useCrashedSessions'
@@ -1529,7 +1530,32 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const { hosts, refresh: refreshHosts } = useHosts()
   const { prefs: _ } = usePreferences() // already have prefs above
-  const wiki = useWikiController(undefined as any, wikiEnabled) // v2 doesn't have workspace object
+  // AppV2 has no workspace reducer (unlike AppLegacy's useWorkspace), so
+  // useWikiController -- which requires a real { state, actions } object --
+  // gets its own small local wiki-state stub here instead. This mirrors
+  // workspaceReducer.ts's 'wiki/open'/'wiki/close' cases exactly (same
+  // WIKI_HISTORY_MAX-capped, dedupe-by-path history) so the panel behaves
+  // identically to the legacy path. Previously this was `undefined as any`,
+  // which crashed AppV2 on every render (`Cannot destructure property
+  // 'state' of 'workspace' as it is undefined`) -- found while building the
+  // v2 multi-node E2E suite; fixed here since it made the entire v2 UI path
+  // non-functional, not something in-scope to leave broken or skip around.
+  const [wikiState, setWikiState] = useState<WikiState>({ target: null, history: [] })
+  const wikiWorkspaceLike = useMemo(
+    () => ({
+      state: { wiki: wikiState, view: { activeKey: null, singleView: null } },
+      actions: {
+        openWiki: (target: WikiTarget) =>
+          setWikiState((s) => ({
+            target,
+            history: [target, ...s.history.filter((t) => t.path !== target.path)].slice(0, WIKI_HISTORY_MAX),
+          })),
+        closeWiki: () => setWikiState((s) => ({ ...s, target: null })),
+      },
+    }),
+    [wikiState],
+  )
+  const wiki = useWikiController(wikiWorkspaceLike, wikiEnabled)
   const crashedHook = useCrashedSessions()
   const selfUpdate = useSelfUpdate(null)
   const wikiEnabledRef = useRef(wikiEnabled)

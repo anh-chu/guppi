@@ -469,3 +469,92 @@ func TestNewRuntimeV2InitFailureReturnsFatalError(t *testing.T) {
 		t.Logf("Warning: error message may not be clear about v2 failure: %v", err)
 	}
 }
+
+// TestV2RuntimeEnricherEnrichIsPureCacheLookup proves that Enrich performs
+// zero /proc reads and zero daemon-adapter list/snapshot calls for N
+// sessions on the hot path: all process metadata comes from the
+// background-refreshed runtimeCache built by refreshRuntimeCache.
+func TestV2RuntimeEnricherEnrichIsPureCacheLookup(t *testing.T) {
+	const n = 500
+	infos := make([]pty.SessionInfo, n)
+	for i := 0; i < n; i++ {
+		infos[i] = pty.SessionInfo{ID: fmt.Sprintf("s%d", i), Pid: 1000 + i, ShellPid: 2000 + i, Shell: "bash"}
+	}
+	reg := &fakeRegistry{sessions: infos}
+	adapter := &daemonAdapter{reg: reg}
+	adapter.refresh()
+
+	readlinkCalls := 0
+	origReadProcCwd := readProcCwd
+	readProcCwd = func(pid int) (string, error) {
+		readlinkCalls++
+		return fmt.Sprintf("/cwd/%d", pid), nil
+	}
+	defer func() { readProcCwd = origReadProcCwd }()
+
+	enricher := &v2RuntimeEnricher{adapter: adapter}
+
+	// The one and only place readlink/list may run: the background refresh.
+	enricher.refreshRuntimeCache()
+	if readlinkCalls != n {
+		t.Fatalf("background refresh: expected %d readlink calls, got %d", n, readlinkCalls)
+	}
+
+	baseListCalls := reg.listCalls
+	readlinkCalls = 0
+
+	for i := 0; i < n; i++ {
+		ref := state.SessionRef{Owner: state.OwnerID("o"), Session: state.SessionID(fmt.Sprintf("s%d", i))}
+		rec := state.LocalSessionRecord{ID: ref.Session, Owner: ref.Owner, Ref: ref}
+		rt := enricher.Enrich(ref, rec)
+		want := fmt.Sprintf("/cwd/%d", 2000+i)
+		if rt.CurrentPath != want {
+			t.Fatalf("session %d: CurrentPath = %q, want %q (cached value)", i, rt.CurrentPath, want)
+		}
+		if rt.DaemonPID != 1000+i || rt.ShellPID != 2000+i {
+			t.Fatalf("session %d: pid fields not populated from cache: %+v", i, rt)
+		}
+	}
+
+	if readlinkCalls != 0 {
+		t.Fatalf("Enrich performed %d /proc reads across %d sessions; want 0 (must be pure cache lookup)", readlinkCalls, n)
+	}
+	if reg.listCalls != baseListCalls {
+		t.Fatalf("Enrich triggered %d daemon-adapter list/snapshot calls; want 0", reg.listCalls-baseListCalls)
+	}
+}
+
+// TestV2RuntimeEnricherBackgroundRefreshUpdatesCache proves that
+// refreshRuntimeCache actually replaces the cached value over successive
+// cycles, simulating the underlying process's cwd changing between two
+// background refreshes.
+func TestV2RuntimeEnricherBackgroundRefreshUpdatesCache(t *testing.T) {
+	reg := &fakeRegistry{sessions: []pty.SessionInfo{{ID: "s1", Pid: 100, ShellPid: 101, Shell: "bash"}}}
+	adapter := &daemonAdapter{reg: reg}
+	adapter.refresh()
+
+	cwd := "/first"
+	origReadProcCwd := readProcCwd
+	readProcCwd = func(pid int) (string, error) { return cwd, nil }
+	defer func() { readProcCwd = origReadProcCwd }()
+
+	enricher := &v2RuntimeEnricher{adapter: adapter}
+	ref := state.SessionRef{Owner: state.OwnerID("o"), Session: state.SessionID("s1")}
+	rec := state.LocalSessionRecord{ID: ref.Session, Owner: ref.Owner, Ref: ref}
+
+	// Cycle 1.
+	enricher.refreshRuntimeCache()
+	rt := enricher.Enrich(ref, rec)
+	if rt.CurrentPath != "/first" {
+		t.Fatalf("cycle 1: CurrentPath = %q, want /first", rt.CurrentPath)
+	}
+
+	// Cycle 2: the process changed directory; the next background refresh
+	// must observe and cache the new value.
+	cwd = "/second"
+	enricher.refreshRuntimeCache()
+	rt = enricher.Enrich(ref, rec)
+	if rt.CurrentPath != "/second" {
+		t.Fatalf("cycle 2: CurrentPath = %q, want /second (background refresh must update cache)", rt.CurrentPath)
+	}
+}

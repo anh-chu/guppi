@@ -105,7 +105,7 @@ export interface LegacyMigrationInput {
 }
 
 const STUB_TTL_MS = 6000
-const WIKI_HISTORY_MAX = 20
+export const WIKI_HISTORY_MAX = 20
 
 export function sessionKey(session: Session): string {
   return session.host ? `${session.host}/${session.name}` : session.name
