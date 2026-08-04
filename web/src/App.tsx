@@ -1712,10 +1712,20 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   // Real session list backing Sidebar/Overview/QuickSwitcher/NewSessionModal
   // and getBackend below. Previously these components were passed sessions={[]}
   // unconditionally, which made them appear to work while showing nothing.
+  //
+  // name MUST be the immutable canonical session id (s.id): sessionKey(session)
+  // is `host/name`, and the pane tree / workspace path keys sessions by
+  // sessionRefToKey(ref) = `owner/ref.session`, where ref.session is the same
+  // canonical id. If name held the MUTABLE display label (_compat.name, set by
+  // the label/rename command), sessionKey() and sessionRefToKey() would diverge
+  // after any rename, and keyToSessionRef() would reconstruct a bogus ref whose
+  // .session is the label string. The friendly label therefore goes into
+  // display_name, which sessionLabel() (used by Sidebar/Overview) shows.
   const sessions = useMemo<Session[]>(
     () => Array.from(state.catalog.sessionsByRef.values()).map(s => ({
       id: s.id,
-      name: s._compat?.name || s.id,
+      name: s.id,
+      display_name: s._compat?.name || undefined,
       host: s.owner,
       windows: [],
       created: s.created_at,
@@ -1791,17 +1801,16 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   }, [])
 
   const glance = useMemo(() => {
-    const allSessions = Array.from(state.catalog.sessionsByRef.values())
     let parked = 0, working = 0, waiting = 0
-    for (const sess of allSessions) {
-      const key = sessionRefToKey(sess.ref)
-      const signal = sessionSignal(undefined as any, getSessionEvents(key), getSessionActivity(key), isSessionInActiveTurn(key))
+    for (const sess of sessions) {
+      const key = sessionKey(sess)
+      const signal = sessionSignal(sess, getSessionEvents(key), getSessionActivity(key), isSessionInActiveTurn(key))
       if (signal.state === 'needs_you') waiting++
       else if (signal.state === 'working') working++
       else parked++
     }
     return { parked, working, waiting }
-  }, [state.catalog.sessionsByRef, getSessionEvents, getSessionActivity, isSessionInActiveTurn, allToolEvents])
+  }, [sessions, getSessionEvents, getSessionActivity, isSessionInActiveTurn, allToolEvents])
 
   const openNewSessionModal = useCallback(() => {
     setNewSessionModalOpen(true)

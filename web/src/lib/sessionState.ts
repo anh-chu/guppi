@@ -62,7 +62,7 @@ export function sessionSignal(
     return { state: 'offline', loud: false, tool, agentCount }
   }
 
-  const working = inActiveTurn || isSessionActive(session) || (activity !== undefined && activity.idle_seconds <= 5)
+  const working = inActiveTurn || isSessionActive(session) || (activity != null && activity.idle_seconds <= 5)
   if (working) {
     return { state: 'working', loud: false, tool, agentCount }
   }

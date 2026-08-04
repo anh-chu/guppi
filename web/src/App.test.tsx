@@ -12,6 +12,9 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { sessionKey } from './hooks/useSessions'
+import { keyToSessionRef } from './state/v2/paneTreeAdapter'
+import { encodeSessionRef } from './state/v2/types'
 
 // Track which code path was taken
 let codePathTaken: 'appv2' | 'applegacy' | 'none' = 'none'
@@ -59,27 +62,31 @@ vi.mock('./hooks/usePreferences', () => ({
 }))
 
 // Track if useV2State is called (only called in AppV2 path)
+// mockV2State lets tests inject a concrete v2 state (populated catalog/layout)
+// while keeping the default (empty) shape for existing tests.
+let mockV2State: any = null
+const defaultV2State = {
+  state: {
+    catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
+    workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+    connectionGeneration: 0,
+    connectionOnline: false,
+    catalogBootstrapped: false,
+    workspaceBootstrapped: false,
+  },
+  bootstrapped: false,
+  connected: false,
+  paneTree: null,
+  activeKey: null,
+  layoutId: null,
+  createSession: vi.fn(),
+  sessionCommand: vi.fn(),
+  workspaceCommand: vi.fn(),
+}
 vi.mock('./hooks/useV2State', () => ({
   useV2State: () => {
     codePathTaken = 'appv2'
-    return {
-      state: {
-        catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
-        workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
-        connectionGeneration: 0,
-        connectionOnline: false,
-        catalogBootstrapped: false,
-        workspaceBootstrapped: false,
-      },
-      bootstrapped: false,
-      connected: false,
-      paneTree: null,
-      activeKey: null,
-      layoutId: null,
-      createSession: vi.fn(),
-      sessionCommand: vi.fn(),
-      workspaceCommand: vi.fn(),
-    }
+    return mockV2State ?? defaultV2State
   },
 }))
 
@@ -173,14 +180,20 @@ vi.mock('./hooks/useCrashedSessions', () => ({ useCrashedSessions: createMockHoo
 vi.mock('./hooks/useSelfUpdate', () => ({ useSelfUpdate: createMockHook('useSelfUpdate') }))
 vi.mock('./hooks/useWikiController', () => ({ useWikiController: createMockHook('useWikiController') }))
 
+// Capture Sidebar/TopBar props so tests can drive the REAL AppV2 callbacks
+// (handleSessionSelect / handleJumpToSession / handleKillSession) that the ui
+// leaf components hook into, without needing full DOM interaction.
+let mockSidebarProps: any = null
+let mockTopBarProps: any = null
+
 // Mock components to avoid deep rendering issues
-vi.mock('./components/Sidebar', () => ({ Sidebar: () => null }))
+vi.mock('./components/Sidebar', () => ({ Sidebar: (props: any) => { mockSidebarProps = props; return null } }))
 vi.mock('./components/Terminal', () => ({ Terminal: () => null }))
 vi.mock('./components/Overview', () => ({ Overview: () => null }))
 vi.mock('./components/NewSessionModal', () => ({ NewSessionModal: () => null }))
 vi.mock('./components/PortForwardModal', () => ({ PortForwardModal: () => null }))
 vi.mock('./components/ScheduleModal', () => ({ ScheduleModal: () => null }))
-vi.mock('./components/TopBar', () => ({ TopBar: () => null }))
+vi.mock('./components/TopBar', () => ({ TopBar: (props: any) => { mockTopBarProps = props; return null } }))
 vi.mock('./components/TiledView', () => ({ TiledView: () => null }))
 vi.mock('./components/WikiPanel', () => ({ WikiPanel: () => null }))
 vi.mock('./components/SettingsDrawer', () => ({ SettingsDrawer: () => null }))
@@ -324,6 +337,89 @@ describe('App: mode-splitting', () => {
       // the terminalPool.checkout() invariant check will reject it if v2
       // identity was requested but not available.
       expect(identity).toEqual({})
+    })
+
+    beforeEach(() => {
+      mockSidebarProps = null
+      mockTopBarProps = null
+      mockV2State = null
+    })
+
+    it('v2 session rows derive keys from the immutable id, not the mutable _compat label', async () => {
+      const sessionId = 'sess-abc-123'
+      const label = 'Friendly Renamed Label'
+      const workspaceCommand = vi.fn().mockResolvedValue({})
+      const sessionCommand = vi.fn().mockResolvedValue({})
+      const session: any = {
+        id: sessionId,
+        owner: null,
+        ref: { owner: null, session: sessionId, window: 0, pane: 0 },
+        phase: 'active',
+        desired: 'run',
+        revision: 3,
+        created_at: '2025-01-01T00:00:00Z',
+        _compat: { name: label },
+      }
+      const sessionsByRef = new Map([[encodeSessionRef(session.ref), session]])
+      mockV2State = {
+        state: {
+          catalog: { owner: null, revision: 3, generation: 1, sessionsByRef, layoutsById: new Map() },
+          workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          connectionGeneration: 1,
+          connectionOnline: true,
+          catalogBootstrapped: true,
+          workspaceBootstrapped: false,
+        },
+        bootstrapped: true,
+        connected: true,
+        paneTree: null,
+        activeKey: 'other-key',
+        layoutId: 'g1',
+        createSession: vi.fn().mockResolvedValue({}),
+        sessionCommand,
+        workspaceCommand,
+      }
+
+      v2Enabled = true
+      const { render } = await import('@testing-library/react')
+      const App = (await import('./App')).default
+      render(<App />)
+
+      expect(mockSidebarProps).not.toBeNull()
+      const [sess] = mockSidebarProps.sessions
+      // Memo shape: name is the immutable id; the mutable label lives in display_name.
+      expect(sess.id).toBe(sessionId)
+      expect(sess.name).toBe(sessionId)
+      expect(sess.display_name).toBe(label)
+      // sessionKey now yields the id-based key, matching sessionRefToKey(ref).
+      const key = sessionKey(sess)
+      expect(key).toBe(sessionId)
+      expect(keyToSessionRef(key)).toEqual({ owner: null, session: sessionId, window: 0, pane: 0 })
+
+      // Sidebar row select -> real handleSessionSelect -> v2 select command with
+      // the canonical ref (session === immutable id, NOT the label).
+      mockSidebarProps.onSessionSelect(sess)
+      expect(workspaceCommand).toHaveBeenCalledWith('g1', {
+        action: 'select',
+        ref: { owner: null, session: sessionId, window: 0, pane: 0 },
+      })
+
+      // Quick-switcher / TopBar jump resolves the same row by the id-based key.
+      expect(mockTopBarProps).not.toBeNull()
+      workspaceCommand.mockClear()
+      mockTopBarProps.onJumpToSession(sessionKey(sess))
+      expect(workspaceCommand).toHaveBeenCalledWith('g1', {
+        action: 'select',
+        ref: { owner: null, session: sessionId, window: 0, pane: 0 },
+      })
+
+      // Kill from the sidebar context menu routes the id-based key to a canonical ref.
+      sessionCommand.mockClear()
+      mockSidebarProps.onSessionKilled(sessionKey(sess))
+      expect(sessionCommand).toHaveBeenCalledWith(
+        { owner: null, session: sessionId, window: 0, pane: 0 },
+        { action: 'kill' },
+      )
     })
   })
 })
