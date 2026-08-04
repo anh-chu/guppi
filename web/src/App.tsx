@@ -1516,7 +1516,28 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   // Fall back to overview if there is genuinely no session to show yet
   // (e.g. before the first session is ever created), even if the URL claims
   // otherwise.
-  const currentView: View = viewMode === 'session' && paneTree ? 'session' : 'overview'
+  // remotePaneKey: a browser-only "standalone remote pane" projection.
+  //
+  // v2's workspace model is local-authority only -- ApplyWorkspaceCommand's
+  // `select` (and every other workspace mutation) can only ever target a
+  // leaf of THIS node's own layout tree. A remote-owned session (visible in
+  // the sidebar via the aggregate catalog, see AggregateCatalog/
+  // MultiOwnerCatalogSnapshot) is never a leaf of the local layout, so
+  // sending it through workspaceCommand('select') is guaranteed to be
+  // rejected server-side as missing_target -- there is no legitimate way to
+  // make the local workspace "contain" another node's pane.
+  //
+  // Instead, selecting a remote session sets remotePaneKey and renders it as
+  // a synthetic single-leaf PaneTree that lives ONLY in this browser's local
+  // view state (see renderTree below) -- never sent to any workspace command,
+  // never part of paneTree. Terminal attachment still works because
+  // getTerminalIdentity resolves the session from the catalog by ref (owner may
+  // be remote) and terminalPool's buildUrl already forwards `host=<owner>` to
+  // the existing /ws/daemon-session -> handleRemoteSession -> peer per-stream
+  // relay path (pkg/server/routes_sessions.go), which predates v2 and is not
+  // gated on local-vs-remote in any v2-specific way.
+  const [remotePaneKey, setRemotePaneKey] = useState<string | null>(null)
+  const currentView: View = viewMode === 'session' && (paneTree || remotePaneKey) ? 'session' : 'overview'
   // Remembers which pane a "split" create should attach beside; set by
   // TiledView's onSplit, consumed and cleared by handleCreateSession.
   const splitTargetRef = useRef<{ key: string; direction: 'h' | 'v'; newFirst?: boolean } | null>(null)
@@ -1765,9 +1786,21 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
       : `/session/${encodeURIComponent(name)}`
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
     setViewMode('session')
-    if (layoutId && activeKey !== key) {
-      void v2State.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
-        .catch(err => console.error('v2 select command failed:', err))
+    const ref = keyToSessionRef(key)
+    // A remote-owned ref (owner set and not this node's own owner) is never a
+    // leaf of the LOCAL layout tree, so workspaceCommand('select') against it
+    // is guaranteed to be rejected server-side as missing_target. Render it as
+    // a standalone browser-local pane instead (see remotePaneKey above)
+    // rather than issuing a command that can never succeed.
+    const isRemote = ref.owner !== null && state.catalog.localOwner !== null && ref.owner !== state.catalog.localOwner
+    if (isRemote) {
+      setRemotePaneKey(key)
+    } else {
+      setRemotePaneKey(null)
+      if (layoutId && activeKey !== key) {
+        void v2State.workspaceCommand(layoutId, { action: 'select', ref })
+          .catch(err => console.error('v2 select command failed:', err))
+      }
     }
     setTimeout(refocusTerminal, 150)
   }
@@ -1852,6 +1885,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
       const resolvedName = result.ref?.session || result.displayName || name
       if (worktreeBranch) setNewSessionModalOpen(false)
       setViewMode('session')
+      setRemotePaneKey(null)
       setTimeout(refocusTerminal, 150)
       return resolvedName
     } catch (err) {
@@ -1894,6 +1928,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   const goToOverview = useCallback(() => {
     if (window.location.pathname !== '/') window.history.pushState(null, '', '/')
     setViewMode('overview')
+    setRemotePaneKey(null)
   }, [])
 
   return (
@@ -1972,7 +2007,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
         {!terminalFullscreen && (
           <Sidebar
             sessions={sessions}
-            selectedSession={activeKey}
+            selectedSession={remotePaneKey ?? activeKey}
             collapsed={sidebarCollapsed}
             selfUpdateAvailable={selfUpdate.status?.update_available ?? false}
             collapseMode={(prefs.sidebar.collapse_mode || 'small') as 'small' | 'hidden'}
@@ -2010,18 +2045,30 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
           />
         )}
         <div className="flex-1 flex flex-col overflow-hidden relative">
-          {currentView === 'session' && paneTree ? (
+          {currentView === 'session' && (remotePaneKey || paneTree) ? (
             <TiledView
-              tree={paneTree}
-              activeKey={activeKey}
+              tree={remotePaneKey ? { type: 'leaf', sessionKey: remotePaneKey } : paneTree}
+              activeKey={remotePaneKey ?? activeKey}
               onActivate={(key) => {
-                if (layoutId && activeKey !== key) {
+                // remotePaneKey's synthetic tree has exactly one leaf, so this
+                // only fires for the local paneTree case.
+                if (!remotePaneKey && layoutId && activeKey !== key) {
                   void v2State.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
                     .catch(err => console.error('v2 select command failed:', err))
                 }
                 refocusTerminal()
               }}
               onClose={(key) => {
+                // The standalone remote pane is not part of any workspace layout
+                // (see remotePaneKey above), so "close" just drops the browser-
+                // local projection rather than sending a workspace 'remove' that
+                // would be rejected as missing_target. Falls back to Overview if
+                // there is no local session to return to.
+                if (remotePaneKey) {
+                  setRemotePaneKey(null)
+                  if (!paneTree) setViewMode('overview')
+                  return
+                }
                 if (layoutId) {
                   void v2State.workspaceCommand(layoutId, { action: 'remove', ref: keyToSessionRef(key) })
                     .catch(err => console.error('v2 remove command failed:', err))
@@ -2029,17 +2076,21 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
               }}
               onKill={handleKillSession}
               onPopOut={(key) => {
-                if (layoutId) {
+                if (!remotePaneKey && layoutId) {
                   void v2State.workspaceCommand(layoutId, { action: 'pop_out', ref: keyToSessionRef(key) })
                     .catch(err => console.error('v2 pop_out command failed:', err))
                 }
               }}
               onSplit={(key, direction) => {
+                // Splitting beside a standalone remote pane is not supported: a
+                // split target must be a leaf of the LOCAL layout tree, which
+                // a remote-owned session never is.
+                if (remotePaneKey) return
                 splitTargetRef.current = { key, direction }
                 openNewSessionModal()
               }}
               onRatioChange={(path, ratio) => {
-                if (layoutId) {
+                if (!remotePaneKey && layoutId) {
                   const record = state.workspace.record
                   const splitId = record ? splitIdAtPath(record.tree, path) : undefined
                   if (splitId) {
@@ -2052,13 +2103,13 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
               onToggleFullscreen={toggleFullscreen}
               terminalContainerRef={terminalContainerRef}
               onSwapPanes={(a, b) => {
-                if (layoutId) {
+                if (!remotePaneKey && layoutId) {
                   void v2State.workspaceCommand(layoutId, { action: 'swap', a: keyToSessionRef(a), b: keyToSessionRef(b) })
                     .catch(err => console.error('v2 swap command failed:', err))
                 }
               }}
               onMovePanes={(sourceKey, targetKey, edge) => {
-                if (layoutId) {
+                if (!remotePaneKey && layoutId) {
                   void v2State.workspaceCommand(layoutId, {
                     action: 'move',
                     source: keyToSessionRef(sourceKey),

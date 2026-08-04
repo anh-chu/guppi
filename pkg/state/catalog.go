@@ -1,10 +1,13 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // Catalog is the local, owner-authoritative session/workspace catalog. It
@@ -349,8 +352,20 @@ func (c *Catalog) apply(reason string, mutate func(*AppDocument) error) error {
 			*target = doc
 			return nil
 		}); err != nil {
-			c.mu.Unlock()
-			return err
+			if !errors.Is(err, errSyncDirFailedAfterRename) {
+				c.mu.Unlock()
+				return err
+			}
+			// The rename that made the new document durably visible on disk
+			// already succeeded; only the directory-entry fsync is uncertain.
+			// Store.Update has already adopted the new document into its own
+			// in-memory state for exactly this reason (see
+			// errSyncDirFailedAfterRename in store.go). The catalog must do the
+			// same instead of returning early, or its maps/revision and every
+			// subscriber fed by it would silently diverge from what is already
+			// on disk and from Store.Snapshot(). Treat this as success: adopt,
+			// publish, and only log a warning about the fsync uncertainty.
+			logrus.WithError(err).WithField("reason", reason).Warn("catalog commit durable but directory fsync uncertain after rename")
 		}
 		doc = c.store.Snapshot()
 	} else {

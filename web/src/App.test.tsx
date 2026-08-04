@@ -217,7 +217,7 @@ vi.mock('./components/Setup', () => ({ Setup: () => null }))
 vi.mock('./components/RecoveryPanel', () => ({ RecoveryPanel: () => null }))
 vi.mock('./components/Toasts', () => ({ Toasts: () => null }))
 
-vi.mock('./theme', () => ({ applyTheme: vi.fn() }))
+vi.mock('./theme', () => ({ applyTheme: vi.fn(), getXtermTheme: vi.fn(() => ({})) }))
 vi.mock('tinykeys', () => ({ tinykeys: vi.fn(() => vi.fn()) }))
 vi.mock('fractional-indexing', () => ({ generateKeyBetween: vi.fn(() => '') }))
 
@@ -657,6 +657,249 @@ describe('App: mode-splitting', () => {
         splitDirection: 'v',
       }))
       expect(workspaceCommand).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('remote session standalone pane presentation', () => {
+    beforeEach(() => {
+      mockSidebarProps = null
+      mockTiledViewProps = null
+      mockV2State = null
+    })
+
+    it('selecting a remote-owned session renders it as a standalone pane instead of a rejected workspace select', async () => {
+      const localOwner = 'node-local'
+      const remoteOwner = 'node-remote'
+      const remoteSessionId = 'remote-sess-1'
+      const remoteGeneration = 'daemon-gen-remote-7'
+      const localSessionId = 'local-sess-1'
+
+      const remoteRef = { owner: remoteOwner, session: remoteSessionId, window: 0, pane: 0 }
+      const localRef = { owner: localOwner, session: localSessionId, window: 0, pane: 0 }
+
+      const remoteSession: any = {
+        id: remoteSessionId,
+        owner: remoteOwner,
+        ref: remoteRef,
+        phase: 'active',
+        desired: 'run',
+        revision: 1,
+        created_at: '2025-01-01T00:00:00Z',
+        _compat: { name: 'remote shell', generation: remoteGeneration },
+      }
+      const localSession: any = {
+        id: localSessionId,
+        owner: localOwner,
+        ref: localRef,
+        phase: 'active',
+        desired: 'run',
+        revision: 1,
+        created_at: '2025-01-01T00:00:00Z',
+        _compat: { name: 'local shell', generation: 'daemon-gen-local-1' },
+      }
+
+      const sessionsByRef = new Map([
+        [encodeSessionRef(remoteRef), remoteSession],
+        [encodeSessionRef(localRef), localSession],
+      ])
+
+      const workspaceCommand = vi.fn().mockResolvedValue({})
+      const sessionCommand = vi.fn().mockResolvedValue({})
+      const localKey = sessionKey({ host: localOwner, name: localSessionId } as any)
+      mockV2State = {
+        state: {
+          catalog: {
+            localOwner,
+            ownerMeta: new Map(),
+            sessionsByRef,
+            layoutsById: new Map(),
+          },
+          workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          connectionGeneration: 1,
+          connectionOnline: true,
+          catalogBootstrapped: true,
+          workspaceBootstrapped: true,
+        },
+        bootstrapped: true,
+        connected: true,
+        // The LOCAL pane tree only ever contains the local session -- the
+        // remote session is never (and can never legitimately be) a leaf of
+        // it.
+        paneTree: { type: 'leaf', sessionKey: localKey } as any,
+        activeKey: localKey,
+        layoutId: 'g1',
+        createSession: vi.fn().mockResolvedValue({}),
+        sessionCommand,
+        workspaceCommand,
+      }
+
+      v2Enabled = true
+      const { render, act } = await import('@testing-library/react')
+      const App = (await import('./App')).default
+      render(<App />)
+
+      expect(mockSidebarProps).not.toBeNull()
+      const remoteRow = mockSidebarProps.sessions.find((s: any) => s.id === remoteSessionId)
+      expect(remoteRow).toBeTruthy()
+      const remoteKey = sessionKey(remoteRow)
+      expect(keyToSessionRef(remoteKey)).toEqual(remoteRef)
+
+      // Select the remote session through the real Sidebar->handleSessionSelect
+      // path.
+      act(() => { mockSidebarProps.onSessionSelect(remoteRow) })
+
+      // The bug: this must NEVER be sent as a workspaceCommand('select')
+      // against the local layout -- that ref is not one of its leaves and
+      // the backend rejects it as missing_target.
+      expect(workspaceCommand).not.toHaveBeenCalledWith('g1', expect.objectContaining({ action: 'select', ref: remoteRef }))
+
+      // Instead, TiledView is handed a synthetic standalone tree whose only
+      // leaf is the remote session -- never merged into paneTree, never sent
+      // anywhere as a workspace mutation.
+      expect(mockTiledViewProps).not.toBeNull()
+      expect(mockTiledViewProps.tree).toEqual({ type: 'leaf', sessionKey: remoteKey })
+      expect(mockTiledViewProps.activeKey).toBe(remoteKey)
+
+      // Terminal identity resolution must come from the REMOTE catalog entry
+      // (real owner + real per-session daemon generation), never from local
+      // workspace lookup and never a partial/legacy-fallback identity.
+      const identity = mockTiledViewProps.getTerminalIdentity(remoteKey)
+      expect(identity).toEqual({
+        ready: true,
+        backend: 'daemon',
+        sessionId: remoteSessionId,
+        ownerId: remoteOwner,
+        generation: remoteGeneration,
+      })
+      expect(identity.ownerId).not.toBe(localOwner)
+
+      // Reuse the real terminalPool.checkout() invariant: a v2 identity with
+      // ownerId/generation MUST also carry sessionId, or it throws instead of
+      // silently falling back to legacy name-based routing. A remote identity
+      // must satisfy that invariant exactly like a local one.
+      const { TerminalPool } = await import('./lib/terminalPool')
+      const fakeTerminal = {
+        options: {},
+        element: document.createElement('div'),
+        cols: 80,
+        rows: 24,
+        loadAddon: () => {},
+        open: () => {},
+        onData: () => ({ dispose: () => {} }),
+        onResize: () => ({ dispose: () => {} }),
+        onSelectionChange: () => ({ dispose: () => {} }),
+        attachCustomKeyEventHandler: () => {},
+        getSelection: () => '',
+        clearSelection: () => {},
+        scrollToBottom: () => {},
+        scrollLines: () => {},
+        focus: () => {},
+        refresh: () => {},
+        dispose: () => {},
+        write: () => {},
+      }
+      const pool = new TerminalPool({
+        createTerminal: () => fakeTerminal as any,
+        createFitAddon: () => ({ fit: () => {} }) as any,
+        createWebLinksAddon: () => ({}) as any,
+        createClipboardAddon: () => ({}) as any,
+        createWebglAddon: () => null,
+        createImageAddon: () => null,
+        createUnicodeGraphemesAddon: () => null,
+        createPredictiveEcho: () => null,
+        createWebSocket: () => ({
+          readyState: 0, close: () => {}, send: () => {},
+          onopen: null, onclose: null, onerror: null, onmessage: null,
+        }) as any,
+      })
+      const prefs = {
+        theme: 'dark', fontFamily: 'Space Mono', fontSize: 13,
+        scrollback: 50000, renderer: 'dom', unicodeGraphemes: false, predictiveEcho: false,
+      }
+      const cbs = {
+        onConnectionChange: () => {}, onCtrlModifierChange: () => {},
+        onAltModifierChange: () => {}, onSelectionMenu: () => {},
+      }
+      const container = document.createElement('div')
+      expect(() => {
+        pool.checkout(
+          { sessionName: remoteSessionId, hostId: identity.ownerId, backend: identity.backend, sessionId: identity.sessionId, ownerId: identity.ownerId, generation: identity.generation },
+          prefs, container, cbs,
+        )
+      }).not.toThrow()
+
+      // Killing/closing a session identified via the sidebar's kill action must
+      // still route through the immutable ref (kill routing itself is
+      // pre-existing and out of scope for this fix; this just proves the
+      // resolved ref is correct for a remote row).
+      sessionCommand.mockClear()
+      mockSidebarProps.onSessionKilled(remoteKey)
+      expect(sessionCommand).toHaveBeenCalledWith(remoteRef, { action: 'kill' })
+    })
+
+    it('selecting a local session after a remote pane was standalone clears the standalone projection', async () => {
+      const localOwner = 'node-local'
+      const remoteOwner = 'node-remote'
+      const remoteSessionId = 'remote-sess-2'
+      const localSessionId = 'local-sess-2'
+      const remoteRef = { owner: remoteOwner, session: remoteSessionId, window: 0, pane: 0 }
+      const localRef = { owner: localOwner, session: localSessionId, window: 0, pane: 0 }
+      const remoteSession: any = {
+        id: remoteSessionId, owner: remoteOwner, ref: remoteRef, phase: 'active', desired: 'run',
+        revision: 1, created_at: '2025-01-01T00:00:00Z', _compat: { generation: 'gen-r' },
+      }
+      const localSession: any = {
+        id: localSessionId, owner: localOwner, ref: localRef, phase: 'active', desired: 'run',
+        revision: 1, created_at: '2025-01-01T00:00:00Z', _compat: { generation: 'gen-l' },
+      }
+      const sessionsByRef = new Map([
+        [encodeSessionRef(remoteRef), remoteSession],
+        [encodeSessionRef(localRef), localSession],
+      ])
+      const workspaceCommand = vi.fn().mockResolvedValue({})
+      const localKey = sessionKey({ host: localOwner, name: localSessionId } as any)
+      mockV2State = {
+        state: {
+          catalog: { localOwner, ownerMeta: new Map(), sessionsByRef, layoutsById: new Map() },
+          workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          connectionGeneration: 1,
+          connectionOnline: true,
+          catalogBootstrapped: true,
+          workspaceBootstrapped: true,
+        },
+        bootstrapped: true,
+        connected: true,
+        paneTree: { type: 'leaf', sessionKey: localKey } as any,
+        // Deliberately NOT localKey: the mocked hook return value is static
+        // across renders (it does not simulate a real reducer round-trip), so
+        // starting it different from localKey lets the re-select-local
+        // assertion below distinguish "a real select command was issued" from
+        // "already active, no-op".
+        activeKey: null,
+        layoutId: 'g1',
+        createSession: vi.fn().mockResolvedValue({}),
+        sessionCommand: vi.fn().mockResolvedValue({}),
+        workspaceCommand,
+      }
+
+      v2Enabled = true
+      const { render, act } = await import('@testing-library/react')
+      const App = (await import('./App')).default
+      render(<App />)
+
+      const remoteRow = mockSidebarProps.sessions.find((s: any) => s.id === remoteSessionId)
+      const localRow = mockSidebarProps.sessions.find((s: any) => s.id === localSessionId)
+      const remoteKey = sessionKey(remoteRow)
+
+      act(() => { mockSidebarProps.onSessionSelect(remoteRow) })
+      expect(mockTiledViewProps.tree).toEqual({ type: 'leaf', sessionKey: remoteKey })
+
+      workspaceCommand.mockClear()
+      act(() => { mockSidebarProps.onSessionSelect(localRow) })
+
+      // Back to the real local paneTree, sent through workspaceCommand as usual.
+      expect(mockTiledViewProps.tree).toEqual({ type: 'leaf', sessionKey: localKey })
+      expect(workspaceCommand).toHaveBeenCalledWith('g1', { action: 'select', ref: localRef })
     })
   })
 })

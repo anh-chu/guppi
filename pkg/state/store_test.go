@@ -845,6 +845,102 @@ func makeFailingSyncDirHookOnCall(call int) func(string) error {
 	}
 }
 
+// TestCatalogApplyAdoptsSyncDirFailureAfterRename is the catalog-level proof
+// that Bug 3's fix closes the gap the earlier, narrower store-level fix (Bug
+// 2, see TestUpdateSyncDirFailureAfterRenameAdoptsDocument above) left open:
+// Store.Update already adopts the post-rename document into its own
+// in-memory state when only the directory-entry fsync fails, but it still
+// returns an error, and Catalog.apply used to return early on any Store.Update
+// error without updating its own maps/revision or publishing a snapshot. That
+// left the catalog -- and everything fed by it (subscribers, the browser
+// state stream) -- stuck on the old document even though disk and
+// Store.Snapshot() both already held the new one. This test drives the exact
+// fault through Catalog.apply (via PutSession, not raw Store.Update) and
+// asserts the catalog adopts the change and publishes it.
+func TestCatalogApplyAdoptsSyncDirFailureAfterRename(t *testing.T) {
+	dir := t.TempDir()
+	store := mustOpenEmptyInDir(t, dir)
+	owner := store.Owner()
+
+	cat := NewCatalog(owner, store)
+	if err := cat.Load(); err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	var mu sync.Mutex
+	var published []OwnerCatalogSnapshot
+	unsubscribe := cat.SubscribeCatalog(func(snap OwnerCatalogSnapshot) {
+		mu.Lock()
+		defer mu.Unlock()
+		published = append(published, snap)
+	})
+	defer unsubscribe()
+
+	beforeRevision := cat.Revision()
+
+	// Fail only the post-rename directory fsync (the second SyncDirHook call
+	// in commit(), after the backup rotation's own directory fsync succeeds),
+	// exactly reproducing the Bug 2/Bug 3 scenario.
+	store.opts.SyncDirHook = makeFailingSyncDirHookOnCall(2)
+
+	rec := LocalSessionRecord{
+		ID:      SessionID("sesscatalogfsync1234"),
+		Owner:   owner,
+		Ref:     SessionRef{Owner: owner, Session: SessionID("sesscatalogfsync1234")},
+		Phase:   SessionPhaseActive,
+		Desired: DesiredRun,
+	}
+	if err := cat.PutSession(rec); err != nil {
+		t.Fatalf("expected Catalog.apply to treat the post-rename directory-fsync failure as adopted-success (per errSyncDirFailedAfterRename), got error: %v", err)
+	}
+
+	// The rename already made the new document durably visible on disk.
+	diskDoc, derr := store.readDocument(store.currentPath())
+	if derr != nil {
+		t.Fatalf("read current from disk: %v", derr)
+	}
+	if len(diskDoc.Sessions) != 1 {
+		t.Fatalf("expected disk to already contain the new session, got %d", len(diskDoc.Sessions))
+	}
+
+	// Store.Snapshot() must match disk (this half was already proven at the
+	// store level by TestUpdateSyncDirFailureAfterRenameAdoptsDocument; re-
+	// asserted here as the baseline the catalog must now also match).
+	storeSnap := store.Snapshot()
+	if !docsEqual(storeSnap, diskDoc) {
+		t.Fatalf("store snapshot diverged from disk:\nstore=%+v\ndisk=%+v", storeSnap, diskDoc)
+	}
+
+	// The catalog's own in-memory maps/revision must match what is actually
+	// on disk -- this is the assertion the prior, narrower fix missed.
+	if cat.Revision() != diskDoc.Revision {
+		t.Fatalf("catalog revision diverged from disk after syncdir failure: catalog=%d disk=%d", cat.Revision(), diskDoc.Revision)
+	}
+	if cat.Revision() == beforeRevision {
+		t.Fatalf("expected catalog revision to advance past %d, got %d", beforeRevision, cat.Revision())
+	}
+	catSessions := cat.Sessions()
+	if len(catSessions) != 1 || catSessions[0].ID != rec.ID {
+		t.Fatalf("expected catalog to adopt the new session into its maps, got %+v", catSessions)
+	}
+
+	// A snapshot reflecting the NEW state must have been published to
+	// subscribers -- not silently dropped, and not a stale snapshot of the
+	// old state.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(published) == 0 {
+		t.Fatal("expected a catalog snapshot to be published after the syncdir-failure commit, got none")
+	}
+	last := published[len(published)-1]
+	if last.Revision != diskDoc.Revision {
+		t.Fatalf("published snapshot revision %d does not match disk revision %d", last.Revision, diskDoc.Revision)
+	}
+	if len(last.Sessions) != 1 || last.Sessions[0].ID != rec.ID {
+		t.Fatalf("published snapshot does not reflect the new session, got %+v", last.Sessions)
+	}
+}
+
 // compile-time check that Store methods used by tests exist.
 var (
 	_ func(*Store) AppDocument = (*Store).Snapshot

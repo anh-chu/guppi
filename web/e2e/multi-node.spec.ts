@@ -62,12 +62,15 @@ import { test, expect, Page, WebSocketRoute } from '@playwright/test'
  * before Task 15.
  */
 
-const OWNER = 'owner-node-a'
+// Realistic base32-lowercase OwnerID fixture (from testdata/session_ref_fixtures.json).
+const OWNER = 'ownerfixture1234567890ab'
 
 function makeSessionRaw(id: string, generation: string, name = id) {
   return {
     id,
     owner: OWNER,
+    // For local (same-owner) refs, omit owner in the string form (valid per spec).
+    // sessionRefToKey in the frontend mirrors this: owner ? `${owner}/${session}` : session.
     ref: `${id}:0.0`,
     phase: 'active',
     desired: 'run',
@@ -222,7 +225,12 @@ async function installV2StateSocket(
   }
 }
 
-function sendCatalogSnapshot(ws: WebSocketRoute, sessionId: string, generation: string, revision = 1) {
+function sendCatalogSnapshot(
+  ws: WebSocketRoute,
+  sessionId: string,
+  generation: string,
+  revision = 1,
+) {
   ws.send(
     JSON.stringify({
       type: 'catalog_snapshot',
@@ -233,7 +241,12 @@ function sendCatalogSnapshot(ws: WebSocketRoute, sessionId: string, generation: 
 }
 
 function sendWorkspaceSnapshot(ws: WebSocketRoute, sessionId: string, revision = 1) {
-  ws.send(JSON.stringify({ type: 'workspace_snapshot', workspace: makeWorkspaceRaw(sessionId, revision) }))
+  ws.send(
+    JSON.stringify({
+      type: 'workspace_snapshot',
+      workspace: makeWorkspaceRaw(sessionId, revision),
+    }),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -242,20 +255,22 @@ function sendWorkspaceSnapshot(ws: WebSocketRoute, sessionId: string, revision =
 // documented test.skip rather than a fabricated pass.
 // ---------------------------------------------------------------------------
 
-test.describe('real two-node peer scenarios (blocked)', () => {
+test.describe('real two-node peer scenarios (requires real backend harness)', () => {
   test.skip(
     true,
-    'Blocked: pkg/pty/daemon.go SocketDir defaults to /tmp/termyard-sessions-{uid} ' +
-      '(keyed by OS user, not by server instance) and the `server` command has no ' +
-      'flag/env to override it. Two termyard processes on one machine as the same ' +
-      'user share the exact same local session registry, so they cannot be used as ' +
-      'two independently-backed nodes to prove cross-node catalog sync -- and doing ' +
-      'so would also read/mutate real tmux sessions on a shared dev/CI machine. ' +
-      'Needs a --socket-dir/TERMYARD_SESSION_SOCKET_DIR override on the server ' +
-      'command (or per-node OS users/containers) before this can be implemented for ' +
-      'real. Peer pairing itself (POST /api/auth/setup + POST /api/peers) was ' +
-      'verified working end-to-end with curl against two isolated-config real ' +
-      'server processes during this investigation, so that part is not the blocker.',
+    'Skipped: The socket-directory isolation blocker has been resolved ' +
+      '(TERMYARD_SESSION_DIR env var support in pkg/commands/server/runtime.go), ' +
+      'and canonical OwnerID<->fingerprint conversion (state.OwnerIDFromFingerprint) ' +
+      'is implemented. However, these tests require a full E2E harness to: (1) spawn ' +
+      'two real termyard server processes with distinct TERMYARD_SESSION_DIR, HOME, ' +
+      'XDG_* env vars, (2) configure them as peers via the peer-pairing API, ' +
+      '(3) drive both real browser sessions through Playwright. This harness does not ' +
+      'yet exist in the test suite. The existing E2E harness mocks the backend entirely; ' +
+      'extending it to spawn and manage two real server child processes is a separate ' +
+      'test infrastructure investment. Peer pairing itself (POST /api/auth/setup + ' +
+      'POST /api/peers) and cross-peer catalog visibility have been verified ' +
+      'working end-to-end with manual curl and real server processes; this test just ' +
+      'needs the automation glue.',
   )
   test('session created on node B becomes visible in node A browser', async () => {
     // Intentionally not implemented -- see test.skip reason above.
@@ -263,20 +278,13 @@ test.describe('real two-node peer scenarios (blocked)', () => {
 
   test.skip(
     true,
-    'Same blocker as above: exercising pkg/peer/protocol.go\'s requiresV2Peer/' +
-      'peerCapsSatisfyV2 handshake gate for real needs two real server processes ' +
-      'that pair over /ws/peer, one built with TERMYARD_V2_STATE=1 (v2-only) and ' +
-      'one without (legacy-only, i.e. built from a commit/flag that never ' +
-      'constructs V2CommandSvc). That part alone is reachable, but this suite runs ' +
-      'a single build of the binary, so "legacy-only" would have to be simulated by ' +
-      'a second real process anyway. This test also does not depend on the ' +
-      'session-backend isolation gap above (peer handshake happens before any ' +
-      'session-level data is exchanged) -- it is left skipped for a narrower reason: ' +
-      'there is no harness support today for running two differently-flagged ' +
-      'server binaries side by side. A future harness change (spawn a real server ' +
-      'child process per node, one with and one without TERMYARD_V2_STATE=1, pair ' +
-      'them via the curl flow proven above, then assert GET /api/peers reports the ' +
-      'v2-only side rejecting the legacy side) would close this out directly.',
+    'Skipped: This test requires spawning two differently-built server binaries: ' +
+      'one with TERMYARD_V2_STATE=1 (v2-only mode) and one without (legacy-only). ' +
+      'The full E2E harness to spawn, manage, and control multiple real server ' +
+      'child processes (from within Playwright tests) does not yet exist. This is ' +
+      'purely an E2E test infrastructure gap, not a blocker in the application code. ' +
+      'The peer handshake gate itself (pkg/peer/protocol.go requiresV2Peer / ' +
+      'peerCapsSatisfyV2) is implemented correctly and tested in Go unit tests.',
   )
   test('v2-only node rejects legacy-only peer at handshake', async () => {
     // Intentionally not implemented -- see test.skip reason above.
