@@ -645,8 +645,9 @@ func (m *Manager) RemoveHost(id string) {
 }
 
 // validateCatalogOwnership checks that all sessions and layouts in the snapshot
-// have their Owner field matching the snapshot's top-level owner. Returns false
-// and logs a warning if any embedded owner differs.
+// have their Owner field matching the snapshot's top-level owner, and that each
+// session's embedded Ref.Owner also matches. Returns false and logs a warning if
+// any embedded owner differs.
 func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bool {
 	for _, sess := range snap.Sessions {
 		if sess.Owner != snap.Owner {
@@ -656,6 +657,15 @@ func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bo
 				"session_id":    string(sess.ID),
 				"session_owner": string(sess.Owner),
 			}).Warn("dropping v2 snapshot: embedded session owner mismatch")
+			return false
+		}
+		if sess.Ref.Owner != snap.Owner {
+			logrus.WithFields(logrus.Fields{
+				"peer":       peerID,
+				"owner":      string(snap.Owner),
+				"session_id": string(sess.ID),
+				"ref_owner":  string(sess.Ref.Owner),
+			}).Warn("dropping v2 snapshot: embedded session ref owner mismatch")
 			return false
 		}
 	}
@@ -674,9 +684,11 @@ func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bo
 }
 
 // validateCatalogInvariants checks deep structural invariants on the catalog snapshot:
-// 1. Each session's Ref.Session must match its own record ID
-// 2. Each layout tree must have valid structure (checked via ValidatePaneTree)
-// 3. Each layout leaf ref must correspond to an actual session in the snapshot
+//  1. Each session's Ref.Session must match its own record ID
+//  2. Each layout tree must have valid structure (checked via ValidatePaneTree)
+//  3. Each layout leaf ref must have owner matching snap.Owner and must
+//     correspond to an actual session in the snapshot
+//
 // Returns false and logs details if any check fails.
 func validateCatalogInvariants(peerID string, snap state.OwnerCatalogSnapshot) bool {
 	// Build a map of known session IDs for quick lookup
@@ -728,6 +740,16 @@ func validateCatalogInvariants(peerID string, snap state.OwnerCatalogSnapshot) b
 			return false
 		}
 		for _, ref := range leaves {
+			if ref.Owner != snap.Owner {
+				logrus.WithFields(logrus.Fields{
+					"peer":      peerID,
+					"owner":     string(snap.Owner),
+					"layout_id": string(layout.ID),
+					"ref":       ref.String(),
+					"ref_owner": string(ref.Owner),
+				}).Warn("dropping v2 snapshot: layout leaf ref owner mismatch")
+				return false
+			}
 			if _, exists := knownSessions[ref.Session]; !exists {
 				logrus.WithFields(logrus.Fields{
 					"peer":      peerID,
