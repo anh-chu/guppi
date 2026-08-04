@@ -22,7 +22,7 @@ type fakePreviewRegistry struct {
 	tailCalls    int
 }
 
-func (f *fakePreviewRegistry) List() []pty.SessionInfo              { return nil }
+func (f *fakePreviewRegistry) List() []pty.SessionInfo               { return nil }
 func (f *fakePreviewRegistry) CrashedSessions() []CrashedSessionInfo { return nil }
 func (f *fakePreviewRegistry) IsSessionDead(name string) bool        { return f.dead[name] }
 
@@ -144,7 +144,7 @@ type fakeFallbackRegistry struct {
 	captureHook  func(name string) (string, error)
 }
 
-func (f *fakeFallbackRegistry) List() []pty.SessionInfo              { return nil }
+func (f *fakeFallbackRegistry) List() []pty.SessionInfo               { return nil }
 func (f *fakeFallbackRegistry) CrashedSessions() []CrashedSessionInfo { return nil }
 func (f *fakeFallbackRegistry) IsSessionDead(name string) bool        { return false }
 func (f *fakeFallbackRegistry) Capture(name string) (string, error) {

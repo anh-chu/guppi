@@ -35,16 +35,16 @@ const (
 //
 // Identity fields are IDs; mutable display labels live in compatibility records.
 type AppDocument struct {
-	Schema              int                      `json:"schema"`
-	Owner               OwnerID                  `json:"owner"`
-	Revision            int64                    `json:"revision"`
-	Sessions            []LocalSessionRecord     `json:"sessions"`
-	Workspaces          []WorkspaceRecord        `json:"workspaces,omitempty"`
-	Layouts             []LayoutRecord           `json:"layouts,omitempty"`
-	Commands            []CommandReceipt         `json:"commands,omitempty"`
-	PendingCreates      []PendingCreateRecord    `json:"pending_creates,omitempty"`
+	Schema               int                         `json:"schema"`
+	Owner                OwnerID                     `json:"owner"`
+	Revision             int64                       `json:"revision"`
+	Sessions             []LocalSessionRecord        `json:"sessions"`
+	Workspaces           []WorkspaceRecord           `json:"workspaces,omitempty"`
+	Layouts              []LayoutRecord              `json:"layouts,omitempty"`
+	Commands             []CommandReceipt            `json:"commands,omitempty"`
+	PendingCreates       []PendingCreateRecord       `json:"pending_creates,omitempty"`
 	PendingRemoteCreates []PendingRemoteCreateRecord `json:"pending_remote_creates,omitempty"`
-	Compat              CompatAppDocument        `json:"_compat,omitempty"`
+	Compat               CompatAppDocument           `json:"_compat,omitempty"`
 }
 
 // LocalSessionRecord is the canonical per-session row known to an owner.

@@ -119,7 +119,7 @@ Loop:
 
 	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(map[string]string{
-		"path":        storeRes.path,
+		"path":       storeRes.path,
 		"quotedPath": model.ShellQuote(storeRes.path),
 	}))
 }

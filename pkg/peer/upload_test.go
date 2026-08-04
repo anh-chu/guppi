@@ -160,7 +160,7 @@ func TestUploadWireProtocolRoundTrip(t *testing.T) {
 
 	// Send result back to hub.
 	reply, _ := json.Marshal(map[string]string{
-		"path":        result.path,
+		"path":       result.path,
 		"quotedPath": model.ShellQuote(result.path),
 	})
 	peerConn.SetWriteDeadline(time.Now().Add(5 * time.Second))

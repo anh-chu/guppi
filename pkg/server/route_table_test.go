@@ -14,8 +14,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+
+
 	"github.com/anh-chu/termyard/pkg/auth"
+	"github.com/anh-chu/termyard/pkg/groupsync"
 	"github.com/anh-chu/termyard/pkg/portforward"
+	"github.com/anh-chu/termyard/pkg/sessionattrs"
+	"github.com/anh-chu/termyard/pkg/sessionorder"
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 	"github.com/anh-chu/termyard/pkg/ws"
@@ -39,6 +44,22 @@ func TestRouteTableSnapshot(t *testing.T) {
 	sm := auth.NewSessionManager(time.Hour)
 	tracker := toolevents.NewTracker()
 
+	// Legacy mode: legacy stores are constructed, so legacy-only routes
+	// (session-attrs, session-order, groups) must be present in the golden
+	// route table below.
+	attrsStore, err := sessionattrs.NewStore()
+	if err != nil {
+		t.Fatalf("sessionattrs.NewStore: %v", err)
+	}
+	orderStore, err := sessionorder.NewStore()
+	if err != nil {
+		t.Fatalf("sessionorder.NewStore: %v", err)
+	}
+	groupStore, err := groupsync.NewStore()
+	if err != nil {
+		t.Fatalf("groupsync.NewStore: %v", err)
+	}
+
 	opts := &Options{
 		AuthEnabled:      true,
 		Port:             7654,
@@ -48,6 +69,9 @@ func TestRouteTableSnapshot(t *testing.T) {
 		NotifyToken:      "notify-token-test",
 		Tracker:          tracker,
 		Hub:              ws.NewHub(state.NewManager(), tracker),
+		AttrsStore:       attrsStore,
+		OrderStore:       orderStore,
+		GroupStore:       groupStore,
 		PortForwardStore: portforward.NewStore(),
 	}
 
@@ -292,10 +316,11 @@ func TestProxyHTMLRewriteCap(t *testing.T) {
 	}
 }
 
-// TestLegacyStoreRoutesReturn503WhenNil verifies that legacy-only routes
-// (session-attrs, session-order, groups) return 503 Service Unavailable when
-// their backing stores are nil, which is the expected behavior in v2 mode.
-func TestLegacyStoreRoutesReturn503WhenNil(t *testing.T) {
+// TestLegacyStoreRoutesNotRegisteredWhenNil verifies that legacy-only routes
+// (session-attrs, session-order, groups) are not registered at all -- and so
+// return 404, not merely 503 -- when their backing stores are nil, which is
+// the case in v2 mode (direct-cutover: no legacy route surface exists).
+func TestLegacyStoreRoutesNotRegisteredWhenNil(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 
@@ -347,10 +372,79 @@ func TestLegacyStoreRoutesReturn503WhenNil(t *testing.T) {
 				t.Fatalf("request: %v", err)
 			}
 			defer resp.Body.Close()
-			
-			if resp.StatusCode != http.StatusServiceUnavailable {
-				t.Errorf("%s returned %d, want %d (Service Unavailable)",
-					tt.name, resp.StatusCode, http.StatusServiceUnavailable)
+
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("%s returned %d, want %d (Not Found -- route must not be registered)",
+					tt.name, resp.StatusCode, http.StatusNotFound)
+			}
+		})
+	}
+}
+
+// TestLegacyStoreRoutesWorkWhenPresent verifies that in legacy mode (stores
+// constructed and non-nil), session-attrs/session-order/groups routes are
+// registered and functional, so gating registration on nil does not regress
+// legacy-mode behavior.
+func TestLegacyStoreRoutesWorkWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	tracker := toolevents.NewTracker()
+	hub := ws.NewHub(state.NewManager(), tracker)
+
+	attrsStore, err := sessionattrs.NewStore()
+	if err != nil {
+		t.Fatalf("sessionattrs.NewStore: %v", err)
+	}
+	orderStore, err := sessionorder.NewStore()
+	if err != nil {
+		t.Fatalf("sessionorder.NewStore: %v", err)
+	}
+	groupStore, err := groupsync.NewStore()
+	if err != nil {
+		t.Fatalf("groupsync.NewStore: %v", err)
+	}
+
+	opts := &Options{
+		Port:             7654,
+		Tracker:          tracker,
+		Hub:              hub,
+		PortForwardStore: portforward.NewStore(),
+		AttrsStore:       attrsStore,
+		OrderStore:       orderStore,
+		GroupStore:       groupStore,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r, _, err := BuildRouter(ctx, opts)
+	if err != nil {
+		t.Fatalf("BuildRouter: %v", err)
+	}
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"GET /api/session-attrs", http.MethodGet, "/api/session-attrs"},
+		{"GET /api/session-order", http.MethodGet, "/api/session-order"},
+		{"GET /api/groups", http.MethodGet, "/api/groups"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + tt.path)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("%s returned %d, want 200", tt.name, resp.StatusCode)
 			}
 		})
 	}

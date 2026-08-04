@@ -765,4 +765,3 @@ func TestWorkspaceSnapshotSynthesized(t *testing.T) {
 		t.Fatalf("expected one leaf")
 	}
 }
-

@@ -9,7 +9,7 @@ type Session struct {
 	Host             string    `json:"host,omitempty"`        // peer fingerprint (empty = local)
 	HostName         string    `json:"host_name,omitempty"`   // peer display name
 	HostOnline       bool      `json:"host_online,omitempty"` // whether the host peer is connected
-	Backend          string    `json:"backend,omitempty"`       // "daemon" for session-daemon sessions
+	Backend          string    `json:"backend,omitempty"`     // "daemon" for session-daemon sessions
 	Windows          []*Window `json:"windows"`
 	Created          time.Time `json:"created"`
 	Attached         bool      `json:"attached"`

@@ -24,10 +24,10 @@ type v2BootstrapResponse struct {
 	Sessions      []state.LocalSessionRecord        `json:"sessions"`
 	Layouts       []state.LayoutRecord              `json:"layouts"`
 	Hosts         interface{}                       `json:"hosts"`
-	Workspace     *state.WorkspaceRecord             `json:"workspace,omitempty"`
-	Presentations []state.PresentationRecord         `json:"presentations,omitempty"`
-	Pending       []state.PendingCreateRecord        `json:"pending"`
-	PendingRemote []state.PendingRemoteCreateRecord  `json:"pending_remote,omitempty"`
+	Workspace     *state.WorkspaceRecord            `json:"workspace,omitempty"`
+	Presentations []state.PresentationRecord        `json:"presentations,omitempty"`
+	Pending       []state.PendingCreateRecord       `json:"pending"`
+	PendingRemote []state.PendingRemoteCreateRecord `json:"pending_remote,omitempty"`
 }
 
 // v2ErrorResponse is the stable typed error shape for v2 command endpoints.

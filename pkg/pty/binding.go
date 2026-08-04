@@ -120,8 +120,8 @@ type StableRegistry interface {
 
 // Common stable-binding errors.
 var (
-	ErrAlreadyBound      = errors.New("stable binding already bound")
-	ErrBindingInUse      = errors.New("daemon key already in use by another binding")
+	ErrAlreadyBound       = errors.New("stable binding already bound")
+	ErrBindingInUse       = errors.New("daemon key already in use by another binding")
 	ErrGenerationMismatch = errors.New("generation mismatch")
 )
 

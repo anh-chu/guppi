@@ -135,8 +135,8 @@ func capabilitiesFor(deps SessionDeps) []string {
 
 // V2 command kinds carried by V2CommandRequestPayload.
 const (
-	V2CommandKindSession     = "session"
-	V2CommandKindWorkspace   = "workspace"
+	V2CommandKindSession      = "session"
+	V2CommandKindWorkspace    = "workspace"
 	V2CommandKindRemoteCreate = "remote_create"
 )
 

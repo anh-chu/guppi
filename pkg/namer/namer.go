@@ -149,11 +149,11 @@ type chatMessage struct {
 }
 
 type chatRequest struct {
-	Model          string             `json:"model"`
-	Messages       []chatMessage      `json:"messages"`
-	Temperature    float64            `json:"temperature"`
-	MaxTokens      int                `json:"max_tokens"`
-	Stream         bool               `json:"stream"`
+	Model          string              `json:"model"`
+	Messages       []chatMessage       `json:"messages"`
+	Temperature    float64             `json:"temperature"`
+	MaxTokens      int                 `json:"max_tokens"`
+	Stream         bool                `json:"stream"`
 	ResponseFormat *chatResponseFormat `json:"response_format,omitempty"`
 }
 

@@ -119,16 +119,16 @@ type V2Commander interface {
 
 // Service is the sole owner of session launch semantics.
 type Service struct {
-	DaemonReg    DaemonRegistry
-	StateMgr     StateManager
-	Attrs        ScheduleAttrStore
-	Hub          BrowserHub
-	Identity     Identity
-	Remote       RemoteLauncher
-	Fanout       PeerFanout
-	Names        ExistingNames
-	Refresh      RefreshFunc
-	V2Commander  V2Commander // nil keeps legacy path
+	DaemonReg   DaemonRegistry
+	StateMgr    StateManager
+	Attrs       ScheduleAttrStore
+	Hub         BrowserHub
+	Identity    Identity
+	Remote      RemoteLauncher
+	Fanout      PeerFanout
+	Names       ExistingNames
+	Refresh     RefreshFunc
+	V2Commander V2Commander // nil keeps legacy path
 }
 
 // Create validates, resolves, and launches one session.

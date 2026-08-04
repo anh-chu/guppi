@@ -236,6 +236,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		rt.v2CommandSvc = state.NewSessionCommandService(rt.v2Catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.v2Catalog.Owner()})
 		rt.v2RemoteCreate = state.NewRemoteCreateCoordinator(rt.v2Catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.v2Catalog.Owner()})
 		rt.v2StateStream = ws.NewStateStreamHub(rt.v2Catalog, nil)
+		rt.stateMgr.SetV2Catalog(rt.v2Catalog, rt.v2Reconciler, enricher)
 		logrus.WithField("owner", rt.v2Catalog.Owner()).Info("v2 mode enabled (legacy stores disabled)")
 	}
 
@@ -350,17 +351,17 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	fileReadReg := peer.NewFileReadRegistry()
 
 	deps := peer.SessionDeps{
-		Manager:      rt.peerMgr,
-		LocalMgr:     rt.stateMgr,
-		Identity:     nodeIdentity,
-		ActTracker:   rt.actTracker,
-		ToolTracker:  rt.tracker,
-		PeerStore:    peerStore,
-		DaemonReg:    rt.adapter,
-		Launch:       launchSvc,
-		StreamReg:    streamReg,
-		CaptureReg:   captureReg,
-		FileReadReg:  fileReadReg,
+		Manager:                 rt.peerMgr,
+		LocalMgr:                rt.stateMgr,
+		Identity:                nodeIdentity,
+		ActTracker:              rt.actTracker,
+		ToolTracker:             rt.tracker,
+		PeerStore:               peerStore,
+		DaemonReg:               rt.adapter,
+		Launch:                  launchSvc,
+		StreamReg:               streamReg,
+		CaptureReg:              captureReg,
+		FileReadReg:             fileReadReg,
 		V2CommandSvc:            rt.v2CommandSvc,
 		RemoteCreateCoordinator: rt.v2RemoteCreate,
 	}

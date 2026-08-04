@@ -21,8 +21,23 @@ type snapshotSlot struct {
 
 	// testWaitBeforeDrain blocks runSnapshotEmitter before draining slots,
 	// allowing tests to accumulate multiple publishes before any flush.
-	// Nil in production.
+	// Nil in production. Guarded by mu since it is set by tests after the
+	// emitter goroutine has already started.
 	testWaitBeforeDrain chan struct{}
+}
+
+// setTestWaitBeforeDrain installs a test-only gate under the slot's mutex.
+func (s *snapshotSlot) setTestWaitBeforeDrain(gate chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.testWaitBeforeDrain = gate
+}
+
+// loadTestWaitBeforeDrain reads the test-only gate under the slot's mutex.
+func (s *snapshotSlot) loadTestWaitBeforeDrain() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.testWaitBeforeDrain
 }
 
 func newSnapshotSlot() *snapshotSlot {
@@ -92,8 +107,8 @@ func runSnapshotEmitter(ctx context.Context, pc *PeerConnection, slot *snapshotS
 
 		// If a test gate is set, wait for it before draining. This allows
 		// tests to accumulate multiple publishes before any flush occurs.
-		if slot.testWaitBeforeDrain != nil {
-			<-slot.testWaitBeforeDrain
+		if gate := slot.loadTestWaitBeforeDrain(); gate != nil {
+			<-gate
 		}
 
 		// Coalesce: keep consuming pending snapshots until none left, then emit

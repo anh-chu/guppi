@@ -80,22 +80,22 @@ type DaemonRegistry interface {
 
 // SessionDeps groups the runtime dependencies needed by a peer session.
 type SessionDeps struct {
-	Manager               *Manager
-	LocalMgr              *state.Manager
-	Identity              *identity.Identity
-	ActTracker            *activity.Tracker
-	ToolTracker           *toolevents.Tracker
-	PeerStore             *identity.PeerStore
-	DaemonReg             DaemonRegistry
-	StreamReg             *StreamRegistry
-	CaptureReg            *CaptureRegistry
-	FileReadReg           *FileReadRegistry
-	AttrsSink             SessionAttrsSink
-	Launch                *sessionlaunch.Service
-	OrderSink             SessionOrderSink
-	GroupSink             GroupSink
-	BrowserHub            BrowserBroadcaster
-	V2CommandSvc          *state.SessionCommandService
+	Manager                 *Manager
+	LocalMgr                *state.Manager
+	Identity                *identity.Identity
+	ActTracker              *activity.Tracker
+	ToolTracker             *toolevents.Tracker
+	PeerStore               *identity.PeerStore
+	DaemonReg               DaemonRegistry
+	StreamReg               *StreamRegistry
+	CaptureReg              *CaptureRegistry
+	FileReadReg             *FileReadRegistry
+	AttrsSink               SessionAttrsSink
+	Launch                  *sessionlaunch.Service
+	OrderSink               SessionOrderSink
+	GroupSink               GroupSink
+	BrowserHub              BrowserBroadcaster
+	V2CommandSvc            *state.SessionCommandService
 	RemoteCreateCoordinator *state.RemoteCreateCoordinator
 }
 

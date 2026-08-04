@@ -3,6 +3,7 @@ package peer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -247,17 +248,17 @@ type remoteRevisionState struct {
 // NewManager creates a new peer manager
 func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr *state.Manager) *Manager {
 	m := &Manager{
-		hosts:           make(map[string]*HostState),
-		localID:         id.Fingerprint(),
-		localName:       id.Name,
-		identity:        id,
-		peerStore:       peerStore,
-		localMgr:        localMgr,
-		remoteCatalogs:  make(map[state.OwnerID]remoteCatalogCache),
-		remoteRevs:      make(map[string]*remoteRevisionState),
-		peerOwner:       make(map[string]state.OwnerID),
-		ownerPeer:       make(map[state.OwnerID]string),
-		commandWaiters:  make(map[string]*commandWaiter),
+		hosts:          make(map[string]*HostState),
+		localID:        id.Fingerprint(),
+		localName:      id.Name,
+		identity:       id,
+		peerStore:      peerStore,
+		localMgr:       localMgr,
+		remoteCatalogs: make(map[state.OwnerID]remoteCatalogCache),
+		remoteRevs:     make(map[string]*remoteRevisionState),
+		peerOwner:      make(map[string]state.OwnerID),
+		ownerPeer:      make(map[state.OwnerID]string),
+		commandWaiters: make(map[string]*commandWaiter),
 	}
 
 	// Register local host
@@ -650,9 +651,9 @@ func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bo
 	for _, sess := range snap.Sessions {
 		if sess.Owner != snap.Owner {
 			logrus.WithFields(logrus.Fields{
-				"peer": peerID,
-				"owner": string(snap.Owner),
-				"session_id": string(sess.ID),
+				"peer":          peerID,
+				"owner":         string(snap.Owner),
+				"session_id":    string(sess.ID),
 				"session_owner": string(sess.Owner),
 			}).Warn("dropping v2 snapshot: embedded session owner mismatch")
 			return false
@@ -661,15 +662,119 @@ func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bo
 	for _, layout := range snap.Layouts {
 		if layout.Owner != snap.Owner {
 			logrus.WithFields(logrus.Fields{
-				"peer": peerID,
-				"owner": string(snap.Owner),
-				"layout_id": string(layout.ID),
+				"peer":         peerID,
+				"owner":        string(snap.Owner),
+				"layout_id":    string(layout.ID),
 				"layout_owner": string(layout.Owner),
 			}).Warn("dropping v2 snapshot: embedded layout owner mismatch")
 			return false
 		}
 	}
 	return true
+}
+
+// validateCatalogInvariants checks deep structural invariants on the catalog snapshot:
+// 1. Each session's Ref.Session must match its own record ID
+// 2. Each layout tree must have valid structure (checked via ValidatePaneTree)
+// 3. Each layout leaf ref must correspond to an actual session in the snapshot
+// Returns false and logs details if any check fails.
+func validateCatalogInvariants(peerID string, snap state.OwnerCatalogSnapshot) bool {
+	// Build a map of known session IDs for quick lookup
+	knownSessions := make(map[state.SessionID]struct{}, len(snap.Sessions))
+	for _, sess := range snap.Sessions {
+		knownSessions[sess.ID] = struct{}{}
+		// Check that Ref.Session matches the session's own ID
+		if sess.Ref.Session != sess.ID {
+			logrus.WithFields(logrus.Fields{
+				"peer":           peerID,
+				"session_id":     string(sess.ID),
+				"ref_session_id": string(sess.Ref.Session),
+			}).Warn("dropping v2 snapshot: session Ref.Session does not match its own ID")
+			return false
+		}
+	}
+
+	// Validate each layout tree and check that leaf refs correspond to known sessions
+	for _, layout := range snap.Layouts {
+		// Use canonical ValidatePaneTree to check structure and duplicate leaves
+		if err := state.ValidatePaneTree(layout.Tree); err != nil {
+			var stateErr state.StateError
+			if errors.As(err, &stateErr) {
+				logrus.WithFields(logrus.Fields{
+					"peer":      peerID,
+					"layout_id": string(layout.ID),
+					"code":      stateErr.Code,
+					"field":     stateErr.Field,
+					"detail":    stateErr.Detail,
+				}).Warn("dropping v2 snapshot: invalid pane tree structure")
+			} else {
+				logrus.WithFields(logrus.Fields{
+					"peer":      peerID,
+					"layout_id": string(layout.ID),
+					"error":     err.Error(),
+				}).Warn("dropping v2 snapshot: invalid pane tree structure")
+			}
+			return false
+		}
+
+		// Check that all leaf refs correspond to known sessions
+		leaves, err := collectTreeLeaves(layout.Tree)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"peer":      peerID,
+				"layout_id": string(layout.ID),
+				"error":     err.Error(),
+			}).Warn("dropping v2 snapshot: failed to collect leaf refs")
+			return false
+		}
+		for _, ref := range leaves {
+			if _, exists := knownSessions[ref.Session]; !exists {
+				logrus.WithFields(logrus.Fields{
+					"peer":      peerID,
+					"layout_id": string(layout.ID),
+					"ref":       ref.String(),
+				}).Warn("dropping v2 snapshot: layout leaf references unknown session")
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// collectTreeLeaves extracts all leaf SessionRefs from a pane tree.
+// It reuses the logic from state.ValidatePaneTree's collectLeaves.
+func collectTreeLeaves(tree state.PaneNode) ([]state.SessionRef, error) {
+	var collect func(state.PaneNode) ([]state.SessionRef, error)
+	collect = func(node state.PaneNode) ([]state.SessionRef, error) {
+		if node.IsLeaf() {
+			if node.Ref == nil {
+				return nil, state.StateError{Code: state.ErrMalformedSplit, Field: "leaf", Detail: "leaf pane has nil ref"}
+			}
+			return []state.SessionRef{*node.Ref}, nil
+		}
+		if !node.IsSplit() {
+			return nil, state.StateError{Code: state.ErrMalformedSplit, Field: "type", Detail: fmt.Sprintf("unknown pane node type %q", node.Type)}
+		}
+		if node.Direction != state.DirectionHorizontal && node.Direction != state.DirectionVertical {
+			return nil, state.StateError{Code: state.ErrMalformedSplit, Field: "direction", Detail: fmt.Sprintf("invalid direction %q", node.Direction)}
+		}
+		if err := node.Ratio.Validate(); err != nil {
+			return nil, state.StateError{Code: state.ErrInvalidRatio, Field: "ratio", Detail: err.Error()}
+		}
+		if node.First == nil || node.Second == nil {
+			return nil, state.StateError{Code: state.ErrMalformedSplit, Field: "split", Detail: "split node missing child"}
+		}
+		first, err := collect(*node.First)
+		if err != nil {
+			return nil, err
+		}
+		second, err := collect(*node.Second)
+		if err != nil {
+			return nil, err
+		}
+		return append(first, second...), nil
+	}
+	return collect(tree)
 }
 
 // validateWorkspaceTreeOwnership recursively checks that all leaf SessionRefs in
@@ -684,8 +789,8 @@ func validateWorkspaceTreeOwnership(peerID string, rec state.WorkspaceRecord) bo
 		if node.IsLeaf() {
 			if node.Ref != nil && node.Ref.Owner != rec.Owner {
 				logrus.WithFields(logrus.Fields{
-					"peer": peerID,
-					"owner": string(rec.Owner),
+					"peer":      peerID,
+					"owner":     string(rec.Owner),
 					"layout_id": string(rec.ID),
 					"ref_owner": string(node.Ref.Owner),
 				}).Warn("dropping v2 snapshot: embedded leaf owner mismatch")
@@ -701,6 +806,34 @@ func validateWorkspaceTreeOwnership(peerID string, rec state.WorkspaceRecord) bo
 		return true
 	}
 	return checkNode(&rec.Tree)
+}
+
+// validateWorkspaceInvariants checks deep structural invariants on a workspace record:
+// 1. Tree structure must be valid (checked via ValidatePaneTree to catch malformed trees and duplicate leaves)
+// 2. All leaf SessionRefs must have owner matching rec.Owner (already validated by validateWorkspaceTreeOwnership)
+// Returns false and logs details if any check fails.
+func validateWorkspaceInvariants(peerID string, rec state.WorkspaceRecord) bool {
+	// Use canonical ValidatePaneTree to check structure and duplicate leaves
+	if err := state.ValidatePaneTree(rec.Tree); err != nil {
+		var stateErr state.StateError
+		if errors.As(err, &stateErr) {
+			logrus.WithFields(logrus.Fields{
+				"peer":      peerID,
+				"layout_id": string(rec.ID),
+				"code":      stateErr.Code,
+				"field":     stateErr.Field,
+				"detail":    stateErr.Detail,
+			}).Warn("dropping v2 snapshot: invalid workspace pane tree structure")
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"peer":      peerID,
+				"layout_id": string(rec.ID),
+				"error":     err.Error(),
+			}).Warn("dropping v2 snapshot: invalid workspace pane tree structure")
+		}
+		return false
+	}
+	return true
 }
 
 // isConnectionStill reports whether conn is the currently-active connection for
@@ -749,18 +882,24 @@ func (m *Manager) bindRemoteOwner(peerID string, owner state.OwnerID) bool {
 // the peer's bound owner (one owner per peer, one peer per owner), and the
 // revision must be increasing within the peer's current connection (stale/delayed
 // snapshots from superseded connections are rejected). All embedded session and
-// layout owners must match the snapshot's owner. If a remote store is wired, the
-// complete set of accepted remote catalogs is persisted.
+// layout owners must match the snapshot's owner. Deep structural invariants are
+// checked: each session's Ref.Session must match its ID, layout trees must be
+// valid (no duplicate leaves, no malformed structure), and leaf refs must
+// correspond to known sessions. If a remote store is wired, the complete set of
+// accepted remote catalogs is persisted.
 func (m *Manager) UpdateRemoteCatalog(peerID string, conn *PeerConnection, snap state.OwnerCatalogSnapshot) {
 	if !validateCatalogOwnership(peerID, snap) {
+		return
+	}
+	if !validateCatalogInvariants(peerID, snap) {
 		return
 	}
 	// Enforce: remote peer's OwnerID must equal its authenticated fingerprint (peerID).
 	expectedOwner := state.OwnerID(peerID)
 	if snap.Owner != expectedOwner {
 		logrus.WithFields(logrus.Fields{
-			"peer": peerID,
-			"claimed_owner": string(snap.Owner),
+			"peer":           peerID,
+			"claimed_owner":  string(snap.Owner),
 			"expected_owner": string(expectedOwner),
 		}).Warn("dropping v2 catalog snapshot: owner does not match authenticated peer identity")
 		return
@@ -801,16 +940,21 @@ func (m *Manager) UpdateRemoteCatalog(peerID string, conn *PeerConnection, snap 
 // must be the peer's bound owner, and the workspace revision must be
 // increasing within the current connection (keyed per layout id). All
 // embedded leaf SessionRefs in the tree must have owner matching rec.Owner.
+// Deep structural invariants are checked: tree must be valid (no duplicate
+// leaves, no malformed structure).
 func (m *Manager) UpdateRemoteWorkspace(peerID string, conn *PeerConnection, rec state.WorkspaceRecord) {
 	if !validateWorkspaceTreeOwnership(peerID, rec) {
+		return
+	}
+	if !validateWorkspaceInvariants(peerID, rec) {
 		return
 	}
 	// Enforce: remote peer's OwnerID must equal its authenticated fingerprint (peerID).
 	expectedOwner := state.OwnerID(peerID)
 	if rec.Owner != expectedOwner {
 		logrus.WithFields(logrus.Fields{
-			"peer": peerID,
-			"claimed_owner": string(rec.Owner),
+			"peer":           peerID,
+			"claimed_owner":  string(rec.Owner),
 			"expected_owner": string(expectedOwner),
 		}).Warn("dropping v2 workspace snapshot: owner does not match authenticated peer identity")
 		return

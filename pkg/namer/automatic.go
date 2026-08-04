@@ -64,10 +64,10 @@ type gateState struct {
 //
 // The gate is safe for concurrent use by multiple goroutines.
 type AutomaticGate struct {
-	mu      sync.Mutex
-	policy  AutomaticPolicy
-	states  map[string]*gateState
-	clock   func() time.Time
+	mu     sync.Mutex
+	policy AutomaticPolicy
+	states map[string]*gateState
+	clock  func() time.Time
 }
 
 // NewAutomaticGate creates a gate with the given policy. Missing or zero

@@ -27,10 +27,10 @@ type testBackend struct {
 
 func newTestBackend() *testBackend {
 	return &testBackend{
-		startResult: pty.ReadyInfo{DaemonPID: 42, ShellPID: 43, Generation: "gen-test"},
+		startResult:  pty.ReadyInfo{DaemonPID: 42, ShellPID: 43, Generation: "gen-test"},
 		terminateOut: pty.TerminateAcknowledged,
-		liveGen:     make(map[string]string),
-		terminated:  make(map[string]bool),
+		liveGen:      make(map[string]string),
+		terminated:   make(map[string]bool),
 	}
 }
 

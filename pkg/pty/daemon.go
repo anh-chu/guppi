@@ -46,10 +46,10 @@ type DaemonConfig struct {
 	// Stable identity fields (v2). Empty values mean legacy mode; the daemon
 	// still binds the socket using ID, and the registry falls back to
 	// process/socket evidence for those sessions.
-	Owner     string
-	SessionID string
+	Owner      string
+	SessionID  string
 	Generation string
-	CommandID string
+	CommandID  string
 }
 
 // RunDaemon is the entry point for a session daemon process.

@@ -47,22 +47,22 @@ type AINaming struct {
 }
 
 type Preferences struct {
-	Terminal                Terminal      `json:"terminal"`
-	Theme                   string        `json:"theme"`
-	Sidebar                 Sidebar       `json:"sidebar"`
-	DefaultView             string        `json:"default_view"`
-	Notifications           Notifications `json:"notifications"`
-	AgentBanner             AgentBanner   `json:"agent_banner"`
-	LockTimeoutMinutes      int           `json:"lock_timeout_minutes"`
-	FullscreenHideAlerts    bool          `json:"fullscreen_hide_alerts"`
-	DefaultAgent            string        `json:"default_agent"`
-	AINaming                AINaming      `json:"ai_naming"`
+	Terminal             Terminal      `json:"terminal"`
+	Theme                string        `json:"theme"`
+	Sidebar              Sidebar       `json:"sidebar"`
+	DefaultView          string        `json:"default_view"`
+	Notifications        Notifications `json:"notifications"`
+	AgentBanner          AgentBanner   `json:"agent_banner"`
+	LockTimeoutMinutes   int           `json:"lock_timeout_minutes"`
+	FullscreenHideAlerts bool          `json:"fullscreen_hide_alerts"`
+	DefaultAgent         string        `json:"default_agent"`
+	AINaming             AINaming      `json:"ai_naming"`
 	// Inverted so the zero value means enabled. PUT /api/preferences decodes
 	// the body into a zero-valued Preferences and replaces the store wholesale,
 	// so any client that omits this key would persist it as false. A default-true
 	// field would therefore be switched off for good by a single save from a tab
 	// running a bundle older than this field, with no way back but the toggle.
-	WikiDisabled            bool          `json:"wiki_disabled"`
+	WikiDisabled bool `json:"wiki_disabled"`
 }
 
 func Default() *Preferences {
@@ -87,9 +87,9 @@ func Default() *Preferences {
 		AgentBanner: AgentBanner{
 			AutoDismissSeconds: 0,
 		},
-		LockTimeoutMinutes:      30,
-		FullscreenHideAlerts:    true,
-		DefaultAgent:            "claude",
+		LockTimeoutMinutes:   30,
+		FullscreenHideAlerts: true,
+		DefaultAgent:         "claude",
 		AINaming: AINaming{
 			Enabled: false,
 			Model:   "gpt-4o-mini",

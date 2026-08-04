@@ -49,12 +49,12 @@ func (r *Registry) Start(ctx context.Context, req StartRequest) (ReadyInfo, erro
 	key := req.EffectiveDaemonKey()
 
 	log := logrus.WithFields(logrus.Fields{
-		"component":   "registry",
-		"daemon_key":  key,
-		"owner":       req.Owner,
-		"session_id":  req.SessionID,
-		"generation":  req.Generation,
-		"command_id":  req.CommandID,
+		"component":  "registry",
+		"daemon_key": key,
+		"owner":      req.Owner,
+		"session_id": req.SessionID,
+		"generation": req.Generation,
+		"command_id": req.CommandID,
 	})
 
 	// 1. Inspect any existing lifecycle record for this daemon key.
@@ -94,17 +94,17 @@ func (r *Registry) Start(ctx context.Context, req StartRequest) (ReadyInfo, erro
 	// ready leaves durable evidence instead of an untracked process.
 	if r.lifecycleStore != nil {
 		startRec := LifecycleRecord{
-			ID:            key,
-			State:         LifecycleStarting,
-			Shell:         req.Shell,
-			Cwd:           req.Cwd,
-			Cols:          req.Cols,
-			Rows:          req.Rows,
-			Generation:    req.Generation,
-			Owner:         req.Owner,
-			SessionID:     req.SessionID,
-			DaemonKey:     key,
-			CommandID:     req.CommandID,
+			ID:         key,
+			State:      LifecycleStarting,
+			Shell:      req.Shell,
+			Cwd:        req.Cwd,
+			Cols:       req.Cols,
+			Rows:       req.Rows,
+			Generation: req.Generation,
+			Owner:      req.Owner,
+			SessionID:  req.SessionID,
+			DaemonKey:  key,
+			CommandID:  req.CommandID,
 		}
 		if err := r.lifecycleStore.writeAtomic(startRec); err != nil {
 			log.WithError(err).Warn("failed to write starting lifecycle record")

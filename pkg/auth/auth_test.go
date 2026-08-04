@@ -95,11 +95,11 @@ func TestSetPasswordIfUnset_RaceOneWinner(t *testing.T) {
 
 func TestRequestIsSecure(t *testing.T) {
 	tests := []struct {
-		name    string
-		tls     bool
-		fwd     string
-		remote  string
-		want    bool
+		name   string
+		tls    bool
+		fwd    string
+		remote string
+		want   bool
 	}{
 		{"plain http", false, "", "192.168.1.2:1234", false},
 		{"tls direct", true, "", "192.168.1.2:1234", true},

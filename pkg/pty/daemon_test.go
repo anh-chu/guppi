@@ -282,5 +282,3 @@ func trimmedAvg(ds []time.Duration) time.Duration {
 	}
 	return total / time.Duration(count)
 }
-
-

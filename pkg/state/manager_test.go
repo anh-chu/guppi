@@ -13,17 +13,17 @@ type fakeDaemonReg struct {
 }
 
 func (f *fakeDaemonReg) List() []pty.SessionInfo               { return nil }
-func (f *fakeDaemonReg) Capture(name string) (string, error)    { return "", nil }
+func (f *fakeDaemonReg) Capture(name string) (string, error)   { return "", nil }
 func (f *fakeDaemonReg) CrashedSessions() []CrashedSessionInfo { return nil }
-func (f *fakeDaemonReg) IsSessionDead(name string) bool         { return f.dead[name] }
+func (f *fakeDaemonReg) IsSessionDead(name string) bool        { return f.dead[name] }
 
 // TestUpdateSessions_RemovesConfirmedDeadLastSession verifies that killing
 // the last session (discovery goes empty) removes it from state instead of
 // skipping the cycle, so it does not linger as "disconnected — reconnecting".
 func TestUpdateSessions_RemovesConfirmedDeadLastSession(t *testing.T) {
 	m := &Manager{
-		sessions: map[string]*model.Session{"solo": {Name: "solo"}},
-		meta:     map[string]SessionMetadata{"solo": {}},
+		sessions:  map[string]*model.Session{"solo": {Name: "solo"}},
+		meta:      map[string]SessionMetadata{"solo": {}},
 		daemonReg: &fakeDaemonReg{dead: map[string]bool{"solo": true}},
 	}
 
@@ -42,8 +42,8 @@ func TestUpdateSessions_RemovesConfirmedDeadLastSession(t *testing.T) {
 // session is NOT confirmed dead, preserving the mass-removal safety guard.
 func TestUpdateSessions_SkipsTransientEmptyDiscovery(t *testing.T) {
 	m := &Manager{
-		sessions: map[string]*model.Session{"solo": {Name: "solo"}},
-		meta:     map[string]SessionMetadata{"solo": {}},
+		sessions:  map[string]*model.Session{"solo": {Name: "solo"}},
+		meta:      map[string]SessionMetadata{"solo": {}},
 		daemonReg: &fakeDaemonReg{dead: map[string]bool{"solo": false}},
 	}
 
@@ -53,4 +53,3 @@ func TestUpdateSessions_SkipsTransientEmptyDiscovery(t *testing.T) {
 		t.Fatalf("live session was wrongly removed on transient empty discovery")
 	}
 }
-

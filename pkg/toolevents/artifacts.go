@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 )
 
 var (
@@ -166,7 +165,6 @@ func displayPathForResolved(path string) string {
 	}
 	return displayPathForHome(path, home)
 }
-
 
 // CWDResolver returns the working directory for a session.
 type CWDResolver interface {

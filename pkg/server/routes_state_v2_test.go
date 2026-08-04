@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -207,6 +208,66 @@ func TestV2WorkspaceCommandRevisionConflict(t *testing.T) {
 	}
 	if !result.Accepted {
 		t.Error("expected accepted true")
+	}
+}
+
+func TestV2BootstrapIncludesPerSessionDaemonGeneration(t *testing.T) {
+	// Verify that the v2 bootstrap response exposes per-session daemon binding
+	// generation (from Compat.Generation), NOT the websocket connection generation.
+	// This is critical for terminal attachment identity resolution.
+	catalog, svc := newV2TestCatalog(t)
+	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	r := newV2TestRouter(opts)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = svc.Run(ctx) }()
+
+	// Create a session; noopBackend.Start will return generation "gen-test"
+	params, _ := json.Marshal(state.CreateParams{Name: "test-session"})
+	cmd := state.SessionCommand{
+		ID:     state.NewCommandID(),
+		Action: state.ActionCreate,
+		Params: params,
+	}
+	res, err := svc.ExecuteSessionCommand(t.Context(), cmd)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// The create is durable-before-reply; the daemon start (and Compat.Generation)
+	// is committed asynchronously by a background worker. Wait for it.
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
+		if rec, ok := catalog.Session(res.Ref.Session); ok && rec.Phase == state.SessionPhaseActive {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Request bootstrap snapshot
+	req := httptest.NewRequest(http.MethodGet, "/v2/bootstrap", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp v2BootstrapResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if len(resp.Sessions) == 0 {
+		t.Fatalf("expected at least one session in bootstrap response (worker did not activate in time); body=%s", w.Body.String())
+	}
+
+	// Verify the session includes per-session daemon generation in _compat
+	session := resp.Sessions[0]
+	if session.Compat.Generation == "" {
+		t.Error("expected session.Compat.Generation to be non-empty (should be 'gen-test' from noopBackend)")
+	}
+	if session.Compat.Generation != "gen-test" {
+		t.Errorf("expected session.Compat.Generation='gen-test', got %q", session.Compat.Generation)
 	}
 }
 

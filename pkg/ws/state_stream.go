@@ -53,7 +53,9 @@ type stateStreamClient struct {
 
 	// testWaitBeforeDrain blocks writeLoop before draining slots, allowing
 	// tests to accumulate multiple publishes before any flush. Nil in production.
-	testWaitBeforeDrain chan struct{}
+	// Stored as an atomic pointer because it is set (by tests) after writeLoop's
+	// goroutine has already started, and read concurrently from writeLoop.
+	testWaitBeforeDrain atomic.Pointer[chan struct{}]
 }
 
 func newStateStreamClient(conn *websocket.Conn, metrics *StateStreamMetrics) *stateStreamClient {
@@ -109,8 +111,8 @@ func (c *stateStreamClient) writeLoop() {
 		}
 		// If a test gate is set, wait for it before draining. This allows
 		// tests to accumulate multiple publishes before any flush occurs.
-		if c.testWaitBeforeDrain != nil {
-			<-c.testWaitBeforeDrain
+		if gate := c.testWaitBeforeDrain.Load(); gate != nil {
+			<-*gate
 		}
 		c.mu.Lock()
 		cat := c.catalog
@@ -217,7 +219,7 @@ func (h *StateStreamHub) setTestWaitBeforeDrain(gate chan struct{}) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for c := range h.clients {
-		c.testWaitBeforeDrain = gate
+		c.testWaitBeforeDrain.Store(&gate)
 	}
 }
 

@@ -57,7 +57,7 @@ func TestLastLine(t *testing.T) {
 		"reasoning...\n\nfinal: db-sync": "final: db-sync",
 		"  db-sync  ":                    "db-sync",
 		"line1\nline2\n":                 "line2",
-		"":                              "",
+		"":                               "",
 	}
 	for in, want := range cases {
 		if got := lastLine(in); got != want {
@@ -68,17 +68,17 @@ func TestLastLine(t *testing.T) {
 
 func TestExtractLabel(t *testing.T) {
 	cases := map[string]string{
-		"fix-auth":                                  "fix-auth",
-		"Fix Auth Token":                            "fix-auth-token",
-		"reasoning...\n\nfix-auth":                   "fix-auth",
-		"```\nfix-auth\n```":                        "fix-auth",
-		"Here is the name:\n\nfix-auth-token\n":     "fix-auth-token",
-		"fix-auth\n```":                             "fix-auth",
-		"```fix-auth```":                            "fix-auth",
-		"café-résumé\n```":                         "caf-rsum",
-		"":                                          "",
-		"!!!":                                       "",
-		"```":                                       "",
+		"fix-auth":                              "fix-auth",
+		"Fix Auth Token":                        "fix-auth-token",
+		"reasoning...\n\nfix-auth":              "fix-auth",
+		"```\nfix-auth\n```":                    "fix-auth",
+		"Here is the name:\n\nfix-auth-token\n": "fix-auth-token",
+		"fix-auth\n```":                         "fix-auth",
+		"```fix-auth```":                        "fix-auth",
+		"café-résumé\n```":                      "caf-rsum",
+		"":                                      "",
+		"!!!":                                   "",
+		"```":                                   "",
 	}
 	for in, want := range cases {
 		if got := extractLabel(in); got != want {
@@ -89,15 +89,15 @@ func TestExtractLabel(t *testing.T) {
 
 func TestJsonName(t *testing.T) {
 	cases := map[string]string{
-		`{"name":"fix-auth-token"}`:                 "fix-auth-token",
-		`  {"name": "db-migration"}  `:              "db-migration",
+		`{"name":"fix-auth-token"}`:                "fix-auth-token",
+		`  {"name": "db-migration"}  `:             "db-migration",
 		`{"name":"Fix Auth Token"}`:                "fix-auth-token",
 		`{"name":"café"}`:                          "caf",
 		`{"name":""}`:                              "",
-		`{"other":"x"}`:                           "",
-		"```json\n{\"name\":\"docker-logs\"}\n```":  "docker-logs",
-		"Here: {\"name\":\"rebase-feature\"} done":  "rebase-feature",
-		`prefix {"name":"x"} suffix {"name":"y"}`:   "y",
+		`{"other":"x"}`:                            "",
+		"```json\n{\"name\":\"docker-logs\"}\n```": "docker-logs",
+		"Here: {\"name\":\"rebase-feature\"} done": "rebase-feature",
+		`prefix {"name":"x"} suffix {"name":"y"}`:  "y",
 		"not json at all":                          "",
 		"":                                         "",
 	}

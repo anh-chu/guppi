@@ -25,9 +25,9 @@ type fakeFramedSession struct {
 	pos int
 }
 
-func (f *fakeFramedSession) Read(p []byte) (int, error) { return 0, io.EOF }
-func (f *fakeFramedSession) Write(p []byte) (int, error) { return len(p), nil }
-func (f *fakeFramedSession) Close()                      {}
+func (f *fakeFramedSession) Read(p []byte) (int, error)     { return 0, io.EOF }
+func (f *fakeFramedSession) Write(p []byte) (int, error)    { return len(p), nil }
+func (f *fakeFramedSession) Close()                         {}
 func (f *fakeFramedSession) Resize(cols, rows uint16) error { return nil }
 
 func (f *fakeFramedSession) ReadFramed(p []byte) (int, pty.ChunkKind, error) {
@@ -158,8 +158,8 @@ func (f *fakeReadSession) Read(p []byte) (int, error) {
 	n := copy(p, f.data)
 	return n, nil
 }
-func (f *fakeReadSession) Write(p []byte) (int, error) { return len(p), nil }
-func (f *fakeReadSession) Close()                      {}
+func (f *fakeReadSession) Write(p []byte) (int, error)    { return len(p), nil }
+func (f *fakeReadSession) Close()                         {}
 func (f *fakeReadSession) Resize(cols, rows uint16) error { return nil }
 
 func TestIsPing(t *testing.T) {

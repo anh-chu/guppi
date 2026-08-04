@@ -230,10 +230,10 @@ func (s *LifecycleStore) DetectCrashes() []LifecycleRecord {
 				if current > 0 && current != rec.ProcStartTime {
 					// PID was reused by a different process — treat as dead.
 					logrus.WithFields(logrus.Fields{
-						"id":               rec.ID,
-						"daemon_pid":       rec.DaemonPID,
-						"expected_start":   rec.ProcStartTime,
-						"actual_start":     current,
+						"id":             rec.ID,
+						"daemon_pid":     rec.DaemonPID,
+						"expected_start": rec.ProcStartTime,
+						"actual_start":   current,
 					}).Warn("PID reused by different process — treating as crashed")
 				} else {
 					continue // same process, still alive

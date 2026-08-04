@@ -335,5 +335,3 @@ func TestRequestPongBlocksWhenQueueFull(t *testing.T) {
 	close(bw.unblock)
 	coalescer.CloseAndFlush()
 }
-
-

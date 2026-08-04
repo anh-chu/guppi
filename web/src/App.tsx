@@ -1548,16 +1548,33 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
     localStorage.setItem('termyard:sidebar-collapsed', String(sidebarCollapsed))
   }, [sidebarCollapsed])
 
-  // getTerminalIdentity: converts legacy sessionKey to v2 catalog lookup
+  // getTerminalIdentity: converts legacy sessionKey to v2 catalog lookup.
+  //
+  // Invariant: in v2 mode a terminal must NEVER silently fall back to legacy
+  // name-based routing. terminalPool.checkout() only rejects an identity when
+  // ownerId or generation is present without sessionId; a fully-empty object
+  // would pass through undetected as "no v2 identity supplied" (the legacy
+  // caller's shape) even though this IS the v2 caller. So when a session
+  // cannot be resolved (unknown ref, or catalog not yet bootstrapped), we
+  // still surface the catalog's own owner id (always known once bootstrapped)
+  // with no sessionId, which trips that invariant deliberately instead of
+  // silently degrading to legacy routing.
   const getTerminalIdentity = useCallback((legacyKey: string) => {
     if (!legacyKey) return {}
     const ref = keyToSessionRef(legacyKey)
     const session = selectSessionByRef(state.catalog, ref)
-    if (!session) return {}
+    if (!session) {
+      return state.catalog.owner ? { ownerId: state.catalog.owner } : {}
+    }
+    // generation is the per-session daemon binding generation from the session's
+    // compat field, NOT the websocket connection generation (state.catalog.generation).
+    // If the session has no daemon generation yet (e.g., pending), we return empty
+    // string; this triggers the invariant check in terminalPool.checkout().
+    const sessionGeneration = session._compat?.generation ?? ''
     return {
       sessionId: session.id,
       ownerId: session.owner,
-      generation: String(state.catalog.generation),
+      generation: String(sessionGeneration),
     }
   }, [state.catalog])
 

@@ -98,7 +98,7 @@ func (r *Runner) runOnce(now time.Time) {
 		if job.NextRun.After(now) {
 			continue
 		}
-			schedule, err := cron.ParseStandard(job.CronSpec)
+		schedule, err := cron.ParseStandard(job.CronSpec)
 		if err != nil {
 			r.log.WithError(err).WithField("job_id", job.ID).Warn("scheduler job disabled: invalid cron")
 			if disErr := r.store.disable(job.ID); disErr != nil {

@@ -180,7 +180,7 @@ func TestCatalogSlot_CoalescesSlowQueue(t *testing.T) {
 	// This ensures multiple publishes accumulate before any flush occurs,
 	// forcing deterministic coalescing.
 	gate := make(chan struct{})
-	pc.catalogSlot.testWaitBeforeDrain = gate
+	pc.catalogSlot.setTestWaitBeforeDrain(gate)
 
 	go runSnapshotEmitter(ctx, pc, pc.catalogSlot)
 

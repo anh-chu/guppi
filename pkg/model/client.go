@@ -44,4 +44,3 @@ func LastLines(text string, n int) string {
 	}
 	return strings.Join(lines, "\n")
 }
-

@@ -1085,185 +1085,172 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		json.NewEncoder(w).Encode(map[string]bool{"installing": true})
 	})
 
-	// Session-attribute endpoints -- server-authoritative, mesh-wide shared
+// Session-attribute endpoints -- server-authoritative, mesh-wide shared
 	// per-session UI bits (backgrounded / hidden). Keys are global and
 	// host-qualified ("<owner-fp>/<name>"), identical to the frontend's
 	// sessionKey(). No localStorage source of truth, no namespace
 	// translation, no whole-blob writes.
-	r.Get("/session-attrs", func(w http.ResponseWriter, r *http.Request) {
-		if opts.AttrsStore == nil {
-			http.Error(w, "session attrs not available", http.StatusServiceUnavailable)
-			return
-		}
-		// Opportunistically GC sessions that are genuinely gone (owner
-		// online but session absent) before returning the live sets.
-		pruneSessionAttrs(opts, hub)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(opts.AttrsStore.Sets())
-	})
-
-	r.Post("/session-attrs", func(w http.ResponseWriter, r *http.Request) {
-		if opts.AttrsStore == nil {
-			http.Error(w, "session attrs not available", http.StatusServiceUnavailable)
-			return
-		}
-		var body struct {
-			Key        string `json:"key"`
-			Background bool   `json:"background"`
-			Hidden     bool   `json:"hidden"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
-			http.Error(w, "key is required", http.StatusBadRequest)
-			return
-		}
-		a, err := opts.AttrsStore.Set(body.Key, body.Background, body.Hidden)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		hub.BroadcastJSON(map[string]interface{}{
-			"type": "session-attrs-updated",
-			"key":  body.Key,
+	//
+	// These are legacy-only routes: registered only when AttrsStore is
+	// non-nil (legacy mode). In v2 mode AttrsStore is nil and these routes
+	// do not exist at all (404), not merely 503.
+	if opts.AttrsStore != nil {
+		r.Get("/session-attrs", func(w http.ResponseWriter, r *http.Request) {
+			// Opportunistically GC sessions that are genuinely gone (owner
+			// online but session absent) before returning the live sets.
+			pruneSessionAttrs(opts, hub)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(opts.AttrsStore.Sets())
 		})
-		fanoutAttrsDeltaToPeers(opts, body.Key, a)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(opts.AttrsStore.Sets())
-	})
+
+		r.Post("/session-attrs", func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Key        string `json:"key"`
+				Background bool   `json:"background"`
+				Hidden     bool   `json:"hidden"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+				http.Error(w, "key is required", http.StatusBadRequest)
+				return
+			}
+			a, err := opts.AttrsStore.Set(body.Key, body.Background, body.Hidden)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			hub.BroadcastJSON(map[string]interface{}{
+				"type": "session-attrs-updated",
+				"key":  body.Key,
+			})
+			fanoutAttrsDeltaToPeers(opts, body.Key, a)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(opts.AttrsStore.Sets())
+		})
+	}
 
 	// Session-order endpoints -- server-authoritative, per-session rank map.
-	r.Get("/session-order", func(w http.ResponseWriter, r *http.Request) {
-		if opts.OrderStore == nil {
-			http.Error(w, "session order not available", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(opts.OrderStore.Ranks())
-	})
-	r.Post("/session-order", func(w http.ResponseWriter, r *http.Request) {
-		if opts.OrderStore == nil {
-			http.Error(w, "session order not available", http.StatusServiceUnavailable)
-			return
-		}
-		var body struct {
-			Key  string `json:"key"`
-			Rank string `json:"rank"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
-			http.Error(w, "key is required", http.StatusBadRequest)
-			return
-		}
-		order, err := opts.OrderStore.Set(body.Key, body.Rank)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if hub != nil {
-			hub.BroadcastJSON(map[string]interface{}{"type": "session-order-updated", "key": body.Key})
-		}
-		fanoutOrderDeltaToPeers(opts, body.Key, order)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(opts.OrderStore.Ranks())
-	})
+	// Legacy-only: registered only when OrderStore is non-nil.
+	if opts.OrderStore != nil {
+		r.Get("/session-order", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(opts.OrderStore.Ranks())
+		})
+		r.Post("/session-order", func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Key  string `json:"key"`
+				Rank string `json:"rank"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+				http.Error(w, "key is required", http.StatusBadRequest)
+				return
+			}
+			order, err := opts.OrderStore.Set(body.Key, body.Rank)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if hub != nil {
+				hub.BroadcastJSON(map[string]interface{}{"type": "session-order-updated", "key": body.Key})
+			}
+			fanoutOrderDeltaToPeers(opts, body.Key, order)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(opts.OrderStore.Ranks())
+		})
+	}
 
 	// Group endpoints -- server-authoritative, durable field-LWW records.
-	r.Get("/groups", func(w http.ResponseWriter, r *http.Request) {
-		if opts.GroupStore == nil {
-			http.Error(w, "groups not available", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(opts.GroupStore.Live())
-	})
-	r.Post("/groups", func(w http.ResponseWriter, r *http.Request) {
-		if opts.GroupStore == nil {
-			http.Error(w, "groups not available", http.StatusServiceUnavailable)
-			return
-		}
-		var body struct {
-			ID   string          `json:"id"`
-			Op   string          `json:"op"`
-			Tree json.RawMessage `json:"tree,omitempty"`
-			Name string          `json:"name,omitempty"`
-			Mode string          `json:"mode,omitempty"`
-			Rank string          `json:"rank,omitempty"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" || body.Op == "" {
-			http.Error(w, "id and op are required", http.StatusBadRequest)
-			return
-		}
-		var (
-			group groupsync.Group
-			err   error
-		)
-		switch body.Op {
-		case "tree":
-			if len(body.Tree) == 0 {
-				http.Error(w, "tree is required", http.StatusBadRequest)
+	// Legacy-only: registered only when GroupStore is non-nil.
+	if opts.GroupStore != nil {
+		r.Get("/groups", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(opts.GroupStore.Live())
+		})
+		r.Post("/groups", func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				ID   string          `json:"id"`
+				Op   string          `json:"op"`
+				Tree json.RawMessage `json:"tree,omitempty"`
+				Name string          `json:"name,omitempty"`
+				Mode string          `json:"mode,omitempty"`
+				Rank string          `json:"rank,omitempty"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" || body.Op == "" {
+				http.Error(w, "id and op are required", http.StatusBadRequest)
 				return
 			}
-			before, _ := opts.GroupStore.Get(body.ID)
-			group, err = opts.GroupStore.SetTree(body.ID, body.Tree)
-			if err == nil && coordinator != nil {
-				coordinator.ObserveTreeMutation(body.ID, before, group)
-			}
-		case "name":
-			mode := groupsync.NameModeManual
-			if body.Mode != "" {
-				switch body.Mode {
-				case string(groupsync.NameModeAuto), string(groupsync.NameModeManual):
-					mode = groupsync.NameMode(body.Mode)
-				default:
-					http.Error(w, "invalid mode", http.StatusBadRequest)
+			var (
+				group groupsync.Group
+				err   error
+			)
+			switch body.Op {
+			case "tree":
+				if len(body.Tree) == 0 {
+					http.Error(w, "tree is required", http.StatusBadRequest)
 					return
 				}
-			}
-			group, err = opts.GroupStore.SetName(body.ID, body.Name, mode)
-		case "ai-name":
-			if coordinator == nil {
-				http.Error(w, "group naming unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			group, err = coordinator.Force(r.Context(), body.ID)
-			if err != nil {
-				code := http.StatusInternalServerError
-				msg := err.Error()
-				switch {
-				case strings.Contains(msg, "not found"):
-					code = http.StatusNotFound
-				case strings.Contains(msg, "needs at least 2 members"),
-					strings.Contains(msg, "is deleted"),
-					strings.Contains(msg, "malformed tree"),
-					strings.Contains(msg, "membership changed during naming"),
-					strings.Contains(msg, "disappeared during naming"):
-					code = http.StatusUnprocessableEntity
-				case strings.Contains(msg, "state manager unavailable"),
-					strings.Contains(msg, "generation failed"),
-					strings.Contains(msg, "persist group name"):
-					code = http.StatusServiceUnavailable
+				before, _ := opts.GroupStore.Get(body.ID)
+				group, err = opts.GroupStore.SetTree(body.ID, body.Tree)
+				if err == nil && coordinator != nil {
+					coordinator.ObserveTreeMutation(body.ID, before, group)
 				}
-				http.Error(w, msg, code)
+			case "name":
+				mode := groupsync.NameModeManual
+				if body.Mode != "" {
+					switch body.Mode {
+					case string(groupsync.NameModeAuto), string(groupsync.NameModeManual):
+						mode = groupsync.NameMode(body.Mode)
+					default:
+						http.Error(w, "invalid mode", http.StatusBadRequest)
+						return
+					}
+				}
+				group, err = opts.GroupStore.SetName(body.ID, body.Name, mode)
+			case "ai-name":
+				if coordinator == nil {
+					http.Error(w, "group naming unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				group, err = coordinator.Force(r.Context(), body.ID)
+				if err != nil {
+					code := http.StatusInternalServerError
+					msg := err.Error()
+					switch {
+					case strings.Contains(msg, "not found"):
+						code = http.StatusNotFound
+					case strings.Contains(msg, "needs at least 2 members"),
+						strings.Contains(msg, "is deleted"),
+						strings.Contains(msg, "malformed tree"),
+						strings.Contains(msg, "membership changed during naming"),
+						strings.Contains(msg, "disappeared during naming"):
+						code = http.StatusUnprocessableEntity
+					case strings.Contains(msg, "state manager unavailable"),
+						strings.Contains(msg, "generation failed"),
+						strings.Contains(msg, "persist group name"):
+						code = http.StatusServiceUnavailable
+					}
+					http.Error(w, msg, code)
+					return
+				}
+			case "rank":
+				group, err = opts.GroupStore.SetRank(body.ID, body.Rank)
+			case "delete":
+				group, err = opts.GroupStore.Delete(body.ID)
+			default:
+				http.Error(w, "invalid op", http.StatusBadRequest)
 				return
 			}
-		case "rank":
-			group, err = opts.GroupStore.SetRank(body.ID, body.Rank)
-		case "delete":
-			group, err = opts.GroupStore.Delete(body.ID)
-		default:
-			http.Error(w, "invalid op", http.StatusBadRequest)
-			return
-		}
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if hub != nil {
-			hub.BroadcastJSON(map[string]interface{}{"type": "groups-updated", "id": body.ID, "op": body.Op})
-		}
-		fanoutGroupDeltaToPeers(opts, body.ID, groupsync.Group(group))
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(opts.GroupStore.Live())
-	})
-
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if hub != nil {
+				hub.BroadcastJSON(map[string]interface{}{"type": "groups-updated", "id": body.ID, "op": body.Op})
+			}
+			fanoutGroupDeltaToPeers(opts, body.ID, groupsync.Group(group))
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(opts.GroupStore.Live())
+		})
+	}
 }
 
 func registerWSRoutes(r chi.Router, opts *Options, hub *ws.Hub) {

@@ -14,18 +14,18 @@ import (
 // All public getters return value copies so callers cannot stamp the internal
 // records.
 type Catalog struct {
-	mu       sync.RWMutex
-	owner    OwnerID
-	revision int64
-	sessions map[SessionID]LocalSessionRecord
-	layouts  map[LayoutID]LayoutRecord
-	pending  map[CommandID]PendingCreateRecord
-	remotePending map[CommandID]PendingRemoteCreateRecord
-	workspaceSubs []workspaceSubscription
+	mu                 sync.RWMutex
+	owner              OwnerID
+	revision           int64
+	sessions           map[SessionID]LocalSessionRecord
+	layouts            map[LayoutID]LayoutRecord
+	pending            map[CommandID]PendingCreateRecord
+	remotePending      map[CommandID]PendingRemoteCreateRecord
+	workspaceSubs      []workspaceSubscription
 	nextWorkspaceSubID int
-	catalogSubs []catalogSubscription
-	nextCatalogSubID int
-	store    *Store
+	catalogSubs        []catalogSubscription
+	nextCatalogSubID   int
+	store              *Store
 
 	// activeKey stores the selected leaf ref per layout. It is purely
 	// in-memory and intentionally not persisted.
