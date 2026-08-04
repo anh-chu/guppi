@@ -269,7 +269,7 @@ func handleV2SessionCommandRequest(peerID string, req V2CommandRequestPayload, p
 	}
 	res, err := deps.V2CommandSvc.ExecuteSessionCommandFromPeer(context.Background(), cmd, peerID)
 	if err != nil {
-		reply.Error = err.Error()
+		setReplyError(reply, err)
 		return
 	}
 	reply.Handled = true
@@ -298,7 +298,7 @@ func handleV2WorkspaceCommandRequest(peerID string, req V2CommandRequestPayload,
 		return
 	}
 	if err := cat.ApplyWorkspaceCommandFromPeer(cmd, peerID); err != nil {
-		reply.Error = err.Error()
+		setReplyError(reply, err)
 		return
 	}
 	reply.Handled = true
@@ -321,7 +321,7 @@ func handleV2RemoteCreateRequest(peerID string, req V2CommandRequestPayload, pc 
 	}
 	res, err := deps.RemoteCreateCoordinator.ExecuteRemoteCreateFromPeer(context.Background(), r, peerID)
 	if err != nil {
-		reply.Error = err.Error()
+		setReplyError(reply, err)
 		return
 	}
 	reply.Handled = true

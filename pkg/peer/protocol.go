@@ -222,9 +222,23 @@ type PeerStatePayload struct {
 	Hosts []HostInfo `json:"hosts"`
 }
 
-// HostInfo represents a peer's state as seen by the hub
+// HostInfo represents a peer's state as seen by the hub.
+//
+// ID is the peer's transport identity (public key fingerprint) -- the key
+// used for peer-connection lookups (IsLocal, GetPeerConnection) and legacy
+// (pre-v2) model.Session.Host values. OwnerID is the v2 catalog authority
+// identity for this host (state.OwnerID) -- what v2 SessionRef.Owner values
+// and the target_owner wire field actually carry. The two are related but
+// NOT interchangeable: OwnerID is a different string encoding of a peer's
+// identity than its fingerprint (see state.OwnerIDFromFingerprint), so a
+// caller that needs to route a v2 command or terminal attach to this host
+// must use OwnerID, never ID, and vice versa for legacy/transport lookups.
+// OwnerID is empty when this node has no v2 catalog wired for that peer
+// (legacy-only mode, or a remote peer whose v2 catalog owner isn't known
+// yet).
 type HostInfo struct {
 	ID       string                 `json:"id"` // public key fingerprint
+	OwnerID  string                 `json:"owner_id,omitempty"`
 	Name     string                 `json:"name"`
 	Version  string                 `json:"version,omitempty"`
 	Local    bool                   `json:"local,omitempty"`
@@ -387,11 +401,23 @@ type V2CommandRequestPayload struct {
 }
 
 // V2CommandReplyPayload carries a reliable command RPC reply.
+//
+// Error carries a human-readable message for logging/legacy compatibility.
+// When the failure originated from a state.StateError, ErrorCode/ErrorField/
+// ErrorDetail mirror its structured fields across the wire so the receiving
+// side can reconstruct a real state.StateError (see replyError) instead of
+// an opaque string, letting HTTP handlers map it to the correct status code
+// even when the error crossed a peer RPC boundary. ErrorCode is empty for
+// non-StateError failures (and for replies from older peers), in which case
+// the receiving side falls back to a generic error.
 type V2CommandReplyPayload struct {
-	ID      string          `json:"id"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   string          `json:"error,omitempty"`
-	Handled bool            `json:"handled"`
+	ID          string          `json:"id"`
+	Result      json.RawMessage `json:"result,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	ErrorCode   string          `json:"error_code,omitempty"`
+	ErrorField  string          `json:"error_field,omitempty"`
+	ErrorDetail string          `json:"error_detail,omitempty"`
+	Handled     bool            `json:"handled"`
 }
 
 // CapturePanePayload asks a peer to capture a session's primary pane buffer.
