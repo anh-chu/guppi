@@ -101,8 +101,15 @@ describe('V2CommandClient', () => {
       return new Response('{}', { status: 200 })
     }) as unknown as typeof fetch
 
+    // target_owner is typed state.OwnerID server-side and looked up in an
+    // OwnerID-keyed catalog map (peer.Manager.PeerIDForOwner) -- it must be a
+    // real v2 OwnerID (see state.OwnerIDFromFingerprint), a DIFFERENT string
+    // encoding than a peer's transport fingerprint. This client performs no
+    // conversion; the value here models what a correct caller (one that
+    // already resolved the target host's OwnerID, see App.tsx's AppV2
+    // handleCreateSession) sends -- never a raw fingerprint.
     const client = new V2CommandClient({ fetchImpl, genId: () => 'builtin-id' })
-    await client.createSession({ action: 'create', name: 'alpha', cwd: '/tmp', target_owner: 'remotehostfingerprint123' })
+    await client.createSession({ action: 'create', name: 'alpha', cwd: '/tmp', target_owner: 'remotehostownerid123' })
 
     // target_owner must be a sibling of action/params (matching
     // v2SessionCommandRequest.TargetOwner in pkg/server/routes_state_v2.go),
@@ -110,7 +117,7 @@ describe('V2CommandClient', () => {
     expect(capturedBody).toEqual({
       id: 'builtin-id',
       action: 'create',
-      target_owner: 'remotehostfingerprint123',
+      target_owner: 'remotehostownerid123',
       params: { name: 'alpha', cwd: '/tmp' },
     })
     expect('target_owner' in capturedBody.params).toBe(false)

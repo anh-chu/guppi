@@ -113,13 +113,19 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		}
 		host := r.URL.Query().Get("host")
 
-		// Remote peer -- request capture over the control link.
-		if host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(host) {
+		// Remote peer -- request capture over the control link. host may be a
+		// v2 OwnerID (from a v2-routed pane's SessionRef.Owner) or a legacy
+		// peer fingerprint; ResolveHostParam accepts either (see its doc).
+		resolvedPeerID, hostIsLocal := "", true
+		if opts.PeerMgr != nil {
+			resolvedPeerID, hostIsLocal = opts.PeerMgr.ResolveHostParam(host)
+		}
+		if host != "" && opts.PeerMgr != nil && !hostIsLocal {
 			if opts.CaptureReg == nil {
 				http.Error(w, "capture unavailable", http.StatusInternalServerError)
 				return
 			}
-			peerConn := opts.PeerMgr.GetPeerConnection(host)
+			peerConn := opts.PeerMgr.GetPeerConnection(resolvedPeerID)
 			if peerConn == nil {
 				http.Error(w, "peer not connected", http.StatusBadGateway)
 				return
@@ -1407,11 +1413,19 @@ func registerWSRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 	ptyHandler := ws.NewPTYTerminalHandler(opts.ActivityTracker, opts.Tracker)
 
 	daemonWS := func(w http.ResponseWriter, req *http.Request) {
-		// Route remote sessions through PTY relay
+		// Route remote sessions through PTY relay. `host` may be a v2 OwnerID
+		// (what a v2-routed pane's SessionRef.Owner / terminalPool.ts identity
+		// actually carries) or a legacy peer fingerprint; ResolveHostParam
+		// accepts either and returns the live peer connection's fingerprint to
+		// use for routing, never conflating the two identity domains by
+		// comparing the raw value against fingerprints unconditionally.
 		hostID := req.URL.Query().Get("host")
-		if opts.PeerMgr != nil && hostID != "" && !opts.PeerMgr.IsLocal(hostID) {
-			handleRemoteSession(w, req, opts, hostID)
-			return
+		if opts.PeerMgr != nil && hostID != "" {
+			resolvedPeerID, isLocal := opts.PeerMgr.ResolveHostParam(hostID)
+			if !isLocal {
+				handleRemoteSession(w, req, opts, resolvedPeerID)
+				return
+			}
 		}
 		handleDaemonSession(w, req, opts)
 	}

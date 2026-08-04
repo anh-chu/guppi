@@ -1849,16 +1849,17 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   }, [v2State, refocusTerminal])
 
   const handleCreateSession = useCallback(async (name: string, path: string, command: string, hostId?: string, worktreeBranch?: string, _agentType?: string): Promise<string | null> => {
-    // hostId (the caller's selected target host) is threaded through to
-    // v2State.createSession so it reaches the frontend API boundary. It does
-    // NOT yet reach the backend over the wire: pkg/state/session_commands.go's
-    // executeCreate rejects any SessionRef.Owner that doesn't match the local
-    // catalog owner (ref.Owner != s.owner -> ErrInvalidIdentity), and the
-    // RemoteCreateCoordinator (pkg/state/remote_create.go) that performs
-    // cross-host creation is only reachable from pkg/peer/session_state.go
-    // today, not from this HTTP command path. Until that backend wiring lands
-    // (see TODO in useV2State.ts's createSession), selecting a non-local host
-    // here will still create the session locally.
+    // hostId is the fingerprint the New Session modal selected from useHosts'
+    // Host list (HostInfo.ID). v2State.createSession's hostId param is sent
+    // on the wire as target_owner, which the server types as state.OwnerID --
+    // a DIFFERENT string encoding than the fingerprint (see
+    // state.OwnerIDFromFingerprint). Sending the raw fingerprint there would
+    // misroute every remote-host create (peer.Manager.RequestRemoteCreate
+    // looks the value up in its OwnerID-keyed catalog map, which would never
+    // match). Resolve the selected host's real OwnerID from the same hosts
+    // list (HostInfo.OwnerID, threaded through useHosts as owner_id) before
+    // handing it to v2State.createSession.
+    const targetOwnerId = hostId ? hosts.find(h => h.id === hostId)?.owner_id : undefined
     if (!worktreeBranch) setNewSessionModalOpen(false)
     const target = splitTargetRef.current
     splitTargetRef.current = null
@@ -1877,7 +1878,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
         cwd: path,
         worktreeBranch: worktreeBranch || undefined,
         layoutId: target ? (layoutId ?? undefined) : undefined,
-        hostId,
+        hostId: targetOwnerId,
         splitTarget: target ? keyToSessionRef(target.key) : undefined,
         splitDirection: target?.direction,
         splitNewFirst: target?.newFirst,
@@ -1893,7 +1894,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
       if (worktreeBranch) return err instanceof Error ? err.message : 'Failed to create worktree'
       return null
     }
-  }, [v2State, layoutId, refocusTerminal])
+  }, [v2State, layoutId, refocusTerminal, hosts])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)

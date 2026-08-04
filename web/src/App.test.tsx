@@ -65,6 +65,10 @@ vi.mock('./hooks/usePreferences', () => ({
 // mockV2State lets tests inject a concrete v2 state (populated catalog/layout)
 // while keeping the default (empty) shape for existing tests.
 let mockV2State: any = null
+// mockHostsList lets tests inject a concrete useHosts() list (e.g. a host
+// with a v2 OwnerID) so handleCreateSession's fingerprint->OwnerID resolution
+// has something real to resolve against. null means the default empty list.
+let mockHostsList: any[] | null = null
 const defaultV2State = {
   state: {
     catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
@@ -146,7 +150,7 @@ vi.mock('./hooks/useWorkspace', () => ({
 
 // Mock other hooks with minimal implementations
 const createMockHook = (name: string) => vi.fn(() => {
-  if (name === 'useHosts') return { hosts: [], refresh: vi.fn() }
+  if (name === 'useHosts') return { hosts: mockHostsList ?? [], refresh: vi.fn() }
   if (name === 'useToolEvents') return {
     events: [],
     handleEvent: vi.fn(),
@@ -356,6 +360,7 @@ describe('App: mode-splitting', () => {
       mockSidebarProps = null
       mockTopBarProps = null
       mockV2State = null
+      mockHostsList = null
     })
 
     it('v2 session rows derive keys from the immutable id, not the mutable _compat label', async () => {
@@ -480,7 +485,18 @@ describe('App: mode-splitting', () => {
       expect(mockSidebarProps.sessionAttrs).toEqual({ background: new Set(), hidden: new Set(), scheduleIDs: new Map() })
     })
 
-    it('handleCreateSession threads the selected hostId through to v2State.createSession', async () => {
+    it('handleCreateSession resolves the selected host fingerprint to its v2 OwnerID before calling v2State.createSession', async () => {
+      // The New Session modal's hostId is a peer transport fingerprint
+      // (HostInfo.ID from useHosts, matching /api/hosts). v2State.createSession's
+      // hostId is sent on the wire as target_owner, typed state.OwnerID
+      // server-side -- a DIFFERENT string encoding than the fingerprint (see
+      // state.OwnerIDFromFingerprint). handleCreateSession must resolve the
+      // selected host's real OwnerID (HostInfo.OwnerID, threaded through
+      // useHosts as owner_id) before calling createSession, never pass the
+      // fingerprint straight through.
+      mockHostsList = [
+        { id: 'remote-host-fingerprint', owner_id: 'remote-host-owner-id', name: 'remote', online: true, sessions: [], last_seen: '' },
+      ]
       const createSession = vi.fn().mockResolvedValue({ Ref: { owner: null, session: 'new-sess', window: 0, pane: 0 } })
       mockV2State = {
         state: {
@@ -514,8 +530,10 @@ describe('App: mode-splitting', () => {
       expect(mockNewSessionModalProps).not.toBeNull()
       await mockNewSessionModalProps.onCreateSession('my-session', '/tmp', '', 'remote-host-fingerprint')
 
+      // hostId passed to createSession must be the resolved OwnerID, never
+      // the raw fingerprint the modal selected.
       expect(createSession).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'my-session', hostId: 'remote-host-fingerprint' }),
+        expect.objectContaining({ name: 'my-session', hostId: 'remote-host-owner-id' }),
       )
     })
 
@@ -665,6 +683,7 @@ describe('App: mode-splitting', () => {
       mockSidebarProps = null
       mockTiledViewProps = null
       mockV2State = null
+      mockHostsList = null
     })
 
     it('selecting a remote-owned session renders it as a standalone pane instead of a rejected workspace select', async () => {

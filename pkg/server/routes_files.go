@@ -323,10 +323,16 @@ func resolveFilePath(p string, opts *Options, r *http.Request) (string, int, str
 func handleFileGrant(w http.ResponseWriter, r *http.Request, opts *Options, grants *fileGrants) {
 	hostID := r.URL.Query().Get("host")
 
-	// Remote peer -- relay file read through the control link.
-	if hostID != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(hostID) {
-		handleRemoteFileGrant(w, r, opts, grants, hostID)
-		return
+	// Remote peer -- relay file read through the control link. hostID may be
+	// a v2 OwnerID (from a v2-routed pane's SessionRef.Owner, see
+	// TiledView.tsx's onOpenFile) or a legacy peer fingerprint;
+	// ResolveHostParam accepts either.
+	if hostID != "" && opts.PeerMgr != nil {
+		resolvedPeerID, isLocal := opts.PeerMgr.ResolveHostParam(hostID)
+		if !isLocal {
+			handleRemoteFileGrant(w, r, opts, grants, resolvedPeerID)
+			return
+		}
 	}
 
 	p, status, msg := resolveFilePath(r.URL.Query().Get("path"), opts, r)
@@ -456,9 +462,12 @@ func handleUpload(w http.ResponseWriter, r *http.Request, opts *Options) {
 		return
 	}
 	hostID := r.URL.Query().Get("host")
-	if hostID != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(hostID) {
-		handleRemoteUpload(w, r, opts, hostID, filename)
-		return
+	if hostID != "" && opts.PeerMgr != nil {
+		resolvedPeerID, isLocal := opts.PeerMgr.ResolveHostParam(hostID)
+		if !isLocal {
+			handleRemoteUpload(w, r, opts, resolvedPeerID, filename)
+			return
+		}
 	}
 	path, err := model.StoreUploadedFile(r.Body, filename)
 	if err != nil {
