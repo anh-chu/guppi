@@ -46,9 +46,18 @@ jobs:
         run: npm run build
         working-directory: web
 
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: pkg/server/dist
+          if-no-files-found: error
+          retention-days: 1
+
   go:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: web
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -57,6 +66,12 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: pkg/server/dist
 
       - name: Go tests
         run: go test ./...
