@@ -422,7 +422,15 @@ func (s *SessionCommandService) resultFromDocLocked(doc *AppDocument, ref Sessio
 // identical command by re-checking (or committing) inside a catalog.apply
 // transaction -- see commitSessionReceipt.
 func (s *SessionCommandService) peekReceipt(id CommandID) (CommandResult, bool, error) {
-	r, ok := s.catalog.CommandReceipt(id)
+	r, ok, err := s.catalog.CommandReceipt(id)
+	if err != nil {
+		// Durability of a prior write is uncertain: fail closed rather than
+		// treat any receipt as present/accepted. ok=true forces callers'
+		// "if result, ok, err := s.peekReceipt(...); ok { return result, err }"
+		// pattern to return this error instead of falling through to redo
+		// (or re-derive a possibly different answer for) the side effect.
+		return CommandResult{}, true, err
+	}
 	if !ok {
 		return CommandResult{}, false, nil
 	}

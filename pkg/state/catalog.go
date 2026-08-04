@@ -135,15 +135,28 @@ func (c *Catalog) PendingCreates() []PendingCreateRecord {
 // attempting any side effect, so a retried request returns the exact
 // original outcome instead of redoing work or re-deriving a possibly
 // different answer from current state.
-func (c *Catalog) CommandReceipt(id CommandID) (CommandReceipt, bool) {
+//
+// Before returning, this re-validates the store's durability state
+// (Store.Revalidate). A receipt written during a window where a prior
+// write's durability was uncertain (see Store.durabilityUncertain) must
+// not be handed back as an accepted result on replay -- doing so would
+// silently upgrade an unconfirmed write to acknowledged success. Callers
+// must treat a non-nil error as fail-closed: do not treat the receipt as
+// present or accepted.
+func (c *Catalog) CommandReceipt(id CommandID) (CommandReceipt, bool, error) {
+	if c.store != nil {
+		if err := c.store.Revalidate(); err != nil {
+			return CommandReceipt{}, false, err
+		}
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, r := range c.commands {
 		if r.ID == id {
-			return r, true
+			return r, true, nil
 		}
 	}
-	return CommandReceipt{}, false
+	return CommandReceipt{}, false, nil
 }
 
 // PutSession stores or replaces a session record.

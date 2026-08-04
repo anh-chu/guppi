@@ -125,3 +125,128 @@ func TestCatalogSyncDirFailureDoesNotAcknowledgeOrPublish(t *testing.T) {
 			"retryResult=%+v", retryResult)
 	}
 }
+
+// TestNonCreateReceiptReplayFailsClosedUnderPersistentDurabilityUncertainty is
+// a regression proof for round-8 Finding A: kill/label/recover/dismiss
+// replay via SessionCommandService.peekReceipt -> Catalog.CommandReceipt,
+// which (before this fix) read a cached receipt directly from
+// Catalog.commands without ever calling Store.Revalidate. A receipt
+// committed while the store's durability was uncertain (see
+// errSyncDirFailedAfterRename / Store.durabilityUncertain) would therefore
+// be served back as accepted success on replay, even though the write that
+// produced it was never durably confirmed.
+//
+// Real production path exercised: SessionCommandService.ExecuteSessionCommand
+// (action=kill) -> executeKill -> peekReceipt -> Catalog.CommandReceipt, and
+// (for the first, receipt-writing call) executeKill -> commitSessionReceipt ->
+// Catalog.apply -> Store.Update -> Store.commit -> Store.syncDirHook, through
+// the real OpenStore/NewCatalog/NewSessionCommandService wiring.
+//
+// The injected SyncDirHook fails PERSISTENTLY (every call, forever) once
+// armed -- unlike the create test above, which only proves a single retry,
+// this proves the fail-closed behavior holds across repeated retries of the
+// exact same CommandID, since a real caller may retry more than once.
+func TestNonCreateReceiptReplayFailsClosedUnderPersistentDurabilityUncertainty(t *testing.T) {
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "v2store")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	owner := NewOwnerID()
+
+	var failing bool
+	relCalls := 0
+	totalCalls := 0
+	store, err := OpenStore(storeDir, "node-a", StoreOptions{
+		Owner: owner,
+		SyncDirHook: func(_ string) error {
+			totalCalls++
+			if !failing {
+				return nil
+			}
+			relCalls++
+			// Let the pending-create removal (session/kill-pending) commit
+			// fully succeed (its backup-sync and final rename-sync are the
+			// first two calls after arming), and let the receipt commit's own
+			// backup-sync succeed too (third call). Only the FOURTH call --
+			// the receipt commit's post-rename directory fsync -- fails, which
+			// is the exact "rename already succeeded, only the directory entry
+			// fsync is uncertain" scenario errSyncDirFailedAfterRename targets.
+			// Every call after that keeps failing (persistent), never resets.
+			if relCalls < 4 {
+				return nil
+			}
+			return errors.New("injected persistent directory fsync failure")
+		},
+	})
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+
+	catalog := NewCatalog(owner, store)
+	if err := catalog.Load(); err != nil {
+		t.Fatalf("catalog.Load: %v", err)
+	}
+
+	backend := &testBackend{
+		liveGen:    map[string]string{},
+		terminated: map[string]bool{},
+	}
+	svc := NewSessionCommandService(catalog, backend, nil, SessionCommandServiceOptions{Owner: owner})
+
+	// Create a session intent (durability confirmed at this point, hook not
+	// yet armed to fail). This leaves the session as a PendingCreateRecord,
+	// which is enough for the subsequent kill to take the
+	// "cancel pending create" branch in executeKill.
+	createParams, _ := json.Marshal(CreateParams{Name: "non-create-durability-probe"})
+	createResult, err := svc.ExecuteSessionCommand(t.Context(), SessionCommand{
+		ID:     NewCommandID(),
+		Action: ActionCreate,
+		Params: createParams,
+	})
+	if err != nil || !createResult.Accepted {
+		t.Fatalf("setup: create failed, this run proves nothing: err=%v result=%+v", err, createResult)
+	}
+
+	// Arm the persistent failure, then issue the kill whose receipt commit
+	// will hit the uncertain-durability window.
+	failing = true
+	killCmd := SessionCommand{
+		ID:     NewCommandID(),
+		Action: ActionKill,
+		Ref:    createResult.Ref,
+	}
+
+	firstResult, firstErr := svc.ExecuteSessionCommand(t.Context(), killCmd)
+	if totalCalls == 0 || relCalls == 0 {
+		t.Fatal("test setup broken: injected SyncDirHook was never invoked while armed, this run proves nothing")
+	}
+	if firstErr == nil && firstResult.Accepted {
+		t.Fatalf("setup broken: first kill attempt should itself observe the injected fsync failure and fail closed, "+
+			"got accepted result with nil error: %+v (relCalls=%d)", firstResult, relCalls)
+	}
+	if !store.DurabilityUncertain() {
+		t.Fatal("test setup broken: store should be left durability-uncertain after the injected failure, this run proves nothing")
+	}
+
+	// Retry the SAME kill CommandID multiple times. Before this fix,
+	// Catalog.CommandReceipt (via peekReceipt) would find the receipt that
+	// commitSessionReceipt's failed Store.Update adopted into memory and
+	// return it as accepted success, without ever calling Store.Revalidate.
+	// Since the injected hook fails persistently, every retry's revalidation
+	// attempt must also fail, and the command must fail closed every time.
+	for attempt := 1; attempt <= 3; attempt++ {
+		retryResult, retryErr := svc.ExecuteSessionCommand(t.Context(), killCmd)
+		if retryErr == nil && retryResult.Accepted {
+			t.Fatalf("FAIL-CLOSED VIOLATION (retry %d): replaying the same kill CommandID under persistent "+
+				"durability uncertainty returned Accepted=true with nil error -- a receipt written during an "+
+				"unconfirmed write was served back as success instead of failing closed. retryResult=%+v",
+				attempt, retryResult)
+		}
+		if !store.DurabilityUncertain() {
+			t.Fatalf("retry %d: store unexpectedly cleared durability-uncertain state despite the injected hook "+
+				"still failing persistently -- test setup broken, this run proves nothing", attempt)
+		}
+	}
+}
