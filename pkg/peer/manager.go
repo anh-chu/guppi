@@ -233,9 +233,15 @@ type Manager struct {
 	peerOwner map[string]state.OwnerID
 	ownerPeer map[state.OwnerID]string
 
-	// v2 reliable command waiters.
+	// v2 reliable command waiters, keyed by (peer, connection, CommandID) --
+	// see commandWaiterKey. A CommandID alone is not unique across peers or
+	// across a reconnect (a superseded connection's in-flight waiter and a
+	// new connection's waiter can share the same CommandID during a retry),
+	// so keying by ID alone let one registration overwrite an unrelated
+	// waiter's map entry and let one handler's deferred unregister delete
+	// another handler's still-pending waiter.
 	cmdMu          sync.Mutex
-	commandWaiters map[string]*commandWaiter
+	commandWaiters map[commandWaiterKey]*commandWaiter
 
 	// remoteStore persists remote catalog caches across restarts.
 	remoteStore *state.Store
@@ -298,7 +304,7 @@ func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr L
 		remoteRevs:     make(map[string]*remoteRevisionState),
 		peerOwner:      make(map[string]state.OwnerID),
 		ownerPeer:      make(map[state.OwnerID]string),
-		commandWaiters: make(map[string]*commandWaiter),
+		commandWaiters: make(map[commandWaiterKey]*commandWaiter),
 	}
 
 	// Register local host
@@ -497,8 +503,10 @@ func (m *Manager) GetHosts() []HostInfo {
 		for i, s := range h.Sessions {
 			sessions[i] = copySession(s)
 		}
+		owner, _ := m.ownerIDForPeerLocked(h.ID)
 		hosts = append(hosts, HostInfo{
 			ID:       h.ID,
+			OwnerID:  string(owner),
 			Name:     h.Name,
 			Version:  h.Version,
 			Local:    h.ID == m.localID,
@@ -523,8 +531,10 @@ func (m *Manager) GetHostsForPeer(remotePeerID string) []HostInfo {
 	if !ok {
 		return nil
 	}
+	owner, _ := m.ownerIDForPeerLocked(h.ID)
 	return []HostInfo{{
 		ID:       h.ID,
+		OwnerID:  string(owner),
 		Name:     h.Name,
 		Version:  h.Version,
 		Local:    true,
@@ -535,6 +545,96 @@ func (m *Manager) GetHostsForPeer(remotePeerID string) []HostInfo {
 		Stats:    h.Stats,
 		LastSeen: h.LastSeen,
 	}}
+}
+
+// ownerIDForPeerLocked returns the v2 catalog OwnerID for a peer fingerprint.
+// Caller must hold m.mu for reading (or writing).
+//
+// For the local peer, the OwnerID is this node's own v2 catalog owner (empty,
+// ok=false, if no v2 catalog is wired -- legacy/v1-only mode has no OwnerID).
+// For a remote peer, the OwnerID is the canonical deterministic conversion of
+// its authenticated fingerprint (state.OwnerIDFromFingerprint) -- the same
+// forward mapping validateCatalogOwnership already requires every remote v2
+// catalog snapshot's Owner field to equal. This is the forward direction
+// only (fingerprint -> OwnerID); the reverse direction (OwnerID -> peer
+// connection) must go through PeerIDForOwner's remoteCatalogs-backed lookup,
+// never a re-derivation, because a remote catalog binding is only considered
+// established once that peer has actually published a snapshot.
+func (m *Manager) ownerIDForPeerLocked(peerID string) (state.OwnerID, bool) {
+	if peerID == "" {
+		return "", false
+	}
+	if peerID == m.localID {
+		if m.v2Catalog == nil {
+			return "", false
+		}
+		return m.v2Catalog.Owner(), true
+	}
+	return state.OwnerIDFromFingerprint(peerID), true
+}
+
+// OwnerIDForPeer returns the v2 catalog OwnerID for a peer's authenticated
+// fingerprint (see ownerIDForPeerLocked). Exported for route handlers and
+// frontend-facing encoders that must translate a transport peer identity
+// into the OwnerID domain (e.g. before threading it into a v2 SessionRef or
+// the target_owner wire field), instead of conflating the two identity
+// spaces by using the fingerprint directly.
+func (m *Manager) OwnerIDForPeer(peerID string) (state.OwnerID, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.ownerIDForPeerLocked(peerID)
+}
+
+// IsLocalOwner reports whether owner names this node's own v2 catalog. It is
+// the OwnerID-domain equivalent of IsLocal (which compares peer transport
+// fingerprints) and must be used wherever a caller's "is this host me"
+// value is a v2 OwnerID rather than a fingerprint -- e.g. a v2-routed
+// terminal attach's `host` query parameter, which carries SessionRef.Owner,
+// not a peer ID.
+func (m *Manager) IsLocalOwner(owner state.OwnerID) bool {
+	if owner == "" {
+		return false
+	}
+	m.mu.RLock()
+	cat := m.v2Catalog
+	m.mu.RUnlock()
+	if cat == nil {
+		return false
+	}
+	return owner == cat.Owner()
+}
+
+// ResolveHostParam resolves a `host` request parameter that may be either a
+// v2 OwnerID (what a v2-routed session's SessionRef.Owner / the frontend's
+// state/v2/paneTreeAdapter.ts sessionRefToKey actually carry) or a legacy
+// peer fingerprint (what pre-v2 model.Session.Host carries). Before this
+// method existed, callers compared the raw `host` value against fingerprints
+// via IsLocal/GetPeerConnection unconditionally, which silently misrouted
+// every v2-routed remote host (misclassified as local, or resolved against
+// no live connection) because a v2 OwnerID is a different string encoding
+// than its owner's fingerprint.
+//
+// It tries the v2 OwnerID interpretation first (the identity domain a
+// v2-enabled frontend actually sends); if host does not resolve as a known
+// owner, it falls back to treating host as a legacy fingerprint so pre-v2
+// callers/peers keep working unchanged. Returns isLocal=true (peerID="") if
+// host names this node itself under either interpretation; otherwise
+// returns the fingerprint of the live peer connection to use, or "" if host
+// resolves under neither interpretation.
+func (m *Manager) ResolveHostParam(host string) (peerID string, isLocal bool) {
+	if host == "" {
+		return "", true
+	}
+	if m.IsLocalOwner(state.OwnerID(host)) {
+		return "", true
+	}
+	if pid := m.PeerIDForOwner(state.OwnerID(host)); pid != "" {
+		return pid, false
+	}
+	if m.IsLocal(host) {
+		return "", true
+	}
+	return host, false
 }
 
 // LocalID returns this node's fingerprint

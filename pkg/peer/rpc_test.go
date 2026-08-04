@@ -3,6 +3,7 @@ package peer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -171,6 +172,80 @@ func TestSendCommand_LostReplyRetryReturnsSameReceipt(t *testing.T) {
 	}
 }
 
+// TestSendCommand_RemoteStateErrorSurvivesRPCRoundTrip is the real-boundary
+// proof for Finding 4 (typed state.StateError flattened to a plain string
+// over peer RPC, breaking HTTP status mapping downstream in
+// pkg/server/routes_state_v2.go's writeV2CommandError/mapV2ErrorCode). It
+// exercises the exact wire path a real remote peer failure takes: a
+// V2CommandReplyPayload built the way handleV2SessionCommandRequest's fixed
+// setReplyError now builds it (structured ErrorCode/ErrorField/ErrorDetail,
+// not just a flattened Error string), delivered through the real
+// deliverCommandReply, and reconstructed by SendCommand's replyError call.
+// Before the fix, SendCommand did `errors.New(res.payload.Error)` --a plain
+// error-- so errors.As(err, &state.StateError{}) at the HTTP layer always
+// failed for remote-originated errors, and every one of them was reported as
+// the generic peer_offline/invalid_input code regardless of its real
+// business meaning.
+func TestSendCommand_RemoteStateErrorSurvivesRPCRoundTrip(t *testing.T) {
+	mgr := makeTestV2Manager(t)
+	peerID := "remotea"
+	pc := newV2PeerConnection(peerID)
+	mgr.RegisterPeer(peerID, "remotea", "", pc)
+
+	cmd := state.SessionCommand{
+		ID:     state.NewCommandID(),
+		Ref:    state.SessionRef{Owner: validOwnerID, Session: validSessionID},
+		Action: "kill",
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := mgr.SendCommand(context.Background(), peerID, cmd)
+		errCh <- err
+	}()
+
+	var req *V2CommandRequestPayload
+	select {
+	case req = <-pc.cmdQueue.ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for command request")
+	}
+
+	// Simulate the remote peer's handleV2SessionCommandRequest failing with a
+	// real state.StateError, encoded exactly as the fixed setReplyError does
+	// (see pkg/peer/rpc.go).
+	remoteErr := state.StateError{Code: state.ErrGenerationMismatch, Field: "generation", Detail: "stale generation"}
+	reply := V2CommandReplyPayload{ID: req.ID}
+	setReplyError(&reply, remoteErr)
+	if reply.ErrorCode == "" {
+		t.Fatal("test setup broken: setReplyError did not populate ErrorCode for a state.StateError")
+	}
+	mgr.deliverCommandReply(peerID, pc, reply)
+
+	var gotErr error
+	select {
+	case gotErr = <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for SendCommand to return")
+	}
+
+	if gotErr == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	var se state.StateError
+	if !errors.As(gotErr, &se) {
+		t.Fatalf("STATE-ERROR LOST OVER RPC: SendCommand returned %v (%T), which does not unwrap to a "+
+			"state.StateError -- the HTTP layer's writeV2CommandError/mapV2ErrorCode can only map a real "+
+			"state.StateError to its correct status code; anything else falls back to a generic error", gotErr, gotErr)
+	}
+	if se.Code != state.ErrGenerationMismatch {
+		t.Fatalf("reconstructed StateError has Code=%q, want %q", se.Code, state.ErrGenerationMismatch)
+	}
+	if se.Field != "generation" {
+		t.Fatalf("reconstructed StateError has Field=%q, want %q", se.Field, "generation")
+	}
+}
+
 func TestCatalogSlot_CoalescesSlowQueue(t *testing.T) {
 	pc := newV2PeerConnection("peer")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -248,6 +323,101 @@ func TestCommandWaiter_RegisterBeforeSend(t *testing.T) {
 	}
 }
 
+// TestSendCommand_SameCommandIDDifferentPeersNoCrossTalk is the real-boundary
+// proof for Finding (RPC command waiters keyed only by CommandID): two
+// concurrent SendCommand calls that happen to carry the SAME CommandID but
+// target DIFFERENT live peer connections must each receive their own correct
+// reply, with no cross-talk and no spurious timeout. Before the composite
+// (peerID, conn, id) waiter key, both registrations shared the single
+// map[string]*commandWaiter entry keyed by CommandID alone: the second
+// registerCommandWaiter call overwrote the first waiter's map entry, so a
+// reply delivered for the first peer's connection could satisfy the SECOND
+// call's waiter channel (cross-talk) while the first call's own waiter
+// silently lost its registration and would hang until ctx timeout.
+func TestSendCommand_SameCommandIDDifferentPeersNoCrossTalk(t *testing.T) {
+	mgr := makeTestV2Manager(t)
+	const sharedCmdID = state.CommandID("shared-command-id")
+
+	peerAID := "peer-a"
+	pcA := newV2PeerConnection(peerAID)
+	mgr.RegisterPeer(peerAID, "peer-a", "", pcA)
+
+	peerBID := "peer-b"
+	pcB := newV2PeerConnection(peerBID)
+	mgr.RegisterPeer(peerBID, "peer-b", "", pcB)
+
+	cmdA := state.SessionCommand{ID: sharedCmdID, Ref: state.SessionRef{Owner: validOwnerID, Session: validSessionID}, Action: "kill"}
+	cmdB := state.SessionCommand{ID: sharedCmdID, Ref: state.SessionRef{Owner: validOwnerID, Session: validSessionID}, Action: "label"}
+
+	resA := make(chan state.CommandResult, 1)
+	errA := make(chan error, 1)
+	go func() {
+		res, err := mgr.SendCommand(context.Background(), peerAID, cmdA)
+		errA <- err
+		resA <- res
+	}()
+
+	resB := make(chan state.CommandResult, 1)
+	errB := make(chan error, 1)
+	go func() {
+		res, err := mgr.SendCommand(context.Background(), peerBID, cmdB)
+		errB <- err
+		resB <- res
+	}()
+
+	// Drain both requests -- both carry the identical CommandID, but on
+	// separate connections/queues.
+	var reqA, reqB *V2CommandRequestPayload
+	select {
+	case reqA = <-pcA.cmdQueue.ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for peer A's command request")
+	}
+	select {
+	case reqB = <-pcB.cmdQueue.ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for peer B's command request")
+	}
+	if reqA.ID != string(sharedCmdID) || reqB.ID != string(sharedCmdID) {
+		t.Fatalf("test setup broken: expected both requests to carry id %q, got %q and %q", sharedCmdID, reqA.ID, reqB.ID)
+	}
+
+	// Deliver DISTINCT replies on each connection, each carrying the SAME
+	// CommandID. Correct routing must deliver reply A only to the call
+	// waiting on connection A, and reply B only to the call waiting on
+	// connection B.
+	dataA, _ := json.Marshal(state.CommandResult{ID: sharedCmdID, Ref: cmdA.Ref, Accepted: true, DisplayName: "from-peer-a"})
+	dataB, _ := json.Marshal(state.CommandResult{ID: sharedCmdID, Ref: cmdB.Ref, Accepted: true, DisplayName: "from-peer-b"})
+	mgr.deliverCommandReply(peerAID, pcA, V2CommandReplyPayload{ID: reqA.ID, Handled: true, Result: dataA})
+	mgr.deliverCommandReply(peerBID, pcB, V2CommandReplyPayload{ID: reqB.ID, Handled: true, Result: dataB})
+
+	select {
+	case err := <-errA:
+		if err != nil {
+			t.Fatalf("SendCommand to peer A: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("peer A's SendCommand timed out -- its waiter was likely clobbered by peer B's registration")
+	}
+	select {
+	case err := <-errB:
+		if err != nil {
+			t.Fatalf("SendCommand to peer B: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("peer B's SendCommand timed out")
+	}
+
+	gotA := <-resA
+	gotB := <-resB
+	if gotA.DisplayName != "from-peer-a" {
+		t.Fatalf("CROSS-TALK: call to peer A got result %+v, want DisplayName=from-peer-a", gotA)
+	}
+	if gotB.DisplayName != "from-peer-b" {
+		t.Fatalf("CROSS-TALK: call to peer B got result %+v, want DisplayName=from-peer-b", gotB)
+	}
+}
+
 // TestPeerIDForOwner_RoutesSendCommandToLiveOwnerBoundPeer proves the exact
 // integration handleV2SessionCommand (pkg/server/routes_state_v2.go) relies
 // on: once a peer's catalog snapshot has bound it to an owner (via
@@ -320,4 +490,3 @@ func TestPeerIDForOwner_RoutesSendCommandToLiveOwnerBoundPeer(t *testing.T) {
 		t.Fatalf("expected accepted result with node B's reply, got %+v", res)
 	}
 }
-
