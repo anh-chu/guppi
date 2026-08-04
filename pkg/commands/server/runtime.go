@@ -43,6 +43,12 @@ type Runtime struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// v2Mode is resolved once in newRuntime (TERMYARD_V2_STATE=1) and never
+	// changes for the lifetime of the runtime. It gates every legacy-only
+	// background loop and write path so the two authorities never run
+	// concurrently.
+	v2Mode bool
+
 	ready chan struct{}
 	opts  *server.Options
 
@@ -103,6 +109,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	v2Mode := os.Getenv("TERMYARD_V2_STATE") == "1"
 
 	rt := &Runtime{
+		v2Mode:     v2Mode,
 		stateMgr:   state.NewManager(),
 		tracker:    toolevents.NewTracker(),
 		actTracker: activity.NewTracker(),
@@ -508,7 +515,11 @@ func (rt *Runtime) Start(parent context.Context) error {
 	go rt.reconciler.Run(rt.ctx)
 	go rt.detector.Run(rt.ctx)
 	go rt.silenceMonitor.Run(rt.ctx)
-	go runShellNameWatcher(rt.ctx, rt.stateMgr, rt.adapter, rt.fgProvider)
+	if !rt.v2Mode {
+		// AI session naming only writes to the legacy state.Manager; v2 has its
+		// own naming path via SessionCommandService's create flow.
+		go runShellNameWatcher(rt.ctx, rt.stateMgr, rt.adapter, rt.fgProvider)
+	}
 
 	go rt.runDaemonRefresh(rt.ctx)
 
@@ -602,9 +613,18 @@ func (rt *Runtime) classifyAndCleanupCrashes() {
 // refreshDaemonState runs one classify-then-publish cycle.  Crash detection
 // happens first so a crashed session is never broadcast as live in the same
 // cycle.
+//
+// In v2 mode, crash detection still runs (the v2 reconciler and daemon
+// registry need it), but the legacy publish step (refreshSessions, which
+// writes into the legacy state.Manager) is skipped: v2 mode has its own
+// classify-before-publish reconciler (pkg/state.Reconciler) driven off the
+// same daemon registry, so publishing through both would be a dual-write.
 func (rt *Runtime) refreshDaemonState() {
 	rt.classifyAndCleanupCrashes()
-	rt.refreshSessions(rt.adapter.refresh())
+	infos := rt.adapter.refresh()
+	if !rt.v2Mode {
+		rt.refreshSessions(infos)
+	}
 }
 
 // runDaemonRefresh keeps an up-to-date snapshot of daemon sessions and runs

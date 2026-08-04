@@ -133,6 +133,32 @@ func capabilitiesFor(deps SessionDeps) []string {
 	return caps
 }
 
+// hasCap reports whether caps contains the given capability string.
+func hasCap(caps []string, cap string) bool {
+	for _, c := range caps {
+		if c == cap {
+			return true
+		}
+	}
+	return false
+}
+
+// requiresV2Peer reports whether this node is v2-only, meaning it must
+// reject peers that do not advertise both v2 capabilities: a v2-only node
+// has no legacy per-field state.Manager path left to fall back to for
+// catalog/workspace sync (see runtime.go's v2Mode gating), so a peer
+// without CapV2Catalog/CapV2Command cannot be synchronized with at all.
+func requiresV2Peer(deps SessionDeps) bool {
+	return deps.V2CommandSvc != nil
+}
+
+// peerCapsSatisfyV2 reports whether a remote peer's advertised capabilities
+// satisfy this node's v2 requirement (both catalog and command RPC caps
+// present). Only meaningful when requiresV2Peer(deps) is true.
+func peerCapsSatisfyV2(caps []string) bool {
+	return hasCap(caps, CapV2Catalog) && hasCap(caps, CapV2Command)
+}
+
 // V2 command kinds carried by V2CommandRequestPayload.
 const (
 	V2CommandKindSession      = "session"

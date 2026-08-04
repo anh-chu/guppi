@@ -405,6 +405,16 @@ func (s *LinkSupervisor) dialOnce(ctx context.Context, link *peerLink) error {
 		}
 	}
 
+	// v2-only nodes have no legacy state-sync fallback: reject peers that
+	// don't advertise both v2 capabilities rather than silently degrading to
+	// (nonexistent) legacy per-field sync. Mirrors the listener-side check
+	// in handler.go's HandlePeer.
+	if requiresV2Peer(s.deps) && !peerCapsSatisfyV2(peerCaps) {
+		logrus.WithFields(logrus.Fields{"peer": link.peer.Name, "addr": addr, "caps": peerCaps}).Warn("rejecting peer: this node is v2-only and remote peer lacks required v2 capabilities")
+		conn.Close()
+		return fmt.Errorf("peer %s lacks required v2 capabilities", link.peer.Name)
+	}
+
 	// Auth ok.
 	_ = s.deps.PeerStore.UpdateLastSeen(link.peer.PublicKey)
 	link.setStatus(StatusConnected, "", time.Time{})

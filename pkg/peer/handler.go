@@ -85,6 +85,16 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// v2-only nodes have no legacy state-sync fallback: reject peers that
+	// don't advertise both v2 capabilities rather than silently degrading to
+	// (nonexistent) legacy per-field sync.
+	if requiresV2Peer(h.deps) && !peerCapsSatisfyV2(caps) {
+		log.WithFields(logrus.Fields{"peer": peer.Name, "id": peer.Fingerprint(), "caps": caps}).Warn("rejecting peer: this node is v2-only and remote peer lacks required v2 capabilities")
+		sendAuthFail(conn, "v2 capabilities required")
+		conn.Close()
+		return
+	}
+
 	// Race resolution: if we already have a live connection for this peer,
 	// reject the newer one with "already connected" so the dialer flips role.
 	if h.deps.Manager.HasLiveConnection(peer.Fingerprint()) {
