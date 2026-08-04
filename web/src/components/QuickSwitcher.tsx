@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { Session, sessionKey } from '../hooks/useSessions'
+import { Session, sessionKey, sessionLabel } from '../hooks/useSessions'
 import { ToolEvent } from '../hooks/useToolEvents'
 import { toolColors } from '../theme'
 import { cn } from '../lib/utils'
@@ -77,7 +77,9 @@ export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, o
     const hasMultipleHosts = sessions.some(s => s.host)
     for (const session of sessions) {
       const sk = sessionKey(session)
-      const label = hasMultipleHosts && session.host_name ? `${session.host_name}: ${session.name}` : session.name
+      // sk stays id-based (session.name is the immutable canonical id); the
+      // row SHOWS the friendly label via sessionLabel() (name -> display_name).
+      const label = hasMultipleHosts && session.host_name ? `${session.host_name}: ${sessionLabel(session)}` : sessionLabel(session)
       items.push({
         type: 'session',
         label,
