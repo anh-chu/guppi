@@ -158,7 +158,7 @@ const createMockHook = (name: string) => vi.fn(() => {
   }
   if (name === 'useActivity') return { getSessionActivity: () => null, handleActivityEvent: vi.fn() }
   if (name === 'useNotifications') return { processToolEvent: vi.fn() }
-  if (name === 'useWebSocket') return { connected: false }
+  if (name === 'useWebSocket') return { connected: false } // overridden below for useWebSocket specifically
   if (name === 'usePushNotifications') return { pushState: 'unsupported', subscribe: vi.fn(), unsubscribe: vi.fn() }
   if (name === 'useSessionAttrs') return { sets: { hidden: new Set(), background: new Set(), scheduleIDs: {} }, setAttr: vi.fn(), refresh: vi.fn() }
   if (name === 'useSessionOrder') return { ranks: {}, loaded: true, refresh: vi.fn(), setRank: vi.fn() }
@@ -172,7 +172,16 @@ vi.mock('./hooks/useHosts', () => ({ useHosts: createMockHook('useHosts') }))
 vi.mock('./hooks/useToolEvents', () => ({ useToolEvents: createMockHook('useToolEvents') }))
 vi.mock('./hooks/useActivity', () => ({ useActivity: createMockHook('useActivity') }))
 vi.mock('./hooks/useNotifications', () => ({ useNotifications: createMockHook('useNotifications') }))
-vi.mock('./hooks/useWebSocket', () => ({ useWebSocket: createMockHook('useWebSocket') }))
+// Captures the onEvent handler AppV2/AppLegacy register with useWebSocket so
+// tests can dispatch a synthetic server event straight into the real App
+// event-handling code path without needing a real socket.
+let capturedOnEvent: ((evt: any) => void) | null = null
+vi.mock('./hooks/useWebSocket', () => ({
+  useWebSocket: (_path: string, onEvent: (evt: any) => void) => {
+    capturedOnEvent = onEvent
+    return { connected: false }
+  },
+}))
 vi.mock('./hooks/usePushNotifications', () => ({ usePushNotifications: createMockHook('usePushNotifications') }))
 vi.mock('./hooks/useSessionAttrs', () => ({ useSessionAttrs: createMockHook('useSessionAttrs') }))
 vi.mock('./hooks/useSessionOrder', () => ({ useSessionOrder: createMockHook('useSessionOrder') }))
@@ -190,7 +199,10 @@ let mockTopBarProps: any = null
 vi.mock('./components/Sidebar', () => ({ Sidebar: (props: any) => { mockSidebarProps = props; return null } }))
 vi.mock('./components/Terminal', () => ({ Terminal: () => null }))
 vi.mock('./components/Overview', () => ({ Overview: () => null }))
-vi.mock('./components/NewSessionModal', () => ({ NewSessionModal: () => null }))
+let mockNewSessionModalProps: any = null
+vi.mock('./components/NewSessionModal', () => ({
+  NewSessionModal: (props: any) => { mockNewSessionModalProps = props; return null },
+}))
 vi.mock('./components/PortForwardModal', () => ({ PortForwardModal: () => null }))
 vi.mock('./components/ScheduleModal', () => ({ ScheduleModal: () => null }))
 vi.mock('./components/TopBar', () => ({ TopBar: (props: any) => { mockTopBarProps = props; return null } }))
@@ -421,5 +433,90 @@ describe('App: mode-splitting', () => {
         { action: 'kill' },
       )
     })
+
+    it('v2 mode never calls useSessionAttrs and treats session-attrs-updated as a no-op', async () => {
+      const workspaceCommand = vi.fn().mockResolvedValue({})
+      mockV2State = {
+        state: {
+          catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
+          workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          connectionGeneration: 0,
+          connectionOnline: false,
+          catalogBootstrapped: false,
+          workspaceBootstrapped: false,
+        },
+        bootstrapped: false,
+        connected: false,
+        paneTree: null,
+        activeKey: null,
+        layoutId: null,
+        createSession: vi.fn().mockResolvedValue({}),
+        sessionCommand: vi.fn(),
+        workspaceCommand,
+      }
+
+      const useSessionAttrsModule = await import('./hooks/useSessionAttrs')
+      const useSessionAttrsSpy = useSessionAttrsModule.useSessionAttrs as ReturnType<typeof vi.fn>
+      useSessionAttrsSpy.mockClear()
+
+      v2Enabled = true
+      const { render } = await import('@testing-library/react')
+      const App = (await import('./App')).default
+      render(<App />)
+
+      // AppV2 must never mount the legacy session-attrs hook: its route is not
+      // registered in v2 mode, so calling it would always 404 for nothing.
+      expect(useSessionAttrsSpy).not.toHaveBeenCalled()
+
+      // Dispatching the legacy 'session-attrs-updated' event through the real
+      // onEvent handler must not throw and must not attempt to call into the
+      // (nonexistent) refresh function -- it is now a documented no-op.
+      expect(capturedOnEvent).not.toBeNull()
+      expect(() => capturedOnEvent!({ type: 'session-attrs-updated' })).not.toThrow()
+
+      // Sidebar/Overview must still receive a well-formed (empty) attrs shape,
+      // never a stale or undefined value from the removed hook.
+      expect(mockSidebarProps.sessionAttrs).toEqual({ background: new Set(), hidden: new Set(), scheduleIDs: new Map() })
+    })
+
+    it('handleCreateSession threads the selected hostId through to v2State.createSession', async () => {
+      const createSession = vi.fn().mockResolvedValue({ Ref: { owner: null, session: 'new-sess', window: 0, pane: 0 } })
+      mockV2State = {
+        state: {
+          catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
+          workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          connectionGeneration: 0,
+          connectionOnline: false,
+          catalogBootstrapped: false,
+          workspaceBootstrapped: false,
+        },
+        bootstrapped: false,
+        connected: false,
+        paneTree: null,
+        activeKey: null,
+        layoutId: null,
+        createSession,
+        sessionCommand: vi.fn(),
+        workspaceCommand: vi.fn(),
+      }
+
+      v2Enabled = true
+      const { render, act } = await import('@testing-library/react')
+      const App = (await import('./App')).default
+      render(<App />)
+
+      // NewSessionModal only mounts once newSessionModalOpen flips true; open
+      // it the same way a real user would, via TopBar's "new session" button.
+      expect(mockTopBarProps).not.toBeNull()
+      act(() => { mockTopBarProps.onNewSession() })
+
+      expect(mockNewSessionModalProps).not.toBeNull()
+      await mockNewSessionModalProps.onCreateSession('my-session', '/tmp', '', 'remote-host-fingerprint')
+
+      expect(createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'my-session', hostId: 'remote-host-fingerprint' }),
+      )
+    })
   })
 })
+

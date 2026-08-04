@@ -25,7 +25,7 @@ import { useWebSocket } from './hooks/useWebSocket'
 import { usePushNotifications } from './hooks/usePushNotifications'
 import { usePreferencesProvider, usePreferences, PreferencesContext } from './hooks/usePreferences'
 import { useAuth } from './hooks/useAuth'
-import { useSessionAttrs } from './hooks/useSessionAttrs'
+import { useSessionAttrs, type SessionAttrSets } from './hooks/useSessionAttrs'
 import { useSessionOrder } from './hooks/useSessionOrder'
 import { useWikiController } from './hooks/useWikiController'
 import { Toasts, Toast } from './components/Toasts'
@@ -1472,6 +1472,19 @@ function AppLegacy({ onLogout, authenticated }: { onLogout?: () => void; authent
   )
 }
 
+// v2 mode has no server-side hidden/background/schedule-id session attributes
+// yet (useSessionAttrs' /api/session-attrs route is deliberately NOT
+// registered when this node is in v2 mode, and the 'session-attrs-updated'
+// event it reacts to is never sent by a v2-mode backend either -- see
+// pkg/server/routes_sessions.go's legacy-route gating). Rather than mount a
+// hook whose initial fetch always 404s and whose refresh is never triggered,
+// AppV2 uses this fixed empty/default value everywhere the legacy hook's
+// output would have been consumed: no session is ever hidden or backgrounded,
+// and no session has a schedule id, which honestly reflects "v2 doesn't
+// support this feature yet" rather than faking a stale/broken result.
+const V2_EMPTY_SESSION_ATTRS: SessionAttrSets = { background: new Set(), hidden: new Set(), scheduleIDs: new Map() }
+const v2NoopSetSessionAttr = (_key: string, _next: { background?: boolean; hidden?: boolean }) => {}
+
 function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
   // V2 mode: normalized catalog + workspace state via useV2State.
   // Simpler than AppLegacy: only one layout (no groups/singleView).
@@ -1517,7 +1530,6 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   const { hosts, refresh: refreshHosts } = useHosts()
   const { prefs: _ } = usePreferences() // already have prefs above
   const wiki = useWikiController(undefined as any, wikiEnabled) // v2 doesn't have workspace object
-  const { sets: sessionAttrs, setAttr: setSessionAttr, refresh: refreshSessionAttrs } = useSessionAttrs(authenticated)
   const crashedHook = useCrashedSessions()
   const selfUpdate = useSelfUpdate(null)
   const wikiEnabledRef = useRef(wikiEnabled)
@@ -1653,11 +1665,12 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
     } else if (evt.type === 'update-status') {
       // ignore
     } else if (evt.type === 'session-attrs-updated') {
-      refreshSessionAttrs()
+      // v2 mode has no server-side session-attrs concept; the v2 backend
+      // never sends this event, and there is no local state to refresh.
     } else if (evt.type === 'sessions-crashed') {
       crashedHook.refresh()
     }
-  }, [handleToolEvent, processToolEvent, handleActivityEvent, refreshSessionAttrs, refreshHosts, crashedHook.refresh])
+  }, [handleToolEvent, processToolEvent, handleActivityEvent, refreshHosts, crashedHook.refresh])
 
   const { connected } = useWebSocket('/ws/events', onEvent)
 
@@ -1753,10 +1766,17 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
     }).catch(err => console.error('v2 quick shell create failed:', err))
   }, [v2State, refocusTerminal])
 
-  const handleCreateSession = useCallback(async (name: string, path: string, command: string, _hostId?: string, worktreeBranch?: string, _agentType?: string): Promise<string | null> => {
-    // v2 has no remote/hostId-based creation yet; only local creation is
-    // routed through the v2 session-command endpoint. Session creation on
-    // a remote peer is a known unmigrated gap (peer-attach cases aside).
+  const handleCreateSession = useCallback(async (name: string, path: string, command: string, hostId?: string, worktreeBranch?: string, _agentType?: string): Promise<string | null> => {
+    // hostId (the caller's selected target host) is threaded through to
+    // v2State.createSession so it reaches the frontend API boundary. It does
+    // NOT yet reach the backend over the wire: pkg/state/session_commands.go's
+    // executeCreate rejects any SessionRef.Owner that doesn't match the local
+    // catalog owner (ref.Owner != s.owner -> ErrInvalidIdentity), and the
+    // RemoteCreateCoordinator (pkg/state/remote_create.go) that performs
+    // cross-host creation is only reachable from pkg/peer/session_state.go
+    // today, not from this HTTP command path. Until that backend wiring lands
+    // (see TODO in useV2State.ts's createSession), selecting a non-local host
+    // here will still create the session locally.
     if (!worktreeBranch) setNewSessionModalOpen(false)
     const target = splitTargetRef.current
     splitTargetRef.current = null
@@ -1767,6 +1787,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
         cwd: path,
         worktreeBranch: worktreeBranch || undefined,
         layoutId: target ? (layoutId ?? undefined) : undefined,
+        hostId,
       })
       const r = result as { Ref?: { owner?: string | null; session?: string; window?: number; pane?: number }; DisplayName?: string } | null
       const resolvedName = r?.Ref?.session || r?.DisplayName || name
@@ -1929,8 +1950,8 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
             onPairSessions={() => {}}
             onRemoveFromSplit={() => {}}
             onSessionKilled={handleKillSession}
-            sessionAttrs={sessionAttrs}
-            setSessionAttr={setSessionAttr}
+            sessionAttrs={V2_EMPTY_SESSION_ATTRS}
+            setSessionAttr={v2NoopSetSessionAttr}
             pruningSuspended={false}
             onQuickShell={handleQuickShell}
             crashedCount={crashedHook.crashedSessions.length}
@@ -2003,16 +2024,16 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
               sessions={sessions}
               onOpenFile={wiki.openFile}
               hosts={hosts}
-              hiddenSet={sessionAttrs.hidden}
-              backgroundSet={sessionAttrs.background}
-              scheduleIDs={sessionAttrs.scheduleIDs}
+              hiddenSet={V2_EMPTY_SESSION_ATTRS.hidden}
+              backgroundSet={V2_EMPTY_SESSION_ATTRS.background}
+              scheduleIDs={V2_EMPTY_SESSION_ATTRS.scheduleIDs}
               onSessionSelect={handleSessionSelect}
               getSessionEvents={getSessionEvents}
               getSessionActivity={getSessionActivity}
               isSessionInActiveTurn={isSessionInActiveTurn}
               onJumpToSession={handleJumpToSession}
               onDismissAlert={dismissEvent}
-              setSessionAttr={setSessionAttr}
+              setSessionAttr={v2NoopSetSessionAttr}
               onSessionKilled={handleKillSession}
               layoutGroups={layoutGroups}
             />

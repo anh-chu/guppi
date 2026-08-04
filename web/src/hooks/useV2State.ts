@@ -42,6 +42,10 @@ export type UseV2StateResult = {
     cwd?: string
     worktreeBranch?: string
     layoutId?: LayoutID
+    // Target host selected by the caller. Accepted here for forward
+    // compatibility with the frontend API boundary, but NOT yet placed on
+    // the wire -- see the TODO in createSession's implementation below.
+    hostId?: string
   }) => Promise<unknown>
   sessionCommand: (ref: SessionRef, cmd: SessionCommandAction) => Promise<unknown>
   workspaceCommand: (layout: LayoutID, cmd: WorkspaceCommandAction) => Promise<unknown>
@@ -126,7 +130,22 @@ export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
         cwd?: string
         worktreeBranch?: string
         layoutId?: LayoutID
+        hostId?: string
       }) => {
+        // TODO(v2 remote create): params.hostId identifies the caller's
+        // selected target host, but the v2 session-command wire contract has
+        // no field to carry it yet -- pkg/state/session_commands.go's
+        // executeCreate hard-rejects any SessionRef.Owner that doesn't match
+        // the local catalog owner (ref.Owner != s.owner -> ErrInvalidIdentity),
+        // and the RemoteCreateCoordinator (pkg/state/remote_create.go,
+        // ExecuteRemoteCreate) that would route this to the right peer is only
+        // reachable from pkg/peer/session_state.go today, not from this HTTP
+        // command path. Deliberately NOT placing hostId on the SessionRef sent
+        // below: doing so would make every remote-host create fail with
+        // invalid_identity instead of the current (also wrong, but at least
+        // non-fatal) behavior of silently creating locally. Once the backend
+        // exposes a target-owner field on this endpoint, wire params.hostId
+        // into that field here.
         const ref: SessionRef = { owner: null, session: '', window: 0, pane: 0 }
         return commandClient.sessionCommand(ref, {
           action: 'create',
