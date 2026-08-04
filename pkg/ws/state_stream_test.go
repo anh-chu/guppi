@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -170,6 +171,79 @@ func TestStateStreamCoalescesToLatestRevision(t *testing.T) {
 	}
 	if lastCount != n {
 		t.Fatalf("expected the final frame to carry all %d sessions, got %d", n, lastCount)
+	}
+}
+
+// TestStateStreamEnqueueCloseRaceNoPanic stresses enqueue racing with close.
+// Before the done-channel redesign, close() closed the signal channel while a
+// concurrent enqueue could still be about to send on it, panicking with
+// "send on closed channel" whenever a write failure raced with shutdown.
+// signal is now never closed; close() closes done instead, so the race cannot
+// panic. This test hammers enqueue from many goroutines while close() runs
+// concurrently (simulating a write failure and an external shutdown racing),
+// with the peer websocket closed so in-flight client writes fail immediately.
+// Run under -race to also verify no data races.
+func TestStateStreamEnqueueCloseRaceNoPanic(t *testing.T) {
+	serverConns := make(chan *websocket.Conn, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sc, err := stateStreamUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("server upgrade: %v", err)
+			return
+		}
+		// Hand the upgraded conn to the test goroutine and return: gorilla's
+		// Upgrade hijacks the underlying net.Conn from the HTTP server, so the
+		// connection stays open after this handler returns. The test below is
+		// the sole receiver on serverConns and closes sc itself to force
+		// client writes to fail immediately.
+		serverConns <- sc
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	sc := <-serverConns
+	// Close the server side so any client write (in writeLoop) fails
+	// immediately, exercising the write-failure -> close() path concurrently
+	// with the external close() calls below.
+	_ = sc.Close()
+
+	c := newStateStreamClient(conn, nil)
+	defer c.close()
+
+	var wg sync.WaitGroup
+	const producers = 8
+	for i := 0; i < producers; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			base := int64(worker) * 10000
+			for j := int64(0); j < 2000; j++ {
+				c.enqueue(&c.catalog, base+j, []byte("payload"))
+			}
+		}(i)
+	}
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				c.close()
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("enqueue/close stress timed out")
 	}
 }
 

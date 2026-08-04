@@ -45,7 +45,12 @@ type stateStreamClient struct {
 	catalog   *encodedSnapshot
 	workspace *encodedSnapshot
 
-	signal  chan struct{}
+	signal chan struct{}
+	// done is closed exactly once by close(). It is only ever closed, never
+	// sent on, so closing it concurrently with anything is always safe.
+	// writeLoop and wake select on it to observe shutdown; signal is NEVER
+	// closed, so no goroutine can send on a channel after it has been closed.
+	done    chan struct{}
 	closed  atomic.Bool
 	closeMu sync.Mutex
 
@@ -62,6 +67,7 @@ func newStateStreamClient(conn *websocket.Conn, metrics *StateStreamMetrics) *st
 	c := &stateStreamClient{
 		conn:    conn,
 		signal:  make(chan struct{}, 1),
+		done:    make(chan struct{}),
 		metrics: metrics,
 	}
 	go c.writeLoop()
@@ -100,32 +106,42 @@ func (c *stateStreamClient) enqueue(slot **encodedSnapshot, rev int64, encoded [
 func (c *stateStreamClient) wake() {
 	select {
 	case c.signal <- struct{}{}:
+	case <-c.done:
 	default:
 	}
 }
 
 func (c *stateStreamClient) writeLoop() {
-	for range c.signal {
-		if c.closed.Load() {
+	for {
+		select {
+		case <-c.done:
 			return
-		}
-		// If a test gate is set, wait for it before draining. This allows
-		// tests to accumulate multiple publishes before any flush occurs.
-		if gate := c.testWaitBeforeDrain.Load(); gate != nil {
-			<-*gate
-		}
-		c.mu.Lock()
-		cat := c.catalog
-		c.catalog = nil
-		wsSnap := c.workspace
-		c.workspace = nil
-		c.mu.Unlock()
+		case <-c.signal:
+			if c.closed.Load() {
+				return
+			}
+			// If a test gate is set, wait for it before draining. This allows
+			// tests to accumulate multiple publishes before any flush occurs.
+			if gate := c.testWaitBeforeDrain.Load(); gate != nil {
+				select {
+				case <-*gate:
+				case <-c.done:
+					return
+				}
+			}
+			c.mu.Lock()
+			cat := c.catalog
+			c.catalog = nil
+			wsSnap := c.workspace
+			c.workspace = nil
+			c.mu.Unlock()
 
-		if cat != nil && !c.write(cat.bytes) {
-			return
-		}
-		if wsSnap != nil && !c.write(wsSnap.bytes) {
-			return
+			if cat != nil && !c.write(cat.bytes) {
+				return
+			}
+			if wsSnap != nil && !c.write(wsSnap.bytes) {
+				return
+			}
 		}
 	}
 }
@@ -145,12 +161,13 @@ func (c *stateStreamClient) write(payload []byte) bool {
 	return true
 }
 
-// close stops the writer goroutine. Safe to call multiple times.
+// close stops the writer goroutine. Safe to call multiple times; done is
+// closed exactly once, guarded by closeMu plus the CAS on closed.
 func (c *stateStreamClient) close() {
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()
 	if c.closed.CompareAndSwap(false, true) {
-		close(c.signal)
+		close(c.done)
 	}
 }
 
