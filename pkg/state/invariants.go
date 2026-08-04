@@ -37,6 +37,20 @@ const (
 	// Requester does not match the authenticated sender). This is a peer-trust
 	// violation, not a client input mistake, and must never be silently ignored.
 	ErrOwnershipMismatch        ErrorCode = "ownership_mismatch"
+	// ErrOrphanedSessionRef is returned when a SessionRef embedded in a layout
+	// or workspace pane-tree leaf (or an active key) either claims an owner
+	// other than the document's own owner, or names a session ID that has no
+	// corresponding LocalSessionRecord in the document. Session identity
+	// (Owner, Session ID) is immutable for a session's lifetime; nothing may
+	// rewrite a leaf's ref without the catalog's session record moving with
+	// it, and nothing may leave a leaf pointing at a session that was never
+	// created or has already been removed.
+	ErrOrphanedSessionRef       ErrorCode = "orphaned_session_ref"
+	// ErrDeprecatedAction is returned when a caller submits a workspace action
+	// that has been intentionally removed because it mutated data it must
+	// never touch (e.g. the old "rename" action rewrote SessionRef identity
+	// inside pane-tree leaves). The error detail names the replacement.
+	ErrDeprecatedAction         ErrorCode = "deprecated_action"
 )
 
 // StateError reports a typed contract violation.
@@ -82,6 +96,20 @@ func ValidateDocument(doc *AppDocument) error {
 		}
 		seenSessions[s.ID] = struct{}{}
 	}
+	// A session ID also "exists" for pane-tree ref-integrity purposes while it
+	// is still an in-flight create intent: create places the session's ref
+	// into its target layout immediately, before the session record itself is
+	// materialized in doc.Sessions once the underlying pty actually starts
+	// (see executeCreate/placeSessionInWorkspace in session_commands.go and
+	// the reconciler that later promotes a pending create to a real session
+	// record). Only a leaf whose session ID appears in none of these three
+	// sources is an orphan.
+	for i := range doc.PendingCreates {
+		seenSessions[doc.PendingCreates[i].Ref.Session] = struct{}{}
+	}
+	for i := range doc.PendingRemoteCreates {
+		seenSessions[doc.PendingRemoteCreates[i].Ref.Session] = struct{}{}
+	}
 
 	seenLayouts := make(map[LayoutID]struct{}, len(doc.Layouts))
 	seenOrders := make(map[int64]struct{}, len(doc.Layouts))
@@ -98,12 +126,23 @@ func ValidateDocument(doc *AppDocument) error {
 		}
 		seenLayouts[l.ID] = struct{}{}
 		seenOrders[l.Order] = struct{}{}
+		if err := validateSessionRefIntegrity(l.Tree, doc.Owner, seenSessions, fmt.Sprintf("layouts[%d].tree", i)); err != nil {
+			return err
+		}
 	}
 
 	for i := range doc.Workspaces {
 		w := &doc.Workspaces[i]
 		if err := ValidateWorkspace(w, doc.Owner, seenLayouts); err != nil {
 			return StateError{Code: err.(StateError).Code, Field: fmt.Sprintf("workspaces[%d].%s", i, err.(StateError).Field), Detail: err.Error()}
+		}
+		if err := validateSessionRefIntegrity(w.Tree, doc.Owner, seenSessions, fmt.Sprintf("workspaces[%d].tree", i)); err != nil {
+			return err
+		}
+		if w.ActiveKey != nil {
+			if err := validateSingleSessionRefIntegrity(*w.ActiveKey, doc.Owner, seenSessions, fmt.Sprintf("workspaces[%d].active_key", i)); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -225,6 +264,37 @@ func collectLeaves(tree PaneNode) ([]SessionRef, error) {
 		return nil, err
 	}
 	return append(first, second...), nil
+}
+
+// validateSessionRefIntegrity checks that every leaf ref in tree is owned by
+// the document's own owner and names a session ID that has a corresponding
+// LocalSessionRecord in the document. This is what catches an orphaned ref:
+// a leaf that survived a mutation (e.g. a rename) without its session record
+// moving with it, or a leaf pointing at a session that was already removed.
+func validateSessionRefIntegrity(tree PaneNode, owner OwnerID, sessions map[SessionID]struct{}, field string) error {
+	leaves, err := collectLeaves(tree)
+	if err != nil {
+		return err
+	}
+	for _, ref := range leaves {
+		if err := validateSingleSessionRefIntegrity(ref, owner, sessions, field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateSingleSessionRefIntegrity applies the same ownership/existence
+// check as validateSessionRefIntegrity to one ref (e.g. an active key)
+// instead of a whole tree.
+func validateSingleSessionRefIntegrity(ref SessionRef, owner OwnerID, sessions map[SessionID]struct{}, field string) error {
+	if ref.Owner != owner {
+		return StateError{Code: ErrOrphanedSessionRef, Field: field, Detail: fmt.Sprintf("ref owner %q does not match document owner %q", ref.Owner, owner)}
+	}
+	if _, ok := sessions[ref.Session]; !ok {
+		return StateError{Code: ErrOrphanedSessionRef, Field: field, Detail: fmt.Sprintf("ref %q does not correspond to any session record in the document", ref.MapKey())}
+	}
+	return nil
 }
 
 // CheckSessionMembershipAcrossLayouts returns an error if any session appears

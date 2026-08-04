@@ -54,11 +54,20 @@ func readTyped(t *testing.T, conn *websocket.Conn) map[string]any {
 // contains complete state".
 func TestStateStreamSendsCompleteSnapshotOnConnect(t *testing.T) {
 	catalog := newTestCatalog(t)
+	sessionID := state.NewSessionID()
+	if err := catalog.PutSession(state.LocalSessionRecord{
+		ID:    sessionID,
+		Owner: catalog.Owner(),
+		Ref:   state.SessionRef{Owner: catalog.Owner(), Session: sessionID},
+		Phase: state.SessionPhaseActive,
+	}); err != nil {
+		t.Fatalf("PutSession: %v", err)
+	}
 	if err := catalog.PutLayout(state.LayoutRecord{
 		ID:    state.NewLayoutID(),
 		Owner: catalog.Owner(),
 		Order: 1,
-		Tree:  state.Leaf(state.SessionRef{Owner: catalog.Owner(), Session: state.NewSessionID()}),
+		Tree:  state.Leaf(state.SessionRef{Owner: catalog.Owner(), Session: sessionID}),
 	}); err != nil {
 		t.Fatalf("PutLayout: %v", err)
 	}

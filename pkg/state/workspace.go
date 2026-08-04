@@ -75,12 +75,6 @@ type workspaceReorderParams struct {
 	TargetIndex int `json:"target_index"`
 }
 
-type workspaceRenameParams struct {
-	workspaceBaseParams
-	Old SessionRef `json:"old"`
-	New SessionRef `json:"new"`
-}
-
 type workspaceSelectParams struct {
 	workspaceBaseParams
 	Ref SessionRef `json:"ref"`
@@ -214,14 +208,10 @@ func (c *Catalog) validatePeerWorkspaceRefOwnership(cmd WorkspaceCommand) error 
 		}
 		return checkRef("ref", p.Ref)
 	case WorkspaceActionRename:
-		var p workspaceRenameParams
-		if err := json.Unmarshal(cmd.Params, &p); err != nil {
-			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
-		}
-		if err := checkRef("old", p.Old); err != nil {
-			return err
-		}
-		return checkRef("new", p.New)
+		// Rename is deprecated (see the WorkspaceActionRename case in
+		// applyLayoutTreeCommand for why); no ref-ownership check is needed
+		// here because the command is unconditionally rejected downstream.
+		return nil
 	case WorkspaceActionSelect:
 		var p workspaceSelectParams
 		if err := json.Unmarshal(cmd.Params, &p); err != nil {
@@ -422,27 +412,16 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		rec.Revision = nextRev
 
 	case WorkspaceActionRename:
-		var p workspaceRenameParams
-		if err := json.Unmarshal(cmd.Params, &p); err != nil {
-			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
-		}
-		if err := checkExpectedRevision(rec.Revision, p.ExpectedRevision); err != nil {
-			return err
-		}
-		if !findLeaf(rec.Tree, p.Old) {
-			return StateError{Code: ErrMissingTarget, Field: "old", Detail: fmt.Sprintf("leaf %q not in layout", p.Old.MapKey())}
-		}
-		if p.New.Session == "" {
-			return StateError{Code: ErrInvalidIdentity, Field: "new", Detail: "new session ref has empty session id"}
-		}
-		if key := p.New.MapKey(); key != p.Old.MapKey() && conflictsMembership(membership, key, layout) {
-			return StateError{Code: ErrDuplicateMembership, Field: "new", Detail: fmt.Sprintf("session %q already belongs to another layout", key)}
-		}
-		rec.Tree = renameTree(rec.Tree, p.Old, p.New)
-		rec.Revision = nextRev
-		// Rename is a cross-cutting identity change, so every saved layout that
-		// contains the old ref must be updated in the same transaction.
-		renameSessionRefAcrossLayouts(doc, p.Old, p.New)
+		// WorkspaceActionRename is removed: it used to rewrite the SessionRef
+		// (owner+session id) stored inside pane-tree leaves, but session
+		// identity is immutable for the lifetime of a session (see
+		// INVARIANTS.md) and this action never updated the corresponding
+		// catalog session record, so it could leave a leaf pointing at a
+		// SessionRef with no matching session (an orphaned ref). Renaming a
+		// session's user-visible display label must go through the session
+		// label command (ActionLabel in session_commands.go), which only
+		// touches the mutable label, never the identity.
+		return StateError{Code: ErrDeprecatedAction, Field: "action", Detail: "workspace \"rename\" action is removed; use the session label command to change a session's display name instead"}
 
 	case WorkspaceActionSelect:
 		var p workspaceSelectParams
@@ -870,38 +849,6 @@ func removeTree(tree PaneNode, ref SessionRef) (PaneNode, bool, error) {
 	tree.First = &newFirst
 	tree.Second = &newSecond
 	return tree, true, nil
-}
-
-func renameSessionRefAcrossLayouts(doc *AppDocument, old, new SessionRef) {
-	oldKey := old.MapKey()
-	for i := range doc.Layouts {
-		doc.Layouts[i].Tree = renameTree(doc.Layouts[i].Tree, old, new)
-	}
-	for i := range doc.Workspaces {
-		if doc.Workspaces[i].ActiveKey != nil && doc.Workspaces[i].ActiveKey.MapKey() == oldKey {
-			doc.Workspaces[i].ActiveKey = nil
-		}
-		doc.Workspaces[i].Tree = renameTree(doc.Workspaces[i].Tree, old, new)
-	}
-}
-
-func renameTree(tree PaneNode, old, new SessionRef) PaneNode {
-	if tree.IsLeaf() {
-		if tree.Ref != nil && tree.Ref.MapKey() == old.MapKey() {
-			cp := new
-			return Leaf(cp)
-		}
-		return tree
-	}
-	if tree.First != nil {
-		first := renameTree(*tree.First, old, new)
-		tree.First = &first
-	}
-	if tree.Second != nil {
-		second := renameTree(*tree.Second, old, new)
-		tree.Second = &second
-	}
-	return tree
 }
 
 func swapTree(tree PaneNode, a, b SessionRef) PaneNode {

@@ -73,6 +73,9 @@ func TestInvariantDuplicateLayoutIDs(t *testing.T) {
 		Schema:   2,
 		Owner:    owner,
 		Revision: 1,
+		Sessions: []LocalSessionRecord{
+			mkSession(owner, "sessdoc1234567890ab"),
+		},
 		Layouts: []LayoutRecord{
 			mkLayout(owner, "layoutinv1234567890", 1),
 			mkLayout(owner, "layoutinv1234567890", 2),
@@ -94,6 +97,10 @@ func TestInvariantDuplicateLayoutOrder(t *testing.T) {
 		Schema:   2,
 		Owner:    owner,
 		Revision: 1,
+		Sessions: []LocalSessionRecord{
+			mkSession(owner, "a"),
+			mkSession(owner, "b"),
+		},
 		Layouts: []LayoutRecord{
 			{ID: "layoutinv1234567890a", Owner: owner, Order: 1, Tree: Leaf(SessionRef{Owner: owner, Session: "a"})},
 			{ID: "layoutinv1234567890b", Owner: owner, Order: 1, Tree: Leaf(SessionRef{Owner: owner, Session: "b"})},
@@ -226,6 +233,89 @@ func TestInvariantSessionInMultipleLayouts(t *testing.T) {
 	}
 }
 
+// TestValidateDocumentRejectsOrphanedSessionRef is the regression-prevention
+// test for the whole class of bug fixed here: a layout pane-tree leaf whose
+// SessionRef.Session names no LocalSessionRecord anywhere in the document
+// (not doc.Sessions, not a PendingCreate, not a PendingRemoteCreate) must be
+// rejected by ValidateDocument, whether or not this specific leaf was ever
+// touched by a workspace "rename" command. This guards against any future
+// code path (not just WorkspaceActionRename) leaving a leaf pointing at a
+// session that was never created or has already been removed.
+func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
+	owner := OwnerID("ownerinv1234567890ab")
+	real := SessionRef{Owner: owner, Session: "sessdoc1234567890ab"}
+	orphan := SessionRef{Owner: owner, Session: "orphaninv1234567890a"}
+
+	doc := AppDocument{
+		Schema:   2,
+		Owner:    owner,
+		Revision: 1,
+		Sessions: []LocalSessionRecord{
+			mkSession(owner, "sessdoc1234567890ab"),
+		},
+		Layouts: []LayoutRecord{
+			{
+				ID:    "layoutinv1234567890a",
+				Owner: owner,
+				Order: 1,
+				Tree: Split(DirectionHorizontal, Ratio(0.5), Leaf(real), Leaf(orphan)),
+			},
+		},
+	}
+
+	err := ValidateDocument(&doc)
+	if err == nil {
+		t.Fatal("expected orphaned session ref to be rejected")
+	}
+	var se StateError
+	if !errors.As(err, &se) || se.Code != ErrOrphanedSessionRef {
+		t.Fatalf("wrong error: %v", err)
+	}
+
+	// A leaf whose owner does not match the document's own owner is rejected
+	// the same way, even if the session ID happens to collide with a real one.
+	foreignOwnerLeaf := SessionRef{Owner: "foreignownerabcd12345", Session: "sessdoc1234567890ab"}
+	doc2 := AppDocument{
+		Schema:   2,
+		Owner:    owner,
+		Revision: 1,
+		Sessions: []LocalSessionRecord{
+			mkSession(owner, "sessdoc1234567890ab"),
+		},
+		Layouts: []LayoutRecord{
+			{ID: "layoutinv1234567890b", Owner: owner, Order: 1, Tree: Leaf(foreignOwnerLeaf)},
+		},
+	}
+	err2 := ValidateDocument(&doc2)
+	if err2 == nil {
+		t.Fatal("expected foreign-owned leaf to be rejected")
+	}
+	var se2 StateError
+	if !errors.As(err2, &se2) || se2.Code != ErrOrphanedSessionRef {
+		t.Fatalf("wrong error: %v", err2)
+	}
+
+	// The same session ID is accepted when it is only a pending (not yet
+	// materialized) create -- this is the legitimate case executeCreate
+	// relies on (see session_commands.go), and must not be confused with an
+	// orphaned ref.
+	pendingRef := SessionRef{Owner: owner, Session: "pendinginv1234567890"}
+	doc3 := AppDocument{
+		Schema:   2,
+		Owner:    owner,
+		Revision: 1,
+		PendingCreates: []PendingCreateRecord{
+			{IntentID: NewCommandID(), Ref: pendingRef},
+		},
+		Layouts: []LayoutRecord{
+			{ID: "layoutinv1234567890c", Owner: owner, Order: 1, Tree: Leaf(pendingRef)},
+		},
+	}
+	if err := ValidateDocument(&doc3); err != nil {
+		t.Fatalf("pending-create-backed leaf should be accepted: %v", err)
+	}
+}
+
 func TestInvariantSessionInWorkspaceAndLayout(t *testing.T) {
 	owner := OwnerID("ownerinv1234567890ab")
 	ref := SessionRef{Owner: owner, Session: "sessinv1234567890ab"}
@@ -233,6 +323,10 @@ func TestInvariantSessionInWorkspaceAndLayout(t *testing.T) {
 		Schema:   2,
 		Owner:    owner,
 		Revision: 1,
+		Sessions: []LocalSessionRecord{
+			mkSession(owner, "sessinv1234567890ab"),
+			mkSession(owner, "otherinv1234567890ab"),
+		},
 		Workspaces: []WorkspaceRecord{
 			{ID: "workspaceinv123456789", Owner: owner, Tree: Leaf(ref)},
 		},

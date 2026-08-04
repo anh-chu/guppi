@@ -84,6 +84,70 @@ func TestOpenStoreValidBackupFallback(t *testing.T) {
 	}
 }
 
+// TestOpenStoreRecoveryDoesNotOverwriteBackup is the core proof for Bug 1:
+// when current is corrupt and recovery falls back to (and restores current
+// from) the backup, the backup file itself must be left byte-for-byte
+// unchanged. Prior to the fix, restoreCurrent went through the normal
+// commit/rotate path, which rotated the (still zero-value, at that point in
+// OpenStore's sequence) in-memory s.doc into the backup slot, destroying the
+// one good copy.
+func TestOpenStoreRecoveryDoesNotOverwriteBackup(t *testing.T) {
+	dir := t.TempDir()
+	owner := OwnerID("ownerbackup1234567890")
+	backup := mkBasicDoc(owner)
+	backup.Revision = 5
+	corrupt := []byte("{ not json")
+
+	backupPath := filepath.Join(dir, "node1.state.json.bak")
+	mustWriteJSON(t, filepath.Join(dir, "node1.state.json"), corrupt)
+	mustWriteJSON(t, backupPath, backup)
+
+	originalBackupBytes, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read original backup: %v", err)
+	}
+
+	s, err := OpenStore(dir, "node1", StoreOptions{})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if s.Revision() != 5 {
+		t.Fatalf("expected recovered revision 5, got %d", s.Revision())
+	}
+
+	afterBackupBytes, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read backup after recovery: %v", err)
+	}
+	var afterBackup AppDocument
+	if err := json.Unmarshal(afterBackupBytes, &afterBackup); err != nil {
+		t.Fatalf("unmarshal backup after recovery: %v", err)
+	}
+	if afterBackup.Revision != 5 {
+		t.Fatalf("backup was rotated/overwritten during recovery: revision %d, want 5", afterBackup.Revision)
+	}
+	var want AppDocument
+	if err := json.Unmarshal(originalBackupBytes, &want); err != nil {
+		t.Fatalf("unmarshal original backup: %v", err)
+	}
+	if !docsEqual(want, afterBackup) {
+		t.Fatalf("backup content changed during recovery:\nbefore=%+v\nafter=%+v", want, afterBackup)
+	}
+
+	// Current should now hold the recovered (backup) document.
+	curBytes, err := os.ReadFile(filepath.Join(dir, "node1.state.json"))
+	if err != nil {
+		t.Fatalf("read current: %v", err)
+	}
+	var restored AppDocument
+	if err := json.Unmarshal(curBytes, &restored); err != nil {
+		t.Fatalf("unmarshal restored current: %v", err)
+	}
+	if restored.Revision != 5 {
+		t.Fatalf("expected restored current revision 5, got %d", restored.Revision)
+	}
+}
+
 func TestOpenStoreCorruptCurrentAndBackup(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteJSON(t, filepath.Join(dir, "node1.state.json"), []byte("bad"))
@@ -253,7 +317,7 @@ func TestUpdateFailureDoesNotAlterMemory(t *testing.T) {
 				WriteHook:      makeFailingWriteHook(boundary == "write"),
 				SyncHook:       makeFailingSyncHook(boundary == "sync"),
 				RenameHook:     makeFailingRenameHook(boundary == "rename"),
-				SyncDirHook:    makeFailingSyncDirHook(boundary == "syncdir"),
+				SyncDirHook:    conditionalSyncDirHook(boundary == "syncdir"),
 			}
 			s.opts = opts.withDefaults()
 
@@ -274,6 +338,23 @@ func TestUpdateFailureDoesNotAlterMemory(t *testing.T) {
 			}
 
 			after := s.Snapshot()
+			if boundary == "syncdir" {
+				// The rename to current already succeeded before the
+				// directory fsync failed, so the new document is durably
+				// visible on disk; in-memory state must adopt it rather than
+				// go stale (see errSyncDirFailedAfterRename in store.go).
+				if docsEqual(before, after) {
+					t.Fatal("expected in-memory snapshot to adopt the post-rename document on syncdir failure")
+				}
+				if len(after.Sessions) != len(before.Sessions)+1 {
+					t.Fatalf("expected new session adopted into memory, got %d sessions", len(after.Sessions))
+				}
+				if s.Revision() != before.Revision+1 {
+					t.Fatalf("expected revision to advance on syncdir failure: %d vs %d", s.Revision(), before.Revision)
+				}
+				return
+			}
+
 			if !docsEqual(before, after) {
 				t.Fatalf("in-memory snapshot changed despite failure:\n%+v\nvs\n%+v", before, after)
 			}
@@ -281,6 +362,57 @@ func TestUpdateFailureDoesNotAlterMemory(t *testing.T) {
 				t.Fatalf("revision changed despite failure: %d vs %d", s.Revision(), before.Revision)
 			}
 		})
+	}
+}
+
+// TestUpdateSyncDirFailureAfterRenameAdoptsDocument is the dedicated proof
+// for Bug 2: if the rename of the new current file succeeds but the
+// subsequent directory fsync fails, the rename has already made the new
+// document durably visible on disk, so in-memory state must adopt it rather
+// than continue operating from the stale pre-update document (which would
+// let a later Update rewrite the backup from a wrong "old" value and
+// silently clobber the already-visible current file).
+func TestUpdateSyncDirFailureAfterRenameAdoptsDocument(t *testing.T) {
+	dir := t.TempDir()
+	s := mustOpenEmptyInDir(t, dir)
+
+	opts := StoreOptions{SyncDirHook: makeFailingSyncDirHookOnCall(2)}
+	s.opts = opts.withDefaults()
+
+	owner := s.Owner()
+	err := s.Update("add-session", func(doc *AppDocument) error {
+		doc.Sessions = append(doc.Sessions, LocalSessionRecord{
+			ID:      SessionID("sesssyncdir123456789"),
+			Owner:   owner,
+			Ref:     SessionRef{Owner: owner, Session: SessionID("sesssyncdir123456789")},
+			Phase:   SessionPhaseActive,
+			Desired: DesiredRun,
+		})
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected injected sync-dir failure")
+	}
+	if !errors.Is(err, errSyncDirFailedAfterRename) {
+		t.Fatalf("expected errSyncDirFailedAfterRename in chain, got: %v", err)
+	}
+
+	// The rename already happened, so disk holds the new document.
+	diskDoc, derr := s.readDocument(s.currentPath())
+	if derr != nil {
+		t.Fatalf("read current from disk: %v", derr)
+	}
+	if len(diskDoc.Sessions) != 1 {
+		t.Fatalf("expected disk to already contain the new session, got %d", len(diskDoc.Sessions))
+	}
+
+	// In-memory state must match what is now on disk, not the stale pre-update doc.
+	memDoc := s.Snapshot()
+	if !docsEqual(memDoc, diskDoc) {
+		t.Fatalf("in-memory document diverged from disk after syncdir failure:\nmem=%+v\ndisk=%+v", memDoc, diskDoc)
+	}
+	if s.Revision() != 1 {
+		t.Fatalf("expected revision 1 after syncdir failure adoption, got %d", s.Revision())
 	}
 }
 
@@ -680,6 +812,33 @@ func makeFailingRenameHook(fail bool) func(string, string) error {
 func makeFailingSyncDirHook(fail bool) func(string) error {
 	return func(dir string) error {
 		if fail {
+			return errInjected
+		}
+		return syncDir(dir)
+	}
+}
+
+// makeFailingSyncDirHookOnCall fails only the callth invocation (1-indexed)
+// of the directory-fsync hook and lets every other call through to the real
+// syncDir. commit() calls SyncDirHook twice when a backup rotation happens:
+// once inside writeBackup (after the backup file is renamed into place) and
+// once after the main rename of the new current file. To reproduce the Bug 2
+// scenario -- rename to current succeeds, only the subsequent directory
+// fsync fails -- the backup's own directory fsync (the first call) must
+// succeed so execution reaches the post-rename fsync (the second call).
+// conditionalSyncDirHook returns the post-rename-failing hook when active is
+// true, otherwise the real syncDir.
+func conditionalSyncDirHook(active bool) func(string) error {
+	if !active {
+		return syncDir
+	}
+	return makeFailingSyncDirHookOnCall(2)
+}
+
+func makeFailingSyncDirHookOnCall(call int) func(string) error {
+	var n atomic.Int64
+	return func(dir string) error {
+		if n.Add(1) == int64(call) {
 			return errInjected
 		}
 		return syncDir(dir)

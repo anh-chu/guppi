@@ -43,6 +43,16 @@ type StoreOptions struct {
 
 const storeAuthorityLocal = "local"
 
+// errSyncDirFailedAfterRename is wrapped into commit's returned error when
+// the atomic rename of the new current file has already succeeded (so the
+// new document is durably visible on disk) but the subsequent directory
+// fsync -- which only guarantees the rename's metadata survives a crash, not
+// the rename's visibility -- failed. Callers use errors.Is to detect this
+// case and adopt the new document into memory even though an error is
+// returned, so in-memory state never goes stale relative to what is already
+// on disk.
+var errSyncDirFailedAfterRename = errors.New("sync directory after rename failed")
+
 // ChangeSet describes one committed change. Document is a deep clone and is
 // safe for subscribers to retain or project from.
 type ChangeSet struct {
@@ -177,6 +187,14 @@ func (s *Store) Update(reason string, mutate func(*AppDocument) error) error {
 	}
 
 	if err := s.commit(&proposed); err != nil {
+		if errors.Is(err, errSyncDirFailedAfterRename) {
+			// The rename already made the new document durably visible on
+			// disk; only the directory-entry fsync failed. Adopt the new
+			// document into memory so a subsequent Update never proceeds
+			// from a stale base and rewrites the backup with an out-of-date
+			// "old" document or overwrites the already-visible current file.
+			s.doc = proposed
+		}
 		return fmt.Errorf("commit %q failed: %w", reason, err)
 	}
 
@@ -345,10 +363,37 @@ func (s *Store) readDocument(path string) (AppDocument, error) {
 	return doc, nil
 }
 
-// restoreCurrent writes the given document to the current path using the same
-// atomic temp/rename path as a normal commit.
+// restoreCurrent writes the given document directly to the current path
+// using the same atomic temp/fsync/rename durability guarantees as commit,
+// but it deliberately does NOT go through the normal commit/rotate path: it
+// never touches or rotates the backup file. This is used during recovery,
+// when the caller (loadBestDocument) has determined that the backup already
+// holds the best-known-good document and current is corrupt or missing. If
+// restoreCurrent rotated the backup the normal way, it would copy whatever
+// is currently in memory (a zero-value AppDocument at this point in
+// OpenStore's sequence) into the backup slot, destroying the one good copy
+// that recovery is trying to preserve.
 func (s *Store) restoreCurrent(doc *AppDocument) error {
-	return s.commit(doc)
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("marshal document: %w", err)
+	}
+
+	tmpPath, err := s.writeTemp(s.tempPattern(), data)
+	if err != nil {
+		// s.writeTemp cleans up its own temp on failure.
+		return fmt.Errorf("write temp: %w", err)
+	}
+
+	if err := s.renameHook(tmpPath, s.currentPath()); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename temp to current: %w", err)
+	}
+
+	if err := s.syncDirHook(s.path); err != nil {
+		return fmt.Errorf("sync directory: %w", err)
+	}
+	return nil
 }
 
 func cloneDoc(doc *AppDocument) (AppDocument, error) {
@@ -429,7 +474,7 @@ func (s *Store) commit(newDoc *AppDocument) error {
 	}
 
 	if err := s.syncDirHook(s.path); err != nil {
-		return fmt.Errorf("sync directory: %w", err)
+		return fmt.Errorf("sync directory: %w: %w", errSyncDirFailedAfterRename, err)
 	}
 	return nil
 }
