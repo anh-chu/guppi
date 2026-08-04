@@ -12,12 +12,15 @@
 
 import { describe, expect, it } from 'vitest'
 import fixtures from '../../../../testdata/session_ref_fixtures.json'
+import commandResultFixture from '../../../../testdata/command_result_fixture.json'
 import { encodeSessionRef, parseSessionRef } from './types'
 import type { SessionRef } from './types'
+import type { CommandResultWire } from './wireTypes'
 import {
   decodeBootstrapResponse,
   decodeCatalogOwnerRemovedMessage,
   decodeCatalogSnapshotMessage,
+  decodeCommandResult,
   decodeLocalSessionRecord,
   decodePaneNode,
   decodePendingCreateRecord,
@@ -55,6 +58,21 @@ describe('SessionRef golden fixture (cross-language contract)', () => {
       expect(encodeSessionRef(c.decoded as SessionRef)).toBe(c.wire)
     })
   }
+})
+
+// Cross-language golden fixture for CommandResult, the response body of POST
+// /api/v2/session-commands (Finding 3: command responses use the wrong wire
+// format). pkg/server/routes_state_v2_test.go's TestCommandResultWireMatchesFixture
+// posts fixture.request through the REAL route handler and asserts the
+// response body equals fixture.wire byte-for-byte (field by field); this test
+// takes that exact same 'wire' object and proves decodeCommandResult turns it
+// into fixture.decoded -- i.e. an actual Go route response, not a hand-built
+// guess at the shape, round-trips correctly through the browser decoder.
+describe('CommandResult golden fixture (cross-language contract)', () => {
+  it('decodeCommandResult(wire) matches fixture.decoded', () => {
+    const result = decodeCommandResult(commandResultFixture.wire as CommandResultWire)
+    expect(result).toEqual(commandResultFixture.decoded)
+  })
 })
 
 describe('decodeSessionRef', () => {

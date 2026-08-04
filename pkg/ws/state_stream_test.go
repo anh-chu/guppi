@@ -231,7 +231,7 @@ func TestStateStreamEnqueueCloseRaceNoPanic(t *testing.T) {
 			defer wg.Done()
 			base := int64(worker) * 10000
 			for j := int64(0); j < 2000; j++ {
-				c.publishCatalogKeyed(localCatalogSlotKey, base+j, []byte("payload"))
+				c.publishCatalogKeyed(localCatalogSlotKey, base+j, false, []byte("payload"))
 			}
 		}(i)
 	}
@@ -290,5 +290,171 @@ func TestStateStreamOneSlowClientDoesNotBlockOthers(t *testing.T) {
 	msg := readTyped(t, fast)
 	if msg["type"] != "catalog_snapshot" {
 		t.Fatalf("expected catalog_snapshot, got %v", msg["type"])
+	}
+}
+
+// firstStateStreamClient returns the sole connected client tracked by h.
+// Test-only helper (same package): reaches into hub internals to drive a
+// client's coalescing slot directly, so the adversarial interleaving tests
+// below can force the exact call order described in the race report without
+// depending on goroutine scheduling.
+func firstStateStreamClient(t *testing.T, h *StateStreamHub) *stateStreamClient {
+	t.Helper()
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		return c
+	}
+	t.Fatal("no connected client")
+	return nil
+}
+
+// TestStateStreamAdversarialOrderKeepsHigherRevision reproduces, deterministically,
+// the exact race described for this bug: an "initial snapshot" capture at
+// revision 8 that is enqueued to a client's coalescing slot AFTER a
+// concurrent "live update" at revision 9 has already been enqueued to the
+// same slot. Before the fix, coalescing was keyed on a hub-assigned publish
+// sequence number (which always favors whichever call reaches the slot
+// last, i.e. the stale revision-8 read in this scenario) instead of the
+// owner's own authoritative catalog revision. The fix requires the stale,
+// later-arriving revision-8 publish to be rejected and the client to retain
+// (and eventually receive) revision 9.
+func TestStateStreamAdversarialOrderKeepsHigherRevision(t *testing.T) {
+	catalog := newTestCatalog(t)
+	hub := NewStateStreamHub(catalog, nil)
+	defer hub.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(hub.HandleState))
+	defer srv.Close()
+
+	conn := dialStateStream(t, srv)
+	defer conn.Close()
+
+	// Drain the initial complete snapshot sent on connect.
+	_ = readTyped(t, conn)
+
+	c := firstStateStreamClient(t, hub)
+
+	// Hold the writer's drain open so both adversarial publishes accumulate
+	// in the slot before either is flushed to the wire -- this is the
+	// existing test-gate pattern used by TestStateStreamCoalescesToLatestRevision.
+	gate := make(chan struct{})
+	hub.setTestWaitBeforeDrain(gate)
+
+	encode := func(rev int64) []byte {
+		b, err := json.Marshal(catalogSnapshotMessage{
+			Type:     "catalog_snapshot",
+			Snapshot: state.OwnerCatalogSnapshot{Owner: catalog.Owner(), Revision: rev},
+			IsLocal:  true,
+		})
+		if err != nil {
+			t.Fatalf("marshal rev %d: %v", rev, err)
+		}
+		return b
+	}
+
+	// Adversarial order: the "concurrent live update" (revision 9) reaches
+	// the slot FIRST in real time, then the "initial snapshot" (revision 8,
+	// captured earlier but enqueued later, e.g. read before registration
+	// completed) reaches the SAME slot second. A hub-sequence-keyed
+	// coalescer would let the later call (revision 8) win; a
+	// revision-keyed coalescer must reject it.
+	c.publishCatalogKeyed(localCatalogSlotKey, 9, false, encode(9))
+	c.publishCatalogKeyed(localCatalogSlotKey, 8, false, encode(8))
+
+	close(gate)
+
+	msg := readTyped(t, conn)
+	if msg["type"] != "catalog_snapshot" {
+		t.Fatalf("expected catalog_snapshot, got %v", msg["type"])
+	}
+	snap, ok := msg["snapshot"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected snapshot object, got %v", msg["snapshot"])
+	}
+	if rev, _ := snap["revision"].(float64); rev != 9 {
+		t.Fatalf("expected the client to retain revision 9 despite the later stale revision-8 publish, got %v", rev)
+	}
+}
+
+// TestStateStreamRemovalTombstoneSurvivesStaleLateSnapshot proves an
+// owner-removal (tombstone) cannot be silently overwritten by a stale,
+// lower-revision snapshot that is delivered out of order AFTER the removal
+// -- and that the tombstone itself is never dropped merely because a
+// removal message carries no meaningful revision number of its own.
+func TestStateStreamRemovalTombstoneSurvivesStaleLateSnapshot(t *testing.T) {
+	catalog := newTestCatalog(t)
+	hub := NewStateStreamHub(catalog, nil)
+	defer hub.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(hub.HandleState))
+	defer srv.Close()
+
+	conn := dialStateStream(t, srv)
+	defer conn.Close()
+
+	_ = readTyped(t, conn)
+
+	c := firstStateStreamClient(t, hub)
+	remoteOwner := state.NewOwnerID()
+	key := remoteCatalogSlotKey(remoteOwner)
+
+	encodeSnapshot := func(rev int64) []byte {
+		b, err := json.Marshal(catalogSnapshotMessage{
+			Type:     "catalog_snapshot",
+			Snapshot: state.OwnerCatalogSnapshot{Owner: remoteOwner, Revision: rev},
+			IsLocal:  false,
+		})
+		if err != nil {
+			t.Fatalf("marshal rev %d: %v", rev, err)
+		}
+		return b
+	}
+	encodeRemoval := func() []byte {
+		b, err := json.Marshal(catalogOwnerRemovedMessage{Type: "catalog_owner_removed", Owner: remoteOwner})
+		if err != nil {
+			t.Fatalf("marshal removal: %v", err)
+		}
+		return b
+	}
+
+	gate := make(chan struct{})
+	hub.setTestWaitBeforeDrain(gate)
+
+	// The owner is known at revision 9, then removed. A stale snapshot at
+	// revision 8 (older than the last known revision) is then delivered out
+	// of order, after the removal reached the slot.
+	c.publishCatalogKeyed(key, 9, false, encodeSnapshot(9))
+	c.publishCatalogKeyed(key, 0, true, encodeRemoval()) // removal carries no meaningful revision of its own
+	c.publishCatalogKeyed(key, 8, false, encodeSnapshot(8))
+
+	close(gate)
+
+	msg := readTyped(t, conn)
+	if msg["type"] != "catalog_owner_removed" {
+		t.Fatalf("expected the tombstone to survive the stale late snapshot, got %v", msg["type"])
+	}
+	if msg["owner"] != string(remoteOwner) {
+		t.Fatalf("expected removal for owner %q, got %v", remoteOwner, msg["owner"])
+	}
+
+	// A genuinely newer snapshot (revision 10, greater than the retained
+	// revision 9) must still be able to supersede the tombstone -- the
+	// removal is not a permanent lock, only a guard against stale replays.
+	gate2 := make(chan struct{})
+	hub.setTestWaitBeforeDrain(gate2)
+	c.publishCatalogKeyed(key, 10, false, encodeSnapshot(10))
+	close(gate2)
+
+	msg2 := readTyped(t, conn)
+	if msg2["type"] != "catalog_snapshot" {
+		t.Fatalf("expected a genuinely newer snapshot to supersede the tombstone, got %v", msg2["type"])
+	}
+	snap, ok := msg2["snapshot"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected snapshot object, got %v", msg2["snapshot"])
+	}
+	if rev, _ := snap["revision"].(float64); rev != 10 {
+		t.Fatalf("expected revision 10, got %v", rev)
 	}
 }

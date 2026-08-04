@@ -144,10 +144,10 @@ func getPeerSessions(m *Manager, peerID string) []*model.Session {
 }
 
 func sendInitialV2Catalog(pc *PeerConnection, deps SessionDeps) {
-	if deps.Manager == nil || deps.Manager.localMgr == nil {
+	if deps.Manager == nil {
 		return
 	}
-	catalog := deps.Manager.localMgr.V2Catalog()
+	catalog := deps.Manager.v2Catalog
 	if catalog == nil {
 		return
 	}
@@ -166,10 +166,10 @@ func sendInitialV2Catalog(pc *PeerConnection, deps SessionDeps) {
 }
 
 func sendInitialV2Workspace(pc *PeerConnection, deps SessionDeps) {
-	if deps.Manager == nil || deps.Manager.localMgr == nil {
+	if deps.Manager == nil {
 		return
 	}
-	catalog := deps.Manager.localMgr.V2Catalog()
+	catalog := deps.Manager.v2Catalog
 	if catalog == nil {
 		return
 	}
@@ -287,7 +287,7 @@ func handleV2SessionCommandRequest(peerID string, req V2CommandRequestPayload, p
 // params is verified against this node's own catalog owner before any
 // mutation; a forged/foreign ref is rejected, never silently ignored.
 func handleV2WorkspaceCommandRequest(peerID string, req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
-	cat := deps.LocalMgr.V2Catalog()
+	cat := deps.V2Catalog
 	if cat == nil {
 		reply.Error = "v2 catalog not enabled"
 		return

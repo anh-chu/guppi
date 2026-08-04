@@ -1,0 +1,23 @@
+{
+  "description": "Cross-language golden fixture for CommandResult wire encoding (pkg/state/session_commands.go's CommandResult, returned by POST /api/v2/session-commands). pkg/server/routes_state_v2_test.go's TestCommandResultWireMatchesFixture posts a request that deterministically reproduces this exact response through the REAL route handler; web/src/state/v2/wireCodec.test.ts's matching test decodes the same 'wire' bytes with decodeCommandResult and asserts the result equals 'decoded'. Both sides must agree that 'ref' is a canonical STRING on the wire (SessionRef.MarshalJSON) and an OBJECT once decoded (SessionRef from types.ts).",
+  "request": {
+    "id": "cmdresultfixtureid001",
+    "ref": "cmdresultfixowner12345/cmdresultfixsession1:0.0",
+    "action": "create",
+    "params": { "name": "fixture-session", "cwd": "/tmp" }
+  },
+  "wire": {
+    "id": "cmdresultfixtureid001",
+    "ref": "cmdresultfixowner12345/cmdresultfixsession1:0.0",
+    "display_name": "fixture-session",
+    "path": "/tmp",
+    "accepted": true
+  },
+  "decoded": {
+    "id": "cmdresultfixtureid001",
+    "ref": { "owner": "cmdresultfixowner12345", "session": "cmdresultfixsession1", "window": 0, "pane": 0 },
+    "displayName": "fixture-session",
+    "path": "/tmp",
+    "accepted": true
+  }
+}

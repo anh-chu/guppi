@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -654,6 +655,221 @@ func TestSchedulerCommandIDIsStable(t *testing.T) {
 	}
 	if err := id1.Validate(); err != nil {
 		t.Fatalf("stable command id invalid: %v", err)
+	}
+}
+
+// TestReplaySameCommandIDReturnsOwnSessionNotAnother reproduces the historical
+// bug where replaying a create command ID looked up its result by scanning
+// ALL current sessions for ANY command whose ID matched cmd.ID, returning the
+// first session iterated (in sorted-ID order) rather than the session that
+// command actually created. With multiple sequential creates in flight, a
+// replay of an early command ID could return a LATER command's session.
+func TestReplaySameCommandIDReturnsOwnSessionNotAnother(t *testing.T) {
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startWorker(ctx, t, svc)
+
+	const n = 6
+	cmds := make([]SessionCommand, n)
+	results := make([]CommandResult, n)
+	for i := 0; i < n; i++ {
+		cmds[i] = createCmd(fmt.Sprintf("multi-%d", i))
+		res, err := svc.ExecuteSessionCommand(ctx, cmds[i])
+		if err != nil {
+			t.Fatalf("create %d failed: %v", i, err)
+		}
+		results[i] = res
+	}
+
+	// Wait for every create to be promoted from a pending intent to an active
+	// session record -- the bug only manifests once all commands' outcomes
+	// are readable purely from doc.Sessions (the buggy code's PendingCreates
+	// branch matched correctly by IntentID; only the doc.Sessions scan was
+	// broken).
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
+		if len(catalog.PendingCreates()) == 0 && len(catalog.Sessions()) == n {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := len(catalog.Sessions()); got != n {
+		t.Fatalf("expected %d active sessions, got %d", n, got)
+	}
+
+	// Replay every command ID (in an order different from creation order) and
+	// confirm each one returns EXACTLY its own session, never a different one
+	// picked up by scanning current catalog state in some other order.
+	for i := n - 1; i >= 0; i-- {
+		replay, err := svc.ExecuteSessionCommand(ctx, cmds[i])
+		if err != nil {
+			t.Fatalf("replay %d failed: %v", i, err)
+		}
+		if replay.Ref.Session != results[i].Ref.Session {
+			t.Fatalf("replay of command %d returned wrong session: got %q, want %q", i, replay.Ref.Session, results[i].Ref.Session)
+		}
+	}
+}
+
+// TestKillIdempotentReplay proves a retried kill (same command ID) returns
+// the original result and does not re-issue termination a second time.
+func TestKillIdempotentReplay(t *testing.T) {
+	svc, catalog, backend, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("killreplay"), "gen-kr")
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := SessionCommand{ID: NewCommandID(), Ref: rec.Ref, Action: ActionKill}
+	res1, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1 != res2 {
+		t.Fatalf("replayed kill returned different result: %+v vs %+v", res1, res2)
+	}
+	if backend.terminateCount() != 1 {
+		t.Fatalf("expected exactly one terminate call across original + replay, got %d", backend.terminateCount())
+	}
+}
+
+// TestLabelIdempotentReplay proves a retried label (same command ID) returns
+// the original result rather than erroring or re-deriving from current state.
+func TestLabelIdempotentReplay(t *testing.T) {
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("labelreplay"), "gen-lr")
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	params, _ := json.Marshal(LabelParams{Label: "renamed"})
+	cmd := SessionCommand{ID: NewCommandID(), Ref: rec.Ref, Action: ActionLabel, Params: params}
+	res1, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1 != res2 {
+		t.Fatalf("replayed label returned different result: %+v vs %+v", res1, res2)
+	}
+	if res1.DisplayName != "renamed" {
+		t.Fatalf("expected label applied, got %q", res1.DisplayName)
+	}
+}
+
+// TestRecoverIdempotentReplay proves a retried recover (same command ID)
+// returns the original result and does not spawn a second daemon.
+func TestRecoverIdempotentReplay(t *testing.T) {
+	svc, catalog, backend, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("recoverreplay"), "gen-rr")
+	rec.Phase = SessionPhaseCrashed
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := SessionCommand{ID: NewCommandID(), Ref: rec.Ref, Action: ActionRecover}
+	res1, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1 != res2 {
+		t.Fatalf("replayed recover returned different result: %+v vs %+v", res1, res2)
+	}
+	if backend.startCount() != 1 {
+		t.Fatalf("expected exactly one daemon start across original + replay, got %d", backend.startCount())
+	}
+}
+
+// TestCreateWithSplitTargetPlacesAtomicallyWithoutDuplicateLeaf proves that a
+// create carrying Target/Direction places the new session by splitting the
+// target leaf as part of the SAME create command, and that the layout ends
+// up with exactly the requested split -- never a duplicate-leaf rejection
+// from a separate follow-up placement.
+func TestCreateWithSplitTargetPlacesAtomicallyWithoutDuplicateLeaf(t *testing.T) {
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	// Seed an existing layout with one session to split beside.
+	existing := activeRecord(SessionID("existingpane"), "gen-ex")
+	if err := catalog.PutSession(existing); err != nil {
+		t.Fatal(err)
+	}
+	layoutID := LayoutID("splitlayout1234567")
+	if err := catalog.PutLayout(LayoutRecord{
+		ID:    layoutID,
+		Owner: testOwner(),
+		Order: 1,
+		Tree:  Leaf(existing.Ref),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	params, _ := json.Marshal(CreateParams{
+		Name:      "splitcreated",
+		Shell:     "/bin/bash",
+		Cwd:       "/tmp",
+		LayoutID:  layoutID,
+		Target:    &existing.Ref,
+		Direction: DirectionVertical,
+	})
+	res, err := svc.ExecuteSessionCommand(context.Background(), SessionCommand{ID: NewCommandID(), Action: ActionCreate, Params: params})
+	if err != nil {
+		t.Fatalf("create with split target failed: %v", err)
+	}
+	if !res.Accepted {
+		t.Fatalf("expected accepted result: %+v", res)
+	}
+
+	layout, ok := catalog.Layout(layoutID)
+	if !ok {
+		t.Fatal("expected layout to still exist")
+	}
+	if !layout.Tree.IsSplit() {
+		t.Fatalf("expected a split tree after atomic create+split placement, got %+v", layout.Tree)
+	}
+	if layout.Tree.Direction != DirectionVertical {
+		t.Fatalf("expected vertical split direction, got %q", layout.Tree.Direction)
+	}
+	leaves := leafs(layout.Tree)
+	if len(leaves) != 2 {
+		t.Fatalf("expected exactly 2 leaves (existing + new), got %d: %v", len(leaves), leaves)
+	}
+	wantExisting := existing.Ref.MapKey()
+	wantNew := res.Ref.MapKey()
+	found := map[string]bool{}
+	for _, l := range leaves {
+		found[l] = true
+	}
+	if !found[wantExisting] || !found[wantNew] {
+		t.Fatalf("expected leaves %q and %q, got %v", wantExisting, wantNew, leaves)
+	}
+
+	// Confirm ValidateDocument (specifically the duplicate-leaf check) never
+	// tripped -- i.e. a real separate follow-up split command targeting the
+	// same new ref WOULD now be rejected as a duplicate, proving create truly
+	// already placed it (this documents why the frontend must not send a
+	// separate split after this kind of create).
+	if findLeaf(layout.Tree, res.Ref) == false {
+		t.Fatalf("expected new ref to already be a leaf in the layout")
 	}
 }
 

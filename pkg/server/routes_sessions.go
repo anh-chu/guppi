@@ -42,7 +42,7 @@ func lookupRemoteSessionRef(peerMgr *peer.Manager, peerID, name string) (state.S
 	if peerMgr == nil || name == "" {
 		return state.SessionRef{}, false
 	}
-	snap, ok := peerMgr.RemoteCatalogSnapshot(state.OwnerID(peerID))
+	snap, ok := peerMgr.RemoteCatalogSnapshot(state.OwnerIDFromFingerprint(peerID))
 	if !ok {
 		return state.SessionRef{}, false
 	}
@@ -77,7 +77,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		var sessions []*model.Session
 		if opts.PeerMgr != nil {
 			sessions = opts.PeerMgr.GetAllSessions()
-		} else {
+		} else if opts.StateMgr != nil {
 			sessions = opts.StateMgr.GetSessions()
 		}
 		localHost := ""
@@ -980,7 +980,10 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 
 	// Stats endpoint -- aggregate overview data
 	r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
-		sessions := opts.StateMgr.GetSessions()
+		var sessions []*model.Session
+		if opts.StateMgr != nil {
+			sessions = opts.StateMgr.GetSessions()
+		}
 		// Enumerate panes from daemon registry.
 		var allPanes []*model.Pane
 		if opts.DaemonReg != nil {

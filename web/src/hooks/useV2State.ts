@@ -19,8 +19,8 @@ import { StateStreamClient } from '../state/v2/stateStream'
 import { V2CommandClient, type SessionCommandAction, type WorkspaceCommandAction } from '../state/v2/commands'
 import { paneNodeToPaneTree, sessionRefToKey } from '../state/v2/paneTreeAdapter'
 import { decodeBootstrapResponse } from '../state/v2/wireCodec'
-import type { SessionRef, LayoutID } from '../state/v2/types'
-import type { V2BootstrapResponse } from '../state/v2/wireTypes'
+import type { SessionRef, LayoutID, SplitDirection } from '../state/v2/types'
+import type { CommandResult, V2BootstrapResponse } from '../state/v2/wireTypes'
 import type { PaneTree } from '../lib/paneTree'
 
 export type UseV2StateOptions = {
@@ -47,8 +47,17 @@ export type UseV2StateResult = {
     // compatibility with the frontend API boundary, but NOT yet placed on
     // the wire -- see the TODO in createSession's implementation below.
     hostId?: string
-  }) => Promise<unknown>
-  sessionCommand: (ref: SessionRef, cmd: SessionCommandAction) => Promise<unknown>
+    // When set (together with layoutId), the new session is placed by
+    // splitting the target leaf in one atomic step on the server -- see
+    // CreateParams in pkg/state/session_commands.go. This replaces the old
+    // create-then-separate-split-command sequence, which could place the
+    // new leaf twice (once via create's default placement, once via the
+    // follow-up split) and have the split rejected as a duplicate leaf.
+    splitTarget?: SessionRef
+    splitDirection?: SplitDirection
+    splitNewFirst?: boolean
+  }) => Promise<CommandResult>
+  sessionCommand: (ref: SessionRef, cmd: SessionCommandAction) => Promise<CommandResult>
   workspaceCommand: (layout: LayoutID, cmd: WorkspaceCommandAction) => Promise<unknown>
 }
 
@@ -137,6 +146,9 @@ export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
         worktreeBranch?: string
         layoutId?: LayoutID
         hostId?: string
+        splitTarget?: SessionRef
+        splitDirection?: SplitDirection
+        splitNewFirst?: boolean
       }) => {
         // TODO(v2 remote create): params.hostId identifies the caller's
         // selected target host, but the v2 session-command wire contract has
@@ -158,6 +170,9 @@ export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
           cwd: params.cwd,
           worktree_branch: params.worktreeBranch,
           layout_id: params.layoutId,
+          target: params.splitTarget,
+          direction: params.splitDirection,
+          new_first: params.splitNewFirst,
         })
       },
     [commandClient],

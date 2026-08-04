@@ -126,6 +126,23 @@ func (c *Catalog) PendingCreates() []PendingCreateRecord {
 	return out
 }
 
+// CommandReceipt returns a copy of the durable receipt for id, if one is
+// currently live (not yet pruned by MaxCommandReceiptAge/MaxPendingCommands).
+// Callers use this to check for an already-accepted command BEFORE
+// attempting any side effect, so a retried request returns the exact
+// original outcome instead of redoing work or re-deriving a possibly
+// different answer from current state.
+func (c *Catalog) CommandReceipt(id CommandID) (CommandReceipt, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, r := range c.commands {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return CommandReceipt{}, false
+}
+
 // PutSession stores or replaces a session record.
 func (c *Catalog) PutSession(rec LocalSessionRecord) error {
 	if err := rec.ID.Validate(); err != nil {

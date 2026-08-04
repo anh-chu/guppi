@@ -64,7 +64,7 @@ func TestUnregisterPeerConn_StaleCannotReplaceLive(t *testing.T) {
 func TestRemoteCatalog_ReplaceNotMerge(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "remotea"
-	owner := state.OwnerID(peerID) // owner must match the authenticated peer
+	owner := state.OwnerIDFromFingerprint(peerID) // owner must match the authenticated peer
 	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
 	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
 	s3 := state.LocalSessionRecord{ID: "s3", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s3"}}
@@ -100,7 +100,7 @@ func TestRemoteCatalog_PreservedThroughReconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp := remoteID.Fingerprint()
-	owner := state.OwnerID(fp)
+	owner := state.OwnerIDFromFingerprint(fp)
 	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
 
 	conn := NewPeerConnection(fp, 64)
@@ -201,7 +201,7 @@ func TestHandleV2CatalogSnapshot_UpdatesCache(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "remotea"
 	// Owner must equal the authenticated peer identity (peerID).
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
 	s1 := state.LocalSessionRecord{ID: sessionID, Owner: owner, Ref: state.SessionRef{Owner: owner, Session: sessionID}}
 
@@ -216,7 +216,7 @@ func TestHandleV2CatalogSnapshot_UpdatesCache(t *testing.T) {
 	}
 	pc := NewPeerConnection(peerID, 64)
 	mgr.RegisterPeer(peerID, "remotea", "", pc)
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr}
+	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager)}
 
 	// DEBUG: verify payload marshals/unmarshals correctly
 	var p V2CatalogSnapshotPayload
@@ -329,7 +329,7 @@ func TestLegacyPeer_InitialStateUpdateStillSent(t *testing.T) {
 	pc.Caps = []string{CapPerStream, CapUpload} // no v2 caps
 	mgr.RegisterPeer(peerID, "legacya", "", pc)
 
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr}
+	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager)}
 	sendStateUpdate(pc, deps)
 
 	select {
@@ -368,14 +368,14 @@ func TestRemoteSnapshot_OwnerBindingEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	peerA := idA.Fingerprint()
-	ownerA := state.OwnerID(peerA)
+	ownerA := state.OwnerIDFromFingerprint(peerA)
 
 	idB, err := identity.Generate("peerb")
 	if err != nil {
 		t.Fatal(err)
 	}
 	peerB := idB.Fingerprint()
-	ownerB := state.OwnerID(peerB)
+	ownerB := state.OwnerIDFromFingerprint(peerB)
 
 	connA := NewPeerConnection(peerA, 64)
 	mgr.RegisterPeer(peerA, "peera", idA.PublicKey, connA)
@@ -429,7 +429,7 @@ func TestRemoteSnapshot_OwnerBindingEnforced(t *testing.T) {
 func TestRemoteCatalog_StaleRevisionRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
 	s2 := state.LocalSessionRecord{ID: "s2", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s2"}}
 
@@ -466,7 +466,7 @@ func TestRemoteCatalog_StaleRevisionRejected(t *testing.T) {
 func TestRemoteWorkspace_StaleRevisionRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	leafA := state.Leaf(state.SessionRef{Owner: owner, Session: "s1"})
 	leafB := state.Leaf(state.SessionRef{Owner: owner, Session: "s2"})
 
@@ -511,7 +511,7 @@ func TestRemoveHost_ForgetsRemoteCatalogPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp := remoteID.Fingerprint()
-	owner := state.OwnerID(fp)
+	owner := state.OwnerIDFromFingerprint(fp)
 
 	conn := NewPeerConnection(fp, 64)
 	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, conn)
@@ -542,7 +542,7 @@ func TestRemoveHost_ForgetsRemoteCatalogPersists(t *testing.T) {
 func TestRemoteSnapshot_SpoofedSessionOwnerRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
 	sessionID := state.NewSessionID()
 
@@ -572,7 +572,7 @@ func TestRemoteSnapshot_SpoofedSessionOwnerRejected(t *testing.T) {
 func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
 	layoutID := state.NewLayoutID()
 
@@ -605,7 +605,7 @@ func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
 func TestRemoteSnapshot_LayoutLeafForeignOwnerRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
 	sessionID := state.NewSessionID()
 	layoutID := state.NewLayoutID()
@@ -645,7 +645,7 @@ func TestRemoteSnapshot_LayoutLeafForeignOwnerRejected(t *testing.T) {
 func TestRemoteSnapshot_SessionRefOwnerMismatchRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
 	sessionID := state.NewSessionID()
 
@@ -676,7 +676,7 @@ func TestRemoteSnapshot_SessionRefOwnerMismatchRejected(t *testing.T) {
 func TestRemoteSnapshot_WellFormedAccepted(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
 	layoutID := state.NewLayoutID()
 
@@ -716,7 +716,7 @@ func TestRemoteSnapshot_WellFormedAccepted(t *testing.T) {
 func TestRemoteWorkspace_SpoofedLeafOwnerRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
 
 	conn := NewPeerConnection(peerID, 64)
@@ -743,7 +743,7 @@ func TestRemoteWorkspace_SpoofedLeafOwnerRejected(t *testing.T) {
 func TestRemoteSnapshot_OutOfOrderDelivery(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 
 	conn := NewPeerConnection(peerID, 64)
 	mgr.RegisterPeer(peerID, "peera", "", conn)
@@ -795,7 +795,7 @@ func TestRemoteSnapshot_NewGenerationAcceptsLowerRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp := remoteID.Fingerprint()
-	owner := state.OwnerID(fp)
+	owner := state.OwnerIDFromFingerprint(fp)
 
 	// First connection sends revision 100
 	conn1 := NewPeerConnection(fp, 64)

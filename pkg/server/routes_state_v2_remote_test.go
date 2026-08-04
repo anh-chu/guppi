@@ -67,7 +67,7 @@ func TestV2BootstrapIncludesRemoteOwnerCatalog(t *testing.T) {
 	// UpdateRemoteCatalog validates and caches it for a real remote peer --
 	// this is the same call peer/session_state.go makes when a v2 catalog
 	// frame arrives from a connected peer. UpdateRemoteCatalog enforces
-	// snap.Owner == state.OwnerID(peerID), so the owner must be a valid v2
+	// snap.Owner == state.OwnerIDFromFingerprint(peerID), so the owner must be a valid v2
 	// OwnerID (unlike a raw fingerprint's charset); the peer fingerprint
 	// itself only needs to be a stable string identifying the connection,
 	// matching the pattern used by pkg/peer's own v2 catalog tests.
@@ -81,7 +81,7 @@ func TestV2BootstrapIncludesRemoteOwnerCatalog(t *testing.T) {
 	// use remoteFingerprint directly as the accepted owner to keep this test
 	// focused on the aggregation/bootstrap wiring rather than re-deriving
 	// identity binding already covered by pkg/peer's own tests.
-	remoteOwner = state.OwnerID(remoteFingerprint)
+	remoteOwner = state.OwnerIDFromFingerprint(remoteFingerprint)
 	peerMgr.UpdateRemoteCatalog(remoteFingerprint, conn, state.OwnerCatalogSnapshot{
 		Owner:    remoteOwner,
 		Revision: 3,

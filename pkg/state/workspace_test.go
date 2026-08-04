@@ -165,6 +165,75 @@ func TestWorkspaceMissingTarget(t *testing.T) {
 	}
 }
 
+// TestWorkspaceSplitReplayReturnsOriginalResultNotDuplicateLeafError proves
+// that retrying a split command (same command ID) after it already
+// succeeded is a no-op that returns success again, instead of the historical
+// bug where the retry re-executed the split, tried to insert the same new
+// leaf a second time, and was rejected as ErrDuplicateLeaf.
+func TestWorkspaceSplitReplayReturnsOriginalResultNotDuplicateLeafError(t *testing.T) {
+	c, owner, cleanup := mustNewWorkspaceCatalog(t)
+	defer cleanup()
+
+	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
+	registerTestSession(t, c, ref(owner, "s2"))
+
+	cmd := WorkspaceCommand{
+		ID:     NewCommandID(),
+		Layout: lID,
+		Action: WorkspaceActionSplit,
+		Params: workspaceParams(map[string]interface{}{
+			"target":    ref(owner, "s1"),
+			"direction": DirectionHorizontal,
+			"new":       ref(owner, "s2"),
+		}),
+	}
+	if err := c.ApplyWorkspaceCommand(cmd); err != nil {
+		t.Fatalf("initial split: %v", err)
+	}
+	afterFirst := c.Revision()
+
+	snapBefore, err := c.WorkspaceSnapshot(lID)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	leavesBefore := leafs(snapBefore.Record.Tree)
+
+	// Retry with the EXACT SAME command ID -- this must return success
+	// (nil error) with no further mutation, not ErrDuplicateLeaf.
+	if err := c.ApplyWorkspaceCommand(cmd); err != nil {
+		t.Fatalf("replay of already-accepted split must succeed, got: %v", err)
+	}
+	if got := c.Revision(); got != afterFirst {
+		t.Fatalf("replay must not change revision: before=%d after=%d", afterFirst, got)
+	}
+
+	snapAfter, err := c.WorkspaceSnapshot(lID)
+	if err != nil {
+		t.Fatalf("snapshot after replay: %v", err)
+	}
+	leavesAfter := leafs(snapAfter.Record.Tree)
+	if len(leavesAfter) != len(leavesBefore) {
+		t.Fatalf("replay must not change leaves: before=%v after=%v", leavesBefore, leavesAfter)
+	}
+	for i := range leavesBefore {
+		if leavesBefore[i] != leavesAfter[i] {
+			t.Fatalf("replay must not change leaves: before=%v after=%v", leavesBefore, leavesAfter)
+		}
+	}
+
+	// Exactly one receipt for this command ID, not two.
+	doc := c.store.Snapshot()
+	count := 0
+	for _, r := range doc.Commands {
+		if r.ID == cmd.ID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one receipt for command id, got %d", count)
+	}
+}
+
 func TestApplyWorkspaceCommandFromPeer_SplitForeignOwnerRejected(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()

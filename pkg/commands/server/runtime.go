@@ -116,11 +116,19 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 
 	rt := &Runtime{
 		v2Mode:     v2Mode,
-		stateMgr:   state.NewManager(),
 		tracker:    toolevents.NewTracker(),
 		actTracker: activity.NewTracker(),
 		ready:      make(chan struct{}),
 		fgProvider: newForegroundProvider(),
+	}
+	// The legacy state.Manager is the single-authority boundary: it must not
+	// be constructed at all in v2 mode, not merely constructed-and-gated. Every
+	// consumer below (peer.Manager, ws.Hub, sessionlaunch.Service, server
+	// options, SessionDeps) is either nil-safe for rt.stateMgr or takes a
+	// narrower interface that a nil *state.Manager still satisfies safely via
+	// explicit nil checks at the conversion boundary (see ws.AsStateSource).
+	if !v2Mode {
+		rt.stateMgr = state.NewManager()
 	}
 	rt.tracker.EnablePersistence()
 
@@ -135,7 +143,9 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	}
 
 	rt.adapter = &daemonAdapter{reg: rt.daemonReg}
-	rt.stateMgr.SetDaemonRegistry(rt.adapter)
+	if rt.stateMgr != nil {
+		rt.stateMgr.SetDaemonRegistry(rt.adapter)
+	}
 
 	rt.reconciler = toolevents.NewReconciler(rt.tracker, rt.lookupPane, 3*time.Second)
 	rt.detector = toolevents.NewDetector(rt.tracker, rt.listPanes, 5*time.Second)
@@ -174,6 +184,9 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	}
 
 	applyNamerFromPrefs := func(p *preferences.Preferences) {
+		if rt.stateMgr == nil {
+			return
+		}
 		cfg := namer.Configure(p.AINaming.Enabled, p.AINaming.Endpoint, p.AINaming.APIKey, p.AINaming.Model)
 		n := namer.New(cfg)
 		rt.stateMgr.SetNamer(n)
@@ -234,7 +247,14 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 			return nil, fmt.Errorf("failed to determine v2 state directory: %w", err)
 		}
 
-		rt.v2store, err = state.OpenStore(v2Dir, nodeIdentity.Fingerprint(), state.StoreOptions{})
+		// This node's own v2 catalog Owner MUST be its own authenticated
+		// identity, converted through the single canonical
+		// state.OwnerIDFromFingerprint function -- the same function peer
+		// validation (pkg/peer/manager.go) uses on the receiving end. Without
+		// this, a fresh store would generate an unrelated random OwnerID that
+		// no peer could ever authenticate against.
+		selfOwner := state.OwnerIDFromFingerprint(nodeIdentity.Fingerprint())
+		rt.v2store, err = state.OpenStore(v2Dir, nodeIdentity.Fingerprint(), state.StoreOptions{Owner: selfOwner})
 		if err != nil {
 			return nil, fmt.Errorf("failed to open v2 state store: %w", err)
 		}
@@ -250,7 +270,6 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		rt.v2CommandSvc = state.NewSessionCommandService(rt.v2Catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.v2Catalog.Owner()})
 		rt.v2RemoteCreate = state.NewRemoteCreateCoordinator(rt.v2Catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.v2Catalog.Owner()})
 		rt.v2StateStream = ws.NewStateStreamHub(rt.v2Catalog, nil)
-		rt.stateMgr.SetV2Catalog(rt.v2Catalog, rt.v2Reconciler, enricher)
 		logrus.WithField("owner", rt.v2Catalog.Owner()).Info("v2 mode enabled (legacy stores disabled)")
 	}
 
@@ -259,7 +278,22 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		return nil, fmt.Errorf("failed to load peer store: %w", err)
 	}
 
-	rt.peerMgr = peer.NewManager(nodeIdentity, peerStore, rt.stateMgr)
+	// peer.Manager takes the narrow LocalSessionSource interface, not a
+	// concrete *state.Manager. In v2 mode rt.stateMgr is nil (no legacy
+	// manager constructed at all), so localSrc must be assigned through this
+	// explicit nil check -- passing rt.stateMgr directly would wrap a typed
+	// nil pointer in a non-nil interface value, which peer.Manager's
+	// `!= nil` checks would then fail to catch.
+	var localSrc peer.LocalSessionSource
+	if rt.stateMgr != nil {
+		localSrc = rt.stateMgr
+	}
+	rt.peerMgr = peer.NewManager(nodeIdentity, peerStore, localSrc)
+	if rt.v2Catalog != nil {
+		// Wired explicitly and independently of rt.stateMgr's presence: v2 mode
+		// never constructs a legacy manager to carry this.
+		rt.peerMgr.SetV2Catalog(rt.v2Catalog)
+	}
 	if rt.v2RemoteCreate != nil {
 		rt.peerMgr.SetRemoteCreateCoordinator(rt.v2RemoteCreate)
 	}
@@ -415,6 +449,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	deps := peer.SessionDeps{
 		Manager:                 rt.peerMgr,
 		LocalMgr:                rt.stateMgr,
+		V2Catalog:               rt.v2Catalog,
 		Identity:                nodeIdentity,
 		ActTracker:              rt.actTracker,
 		ToolTracker:             rt.tracker,
@@ -434,7 +469,11 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 
 	rt.wikiSup = wikilite.NewSupervisor()
 
-	rt.hub = ws.NewHub(rt.stateMgr, rt.tracker)
+	// ws.Hub takes the narrow StateSource interface. AsStateSource converts
+	// a possibly-nil rt.stateMgr into a genuine nil interface value (v2 mode
+	// constructs no legacy manager at all) instead of a non-nil interface
+	// wrapping a nil pointer.
+	rt.hub = ws.NewHub(ws.AsStateSource(rt.stateMgr), rt.tracker)
 	rt.hub.SetActivityTracker(rt.actTracker, rt.peerMgr, rt.peerMgr.LocalID(), false)
 
 	var (

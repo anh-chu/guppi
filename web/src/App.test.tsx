@@ -602,7 +602,7 @@ describe('App: mode-splitting', () => {
 
     it('top-bar split action records the target pane + direction so the created session is spliced in, not created standalone', async () => {
       const workspaceCommand = vi.fn().mockResolvedValue({})
-      const createSession = vi.fn().mockResolvedValue({ Ref: { owner: null, session: 'new-sess', window: 0, pane: 0 } })
+      const createSession = vi.fn().mockResolvedValue({ ref: { owner: null, session: 'new-sess', window: 0, pane: 0 }, accepted: true })
       const activeSessionId = 'active-sess'
       const activeSession: any = {
         id: activeSessionId,
@@ -646,12 +646,17 @@ describe('App: mode-splitting', () => {
       expect(mockNewSessionModalProps).not.toBeNull()
       await mockNewSessionModalProps.onCreateSession('split-session', '/tmp', '')
 
-      expect(workspaceCommand).toHaveBeenCalledWith('layout-1', expect.objectContaining({
-        action: 'split',
-        target: { owner: null, session: activeSessionId, window: 0, pane: 0 },
-        direction: 'v',
-        new: { owner: null, session: 'new-sess', window: 0, pane: 0 },
+      // Placement is one atomic step: the split target/direction are sent as
+      // part of the SAME create-session call, not as a separate follow-up
+      // workspace "split" command (see App.tsx's handleCreateSession and
+      // CreateParams in pkg/state/session_commands.go). A separate split
+      // command after create would try to insert the already-placed ref a
+      // second time and be rejected as a duplicate leaf.
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+        splitTarget: { owner: null, session: activeSessionId, window: 0, pane: 0 },
+        splitDirection: 'v',
       }))
+      expect(workspaceCommand).not.toHaveBeenCalled()
     })
   })
 })

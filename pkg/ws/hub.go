@@ -60,11 +60,21 @@ type ActivitySource interface {
 	GetAllActivity() []*activity.Snapshot
 }
 
+// StateSource is the narrow legacy-mode session-event surface Hub needs. In
+// v2 mode no legacy state.Manager is constructed at all, so NewHub is called
+// with a nil StateSource; Hub treats that as "no legacy events to forward"
+// rather than deriving v2-mode from whether a catalog happens to be attached
+// to a still-constructed manager.
+type StateSource interface {
+	Subscribe() chan state.StateEvent
+	Unsubscribe(ch chan state.StateEvent)
+}
+
 // Hub manages WebSocket connections for state events and tool events
 type Hub struct {
 	mu              sync.RWMutex
 	clients         map[*client]bool
-	stateMgr        *state.Manager
+	stateMgr        StateSource
 	tracker         *toolevents.Tracker
 	activityTracker *activity.Tracker
 	peerActivity    ActivitySource // optional, for multi-host
@@ -72,8 +82,24 @@ type Hub struct {
 	localOnly       bool
 }
 
-// NewHub creates a new WebSocket hub
-func NewHub(stateMgr *state.Manager, tracker *toolevents.Tracker) *Hub {
+// AsStateSource converts a possibly-nil *state.Manager into a StateSource
+// interface value that is a genuine nil (not a non-nil interface wrapping a
+// nil pointer). Callers that may hold a nil *state.Manager (v2 mode, where no
+// legacy manager is constructed at all) MUST use this instead of assigning
+// the pointer directly to a StateSource-typed variable/parameter, or Hub's
+// `stateMgr != nil` check below would incorrectly see a non-nil interface and
+// dereference the nil pointer.
+func AsStateSource(m *state.Manager) StateSource {
+	if m == nil {
+		return nil
+	}
+	return m
+}
+
+// NewHub creates a new WebSocket hub. stateMgr may be nil (v2 mode, where no
+// legacy state.Manager is constructed); Hub simply skips legacy state-event
+// forwarding in that case.
+func NewHub(stateMgr StateSource, tracker *toolevents.Tracker) *Hub {
 	return &Hub{
 		clients:  make(map[*client]bool),
 		stateMgr: stateMgr,
@@ -92,14 +118,12 @@ func (h *Hub) SetActivityTracker(at *activity.Tracker, peerActivity ActivitySour
 // Run starts broadcasting state events and tool events to connected clients.
 // Blocks until ctx is cancelled or its subscriptions are closed.
 func (h *Hub) Run(ctx context.Context) {
-	// In v2 mode the legacy state.Manager is a neutered shim that receives no
-	// real writes (see the v2-mode gating throughout pkg/commands/server and
-	// pkg/peer); subscribing to it and rebroadcasting its (empty) events to
-	// /ws/events clients would just be shadow-mode noise. Leave stateCh nil
-	// so its select case below never fires. Tool-event and activity
-	// broadcasts on this same hub are unaffected.
+	// In v2 mode h.stateMgr is nil (no legacy state.Manager is constructed at
+	// all, see pkg/commands/server/runtime.go); there is nothing to subscribe
+	// to, so stateCh stays nil and its select case below never fires.
+	// Tool-event and activity broadcasts on this same hub are unaffected.
 	var stateCh chan state.StateEvent
-	if h.stateMgr.V2Catalog() == nil {
+	if h.stateMgr != nil {
 		stateCh = h.stateMgr.Subscribe()
 		defer h.stateMgr.Unsubscribe(stateCh)
 	}

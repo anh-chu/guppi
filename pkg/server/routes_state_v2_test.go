@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -415,6 +416,75 @@ func TestV2CreateCommandBodyAsBrowserWouldProduceIt(t *testing.T) {
 	}
 	if errResp.Code != "invalid_input" {
 		t.Fatalf("expected invalid_input, got %q", errResp.Code)
+	}
+}
+
+// commandResultFixture mirrors the shape of testdata/command_result_fixture.json.
+type commandResultFixture struct {
+	Request struct {
+		ID     string          `json:"id"`
+		Ref    string          `json:"ref"`
+		Action string          `json:"action"`
+		Params json.RawMessage `json:"params"`
+	} `json:"request"`
+	Wire json.RawMessage `json:"wire"`
+}
+
+// TestCommandResultWireMatchesFixture proves the REAL POST
+// /api/v2/session-commands route produces exactly the wire bytes recorded in
+// testdata/command_result_fixture.json -- the same fixture
+// web/src/state/v2/wireCodec.test.ts decodes and checks against "decoded".
+// This is the Go side of the cross-language round trip: a fixture generated
+// by (and continuously verified against) the real handler, not a hand-built
+// guess at the wire shape.
+func TestCommandResultWireMatchesFixture(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/command_result_fixture.json")
+	if err != nil {
+		t.Fatalf("read command_result_fixture.json: %v", err)
+	}
+	var fixture commandResultFixture
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("parse command_result_fixture.json: %v", err)
+	}
+
+	// The fixture's ref is "<owner>/<session>:0.0"; the owner segment must be
+	// used to construct the catalog so the request's ref is accepted (create
+	// rejects any ref.Owner that doesn't match the catalog's own owner).
+	owner := state.OwnerID(fixture.Request.Ref[:len("cmdresultfixowner12345")])
+	catalog := state.NewCatalog(owner, nil)
+	if err := catalog.Load(); err != nil {
+		t.Fatalf("catalog.Load: %v", err)
+	}
+	svc := state.NewSessionCommandService(catalog, noopBackend{}, nil, state.SessionCommandServiceOptions{Owner: owner})
+	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	r := newV2TestRouter(opts)
+
+	body, err := json.Marshal(fixture.Request)
+	if err != nil {
+		t.Fatalf("marshal fixture request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v2/session-commands", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got, want map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode actual response: %v", err)
+	}
+	if err := json.Unmarshal(fixture.Wire, &want); err != nil {
+		t.Fatalf("decode fixture wire: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("field count mismatch: got %v, want %v", got, want)
+	}
+	for k, wantV := range want {
+		if gotV, ok := got[k]; !ok || gotV != wantV {
+			t.Errorf("field %q: got %v, want %v", k, gotV, wantV)
+		}
 	}
 }
 

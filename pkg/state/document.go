@@ -268,13 +268,96 @@ type CreateIntent struct {
 	Inserted time.Time       `json:"inserted_at"`
 }
 
-// CommandReceipt acknowledges that a command was accepted and optionally gives
-// the worker the next sequence number to observe.
+// CommandReceiptError is the durable, stable representation of a command
+// that was rejected in a way that is safe to replay unchanged: the error is
+// fully determined by the command's own input and does not depend on
+// mutable catalog state that could legitimately produce a different answer
+// on a later retry (e.g. a not-found error is NOT safe to cache this way,
+// since the same command ID retried after the target is created should
+// succeed, not keep replaying a stale not-found).
+type CommandReceiptError struct {
+	Code    ErrorCode `json:"code"`
+	Field   string    `json:"field,omitempty"`
+	Message string    `json:"message"`
+}
+
+// CommandReceipt is the durable record of one accepted command, keyed by
+// CommandID. It is the single source of truth for idempotent replay: a
+// retried request carrying the same CommandID must return the EXACT original
+// outcome recorded here, never a value re-derived by scanning current catalog
+// state (that scan is what let a replayed create return an arbitrary
+// unrelated session once multiple commands were in flight -- see
+// session_commands.go's executeCreate and remote_create.go's
+// ExecuteRemoteCreate).
+//
+// Kind identifies the command family and action (e.g. "session:create",
+// "workspace:split"). Target is a normalized identifier for what the command
+// addressed (a SessionRef.MapKey(), a LayoutID, or similar), for
+// observability only -- replay never re-derives the result from Target.
+// Status is "ok" or "error". Result is the exact JSON-encoded success payload
+// (typically a CommandResult or RemoteCreateResult); Error, when Status is
+// "error", is a previously observed terminal, input-derived failure that is
+// safe to replay unchanged. Receipts are bounded by MaxCommandReceiptAge and
+// MaxPendingCommands (see pruneReceipts in store.go), so idempotent replay is
+// only guaranteed within that window, not forever.
 type CommandReceipt struct {
-	ID       CommandID `json:"id"`
-	IntentID CommandID `json:"intent_id"`
-	Seq      int64     `json:"seq"`
-	Created  time.Time `json:"created_at"`
+	ID       CommandID             `json:"id"`
+	IntentID CommandID             `json:"intent_id"`
+	Seq      int64                 `json:"seq"`
+	Created  time.Time             `json:"created_at"`
+	Kind     string                `json:"kind,omitempty"`
+	Target   string                `json:"target,omitempty"`
+	Status   string                `json:"status,omitempty"`
+	Result   json.RawMessage       `json:"result,omitempty"`
+	Error    *CommandReceiptError  `json:"error,omitempty"`
+}
+
+// DecodeResult unmarshals the receipt's stored success payload into out. It
+// is a no-op (out left unchanged) if the receipt carries no result.
+func (r CommandReceipt) DecodeResult(out interface{}) error {
+	if len(r.Result) == 0 {
+		return nil
+	}
+	return json.Unmarshal(r.Result, out)
+}
+
+// AsError reconstructs the stored terminal failure, if any, as a StateError.
+// Returns nil if the receipt does not carry an error.
+func (r CommandReceipt) AsError() error {
+	if r.Error == nil {
+		return nil
+	}
+	return StateError{Code: r.Error.Code, Field: r.Error.Field, Detail: r.Error.Message}
+}
+
+// findCommandReceipt returns the receipt for id, if one exists in doc.
+func findCommandReceipt(doc *AppDocument, id CommandID) (CommandReceipt, bool) {
+	for _, r := range doc.Commands {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return CommandReceipt{}, false
+}
+
+// newSuccessReceipt builds a CommandReceipt recording a successful command
+// outcome. result is JSON-marshalled once and stored verbatim so replay never
+// re-derives it.
+func newSuccessReceipt(id CommandID, kind, target string, seq int64, now time.Time, result interface{}) (CommandReceipt, error) {
+	b, err := json.Marshal(result)
+	if err != nil {
+		return CommandReceipt{}, err
+	}
+	return CommandReceipt{
+		ID:       id,
+		IntentID: id,
+		Seq:      seq,
+		Created:  now,
+		Kind:     kind,
+		Target:   target,
+		Status:   "ok",
+		Result:   b,
+	}, nil
 }
 
 // SessionCommand is an envelope for a command targeting a session.

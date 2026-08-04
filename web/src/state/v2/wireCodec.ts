@@ -38,6 +38,8 @@ import type {
 import type {
   CatalogOwnerRemovedMessage,
   CatalogSnapshotMessage,
+  CommandResult,
+  CommandResultWire,
   PendingRemoteCreateRecord,
   PresentationRecord,
   V2BootstrapResponse,
@@ -144,6 +146,22 @@ export function decodeCatalogOwnerRemovedMessage(raw: any): CatalogOwnerRemovedM
 
 export function decodeWorkspaceSnapshotMessage(raw: any): WorkspaceSnapshotMessage {
   return { type: 'workspace_snapshot', workspace: decodeWorkspaceRecord(raw.workspace) }
+}
+
+// decodeCommandResult decodes a raw POST /api/v2/session-commands response
+// body (CommandResultWire) into the typed CommandResult object shape,
+// decoding `ref` (a wire string) into the SessionRef object the rest of the
+// browser expects. `ref` is optional on the wire (e.g. never present on a
+// well-formed-error response, though those are routed through V2CommandError
+// before reaching this function -- see commands.ts's postWithRetry).
+export function decodeCommandResult(raw: CommandResultWire): CommandResult {
+  return {
+    id: raw.id,
+    ref: raw.ref !== undefined && raw.ref !== null ? decodeSessionRef(raw.ref) : undefined,
+    displayName: raw.display_name,
+    path: raw.path,
+    accepted: Boolean(raw.accepted),
+  }
 }
 
 // ---------------------------------------------------------------------------

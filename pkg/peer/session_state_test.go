@@ -48,7 +48,7 @@ func TestGetPeerSessions(t *testing.T) {
 func TestSendStateUpdate(t *testing.T) {
 	mgr := makeTestManager(t)
 	pc := NewPeerConnection("peer", 1)
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr}
+	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager)}
 
 	sendStateUpdate(pc, deps)
 
@@ -77,7 +77,7 @@ func TestHandleStateMessageUpdate(t *testing.T) {
 	mgr := makeTestManager(t)
 	mgr.RegisterPeer("peera", "remotea", "", nil)
 	pc := NewPeerConnection("peer", 1)
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr}
+	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager)}
 	log := logrus.NewEntry(logrus.New())
 
 	payload := StateUpdatePayload{
@@ -100,7 +100,7 @@ func TestHandleStateMessageUpdate(t *testing.T) {
 func TestHandleStateMessageRequestState(t *testing.T) {
 	mgr := makeTestManager(t)
 	pc := NewPeerConnection("peer", 1)
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr}
+	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager)}
 	log := logrus.NewEntry(logrus.New())
 
 	msg, err := NewMessage(MsgRequestState, struct{}{})

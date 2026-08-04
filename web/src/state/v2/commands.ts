@@ -13,8 +13,8 @@
  */
 
 import type { CommandID, LayoutID, SessionRef, SplitDirection } from './types'
-import type { V2ErrorResponse } from './wireTypes'
-import { encodeSessionRefWire } from './wireCodec'
+import type { CommandResult, CommandResultWire, V2ErrorResponse } from './wireTypes'
+import { decodeCommandResult, encodeSessionRefWire } from './wireCodec'
 
 // SessionCommandAction mirrors pkg/state/session_commands.go's ExecuteSessionCommand
 // switch: create/kill/label/recover/dismiss/retry are the only session-scoped
@@ -22,8 +22,14 @@ import { encodeSessionRefWire } from './wireCodec'
 // resize/rename/select) are NOT session commands server-side -- they are
 // workspace commands (see WorkspaceCommandAction below), keyed by layout id
 // rather than by session ref.
+// The create variant's target/direction/new_first fields mirror
+// pkg/state/session_commands.go's CreateParams: when target names an
+// existing leaf in layout_id, the server places the new session by splitting
+// that leaf, atomically, as part of the same create command -- this is the
+// single-step replacement for the old create-then-split-command sequence
+// (see V2CommandClient.createSession and App.tsx's handleCreateSession).
 export type SessionCommandAction =
-  | { action: 'create'; name?: string; shell?: string; cwd?: string; worktree_branch?: string; cols?: number; rows?: number; layout_id?: LayoutID; agent_type?: string }
+  | { action: 'create'; name?: string; shell?: string; cwd?: string; worktree_branch?: string; cols?: number; rows?: number; layout_id?: LayoutID; agent_type?: string; target?: SessionRef; direction?: SplitDirection; new_first?: boolean }
   | { action: 'kill' }
   | { action: 'label'; label: string }
   | { action: 'recover' }
@@ -169,29 +175,36 @@ export class V2CommandClient {
     this.retryDelayMs = options.retryDelayMs ?? 0
   }
 
-  async sessionCommand(ref: SessionRef, cmd: SessionCommandAction, id?: CommandID): Promise<unknown> {
+  async sessionCommand(ref: SessionRef, cmd: SessionCommandAction, id?: CommandID): Promise<CommandResult> {
     const commandId = id ?? this.genId()
     const { action, ...params } = cmd
-    return postWithRetry(
+    const raw = await postWithRetry(
       '/api/v2/session-commands',
       { id: commandId, ref: encodeSessionRefWire(ref), action, params },
       { fetchImpl: this.fetchImpl, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs },
     )
+    return decodeCommandResult(raw as CommandResultWire)
   }
 
   /**
    * Posts a create-session command. Unlike sessionCommand, this NEVER includes
    * a `ref` member: a create cannot know its SessionID before the server
    * assigns one, so the wire body is exactly { id, action: 'create', params }.
+   * If cmd carries a `target`, it is re-encoded to its canonical wire string
+   * (mirroring encodeWorkspaceCommandAction's split case below) so the server
+   * places the new session atomically via that target, instead of the caller
+   * having to issue a separate split command afterward.
    */
-  async createSession(cmd: CreateSessionCommand, id?: CommandID): Promise<unknown> {
+  async createSession(cmd: CreateSessionCommand, id?: CommandID): Promise<CommandResult> {
     const commandId = id ?? this.genId()
-    const { action, ...params } = cmd
-    return postWithRetry(
+    const { action, target, ...rest } = cmd
+    const params = target !== undefined ? { ...rest, target: encodeSessionRefWire(target) } : rest
+    const raw = await postWithRetry(
       '/api/v2/session-commands',
       { id: commandId, action, params },
       { fetchImpl: this.fetchImpl, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs },
     )
+    return decodeCommandResult(raw as CommandResultWire)
   }
 
   async workspaceCommand(layout: LayoutID, cmd: WorkspaceCommandAction, id?: CommandID): Promise<unknown> {

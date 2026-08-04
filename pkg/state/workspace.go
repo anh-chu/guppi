@@ -271,6 +271,16 @@ func (c *Catalog) RemoveSessionRef(ref SessionRef) error {
 
 // applyLayoutTreeCommand handles commands that mutate one layout's pane tree.
 func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) error {
+	// Idempotent replay FIRST, before any lookup or mutation: a command ID
+	// that was already durably accepted is a no-op that returns success
+	// again, never a re-derived mutation. Without this check, retrying e.g.
+	// a "split" whose reply was lost re-inserts the same leaf and is
+	// rejected as a duplicate-leaf error instead of returning the original
+	// successful result.
+	if _, ok := findCommandReceipt(doc, cmd.ID); ok {
+		return nil
+	}
+
 	layout := cmd.Layout
 	idx := -1
 	for i := range doc.Layouts {
@@ -445,13 +455,19 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		return StateError{Code: ErrMalformedSplit, Field: "action", Detail: fmt.Sprintf("unknown workspace action %q", cmd.Action)}
 	}
 
-	if err := appendCommandReceipt(doc, cmd.ID, doc.Revision+1); err != nil {
+	if err := appendCommandReceipt(doc, cmd.ID, doc.Revision+1, "workspace:"+cmd.Action, string(layout)); err != nil {
 		return err
 	}
 	return nil
 }
 
 func applyReorderLayoutsCommand(doc *AppDocument, cmd WorkspaceCommand) error {
+	// Idempotent replay: a retried reorder returns success again without
+	// re-swapping orders a second time.
+	if _, ok := findCommandReceipt(doc, cmd.ID); ok {
+		return nil
+	}
+
 	var p workspaceReorderParams
 	if err := json.Unmarshal(cmd.Params, &p); err != nil {
 		return StateError{Code: ErrMalformedOrder, Field: "params", Detail: err.Error()}
@@ -475,7 +491,7 @@ func applyReorderLayoutsCommand(doc *AppDocument, cmd WorkspaceCommand) error {
 	dstIdx := sorted[p.TargetIndex]
 	doc.Layouts[srcIdx].Order, doc.Layouts[dstIdx].Order = doc.Layouts[dstIdx].Order, doc.Layouts[srcIdx].Order
 
-	if err := appendCommandReceipt(doc, cmd.ID, doc.Revision+1); err != nil {
+	if err := appendCommandReceipt(doc, cmd.ID, doc.Revision+1, "workspace:"+cmd.Action, ""); err != nil {
 		return err
 	}
 	return nil
@@ -562,7 +578,7 @@ func conflictsMembership(membership map[string]LayoutID, key string, layout Layo
 	return owner != layout
 }
 
-func appendCommandReceipt(doc *AppDocument, id CommandID, seq int64) error {
+func appendCommandReceipt(doc *AppDocument, id CommandID, seq int64, kind, target string) error {
 	if err := id.Validate(); err != nil {
 		return StateError{Code: ErrInvalidIdentity, Field: "id", Detail: err.Error()}
 	}
@@ -574,12 +590,13 @@ func appendCommandReceipt(doc *AppDocument, id CommandID, seq int64) error {
 			}
 		}
 	}
-	doc.Commands = append(doc.Commands, CommandReceipt{
-		ID:       id,
-		IntentID: id,
-		Seq:      seq,
-		Created:  time.Now(),
-	})
+	receipt, err := newSuccessReceipt(id, kind, target, seq, time.Now(), struct {
+		Accepted bool `json:"accepted"`
+	}{true})
+	if err != nil {
+		return err
+	}
+	doc.Commands = append(doc.Commands, receipt)
 	pruneReceipts(doc, MaxCommandReceiptAge, MaxPendingCommands)
 	return nil
 }

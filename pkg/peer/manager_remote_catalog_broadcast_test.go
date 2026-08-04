@@ -15,7 +15,7 @@ import (
 func TestAllRemoteCatalogSnapshots_ReturnsEveryCachedOwner(t *testing.T) {
 	mgr := makeV2Manager(t)
 
-	ownerA := state.OwnerID("peera")
+	ownerA := state.OwnerIDFromFingerprint("peera")
 	connA := NewPeerConnection("peera", 64)
 	mgr.RegisterPeer("peera", "peer-a", "", connA)
 	mgr.UpdateRemoteCatalog("peera", connA, state.OwnerCatalogSnapshot{
@@ -26,7 +26,7 @@ func TestAllRemoteCatalogSnapshots_ReturnsEveryCachedOwner(t *testing.T) {
 		},
 	})
 
-	ownerB := state.OwnerID("peerb")
+	ownerB := state.OwnerIDFromFingerprint("peerb")
 	connB := NewPeerConnection("peerb", 64)
 	mgr.RegisterPeer("peerb", "peer-b", "", connB)
 	mgr.UpdateRemoteCatalog("peerb", connB, state.OwnerCatalogSnapshot{
@@ -71,7 +71,7 @@ func TestSubscribeRemoteCatalogs_NotifiesUpdateAndRemoval(t *testing.T) {
 	})
 	defer unsubscribe()
 
-	owner := state.OwnerID("peerc")
+	owner := state.OwnerIDFromFingerprint("peerc")
 	conn := NewPeerConnection("peerc", 64)
 	mgr.RegisterPeer("peerc", "peer-c", "", conn)
 	mgr.UpdateRemoteCatalog("peerc", conn, state.OwnerCatalogSnapshot{Owner: owner, Revision: 1})
@@ -113,7 +113,7 @@ func TestSubscribeRemoteCatalogs_NotifiesUpdateAndRemoval(t *testing.T) {
 func TestForgetRemoteCatalogsForPeer_NotifiesRemovalPerOwner(t *testing.T) {
 	mgr := makeV2Manager(t)
 
-	owner := state.OwnerID("peerd")
+	owner := state.OwnerIDFromFingerprint("peerd")
 	conn := NewPeerConnection("peerd", 64)
 	mgr.RegisterPeer("peerd", "peer-d", "", conn)
 	mgr.UpdateRemoteCatalog("peerd", conn, state.OwnerCatalogSnapshot{Owner: owner, Revision: 1})

@@ -141,7 +141,7 @@ func NewRemoteCreateCoordinator(catalog *Catalog, backend DaemonBackend, opts Re
 // already-trusted local paths.
 func (c *RemoteCreateCoordinator) ExecuteRemoteCreateFromPeer(ctx context.Context, req RemoteCreateRequest, peerID string) (RemoteCreateResult, error) {
 	if peerID != "" {
-		if req.Requester == "" || req.Requester != OwnerID(peerID) {
+		if req.Requester == "" || req.Requester != OwnerIDFromFingerprint(peerID) {
 			return RemoteCreateResult{}, StateError{
 				Code:   ErrOwnershipMismatch,
 				Field:  "requester",
@@ -174,15 +174,13 @@ func (c *RemoteCreateCoordinator) ExecuteRemoteCreate(ctx context.Context, req R
 	path := expandPath(req.Cwd)
 	var result RemoteCreateResult
 	err := c.catalog.apply("remote-create/intent", func(doc *AppDocument) error {
-		// Idempotent replay: same command ID accepted once.
-		for _, r := range doc.Commands {
-			if r.ID == req.IntentID {
-				result = c.existingResultFromDocLocked(doc, req.IntentID)
-				if result.Accepted {
-					return nil
-				}
-				return StateError{Code: ErrDuplicateIdentity, Field: "intent_id", Detail: fmt.Sprintf("command %q accepted for a different session", req.IntentID)}
-			}
+		// Idempotent replay FIRST, before any lookup or side effect: a
+		// command ID that was already durably accepted returns its own exact
+		// stored outcome, never a value re-derived by scanning current
+		// sessions (that scan is what let a replayed remote create return an
+		// arbitrary unrelated session once multiple creates were in flight).
+		if r, ok := findCommandReceipt(doc, req.IntentID); ok {
+			return r.DecodeResult(&result)
 		}
 
 		ref := SessionRef{Owner: c.opts.Owner, Session: NewSessionID()}
@@ -225,13 +223,12 @@ func (c *RemoteCreateCoordinator) ExecuteRemoteCreate(ctx context.Context, req R
 				Rows:  req.Rows,
 			},
 		})
-		doc.Commands = append(doc.Commands, CommandReceipt{
-			ID:       req.IntentID,
-			IntentID: req.IntentID,
-			Seq:      nextCommandSeq(doc),
-			Created:  now,
-		})
 		result = RemoteCreateResult{ID: req.IntentID, Ref: ref, DisplayName: displayName, Path: path, LayoutID: layoutID, Accepted: true}
+		receipt, err := newSuccessReceipt(req.IntentID, "remote-create:create", ref.MapKey(), nextCommandSeq(doc), now, result)
+		if err != nil {
+			return err
+		}
+		doc.Commands = append(doc.Commands, receipt)
 		return nil
 	})
 	if err != nil {
@@ -508,22 +505,6 @@ func (c *RemoteCreateCoordinator) placeRemoteRefLocked(doc *AppDocument, ref Ses
 	}
 	doc.Layouts[0].Revision = doc.Revision + 1
 	return doc.Layouts[0].ID, nil
-}
-
-func (c *RemoteCreateCoordinator) existingResultFromDocLocked(doc *AppDocument, id CommandID) RemoteCreateResult {
-	for _, p := range doc.PendingRemoteCreates {
-		if p.IntentID == id {
-			return RemoteCreateResult{ID: id, Ref: p.Ref, DisplayName: p.DisplayName, Path: expandPath(p.Cwd), LayoutID: p.LayoutID, Accepted: true}
-		}
-	}
-	for _, rec := range doc.Sessions {
-		for _, r := range doc.Commands {
-			if r.ID == id {
-				return RemoteCreateResult{ID: id, Ref: rec.Ref, DisplayName: rec.Compat.Name, Path: expandPath(rec.Compat.Cwd), Accepted: true}
-			}
-		}
-	}
-	return RemoteCreateResult{}
 }
 
 func (c *RemoteCreateCoordinator) uniqueDisplayNameLocked(doc *AppDocument, name string) string {

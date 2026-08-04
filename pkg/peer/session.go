@@ -80,8 +80,12 @@ type DaemonRegistry interface {
 
 // SessionDeps groups the runtime dependencies needed by a peer session.
 type SessionDeps struct {
-	Manager                 *Manager
-	LocalMgr                *state.Manager
+	Manager  *Manager
+	LocalMgr *state.Manager
+	// V2Catalog is this node's own v2 catalog, decoupled from LocalMgr. It is
+	// non-nil exactly when this node runs in v2 mode, independent of whether
+	// LocalMgr itself is nil (v2 mode) or a real legacy manager (legacy mode).
+	V2Catalog               *state.Catalog
 	Identity                *identity.Identity
 	ActTracker              *activity.Tracker
 	ToolTracker             *toolevents.Tracker
@@ -152,7 +156,7 @@ func runSession(
 
 	// Subscribe to complete workspace snapshots after each accepted command
 	// so remote peers see the whole layout, never intermediate steps.
-	if cat := deps.Manager.localMgr.V2Catalog(); cat != nil {
+	if cat := deps.Manager.v2Catalog; cat != nil {
 		unsubWorkspace = cat.SubscribeWorkspace(func(layout state.LayoutID, rec state.WorkspaceRecord) {
 			payload := V2WorkspaceSnapshotPayload{Owner: rec.Owner, Revision: rec.Revision, Workspace: rec}
 			msg, err := NewMessage(MsgV2WorkspaceSnapshot, payload)

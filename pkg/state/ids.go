@@ -3,6 +3,7 @@ package state
 import (
 	"crypto/rand"
 	"encoding/base32"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -60,6 +61,36 @@ func newID() string {
 		return idEncoding.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
 	}
 	return strings.ToLower(idEncoding.EncodeToString(b))
+}
+
+// OwnerIDFromFingerprint is the single canonical, deterministic conversion
+// from an authenticated peer identity fingerprint (identity.Identity.
+// Fingerprint(), base64.RawURLEncoding of 8 raw ed25519-pubkey bytes -- which
+// may contain uppercase letters, '-', or '_') into a valid OwnerID (lowercase
+// base32, see idPattern/validateID above). It transcodes the same raw bytes
+// through idEncoding rather than hashing, so it is a stable bijection: the
+// same fingerprint always yields the same OwnerID and different fingerprints
+// never collide (barring the encoding always succeeding, see fallback below).
+//
+// Both directions of the v2 peer-trust boundary MUST call this exact function
+// so they stay consistent:
+//   - when opening/creating this node's own v2 store, pass
+//     OwnerIDFromFingerprint(selfFingerprint) as StoreOptions.Owner, so this
+//     node's catalog Owner IS its own authenticated identity;
+//   - when validating a remote snapshot/request, compare snap.Owner (or
+//     req.Requester) against OwnerIDFromFingerprint(peerID), where peerID is
+//     the authenticated identity fingerprint of that connection.
+func OwnerIDFromFingerprint(fingerprint string) OwnerID {
+	raw, err := base64.RawURLEncoding.DecodeString(fingerprint)
+	if err != nil || len(raw) == 0 {
+		// Fingerprint() always produces valid, non-empty base64url. If some
+		// caller ever passes something else, fall back to transcoding the raw
+		// input bytes directly so this function never panics and stays
+		// deterministic for the same bad input rather than silently matching
+		// nothing.
+		raw = []byte(fingerprint)
+	}
+	return OwnerID(strings.ToLower(idEncoding.EncodeToString(raw)))
 }
 
 func (id OwnerID) String() string   { return string(id) }

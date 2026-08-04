@@ -173,6 +173,18 @@ func (pc *PeerConnection) Close() {
 	close(pc.done)
 }
 
+// LocalSessionSource is the narrow legacy-mode session read/subscribe
+// surface Manager needs when this node is NOT running v2 mode. In v2 mode
+// this is nil -- no legacy state.Manager is constructed at all -- and the v2
+// catalog is wired separately via SetV2Catalog, so v2-mode detection never
+// depends on the legacy manager's presence or its (former) attached-catalog
+// shim state.
+type LocalSessionSource interface {
+	GetSessions() []*model.Session
+	Subscribe() chan state.StateEvent
+	Unsubscribe(ch chan state.StateEvent)
+}
+
 // Manager aggregates state from local sessions and remote peers
 type Manager struct {
 	mu    sync.RWMutex
@@ -182,7 +194,16 @@ type Manager struct {
 	localName string
 	identity  *identity.Identity
 	peerStore *identity.PeerStore
-	localMgr  *state.Manager
+	// localMgr is the legacy per-node session source. It is nil in v2 mode
+	// (see LocalSessionSource); every read of it below is nil-guarded.
+	localMgr LocalSessionSource
+	// v2Catalog is this node's own v2 catalog, wired explicitly via
+	// SetV2Catalog. It is decoupled from localMgr entirely: v2 mode never
+	// constructs a legacy state.Manager to carry this, so mode detection
+	// throughout this file and pkg/peer/session_state.go checks v2Catalog
+	// directly instead of asking localMgr whether a catalog happens to be
+	// attached to it.
+	v2Catalog *state.Catalog
 
 	// Subscribers for state changes (browser WebSocket hub subscribes here)
 	subMu       sync.RWMutex
@@ -265,7 +286,7 @@ type remoteRevisionState struct {
 }
 
 // NewManager creates a new peer manager
-func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr *state.Manager) *Manager {
+func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr LocalSessionSource) *Manager {
 	m := &Manager{
 		hosts:          make(map[string]*HostState),
 		localID:        id.Fingerprint(),
@@ -293,13 +314,20 @@ func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr *
 	return m
 }
 
+// SetV2Catalog wires this node's own v2 catalog. It is decoupled from
+// localMgr: v2 mode never constructs a legacy state.Manager, so this is the
+// only way Manager learns whether v2 is active and what its local catalog is.
+func (m *Manager) SetV2Catalog(cat *state.Catalog) {
+	m.v2Catalog = cat
+}
+
 // updateLocalStats collects system stats and process counts for the local host.
-// In v2-only mode (localMgr carries no session state -- see v2Mode gating in
-// runtime.go) the legacy GetSessions() call would always return an empty
-// slice, so it is skipped entirely rather than reported as zero processes.
+// In v2 mode (m.localMgr is nil -- no legacy state.Manager is constructed at
+// all, see v2Mode gating in runtime.go) there is no legacy session source to
+// read, so process counting is skipped entirely rather than reported as zero.
 func (m *Manager) updateLocalStats() {
 	s := stats.SystemStats()
-	if m.localMgr.V2Catalog() == nil {
+	if m.localMgr != nil {
 		sessions := m.localMgr.GetSessions()
 		s["processes"] = stats.ProcessCountsFromSessions(sessions)
 	}
@@ -309,17 +337,13 @@ func (m *Manager) updateLocalStats() {
 // Run starts forwarding local state events to peer manager subscribers
 // and pruning offline peers. Blocks until ctx is cancelled.
 //
-// In v2-only mode, the legacy state.Manager (m.localMgr) is a neutered shim
-// that never receives session updates (see v2Mode gating in
-// pkg/commands/server/runtime.go), so its event channel would never fire.
-// Subscribing anyway would hold open a channel and goroutine registration for
-// the lifetime of the runtime for no purpose, so the subscription is skipped
-// entirely when a v2 catalog is present.
+// In v2 mode (m.localMgr == nil -- no legacy state.Manager is constructed at
+// all, see v2Mode gating in pkg/commands/server/runtime.go) there is no
+// legacy event channel to subscribe to; the v2 catalog's own subscription
+// mechanism (SubscribeCatalog/SubscribeWorkspace) carries real state instead.
 func (m *Manager) Run(ctx context.Context) {
-	v2Only := m.localMgr.V2Catalog() != nil
-
 	var localCh chan state.StateEvent
-	if !v2Only {
+	if m.localMgr != nil {
 		localCh = m.localMgr.Subscribe()
 		defer m.localMgr.Unsubscribe(localCh)
 	}
@@ -451,8 +475,13 @@ func copySession(s *model.Session) *model.Session {
 	return &c
 }
 
-// GetLocalSessions returns only this node's sessions
+// GetLocalSessions returns only this node's sessions. Returns nil in v2 mode,
+// where there is no legacy session source (v2 session data lives in
+// m.v2Catalog instead).
 func (m *Manager) GetLocalSessions() []*model.Session {
+	if m.localMgr == nil {
+		return nil
+	}
 	return m.localMgr.GetSessions()
 }
 
@@ -528,8 +557,8 @@ func (m *Manager) PeerStore() *identity.PeerStore {
 	return m.peerStore
 }
 
-// LocalManager returns the local state manager.
-func (m *Manager) LocalManager() *state.Manager {
+// LocalManager returns the legacy local session source, or nil in v2 mode.
+func (m *Manager) LocalManager() LocalSessionSource {
 	return m.localMgr
 }
 
@@ -954,7 +983,7 @@ func (m *Manager) UpdateRemoteCatalog(peerID string, conn *PeerConnection, snap 
 		return
 	}
 	// Enforce: remote peer's OwnerID must equal its authenticated fingerprint (peerID).
-	expectedOwner := state.OwnerID(peerID)
+	expectedOwner := state.OwnerIDFromFingerprint(peerID)
 	if snap.Owner != expectedOwner {
 		logrus.WithFields(logrus.Fields{
 			"peer":           peerID,
@@ -1010,7 +1039,7 @@ func (m *Manager) UpdateRemoteWorkspace(peerID string, conn *PeerConnection, rec
 		return
 	}
 	// Enforce: remote peer's OwnerID must equal its authenticated fingerprint (peerID).
-	expectedOwner := state.OwnerID(peerID)
+	expectedOwner := state.OwnerIDFromFingerprint(peerID)
 	if rec.Owner != expectedOwner {
 		logrus.WithFields(logrus.Fields{
 			"peer":           peerID,
@@ -1147,7 +1176,7 @@ func (m *Manager) SetRemoteCreateCoordinator(c *state.RemoteCreateCoordinator) {
 // remote, the peer ID that last advertised it. The empty peerID means this node
 // is the authority.
 func (m *Manager) WorkspaceAuthority(layout state.LayoutID) (state.OwnerID, string, error) {
-	if cat := m.localMgr.V2Catalog(); cat != nil {
+	if cat := m.v2Catalog; cat != nil {
 		if rec, ok := cat.Layout(layout); ok {
 			return rec.Owner, "", nil
 		}
@@ -1169,7 +1198,7 @@ func (m *Manager) WorkspaceAuthority(layout state.LayoutID) (state.OwnerID, stri
 
 // IsWorkspaceOwnerOnline reports whether owner is reachable for v2 commands.
 func (m *Manager) IsWorkspaceOwnerOnline(owner state.OwnerID) bool {
-	if owner == state.OwnerID(m.localID) {
+	if owner == state.OwnerIDFromFingerprint(m.localID) {
 		return true
 	}
 	peerID := m.peerIDForOwner(owner)
@@ -1188,8 +1217,8 @@ func (m *Manager) ProxyWorkspaceCommand(ctx context.Context, cmd state.Workspace
 	if err != nil {
 		return err
 	}
-	if owner == state.OwnerID(m.localID) {
-		cat := m.localMgr.V2Catalog()
+	if owner == state.OwnerIDFromFingerprint(m.localID) {
+		cat := m.v2Catalog
 		if cat == nil {
 			return fmt.Errorf("v2 catalog not enabled")
 		}
@@ -1209,7 +1238,7 @@ func (m *Manager) ProxyWorkspaceCommand(ctx context.Context, cmd state.Workspace
 // owner path runs directly in the coordinator; remote owners are reached over
 // the v2 remote-create RPC.
 func (m *Manager) RequestRemoteCreate(ctx context.Context, owner state.OwnerID, req state.RemoteCreateRequest) (state.RemoteCreateResult, error) {
-	if owner == "" || owner == state.OwnerID(m.localID) {
+	if owner == "" || owner == state.OwnerIDFromFingerprint(m.localID) {
 		if m.v2RemoteCreate == nil {
 			return state.RemoteCreateResult{}, fmt.Errorf("remote create coordinator not available")
 		}

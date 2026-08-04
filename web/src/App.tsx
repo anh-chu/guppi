@@ -1811,8 +1811,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
 
   const handleQuickShell = useCallback(() => {
     void v2State.createSession({}).then(result => {
-      const r = result as { Ref?: { session?: string } } | null
-      if (r?.Ref?.session) setTimeout(refocusTerminal, 150)
+      if (result.ref?.session) setTimeout(refocusTerminal, 150)
     }).catch(err => console.error('v2 quick shell create failed:', err))
   }, [v2State, refocusTerminal])
 
@@ -1831,6 +1830,14 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
     const target = splitTargetRef.current
     splitTargetRef.current = null
     try {
+      // Placement is one atomic step: when a split was requested (target set),
+      // the split's target/direction/new_first are sent as part of THIS create
+      // command (see CreateParams in pkg/state/session_commands.go), instead
+      // of a separate follow-up workspace "split" command. Doing create then
+      // split as two calls raced against create's own default placement
+      // (whichever leaf create picked first) and the follow-up split was then
+      // rejected as inserting a duplicate leaf for the ref create had just
+      // placed.
       const result = await v2State.createSession({
         name,
         shell: command || undefined,
@@ -1838,24 +1845,11 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
         worktreeBranch: worktreeBranch || undefined,
         layoutId: target ? (layoutId ?? undefined) : undefined,
         hostId,
+        splitTarget: target ? keyToSessionRef(target.key) : undefined,
+        splitDirection: target?.direction,
+        splitNewFirst: target?.newFirst,
       })
-      const r = result as { Ref?: { owner?: string | null; session?: string; window?: number; pane?: number }; DisplayName?: string } | null
-      const resolvedName = r?.Ref?.session || r?.DisplayName || name
-      if (target && layoutId && r?.Ref?.session) {
-        const newRef: SessionRef = {
-          owner: r.Ref.owner ?? null,
-          session: r.Ref.session,
-          window: r.Ref.window ?? 0,
-          pane: r.Ref.pane ?? 0,
-        }
-        await v2State.workspaceCommand(layoutId, {
-          action: 'split',
-          target: keyToSessionRef(target.key),
-          direction: target.direction,
-          new: newRef,
-          new_first: target.newFirst,
-        }).catch(err => console.error('v2 split command failed:', err))
-      }
+      const resolvedName = result.ref?.session || result.displayName || name
       if (worktreeBranch) setNewSessionModalOpen(false)
       setViewMode('session')
       setTimeout(refocusTerminal, 150)

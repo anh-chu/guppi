@@ -103,3 +103,28 @@ export type V2ErrorResponse = {
   field?: string
   message: string
 }
+
+// CommandResultWire mirrors pkg/state/session_commands.go's CommandResult
+// exactly as it appears on the wire (the response body of POST
+// /api/v2/session-commands): snake_case keys per its json tags, with `ref`
+// carried as SessionRef's canonical STRING form, never as an object -- see
+// wireCodec.ts's decodeCommandResult, which is the one place this gets
+// turned into the object shape the rest of the browser code expects.
+export type CommandResultWire = {
+  id: string
+  ref?: string
+  display_name?: string
+  path?: string
+  accepted: boolean
+}
+
+// CommandResult is the browser-side decoded shape of CommandResultWire: ref
+// is the typed SessionRef object (see types.ts), decoded exactly once at the
+// V2CommandClient boundary before the result reaches any caller.
+export type CommandResult = {
+  id: string
+  ref?: SessionRef
+  displayName?: string
+  path?: string
+  accepted: boolean
+}

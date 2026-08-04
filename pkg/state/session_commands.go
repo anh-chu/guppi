@@ -45,16 +45,36 @@ const (
 	CrashAfterCommitBeforeReply CrashPoint = "after_commit_before_reply"
 )
 
-// CreateParams carries a local create request.
+// CreateParams carries a local create request. Target/Direction/NewFirst are
+// optional and mirror RemoteCreateRequest's identical fields (see
+// remote_create.go): when Target names an existing leaf in LayoutID, the new
+// session is placed by splitting that leaf in Direction (NewFirst controls
+// which side of the split the new leaf lands on), in the SAME atomic
+// transaction that commits the create -- not as a separate, later workspace
+// command. This is what lets a caller request "create and split next to X"
+// as one indivisible placement instead of create-then-split, which could
+// otherwise place the ref via the default "first free leaf" heuristic and
+// then have the follow-up split rejected as a duplicate-leaf insert of a ref
+// that is already placed. When Target is empty, placement falls back to the
+// existing default-leaf heuristic, unchanged.
+// Target is a pointer (not a plain SessionRef) because SessionRef's custom
+// MarshalJSON always produces a non-empty string (":0.0" for the zero
+// value) -- json's "omitempty" tag option does not apply to struct values,
+// so a plain SessionRef field would always be present on the wire and
+// always fail to decode back (ParseSessionRef rejects an empty session id).
+// A pointer is genuinely absent when nil, matching the optional semantics.
 type CreateParams struct {
-	Name           string   `json:"name,omitempty"`
-	Shell          string   `json:"shell,omitempty"`
-	Cwd            string   `json:"cwd,omitempty"`
-	WorktreeBranch string   `json:"worktree_branch,omitempty"`
-	Cols           uint16   `json:"cols,omitempty"`
-	Rows           uint16   `json:"rows,omitempty"`
-	LayoutID       LayoutID `json:"layout_id,omitempty"`
-	AgentType      string   `json:"agent_type,omitempty"`
+	Name           string         `json:"name,omitempty"`
+	Shell          string         `json:"shell,omitempty"`
+	Cwd            string         `json:"cwd,omitempty"`
+	WorktreeBranch string         `json:"worktree_branch,omitempty"`
+	Cols           uint16         `json:"cols,omitempty"`
+	Rows           uint16         `json:"rows,omitempty"`
+	LayoutID       LayoutID       `json:"layout_id,omitempty"`
+	AgentType      string         `json:"agent_type,omitempty"`
+	Target         *SessionRef    `json:"target,omitempty"`
+	Direction      SplitDirection `json:"direction,omitempty"`
+	NewFirst       bool           `json:"new_first,omitempty"`
 }
 
 // RecoverParams overrides the saved shell/cwd for crash recovery.
@@ -69,13 +89,20 @@ type LabelParams struct {
 }
 
 // CommandResult acknowledges an accepted command and gives the caller the
-// stable identity that was durably committed.
+// stable identity that was durably committed. Fields carry explicit JSON
+// tags (snake_case, matching every other v2 wire type) because without them
+// Go would encode the Go field names verbatim ("ID", "Ref", "DisplayName",
+// ...) -- an inconsistent, undocumented wire shape that the browser had no
+// codec for. Ref is a SessionRef, which itself marshals to a canonical
+// STRING (see SessionRef.MarshalJSON in ids.go), not a JSON object; the
+// browser-side codec that decodes it into the object shape lives in
+// web/src/state/v2/wireCodec.ts's decodeCommandResult.
 type CommandResult struct {
-	ID          CommandID
-	Ref         SessionRef
-	DisplayName string
-	Path        string
-	Accepted    bool
+	ID          CommandID  `json:"id"`
+	Ref         SessionRef `json:"ref"`
+	DisplayName string     `json:"display_name,omitempty"`
+	Path        string     `json:"path,omitempty"`
+	Accepted    bool       `json:"accepted"`
 }
 
 // SessionCommandService turns session-level requests into atomic catalog
@@ -262,25 +289,29 @@ func (s *SessionCommandService) executeCreate(ctx context.Context, cmd SessionCo
 	path := expandPath(params.Cwd)
 	var result CommandResult
 	err := s.catalog.apply("session/create", func(doc *AppDocument) error {
-		// Idempotent replay: same command ID accepted once.
-		for _, r := range doc.Commands {
-			if r.ID == cmd.ID {
-				result = s.existingResultFromDocLocked(doc, cmd.ID)
-				if result.Accepted {
-					return nil
-				}
-				return StateError{Code: ErrDuplicateIdentity, Field: "id", Detail: fmt.Sprintf("command %q accepted for a different session", cmd.ID)}
-			}
+		// Idempotent replay FIRST, before any lookup by ref or side effect:
+		// a command ID that was already durably accepted returns its own
+		// exact stored outcome, never a value re-derived by scanning current
+		// sessions (that scan is what let a replayed create return an
+		// arbitrary unrelated session once multiple creates were in flight).
+		if r, ok := findCommandReceipt(doc, cmd.ID); ok {
+			return r.DecodeResult(&result)
 		}
 
-		// Same session ref may only be created once.
-		result = s.resultFromDocLocked(doc, ref, displayName, path)
-		if result.Accepted {
+		// Same session ref may only be created once (a distinct command ID
+		// targeting a ref that already exists is not an idempotent replay of
+		// THIS command, but must still not create a second session).
+		if existing := s.resultFromDocLocked(doc, ref, displayName, path); existing.Accepted {
+			result = existing
 			return nil
 		}
 
 		displayName = s.uniqueDisplayNameLocked(doc, displayName)
-		if err := placeSessionInWorkspace(doc, params.LayoutID, ref); err != nil {
+		var target SessionRef
+		if params.Target != nil {
+			target = *params.Target
+		}
+		if err := placeSessionInWorkspace(doc, params.LayoutID, ref, target, params.Direction, params.NewFirst); err != nil {
 			return err
 		}
 
@@ -295,13 +326,12 @@ func (s *SessionCommandService) executeCreate(ctx context.Context, cmd SessionCo
 			DisplayName:    displayName,
 			WorktreeBranch: params.WorktreeBranch,
 		})
-		doc.Commands = append(doc.Commands, CommandReceipt{
-			ID:       cmd.ID,
-			IntentID: cmd.ID,
-			Seq:      nextCommandSeq(doc),
-			Created:  s.opts.Now(),
-		})
 		result = CommandResult{ID: cmd.ID, Ref: ref, DisplayName: displayName, Path: path, Accepted: true}
+		receipt, err := newSuccessReceipt(cmd.ID, "session:"+ActionCreate, ref.MapKey(), nextCommandSeq(doc), s.opts.Now(), result)
+		if err != nil {
+			return err
+		}
+		doc.Commands = append(doc.Commands, receipt)
 		return nil
 	})
 	if err != nil {
@@ -326,20 +356,53 @@ func (s *SessionCommandService) resultFromDocLocked(doc *AppDocument, ref Sessio
 	return CommandResult{DisplayName: displayName, Path: path}
 }
 
-func (s *SessionCommandService) existingResultFromDocLocked(doc *AppDocument, id CommandID) CommandResult {
-	for _, p := range doc.PendingCreates {
-		if p.IntentID == id {
-			return CommandResult{Ref: p.Ref, DisplayName: p.DisplayName, Path: expandPath(p.Cwd), Accepted: true}
-		}
+// peekReceipt returns the durable result of a previously accepted command
+// with this exact ID, if any. It is a read-only lookup; callers that go on
+// to mutate state must still guard against a race with a concurrent
+// identical command by re-checking (or committing) inside a catalog.apply
+// transaction -- see commitSessionReceipt.
+func (s *SessionCommandService) peekReceipt(id CommandID) (CommandResult, bool, error) {
+	r, ok := s.catalog.CommandReceipt(id)
+	if !ok {
+		return CommandResult{}, false, nil
 	}
-	for _, rec := range doc.Sessions {
-		for _, r := range doc.Commands {
-			if r.ID == id {
-				return CommandResult{Ref: rec.Ref, DisplayName: rec.Compat.Name, Path: expandPath(rec.Compat.Cwd), Accepted: true}
-			}
-		}
+	var result CommandResult
+	if err := r.DecodeResult(&result); err != nil {
+		return CommandResult{}, true, err
 	}
-	return CommandResult{}
+	return result, true, nil
+}
+
+// commitSessionReceipt durably records result as the outcome of cmd,
+// atomically re-checking for a receipt written by a concurrent identical
+// command first. If a concurrent call already committed a receipt for this
+// exact command ID, that stored result is returned instead of overwriting it
+// -- this keeps the return value correct (never "wrong session"/duplicate
+// data) even in the narrow window where two racing identical requests both
+// passed peekReceipt's earlier check before either had committed. It does
+// NOT undo an external side effect (e.g. backend.Terminate/Start) that may
+// have already run for both racers; only session:create's side effects are
+// deferred (see PendingCreateRecord), so this race only matters for
+// kill/label/recover/dismiss, whose side effects are themselves safe to
+// invoke more than once for the same target.
+func (s *SessionCommandService) commitSessionReceipt(cmd SessionCommand, kind string, ref SessionRef, result CommandResult) (CommandResult, error) {
+	var final CommandResult
+	err := s.catalog.apply("session/receipt-"+cmd.Action, func(doc *AppDocument) error {
+		if r, ok := findCommandReceipt(doc, cmd.ID); ok {
+			return r.DecodeResult(&final)
+		}
+		receipt, err := newSuccessReceipt(cmd.ID, kind, ref.MapKey(), nextCommandSeq(doc), s.opts.Now(), result)
+		if err != nil {
+			return err
+		}
+		doc.Commands = append(doc.Commands, receipt)
+		final = result
+		return nil
+	})
+	if err != nil {
+		return CommandResult{}, err
+	}
+	return final, nil
 }
 
 func (s *SessionCommandService) uniqueDisplayNameLocked(doc *AppDocument, name string) string {
@@ -529,9 +592,15 @@ func (s *SessionCommandService) executeKill(ctx context.Context, cmd SessionComm
 		return CommandResult{}, StateError{Code: ErrInvalidIdentity, Field: "ref.session", Detail: err.Error()}
 	}
 
+	// Idempotent replay: return the original outcome before re-issuing
+	// termination or touching catalog state.
+	if result, ok, err := s.peekReceipt(cmd.ID); ok {
+		return result, err
+	}
+
 	if rec, ok := s.catalog.Session(ref.Session); ok {
 		if rec.Phase == SessionPhaseCleanlyEnded || rec.Phase == SessionPhaseDismissed {
-			return CommandResult{ID: cmd.ID, Ref: ref, Accepted: true}, nil
+			return s.commitSessionReceipt(cmd, "session:"+ActionKill, ref, CommandResult{ID: cmd.ID, Ref: ref, Accepted: true})
 		}
 		// Persist stop intent before issuing exact-generation termination.
 		rec.Desired = DesiredStop
@@ -546,7 +615,7 @@ func (s *SessionCommandService) executeKill(ctx context.Context, cmd SessionComm
 			"generation": rec.Compat.Generation,
 			"outcome":    outcome,
 		}).Info("session kill issued")
-		return CommandResult{ID: cmd.ID, Ref: ref, Accepted: true}, nil
+		return s.commitSessionReceipt(cmd, "session:"+ActionKill, ref, CommandResult{ID: cmd.ID, Ref: ref, Accepted: true})
 	}
 
 	// A pending create can be cancelled before work starts.
@@ -558,7 +627,7 @@ func (s *SessionCommandService) executeKill(ctx context.Context, cmd SessionComm
 		if pending.WorktreeBranch != "" {
 			s.cleanupWorktree(pending.Cwd, pending.WorktreeBranch)
 		}
-		return CommandResult{ID: cmd.ID, Ref: ref, Accepted: true}, nil
+		return s.commitSessionReceipt(cmd, "session:"+ActionKill, ref, CommandResult{ID: cmd.ID, Ref: ref, Accepted: true})
 	}
 
 	return CommandResult{}, StateError{Code: ErrUnknownLayout, Field: "ref.session", Detail: fmt.Sprintf("session %q not found", ref.Session)}
@@ -581,12 +650,16 @@ func (s *SessionCommandService) executeLabel(ctx context.Context, cmd SessionCom
 		return CommandResult{}, StateError{Code: ErrInvalidIdentity, Field: "ref.session", Detail: err.Error()}
 	}
 
+	if result, ok, err := s.peekReceipt(cmd.ID); ok {
+		return result, err
+	}
+
 	if rec, ok := s.catalog.Session(ref.Session); ok {
 		rec.Compat.Name = label
 		if err := s.catalog.PutSession(rec); err != nil {
 			return CommandResult{}, err
 		}
-		return CommandResult{ID: cmd.ID, Ref: ref, DisplayName: label, Accepted: true}, nil
+		return s.commitSessionReceipt(cmd, "session:"+ActionLabel, ref, CommandResult{ID: cmd.ID, Ref: ref, DisplayName: label, Accepted: true})
 	}
 
 	if pending, ok := s.findPending(ref.Session); ok {
@@ -594,7 +667,7 @@ func (s *SessionCommandService) executeLabel(ctx context.Context, cmd SessionCom
 		if err := s.catalog.PutPendingCreate(pending); err != nil {
 			return CommandResult{}, err
 		}
-		return CommandResult{ID: cmd.ID, Ref: ref, DisplayName: label, Accepted: true}, nil
+		return s.commitSessionReceipt(cmd, "session:"+ActionLabel, ref, CommandResult{ID: cmd.ID, Ref: ref, DisplayName: label, Accepted: true})
 	}
 
 	return CommandResult{}, StateError{Code: ErrUnknownLayout, Field: "ref.session", Detail: fmt.Sprintf("session %q not found", ref.Session)}
@@ -607,6 +680,10 @@ func (s *SessionCommandService) executeRecover(ctx context.Context, cmd SessionC
 	ref := cmd.Ref
 	if err := ref.Session.Validate(); err != nil {
 		return CommandResult{}, StateError{Code: ErrInvalidIdentity, Field: "ref.session", Detail: err.Error()}
+	}
+
+	if result, ok, err := s.peekReceipt(cmd.ID); ok {
+		return result, err
 	}
 
 	rec, ok := s.catalog.Session(ref.Session)
@@ -650,13 +727,17 @@ func (s *SessionCommandService) executeRecover(ctx context.Context, cmd SessionC
 		return CommandResult{}, err
 	}
 
-	return CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Compat.Name, Accepted: true}, nil
+	return s.commitSessionReceipt(cmd, "session:"+ActionRecover, ref, CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Compat.Name, Accepted: true})
 }
 
 func (s *SessionCommandService) executeDismiss(ctx context.Context, cmd SessionCommand) (CommandResult, error) {
 	ref := cmd.Ref
 	if err := ref.Session.Validate(); err != nil {
 		return CommandResult{}, StateError{Code: ErrInvalidIdentity, Field: "ref.session", Detail: err.Error()}
+	}
+
+	if result, ok, err := s.peekReceipt(cmd.ID); ok {
+		return result, err
 	}
 
 	if pending, ok := s.findPending(ref.Session); ok && pending.WorktreeBranch != "" {
@@ -666,7 +747,7 @@ func (s *SessionCommandService) executeDismiss(ctx context.Context, cmd SessionC
 	if err := s.removeSessionAndRefs(ref.Session, ref); err != nil {
 		return CommandResult{}, err
 	}
-	return CommandResult{ID: cmd.ID, Ref: ref, Accepted: true}, nil
+	return s.commitSessionReceipt(cmd, "session:"+ActionDismiss, ref, CommandResult{ID: cmd.ID, Ref: ref, Accepted: true})
 }
 
 func (s *SessionCommandService) executeRetry(ctx context.Context, cmd SessionCommand) (CommandResult, error) {
@@ -679,11 +760,18 @@ func (s *SessionCommandService) executeRetry(ctx context.Context, cmd SessionCom
 	if !ok {
 		return CommandResult{}, StateError{Code: ErrUnknownLayout, Field: "ref.session", Detail: fmt.Sprintf("session %q not found", ref.Session)}
 	}
-	if rec.Phase != SessionPhaseDismissed && rec.Phase != SessionPhaseCrashed {
-		return CommandResult{}, StateError{Code: ErrMalformedSplit, Field: "phase", Detail: fmt.Sprintf("session is %q, cannot retry", rec.Phase)}
-	}
 
+	var result CommandResult
 	err := s.catalog.apply("session/retry", func(doc *AppDocument) error {
+		// Idempotent replay FIRST: a retried "retry" command returns its own
+		// original stored outcome, before re-checking phase or re-queuing a
+		// second pending create for the same intent.
+		if r, ok := findCommandReceipt(doc, cmd.ID); ok {
+			return r.DecodeResult(&result)
+		}
+		if rec.Phase != SessionPhaseDismissed && rec.Phase != SessionPhaseCrashed {
+			return StateError{Code: ErrMalformedSplit, Field: "phase", Detail: fmt.Sprintf("session is %q, cannot retry", rec.Phase)}
+		}
 		doc.PendingCreates = removePendingByID(doc.PendingCreates, cmd.ID)
 		doc.PendingCreates = append(doc.PendingCreates, PendingCreateRecord{
 			IntentID:       cmd.ID,
@@ -697,12 +785,18 @@ func (s *SessionCommandService) executeRetry(ctx context.Context, cmd SessionCom
 			WorktreeBranch: "", // original branch context is gone; caller can recover with explicit cwd
 		})
 		// Keep the logical session record as dismissed until the worker succeeds.
+		result = CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Compat.Name, Accepted: true}
+		receipt, err := newSuccessReceipt(cmd.ID, "session:"+ActionRetry, ref.MapKey(), nextCommandSeq(doc), s.opts.Now(), result)
+		if err != nil {
+			return err
+		}
+		doc.Commands = append(doc.Commands, receipt)
 		return nil
 	})
 	if err != nil {
 		return CommandResult{}, err
 	}
-	return CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Compat.Name, Accepted: true}, nil
+	return result, nil
 }
 
 func (s *SessionCommandService) removeSessionAndRefs(id SessionID, ref SessionRef) error {
@@ -761,11 +855,32 @@ func (s *SessionCommandService) hook(p CrashPoint) {
 }
 
 // placeSessionInWorkspace adds ref to the requested layout, creating a default
-// layout when none exists.
-func placeSessionInWorkspace(doc *AppDocument, layoutID LayoutID, ref SessionRef) error {
+// layout when none exists. When target names an existing leaf in layoutID,
+// ref is placed by splitting that leaf in direction (mirroring
+// RemoteCreateCoordinator.placeRemoteRefLocked in remote_create.go) instead
+// of using the default "first free leaf" heuristic -- this is what makes
+// "create a session as a split next to X" one atomic placement instead of a
+// separate create-then-split that could race with, or duplicate, the
+// create's own default placement.
+func placeSessionInWorkspace(doc *AppDocument, layoutID LayoutID, ref SessionRef, target SessionRef, direction SplitDirection, newFirst bool) error {
 	if layoutID != "" {
 		for i := range doc.Layouts {
 			if doc.Layouts[i].ID == layoutID {
+				if target.Session != "" {
+					if !findLeaf(doc.Layouts[i].Tree, target) {
+						return StateError{Code: ErrMissingTarget, Field: "target", Detail: fmt.Sprintf("target leaf %q not in layout", target.MapKey())}
+					}
+					if key := ref.MapKey(); findLeaf(doc.Layouts[i].Tree, ref) {
+						return StateError{Code: ErrDuplicateLeaf, Field: "target", Detail: fmt.Sprintf("duplicate leaf %q", key)}
+					}
+					tree, err := splitTree(doc.Layouts[i].Tree, target, direction, ref, newFirst)
+					if err != nil {
+						return err
+					}
+					doc.Layouts[i].Tree = tree
+					doc.Layouts[i].Revision = doc.Revision + 1
+					return nil
+				}
 				return addLeafToLayout(doc, &doc.Layouts[i], ref)
 			}
 		}

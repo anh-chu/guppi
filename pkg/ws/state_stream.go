@@ -49,20 +49,34 @@ type StateStreamMetrics struct {
 }
 
 type encodedSnapshot struct {
+	// revision is the owner's own authoritative catalog revision for a
+	// catalog slot (never a hub-assigned sequence number -- see
+	// publishCatalogKeyed for why that distinction matters). For a
+	// removed/tombstoned slot, revision retains the highest revision ever
+	// observed for that key, so a later stale snapshot arriving out of order
+	// with a lower-or-equal revision is still correctly rejected instead of
+	// silently overwriting the tombstone.
 	revision int64
-	bytes    []byte
+	// removed marks this slot as a tombstone: the owner was explicitly
+	// removed (e.g. a remote peer disconnected and its cache was forgotten).
+	// A tombstone is never dropped in favor of a stale lower-revision
+	// snapshot, and is itself superseded only by a genuinely newer snapshot
+	// (incoming revision strictly greater than the retained revision).
+	removed bool
+	bytes   []byte
 }
 
 // stateStreamClient holds at most one pending snapshot per catalog slot
 // (the local owner plus one slot per remote owner it has seen) and one
-// pending workspace snapshot, each coalesced independently by a
-// monotonically increasing sequence number, and drains them from a single
-// writer goroutine. A later publish to a slot with a lower-or-equal sequence
-// is dropped, so a slow client never accumulates backlog and can never block
-// the publisher or any other client. Sequence numbers are hub-assigned and
-// global (not the domain revision), so they remain strictly comparable even
-// though different owners' catalog revisions are never conflated with each
-// other.
+// pending workspace snapshot, each coalesced independently, and drains them
+// from a single writer goroutine. A slot's coalescing/staleness comparison
+// is keyed on the OWNER'S OWN authoritative catalog revision (see
+// publishCatalogKeyed), never on publish order or a hub-assigned sequence
+// number: an earlier-captured-but-later-enqueued snapshot (e.g. an initial
+// connect snapshot read before a concurrent live update, but enqueued after
+// it) must not be allowed to overwrite a slot that already holds a newer
+// revision. This is what keeps a slow client from accumulating backlog
+// without ever discarding genuinely newer state in favor of stale state.
 type stateStreamClient struct {
 	conn *websocket.Conn
 
@@ -101,17 +115,30 @@ func newStateStreamClient(conn *websocket.Conn, metrics *StateStreamMetrics) *st
 }
 
 // publishCatalogKeyed enqueues a catalog-related message (a snapshot for key,
-// or an owner-removal message) into the per-key slot. seq must be strictly
-// increasing across ALL calls for a given key (callers use a hub-wide
-// monotonic counter) so a removal always supersedes an older snapshot and
-// vice versa.
-func (c *stateStreamClient) publishCatalogKeyed(key string, seq int64, encoded []byte) {
+// or an owner-removal/tombstone message) into the per-key slot. revision is
+// the OWNER'S OWN authoritative catalog revision (state.OwnerCatalogSnapshot.
+// Revision) for a snapshot -- NOT a hub-assigned publish sequence number.
+// Comparing real per-owner revisions (instead of hub-wide sequence/arrival
+// order) is what makes coalescing safe when a snapshot is captured early but
+// enqueued late (e.g. an initial-connect read racing a concurrent live
+// update): a lower revision can never clobber an already-stored higher one,
+// regardless of which call reaches the slot first.
+//
+// removed=true marks a tombstone (owner explicitly removed). A tombstone is
+// always applied -- it is never rejected merely because its carried revision
+// looks "low" -- but it retains the highest revision already known for this
+// key, so a stale snapshot delivered out of order AFTER the tombstone (with
+// revision <= that retained value) is still correctly rejected instead of
+// silently overwriting the removal. A tombstone is only superseded by a
+// later snapshot whose revision is strictly greater than the retained value
+// (e.g. the owner reappeared with genuinely newer state).
+func (c *stateStreamClient) publishCatalogKeyed(key string, revision int64, removed bool, encoded []byte) {
 	if c.closed.Load() {
 		return
 	}
 	c.mu.Lock()
 	cur := c.catalogSlots[key]
-	if cur != nil && seq <= cur.revision {
+	if cur != nil && !removed && revision <= cur.revision {
 		c.mu.Unlock()
 		if c.metrics != nil {
 			atomic.AddInt64(&c.metrics.CoalescedSnapshots, 1)
@@ -121,7 +148,11 @@ func (c *stateStreamClient) publishCatalogKeyed(key string, seq int64, encoded [
 	if cur != nil && c.metrics != nil {
 		atomic.AddInt64(&c.metrics.CoalescedSnapshots, 1)
 	}
-	c.catalogSlots[key] = &encodedSnapshot{revision: seq, bytes: encoded}
+	retained := revision
+	if cur != nil && cur.revision > retained {
+		retained = cur.revision
+	}
+	c.catalogSlots[key] = &encodedSnapshot{revision: retained, removed: removed, bytes: encoded}
 	c.mu.Unlock()
 	c.wake()
 }
@@ -276,13 +307,16 @@ type StateStreamHub struct {
 	// single-node deployment, in which case only the local catalog streams --
 	// unchanged from pre-multi-node behavior.
 	remoteSource RemoteCatalogNotifier
-	// catalogSeq is a hub-wide monotonic counter assigned to every emitted
-	// catalog-related message (local or remote, snapshot or removal). It is
-	// intentionally NOT the domain revision -- different owners' revisions
-	// are independent and never compared to each other -- it only orders
-	// per-client per-key coalescing (see stateStreamClient).
-	catalogSeq atomic.Int64
 
+	// mu guards clients AND, critically, is held across the entire
+	// "register client + capture and enqueue its initial snapshot" sequence
+	// in HandleState. Every live-publish fan-out (onCatalog/onRemoteCatalog/
+	// onWorkspace) takes mu.RLock while iterating clients. Serializing
+	// registration against those RLocks as one atomic write-locked operation
+	// is what prevents a live update from being published to a client
+	// between "client added to clients" and "initial snapshot enqueued",
+	// which would otherwise risk a stale initial snapshot silently
+	// overwriting a newer live one already sitting in the client's slot.
 	mu      sync.RWMutex
 	clients map[*stateStreamClient]struct{}
 
@@ -355,11 +389,10 @@ func (h *StateStreamHub) onCatalog(snap state.OwnerCatalogSnapshot) {
 		logrus.WithError(err).Warn("v2 state stream: failed to encode catalog snapshot")
 		return
 	}
-	seq := h.catalogSeq.Add(1)
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for c := range h.clients {
-		c.publishCatalogKeyed(localCatalogSlotKey, seq, encoded)
+		c.publishCatalogKeyed(localCatalogSlotKey, snap.Revision, false, encoded)
 	}
 }
 
@@ -379,12 +412,11 @@ func (h *StateStreamHub) onRemoteCatalog(owner state.OwnerID, snap state.OwnerCa
 		logrus.WithError(err).Warn("v2 state stream: failed to encode remote catalog message")
 		return
 	}
-	seq := h.catalogSeq.Add(1)
 	key := remoteCatalogSlotKey(owner)
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for c := range h.clients {
-		c.publishCatalogKeyed(key, seq, encoded)
+		c.publishCatalogKeyed(key, snap.Revision, removed, encoded)
 	}
 }
 
@@ -432,22 +464,26 @@ func (h *StateStreamHub) HandleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c := newStateStreamClient(conn, &h.Metrics)
+
+	// Register the client AND capture+enqueue its initial snapshots as one
+	// atomic operation under h.mu (write-locked). onCatalog/onRemoteCatalog/
+	// onWorkspace all take h.mu.RLock while fanning out a live publish to
+	// h.clients, so holding the write lock across this entire block
+	// guarantees no live update can be published to this client between it
+	// being added to h.clients and its initial snapshot being enqueued --
+	// closing the race where an earlier-read-but-later-enqueued initial
+	// snapshot could otherwise overwrite a newer live one already sitting in
+	// the client's coalescing slot.
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
-	h.mu.Unlock()
-	atomic.AddInt64(&h.Metrics.ConnectedClients, 1)
-
 	catSnap := h.catalog.AggregateCatalogSnapshot()
 	if encoded, err := json.Marshal(catalogSnapshotMessage{Type: "catalog_snapshot", Snapshot: catSnap, IsLocal: true}); err == nil {
-		c.publishCatalogKeyed(localCatalogSlotKey, h.catalogSeq.Add(1), encoded)
+		c.publishCatalogKeyed(localCatalogSlotKey, catSnap.Revision, false, encoded)
 	}
-	h.mu.RLock()
-	remoteSource := h.remoteSource
-	h.mu.RUnlock()
-	if remoteSource != nil {
-		for _, rsnap := range remoteSource.AllRemoteCatalogSnapshots() {
+	if h.remoteSource != nil {
+		for _, rsnap := range h.remoteSource.AllRemoteCatalogSnapshots() {
 			if encoded, err := json.Marshal(catalogSnapshotMessage{Type: "catalog_snapshot", Snapshot: rsnap, IsLocal: false}); err == nil {
-				c.publishCatalogKeyed(remoteCatalogSlotKey(rsnap.Owner), h.catalogSeq.Add(1), encoded)
+				c.publishCatalogKeyed(remoteCatalogSlotKey(rsnap.Owner), rsnap.Revision, false, encoded)
 			}
 		}
 	}
@@ -458,6 +494,8 @@ func (h *StateStreamHub) HandleState(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	h.mu.Unlock()
+	atomic.AddInt64(&h.Metrics.ConnectedClients, 1)
 
 	logrus.Debug("v2 state stream client connected")
 

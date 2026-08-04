@@ -11,7 +11,7 @@ import (
 func TestRemoteCatalog_SessionRefSessionMismatchRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
 	wrongSessionID := state.NewSessionID()
 
@@ -41,7 +41,7 @@ func TestRemoteCatalog_SessionRefSessionMismatchRejected(t *testing.T) {
 func TestRemoteCatalog_DuplicateLeavesRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
 
 	conn := NewPeerConnection(peerID, 64)
@@ -77,7 +77,7 @@ func TestRemoteCatalog_DuplicateLeavesRejected(t *testing.T) {
 func TestRemoteCatalog_MalformedSplitNodeRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
 
 	conn := NewPeerConnection(peerID, 64)
@@ -118,7 +118,7 @@ func TestRemoteCatalog_MalformedSplitNodeRejected(t *testing.T) {
 func TestRemoteCatalog_InvalidRatioRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
 
 	conn := NewPeerConnection(peerID, 64)
@@ -160,7 +160,7 @@ func TestRemoteCatalog_InvalidRatioRejected(t *testing.T) {
 func TestRemoteCatalog_UnknownSessionRefRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
 	unknownSessionID := state.NewSessionID()
 
@@ -196,7 +196,7 @@ func TestRemoteCatalog_UnknownSessionRefRejected(t *testing.T) {
 func TestRemoteWorkspace_MalformedTreeRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
 
 	conn := NewPeerConnection(peerID, 64)
@@ -229,7 +229,7 @@ func TestRemoteWorkspace_MalformedTreeRejected(t *testing.T) {
 func TestRemoteWorkspace_DuplicateLeavesRejected(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "peera"
-	owner := state.OwnerID(peerID)
+	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
 
 	conn := NewPeerConnection(peerID, 64)
