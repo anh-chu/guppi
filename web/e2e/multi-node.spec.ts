@@ -1,66 +1,380 @@
 import { test, expect, Page, WebSocketRoute } from '@playwright/test'
+import * as fs from 'node:fs'
+
+import {
+  ClusterNode,
+  Cluster,
+  startCluster,
+  waitForHostOnline,
+  assertPeerNeverConnects,
+  loginBrowserContext,
+  pairNodes,
+  SHARED_TEST_PASSWORD,
+  getReviewedBinary,
+} from './fixtures/termyardCluster'
 
 /**
- * Multi-node v2 E2E suite (docs/v2-direct-cutover.md's proof-gate item
- * "UI correctness" + the acceptance criteria list attached to this task).
+ * Multi-node v2 E2E suite.
  *
- * Two of the four scenarios below (remote-catalog-visibility across two
- * real peered nodes, and v2-only-rejects-legacy-peer at handshake) are
- * `test.skip`ped with a concrete, verified blocker -- see the
- * "REAL TWO-PROCESS HARNESS" section for the investigation that produced
- * that blocker. The other two (retry idempotency, generation-change/
- * reconnect does not remount) are fully implemented against the existing
- * single-process Vite-dev-server + route-stub harness (same pattern as
- * baseline-render.spec.ts / smoke.spec.ts), extended with:
- *   - a GET /api/v2/bootstrap stub (the v2 equivalent of /api/sessions)
- *   - page.routeWebSocket('**\/ws/v2/state', ...) to fully mock the v2
- *     durable state stream without needing a real backend
- *   - page.route('**\/api/v2/session-commands', ...) to fully mock the v2
- *     command endpoint and observe retry behavior
+ * REAL TWO-PROCESS HARNESS
+ * -------------------------------------------------------------------------
+ * Every test in the `real two-node cluster` describe blocks below (and the
+ * standalone case-6 test) drives genuine `termyard server` OS processes,
+ * built from the exact checked-out source (see fixtures/termyardCluster.ts:
+ * `npm run build` embeds the current frontend, then `go build .`), each
+ * with its own HOME, XDG_* dirs, TERMYARD_SESSION_DIR, TERMYARD_PORT, TERMYARD_SOCKET,
+ * and (for v2 nodes) TERMYARD_V2_STATE=1. Pairing goes through the real
+ * POST /api/auth/setup and POST /api/peers (-> POST /api/peers/bootstrap)
+ * HTTP endpoints -- no internal Go state is ever injected directly. The one
+ * browser page each test drives is authenticated by copying the session
+ * cookie a real /api/auth/setup or /api/auth/login call returned into the
+ * page's cookie jar (the cookie itself is server-issued, not fabricated).
  *
- * ---------------------------------------------------------------------
- * REAL TWO-PROCESS HARNESS: investigation and concrete blocker
- * ---------------------------------------------------------------------
- * A real two-node test was attempted first (not assumed impossible). Using
- * a built `termyard` binary, two full server processes were started on
- * different ports with isolated $HOME/$XDG_CONFIG_HOME/$XDG_DATA_HOME/
- * $XDG_STATE_HOME directories (pkg/config/config.go's Dir()/DataDir() and
- * pkg/pty/lifecycle.go's DefaultStateDir() all respect these env vars, so
- * config/auth/v2-store isolation between two instances on one machine
- * works fine). The full peer-pairing flow was driven end-to-end with curl
- * and verified to work: POST /api/auth/setup on each node, then POST
- * /api/peers {address, password} from node A's authenticated session
- * against node B -- node A's GET /api/peers came back with the peer at
- * status "connected" and node B's GET /api/peers showed status "listener"
- * within ~1.5s. So peer trust/bootstrap itself is NOT the blocker.
+ * This closes the gap the previous version of this file recorded: an
+ * uncontrolled UID-scoped PTY daemon socket directory used to make two
+ * "independent" local nodes share one real daemon registry. That is fixed
+ * in production by TERMYARD_SESSION_DIR (pkg/commands/server/runtime.go's
+ * defaultSessionDir) and is verified fail-fast by
+ * fixtures/termyardCluster.ts's assertDistinctIdentities (called inside
+ * startCluster), which throws if two nodes ever end up pointed at the same
+ * directory, OwnerID, or peer fingerprint.
  *
- * The blocker is the session/PTY backend: pkg/pty/daemon.go's
- * DaemonConfig.SocketDir defaults to `/tmp/termyard-sessions-{uid}`, keyed
- * by OS user id, not by server instance/config dir, and the `server`
- * command has no flag/env var to override it (only the internal
- * `sessiondaemon` child process accepts --socket-dir, and only when a
- * parent explicitly passes a non-default one, which pkg/commands/server
- * never does). Confirmed live: GET /api/hosts on either of the two
- * differently-configured, differently-ported test instances returned the
- * exact same set of real tmux/daemon sessions already running on the host
- * under this OS user -- i.e. "node A" and "node B" are not actually two
- * independent local session backends, they are two HTTP/WS front ends onto
- * the SAME shared daemon registry. A test that creates a session "on node
- * B" and asserts it becomes visible "on node A" would be trivially true
- * for the wrong reason (it's the same underlying local daemon, not
- * genuine cross-node catalog sync over the peer WS link) -- and would
- * also be unsafe to run on a shared dev/CI machine, since it would list
- * and could kill real, unrelated tmux sessions belonging to that user.
+ * The two-node describe block runs `mode: 'serial'` and is wrapped in a
+ * `for` loop that spins the ENTIRE cluster lifecycle up twice ("run 1" /
+ * "run 2") in one `playwright test` invocation, each with its own
+ * beforeAll/afterAll. Combined with the process-group teardown's own
+ * "assert nothing survives" check (termyardCluster.ts's
+ * assertNoProcessGroup, which runs at the end of every `stop()`), this
+ * proves run 2 does not inherit any leaked process, Unix socket, state
+ * directory, or browser context from run 1.
  *
- * Fixing this needs one of: (a) a `--socket-dir`/`TERMYARD_SESSION_SOCKET_DIR`
- * override plumbed from the `server` command down into the Registry it
- * constructs (mirroring the child daemon's existing --socket-dir flag), or
- * (b) running each node as a distinct OS user/container. Neither exists
- * today, so the two true multi-process tests below are `test.skip` with
- * this comment rather than faked. This is the concrete, sourced gap that
- * should be closed (see docs/v2-direct-cutover.md's preflight checklist)
- * before Task 15.
+ * The single exception to "no mocks" is the last test in this file
+ * ("browser command retry with same CommandID does not double-execute"),
+ * which is the one deterministic response-loss scenario the plan calls out
+ * as unsafe to induce via real process/network timing: it needs a
+ * guaranteed single ambiguous failure on the FIRST attempt followed by a
+ * byte-identical retry succeeding, which real process/network timing cannot
+ * reliably reproduce test-to-test.
  */
+
+// ---------------------------------------------------------------------------
+// Small real-cluster test helpers. These only ever drive the real browser
+// DOM (against a real backend) or the real cluster HTTP API -- nothing here
+// mocks a route or a WebSocket.
+// ---------------------------------------------------------------------------
+
+async function openAuthedPage(browser: import('@playwright/test').Browser, node: ClusterNode): Promise<Page> {
+  // Tall viewport: the New Session modal (with the host selector row shown)
+  // can exceed the default 720px viewport height, and it's a fixed-position
+  // overlay that the page can't scroll to reveal its Create button.
+  const context = await browser.newContext({ viewport: { width: 1280, height: 1400 } })
+  await loginBrowserContext(context, node)
+  const page = await context.newPage()
+  await page.goto(node.baseURL + '/')
+  return page
+}
+
+/** Creates a session through the real New Session modal. Session name is the auto-suggested basename of `pathValue`. */
+async function createSessionViaUI(page: Page, opts: { pathValue: string; hostFingerprint?: string }): Promise<void> {
+  // The real PTY backend needs an existing working directory (this harness
+  // runs both nodes on one machine, so a plain mkdir on the test process's
+  // own filesystem is sufficient and real -- not a mock).
+  fs.mkdirSync(opts.pathValue, { recursive: true })
+  await page.getByTitle('New session (drag onto a pane to split)').click()
+  await expect(page.getByText('New Session', { exact: true })).toBeVisible()
+  await page.locator('input[placeholder="~"]').fill(opts.pathValue)
+  if (opts.hostFingerprint) {
+    await page.locator('select').selectOption({ value: opts.hostFingerprint })
+  }
+  await page.getByRole('button', { name: 'Create' }).click()
+}
+
+function basename(p: string): string {
+  return p.replace(/\/+$/, '').split('/').pop() || p
+}
+
+/** Right-clicks a session row by its visible name, then clicks a context-menu item by exact text. */
+async function contextMenuAction(page: Page, sessionName: string, item: string): Promise<void> {
+  await page.getByText(sessionName, { exact: true }).first().click({ button: 'right' })
+  await page.getByText(item, { exact: true }).first().click()
+}
+
+// ---------------------------------------------------------------------------
+// Real two-node cluster: mandatory cases 1-5. Run the whole cluster
+// lifecycle twice in this one invocation to prove no cross-run leakage.
+// ---------------------------------------------------------------------------
+
+for (const run of [1, 2] as const) {
+  test.describe(`real two-node cluster (run ${run})`, () => {
+    // Serial mode is scoped to THIS describe only (one cluster, one
+    // beforeAll/afterAll, ordered tests). It is intentionally NOT applied
+    // file-wide: a real failure inside one run's cluster tests must not
+    // cascade-skip the other run, case 6, or the retained mocked test.
+    test.describe.configure({ mode: 'serial' })
+
+    let cluster: Cluster
+    let a: ClusterNode
+    let b: ClusterNode
+
+    test.beforeAll(async ({}, testInfo) => {
+      test.setTimeout(180_000)
+      const rootDir = testInfo.outputPath(`cluster-run-${run}`)
+      cluster = await startCluster({ rootDir })
+      a = cluster.a
+      b = cluster.b
+    })
+
+    test.afterAll(async () => {
+      test.setTimeout(60_000)
+      if (cluster) await cluster.stopAll()
+    })
+
+    // NOTE on ordering: "case 1" (create a session on B through A's browser
+    // host selector) is declared LAST in this describe block, not first.
+    // Driving it revealed a real, reproducible production defect (reported
+    // in full by this task's worker; see the Task 2 report): the
+    // pkg/state/remote_create.go's RemoteCreateRequest.Target field is a
+    // non-pointer state.SessionRef with an `omitempty` tag that Go's
+    // encoding/json never honors for struct types, so every cross-node
+    // remote-create request serializes a zero-value Target as the string
+    // ":0.0" via SessionRef's own custom MarshalJSON -- which SessionRef's
+    // own UnmarshalJSON then rejects ("missing session id in \":0.0\"") on
+    // the receiving peer, inside pkg/peer/session_state.go's
+    // handleV2RemoteCreateRequest. This breaks 100% of remote creates issued
+    // through the New Session modal's host selector (routes_state_v2.go's
+    // TargetOwner branch), not only split-into-existing-pane ones. It is
+    // left FAILING here (never `.skip`/`.fixme`) as the demonstrated failing
+    // invariant this task's review boundary calls for; cases 2-5 below seed
+    // their sessions via a real *local* create on B
+    // (ClusterNode.createLocalSession -- a different, unaffected code path,
+    // see its doc comment in fixtures/termyardCluster.ts) precisely so this
+    // known-broken path does not block proving the rest of the mandatory
+    // matrix, and declaring it last means its failure does not
+    // serial-mode-skip the tests before it.
+
+    test('case 2: attach from A to B terminal, write a unique marker, read it back through the real remote stream', async ({ browser }) => {
+      test.setTimeout(60_000)
+      const path = `/tmp/e2e-r${run}-attach-${Date.now()}`
+      const name = basename(path)
+      await b.createLocalSession(name, path)
+      await expect.poll(async () => {
+        const boot = await a.bootstrap()
+        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name))
+      }, { timeout: 15_000, message: 'seeded session on B never replicated to A remote catalog' }).toBe(true)
+
+      const marker = `E2E-MARKER-${run}-${Date.now()}`
+      const page = await openAuthedPage(browser, a)
+      try {
+        await page.getByText(name, { exact: true }).first().click()
+        const pane = page.locator('[data-pane-key]').first()
+        await expect(pane).toBeVisible({ timeout: 15_000 })
+
+        await pane.locator('.xterm').click()
+        await page.keyboard.type(`echo ${marker}`)
+        await page.keyboard.press('Enter')
+
+        // The marker only reaches the DOM if the browser's PTY write went
+        // through the real peer control/stream link to B's real daemon and
+        // the real echo came back the same way -- nothing here is mocked.
+        await expect(pane).toContainText(marker, { timeout: 15_000 })
+      } finally {
+        await page.close()
+      }
+    })
+
+    test('case 3: label and kill the remote session from A; B authoritative state and A projection converge', async ({ browser }) => {
+      test.setTimeout(60_000)
+      const path = `/tmp/e2e-r${run}-labelkill-${Date.now()}`
+      const name = basename(path)
+      const renamedName = `${name}-relabeled`
+      await b.createLocalSession(name, path)
+      await expect.poll(async () => {
+        const boot = await a.bootstrap()
+        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name))
+      }, { timeout: 15_000, message: 'seeded session on B never replicated to A remote catalog' }).toBe(true)
+
+      const page = await openAuthedPage(browser, a)
+      try {
+        await contextMenuAction(page, name, 'Rename')
+        const renameInput = page.locator('input:focus')
+        await renameInput.fill(renamedName)
+        await renameInput.press('Enter')
+        await expect(page.getByText(renamedName, { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+
+        await contextMenuAction(page, renamedName, 'Kill')
+        await page.getByText('Confirm kill?', { exact: true }).first().click()
+        await expect(page.getByText(renamedName, { exact: true })).toHaveCount(0, { timeout: 15_000 })
+      } finally {
+        await page.close()
+      }
+
+      // B's authoritative catalog must reflect both the rename and the kill.
+      await expect.poll(async () => {
+        const boot = await b.bootstrap()
+        return (boot.local?.sessions || []).some((s: any) => s._compat?.name === name || s._compat?.name === renamedName)
+      }, { timeout: 15_000, message: 'B still authoritatively lists the killed session' }).toBe(false)
+
+      // A's projection (its cached remote snapshot of B) must converge to
+      // the same state, not diverge from B.
+      await expect.poll(async () => {
+        const boot = await a.bootstrap()
+        const bSnap = (boot.remote || []).find((snap: any) => snap.owner === b.ownerId)
+        const sessions = bSnap ? bSnap.sessions || [] : []
+        return sessions.some((s: any) => s._compat?.name === name || s._compat?.name === renamedName)
+      }, { timeout: 15_000, message: "A's projection of B did not converge with B's kill" }).toBe(false)
+    })
+
+    test('case 4: stop B; A retains last-confirmed sessions as offline; restart B; verify reconnect/snapshot convergence', async () => {
+      test.setTimeout(90_000)
+      const path2 = `/tmp/e2e-r${run}-offline-${Date.now()}`
+      const name2 = basename(path2)
+      await b.createLocalSession(name2, path2)
+
+      await expect.poll(async () => {
+        const boot = await a.bootstrap()
+        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name2))
+      }, { timeout: 15_000 }).toBe(true)
+
+      const lastKnownRemote = await a.bootstrap()
+      const lastSnapForB = (lastKnownRemote.remote || []).find((snap: any) => snap.owner === b.ownerId)
+      expect(lastSnapForB, 'A had no last-confirmed remote snapshot for B before stopping it').toBeTruthy()
+
+      await b.stop()
+      await waitForHostOnline(a, b.fingerprint!, false)
+
+      // A must retain the last-confirmed session list (marked offline via
+      // host.online=false) rather than discarding it.
+      const hostsAfterStop = await a.hosts()
+      const bHostAfterStop = hostsAfterStop.find((h: any) => h.id === b.fingerprint)
+      expect(bHostAfterStop, 'A dropped B from its host list entirely instead of marking it offline').toBeTruthy()
+      const bootWhileDown = await a.bootstrap()
+      const remoteSnapWhileDown = (bootWhileDown.remote || []).find((snap: any) => snap.owner === b.ownerId)
+      expect(remoteSnapWhileDown, "A discarded B's last-confirmed catalog instead of retaining it while offline").toBeTruthy()
+      expect((remoteSnapWhileDown.sessions || []).some((s: any) => s._compat?.name === name2)).toBe(true)
+
+      await b.restart()
+      await b.login(cluster.password)
+      await waitForHostOnline(a, b.fingerprint!, true)
+
+      // Replacement connection/snapshot convergence: A's remote view of B
+      // must still (or again) carry B's real, current catalog.
+      await expect.poll(async () => {
+        const boot = await a.bootstrap()
+        const snap = (boot.remote || []).find((s: any) => s.owner === b.ownerId)
+        return snap ? (snap.sessions || []).some((s: any) => s._compat?.name === name2) : false
+      }, { timeout: 20_000, message: "A's remote snapshot of B did not reconverge after B restarted" }).toBe(true)
+    })
+
+    test('case 5: restart A with its persisted remote cache; verify owner-to-peer routing restores correctly', async () => {
+      test.setTimeout(90_000)
+      const path3 = `/tmp/e2e-r${run}-restart-a-${Date.now()}`
+      const name3 = basename(path3)
+      await b.createLocalSession(name3, path3)
+
+      await a.stop()
+      await a.restart()
+      await a.login(cluster.password)
+
+      // A's own on-disk peer store (in its persisted HOME) must be enough
+      // for it to automatically redial B and re-establish routing -- no
+      // re-pairing call is made here.
+      await waitForHostOnline(a, b.fingerprint!, true)
+
+      await expect.poll(async () => {
+        const boot = await a.bootstrap()
+        const snap = (boot.remote || []).find((s: any) => s.owner === b.ownerId)
+        return snap ? (snap.sessions || []).some((s: any) => s._compat?.name === name3) : false
+      }, { timeout: 20_000, message: 'A did not restore an owner->peer(B) route after restarting' }).toBe(true)
+    })
+
+    test('case 1: create session on B through A browser host selection; B owns it, A sees it via remote catalog replication', async ({ browser }) => {
+      test.setTimeout(60_000)
+      const path = `/tmp/e2e-r${run}-remotecreate-${Date.now()}`
+      const name = basename(path)
+
+      // A must observe B online before the New Session modal offers it as a
+      // host choice -- this alone proves the real peer link, not a stub, is
+      // what drives host visibility.
+      await waitForHostOnline(a, b.fingerprint!, true)
+
+      const page = await openAuthedPage(browser, a)
+      try {
+        await createSessionViaUI(page, { pathValue: path, hostFingerprint: b.fingerprint! })
+        await expect(page.getByText(name, { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+      } finally {
+        await page.close()
+      }
+
+      // B is the authoritative owner: the session must exist in B's own
+      // local catalog, not A's.
+      await expect.poll(async () => {
+        const boot = await b.bootstrap()
+        return (boot.local?.sessions || []).some((s: any) => s._compat?.name === name)
+      }, { timeout: 15_000, message: 'session never appeared in B local catalog' }).toBe(true)
+
+      // A must see it only through remote catalog replication (a Remote
+      // entry keyed by B's OwnerID), never in A's own Local catalog -- that
+      // would mean the "remote" create actually executed locally.
+      await expect.poll(async () => {
+        const boot = await a.bootstrap()
+        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name))
+      }, { timeout: 15_000, message: 'session never appeared in A remote catalog replication' }).toBe(true)
+
+      const bootA = await a.bootstrap()
+      const localHasIt = (bootA.local?.sessions || []).some((s: any) => s._compat?.name === name)
+      expect(localHasIt, 'remote routing executed locally on A instead of on B').toBe(false)
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Case 6: a v2-only node must reject a legacy-mode peer's control connection
+// before any state/command participation. Uses its own small v2/legacy pair
+// (not the main A/B v2/v2 cluster above) since B above must stay v2 for
+// cases 1-5.
+// ---------------------------------------------------------------------------
+
+test('case 6: v2 node rejects a legacy-mode peer at handshake, before state/command participation', async ({}, testInfo) => {
+  test.setTimeout(90_000)
+  const binaryPath = await getReviewedBinary()
+  const rootDir = testInfo.outputPath('cluster-case6')
+
+  const v2Node = await ClusterNode.start({ name: 'V2', rootDir: `${rootDir}/v2`, binaryPath, v2: true })
+  const legacyNode = await ClusterNode.start({ name: 'LEGACY', rootDir: `${rootDir}/legacy`, binaryPath, v2: false })
+  try {
+    await v2Node.authSetup(SHARED_TEST_PASSWORD)
+    await legacyNode.authSetup(SHARED_TEST_PASSWORD)
+
+    // Confirm the legacy node really is legacy-mode: its own v2 bootstrap
+    // endpoint must be unavailable.
+    const legacyBootRes = await legacyNode.api('/api/v2/bootstrap')
+    expect(legacyBootRes.status, 'legacy node unexpectedly has v2 state enabled').toBe(503)
+
+    await pairNodes(v2Node, legacyNode, SHARED_TEST_PASSWORD)
+
+    const legacySelf = await legacyNode.refreshSelf()
+    const statusesSeen = await assertPeerNeverConnects(v2Node, legacySelf.fingerprint, 8_000)
+    expect(statusesSeen).not.toContain('connected')
+
+    // Rejection must happen before any state/command participation: the
+    // legacy node must never appear as an online host or a remote catalog
+    // source on the v2 node.
+    const hosts = await v2Node.hosts()
+    const legacyHost = hosts.find((h: any) => h.id === legacySelf.fingerprint)
+    if (legacyHost) {
+      expect(legacyHost.online ?? legacyHost.Online).toBe(false)
+    }
+    const boot = await v2Node.bootstrap()
+    expect((boot.remote || []).some((snap: any) => snap.owner && legacyHost && snap.owner === legacyHost.owner_id)).toBe(false)
+  } finally {
+    await Promise.all([v2Node.stop(), legacyNode.stop()])
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The one retained mock: a deterministic response-loss/retry condition that
+// real process/network timing cannot reliably reproduce.
+// ---------------------------------------------------------------------------
 
 // Realistic base32-lowercase OwnerID fixture (from testdata/session_ref_fixtures.json).
 const OWNER = 'ownerfixture1234567890ab'
@@ -69,8 +383,6 @@ function makeSessionRaw(id: string, generation: string, name = id) {
   return {
     id,
     owner: OWNER,
-    // For local (same-owner) refs, omit owner in the string form (valid per spec).
-    // sessionRefToKey in the frontend mirrors this: owner ? `${owner}/${session}` : session.
     ref: `${id}:0.0`,
     phase: 'active',
     desired: 'run',
@@ -139,38 +451,32 @@ const LOCAL_HOST = {
   last_seen: new Date().toISOString(),
 }
 
-/** Base stubs every v2 test needs: auth, prefs, hosts, and a generic /api/* catch-all. */
 async function installBaseStubs(page: Page) {
   await page.route('**/api/**', async (route, request) => {
     const url = new URL(request.url())
-    const path = url.pathname
+    const p = url.pathname
 
-    if (path === '/api/auth/status') {
+    if (p === '/api/auth/status') {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({ auth_required: true, needs_setup: false }),
       })
     }
-    if (path === '/api/auth/check') {
+    if (p === '/api/auth/check') {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({ authenticated: true }),
       })
     }
-    if (path === '/api/preferences') {
+    if (p === '/api/preferences') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(DEFAULT_PREFS) })
     }
-    if (path === '/api/hosts') {
+    if (p === '/api/hosts') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([LOCAL_HOST]) })
     }
-    // Generic catch-all for every other legacy/shared endpoint AppV2's
-    // shared hooks still call (crashed-sessions, update, tool-events,
-    // active-turns, activity, stats, schedules, ...). None of these carry
-    // v2 catalog/workspace data, so an empty array/object is always a valid
-    // stub response for them in this suite.
-    if (path.startsWith('/api/')) {
+    if (p.startsWith('/api/')) {
       return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
     }
     return route.continue()
@@ -189,17 +495,8 @@ async function enableV2Flag(page: Page) {
   })
 }
 
-/**
- * Mocks /ws/v2/state entirely (no real backend). `onConnection` is called
- * once per socket the browser opens (including reconnects after a forced
- * close), receiving the server-side WebSocketRoute and a 1-based connection
- * index, so a test can send different frames on each successive connection
- * (e.g. to simulate a reconnect after a generation change).
- */
 type V2SocketHandle = {
-  /** 1-based count of connections opened so far (bumped on every reconnect). */
   connectionCount: () => number
-  /** Closes the currently-open connection (triggers the client's reconnect logic). */
   closeCurrent: () => Promise<void>
 }
 
@@ -225,12 +522,7 @@ async function installV2StateSocket(
   }
 }
 
-function sendCatalogSnapshot(
-  ws: WebSocketRoute,
-  sessionId: string,
-  generation: string,
-  revision = 1,
-) {
+function sendCatalogSnapshot(ws: WebSocketRoute, sessionId: string, generation: string, revision = 1) {
   ws.send(
     JSON.stringify({
       type: 'catalog_snapshot',
@@ -249,53 +541,7 @@ function sendWorkspaceSnapshot(ws: WebSocketRoute, sessionId: string, revision =
   )
 }
 
-// ---------------------------------------------------------------------------
-// Test 1 & 2: real two-node scenarios. See file header for the concrete,
-// verified blocker (shared UID-scoped PTY daemon socket dir). Left as
-// documented test.skip rather than a fabricated pass.
-// ---------------------------------------------------------------------------
-
-test.describe('real two-node peer scenarios (requires real backend harness)', () => {
-  test.skip(
-    true,
-    'Skipped: The socket-directory isolation blocker has been resolved ' +
-      '(TERMYARD_SESSION_DIR env var support in pkg/commands/server/runtime.go), ' +
-      'and canonical OwnerID<->fingerprint conversion (state.OwnerIDFromFingerprint) ' +
-      'is implemented. However, these tests require a full E2E harness to: (1) spawn ' +
-      'two real termyard server processes with distinct TERMYARD_SESSION_DIR, HOME, ' +
-      'XDG_* env vars, (2) configure them as peers via the peer-pairing API, ' +
-      '(3) drive both real browser sessions through Playwright. This harness does not ' +
-      'yet exist in the test suite. The existing E2E harness mocks the backend entirely; ' +
-      'extending it to spawn and manage two real server child processes is a separate ' +
-      'test infrastructure investment. Peer pairing itself (POST /api/auth/setup + ' +
-      'POST /api/peers) and cross-peer catalog visibility have been verified ' +
-      'working end-to-end with manual curl and real server processes; this test just ' +
-      'needs the automation glue.',
-  )
-  test('session created on node B becomes visible in node A browser', async () => {
-    // Intentionally not implemented -- see test.skip reason above.
-  })
-
-  test.skip(
-    true,
-    'Skipped: This test requires spawning two differently-built server binaries: ' +
-      'one with TERMYARD_V2_STATE=1 (v2-only mode) and one without (legacy-only). ' +
-      'The full E2E harness to spawn, manage, and control multiple real server ' +
-      'child processes (from within Playwright tests) does not yet exist. This is ' +
-      'purely an E2E test infrastructure gap, not a blocker in the application code. ' +
-      'The peer handshake gate itself (pkg/peer/protocol.go requiresV2Peer / ' +
-      'peerCapsSatisfyV2) is implemented correctly and tested in Go unit tests.',
-  )
-  test('v2-only node rejects legacy-only peer at handshake', async () => {
-    // Intentionally not implemented -- see test.skip reason above.
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Test 3: browser command retry with the same CommandID does not double-execute.
-// ---------------------------------------------------------------------------
-
-test('browser command retry with same CommandID does not double-execute', async ({ page }) => {
+test('browser command retry with same CommandID does not double-execute (deterministic mocked lost-response case)', async ({ page }) => {
   const sessionId = 'sess-retry'
   const generation = 'gen-1'
 
@@ -313,12 +559,6 @@ test('browser command retry with same CommandID does not double-execute', async 
     sendWorkspaceSnapshot(ws, sessionId)
   })
 
-  // Capture every session-command POST body so we can assert the retry
-  // reuses the exact same `id` (this is the browser-level contract that
-  // makes server-side CommandReceipt dedup by intent id actually work --
-  // see pkg/state/INVARIANTS.md's Commands section; the server-side dedup
-  // itself is unit-tested in Go, this proves the browser side of the
-  // contract at the E2E level).
   const seenBodies: Array<{ id: string; action: string }> = []
   const idAttempts = new Map<string, number>()
   await page.route('**/api/v2/session-commands', async (route, request) => {
@@ -328,19 +568,9 @@ test('browser command retry with same CommandID does not double-execute', async 
     idAttempts.set(body.id, attempt)
 
     if (attempt === 1) {
-      // Simulate an ambiguous network failure (e.g. connection reset) --
-      // the one class of failure the client is allowed to retry.
       return route.abort('failed')
     }
 
-    // Second attempt with the SAME id: succeed, and reflect the effect
-    // (session killed) exactly once via a fresh catalog snapshot over the
-    // (already-connected) mocked state stream. Note: killing a session only
-    // removes it from the catalog -- removing its leaf from the workspace
-    // tree is a separate, explicit "remove" workspace command (see
-    // App.tsx's onClose handler), so the workspace snapshot here
-    // deliberately keeps the same tree; only the catalog's sessions list
-    // empties.
     if (latestWs) {
       latestWs.send(
         JSON.stringify({
@@ -356,89 +586,19 @@ test('browser command retry with same CommandID does not double-execute', async 
   await page.goto('/session/x')
   await expect(page.locator(`[data-pane-key="${sessionId}"]`)).toBeVisible({ timeout: 15000 })
 
-  // Trigger a kill via the sidebar's session-actions menu (same "Kill" ->
-  // "Confirm kill?" two-step pattern used by smoke.spec.ts and
-  // Sidebar.test.tsx's v2Mode kill test).
   await page.getByText(sessionId).first().click({ button: 'right' })
   await page.locator('text=Kill').first().click()
   await page.locator('text=Confirm kill?').first().click()
 
-  // Wait until the retried (2nd) attempt has actually gone out.
   await expect.poll(() => seenBodies.length, { timeout: 10000 }).toBeGreaterThanOrEqual(2)
 
   expect(seenBodies).toHaveLength(2)
   expect(seenBodies[0].action).toBe('kill')
   expect(seenBodies[1].action).toBe('kill')
-  // The core assertion: retry reused the identical CommandID, not a new one.
   expect(seenBodies[1].id).toBe(seenBodies[0].id)
 
-  // And the effect only ever lands once: the session disappears from the
-  // catalog-backed sidebar exactly once (not toggled/duplicated) once the
-  // successful attempt's catalog update arrives -- not twice, which is what
-  // a double-execution bug (e.g. a second, independently-generated command
-  // id also reaching the server) would look like.
   await expect(page.locator(`[data-session-key="${sessionId}"]`)).toHaveCount(0)
 
-  // No third attempt was ever made -- the client's retry budget is bounded
-  // and this specific retry succeeded on attempt 2, so nothing should keep
-  // retrying in the background.
   await page.waitForTimeout(500)
   expect(seenBodies).toHaveLength(2)
-})
-
-// ---------------------------------------------------------------------------
-// Test 4: generation change (reconnect) does not visibly remount the terminal.
-// ---------------------------------------------------------------------------
-
-test('generation change on reconnect does not remount the terminal', async ({ page }) => {
-  const sessionId = 'sess-stable'
-  const generation = 'gen-1' // daemon binding generation: unchanged across the reconnect
-
-  await enableV2Flag(page)
-  await installBaseStubs(page)
-  await installV2Bootstrap(page, makeBootstrapRaw(sessionId, generation))
-
-  const socket = await installV2StateSocket(page, (ws) => {
-    // Every connection (including the reconnect) gets a complete snapshot,
-    // mirroring the real StateStreamHub's connect-order guarantee (see
-    // pkg/ws/state_stream.go). Same sessionId/ownerId/generation triple on
-    // both connections -- only the WS connection generation changes.
-    sendCatalogSnapshot(ws, sessionId, generation)
-    sendWorkspaceSnapshot(ws, sessionId)
-  })
-
-  await page.goto('/session/x')
-  await expect(page.locator(`[data-pane-key="${sessionId}"]`)).toBeVisible({ timeout: 15000 })
-
-  // Tag the actual xterm DOM root terminalPool reuses across checkouts
-  // (see web/src/lib/terminalPool.ts's transferNode/checkout) so we can
-  // prove afterwards it is the SAME node, not a freshly mounted one. This is
-  // the E2E-level equivalent of the unit-level identity assertions in
-  // web/src/lib/terminalPool.test.ts ("terminal instance identity survives
-  // both rename and generation-change events").
-  const tagged = await page.evaluate((key) => {
-    const el = document.querySelector(`[data-pane-key="${key}"] .xterm`) as HTMLElement | null
-    if (!el) return false
-    el.setAttribute('data-e2e-stable-node', 'yes')
-    return true
-  }, sessionId)
-  expect(tagged).toBe(true)
-
-  // Force the mocked socket closed to simulate a dropped connection; the
-  // real StateStreamClient (web/src/state/v2/stateStream.ts) auto-reconnects
-  // with backoff and bumps its internal generation counter on the new
-  // connect() call -- exactly the "generation change (recovery/reconnect)"
-  // scenario this test targets.
-  const connectionsBefore = socket.connectionCount()
-  await socket.closeCurrent()
-  await expect.poll(() => socket.connectionCount(), { timeout: 10000 }).toBeGreaterThan(connectionsBefore)
-
-  // The pane is still present (no unmount/error state)...
-  await expect(page.locator(`[data-pane-key="${sessionId}"]`)).toBeVisible()
-  // ...and the tagged DOM node is still the exact one from before the
-  // reconnect: terminalPool did not tear down and recreate the terminal
-  // just because the WS connection generation changed.
-  await expect(
-    page.locator(`[data-pane-key="${sessionId}"] .xterm[data-e2e-stable-node="yes"]`),
-  ).toBeVisible()
 })

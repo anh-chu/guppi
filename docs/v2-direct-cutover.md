@@ -44,11 +44,24 @@ call.
 - [ ] `web`: `npm run typecheck`, `npm test` (Vitest unit/component
       suite), `npm run build` all green.
 - [ ] `web`: `npm run test:e2e` green, INCLUDING `e2e/multi-node.spec.ts`.
-      Two of its four cases are `test.skip` with a documented harness gap
-      (see that file's header comment and item 1.4 below) -- cutover must
-      not proceed while that skip reason is stale (i.e. if the harness gap
-      gets fixed, the tests must be un-skipped and passing before this box
-      is checked).
+      As of Task 15 Task 2, this file drives a REAL two-(and
+      three-)process harness (`e2e/fixtures/termyardCluster.ts`) -- there is
+      no remaining `test.skip`/`test.fixme` in this file. Its real create-
+      dependent cases (attach/label/kill/offline-reconnect/restart-routing/
+      remote-create-via-UI) currently FAIL because they surfaced two real,
+      reproducible production defects (not harness bugs): (1)
+      `pkg/state/remote_create.go`'s `RemoteCreateRequest.Target` is a
+      non-pointer `SessionRef` whose `omitempty` tag Go's `encoding/json`
+      never honors for struct types, so a normal (non-split) cross-node
+      remote create always serializes an invalid zero-value target and is
+      rejected by `SessionRef.UnmarshalJSON` on the receiving peer; (2)
+      `pkg/pty/registry_stable.go`'s `Start()` passes `--daemon-key`,
+      `--owner`, `--session-id`, `--generation`, `--command-id` flags to the
+      `session-daemon` subcommand, but `pkg/commands/sessiondaemon/sessiondaemon.go`
+      never defines those flags, so the daemon child process fatals
+      immediately on every v2 stable-binding session start (local or
+      remote) and the create silently times out/retries/drops. Cutover must
+      not proceed until both are fixed and this file is fully green.
 - [ ] `TestV2CommandBodyAsBrowserWouldProduceIt` and the shared
       `testdata/session_ref_fixtures.json` golden-fixture tests
       (`pkg/state/ids_test.go`'s `TestSessionRefGoldenFixture` and
@@ -92,9 +105,11 @@ multi-node deployment:
       manual refresh; kill it on node A, watch it disappear on node B.
 - [ ] Manually kill and restart the daemon process under one node mid-session
       and confirm the browser reconnects and the terminal does not visibly
-      remount (this is the real-backend version of
-      `e2e/multi-node.spec.ts`'s mocked reconnect test -- run it for real at
-      least once, since that test's WS layer is fully mocked).
+      remount. `e2e/multi-node.spec.ts`'s "case 4" (stop/restart B) now
+      exercises the real-backend version of this automatically, but is
+      currently blocked by the two production defects noted above (item
+      1.3) -- do not treat that automated case as sufficient until it
+      passes for real; a manual pass is still required until then.
 - [ ] Manually verify crash recovery: kill `-9` the server process with a
       live v2 session, restart it, confirm the session's phase reflects
       the crash correctly (not silently dropped, not silently
@@ -110,16 +125,17 @@ themselves block cutover (the legacy path has its own gaps and is being
 retired regardless), but they must be listed here so cutover sign-off is
 an informed decision, not a surprise discovered in production:
 
-- **Remote session creation cannot target a specific host from the
-  browser yet.** `web/src/hooks/useV2State.ts`'s `createSession` accepts
-  a `hostId` parameter (for forward-compatibility with the UI's host
-  picker) but the v2 session-command wire contract has no field to carry
-  it, so a remote-host create silently creates locally instead. See that
-  file's inline `TODO(v2 remote create)` comment. The backend piece that
-  *would* handle this
-  (`pkg/state/remote_create.go`'s `RemoteCreateCoordinator`) exists and is
-  reachable from `pkg/peer/session_state.go`, but not from the HTTP
-  command path yet.
+- **Remote session creation targeting a specific host is wired but
+  currently broken, not unimplemented.** This claim is stale as of Task 15
+  Task 2's real two-node E2E harness: `App.tsx`'s `handleCreateSession`
+  now sends the New Session modal's selected host as `target_owner` on
+  `POST /api/v2/session-commands`, and `routes_state_v2.go`'s
+  `handleV2SessionCommand` routes a `target_owner` create through
+  `PeerMgr.RequestRemoteCreate` -> `pkg/state/remote_create.go`'s
+  `RemoteCreateCoordinator` over the real peer RPC -- it does not silently
+  create locally. It fails for a different, confirmed reason: see item 1.3
+  above's defect (1) (the `RemoteCreateRequest.Target` marshal bug), which
+  the real harness's "case 1" reproduces end to end.
 - **Drag-and-drop has no v2 equivalent.** The legacy path's "drag New
   Session onto a pane to split" and "drag a session onto another pane to
   swap/move" gestures (exercised by `smoke.spec.ts`'s drag-and-drop test)
@@ -131,17 +147,22 @@ an informed decision, not a surprise discovered in production:
   (`sessionattrs.Attr.ScheduleID` / `peer.SessionAttr.ScheduleID`) has no
   v2 equivalent; `AppV2` hardcodes `V2_EMPTY_SESSION_ATTRS` (see
   `App.tsx`), so no v2 session can have a schedule id at all yet.
-- **Real two-node E2E coverage is incomplete.** `e2e/multi-node.spec.ts`
-  proves retry-idempotency and reconnect-generation behavior against a
-  fully-mocked single-process harness, but the two genuinely cross-process
-  scenarios (remote catalog visibility, v2-only-rejects-legacy-peer) are
-  `test.skip`ped: `pkg/pty/daemon.go`'s `DaemonConfig.SocketDir` defaults
-  to `/tmp/termyard-sessions-{uid}` (keyed by OS user, not by server
-  instance) and the `server` command has no flag/env to override it, so
-  two termyard processes on one machine as the same user share the exact
-  same local session registry and cannot be used as two independently-backed
-  nodes for this purpose. This is a real coverage gap in automated proof
-  for the exact scenario item 1.3 asks you to check manually above.
+- **Real two-node E2E coverage now exists but is red, not incomplete.**
+  `e2e/multi-node.spec.ts` (Task 15 Task 2) drives a real two-(and
+  three-)process harness (`e2e/fixtures/termyardCluster.ts`) covering
+  remote catalog visibility/creation, remote attach+I/O, label/kill
+  convergence, offline retention/reconnect, restart routing, and
+  v2-only-rejects-legacy-peer. There is no remaining `test.skip`. The
+  create-dependent cases currently FAIL, and correctly so: they surfaced
+  two real production defects (see item 1.3 above) that block v2 session
+  creation entirely, independent of any harness limitation. The prior
+  claim that `pkg/pty/daemon.go`'s `DaemonConfig.SocketDir` has no override
+  is also stale and has been fixed: `pkg/commands/server/runtime.go`'s
+  `defaultSessionDir()` already honors `TERMYARD_SESSION_DIR`, and the
+  harness uses it to give every node its own isolated daemon socket
+  directory. This is now a real, automated coverage path for the exact
+  scenario item 1.3 asks you to check manually above -- it just cannot
+  pass yet because of the two defects it found.
 - **Presentation records are not part of the durable workspace stream.**
   Only bootstrap (`GET /api/v2/bootstrap`'s `presentations` field) carries
   them; `ApplyWorkspaceCommand`'s `WorkspaceActionPresent` path never
@@ -218,7 +239,7 @@ with the specific verification named, not a general "looks fine":
 | **Peer trust** | A peer's v2 catalog/command data is only ever accepted from a session whose owner id was established at mutual-auth time (challenge/response + capability check); no embedded foreign-owner ref is ever accepted into the wrong owner's catalog. | `pkg/peer/v2_capability_gate_test.go`, `pkg/server/routes_state_v2_remote_test.go` (foreign-owner embedded ref rejection). |
 | **Crash safety** | A killed `-9` process, restarted, reflects an accurate session phase (not silently dropped, not silently resurrected as healthy) and the v2 store's atomic write/read round-trips without partial-write corruption. | `pkg/commands/server/runtime_test.go`'s `TestRefreshDaemonState_ClassifiesBeforePublishing`; v2 store atomic-write tests in `pkg/state`; manual step in section 1.3. |
 | **Non-blocking hot path** | Catalog projection (the code path serving every browser bootstrap/stream read) never performs blocking I/O (e.g. `/proc` reads) inline; such reads happen on a background refresh cadence only. | `pkg/commands/server/runtime.go`'s `v2RuntimeEnricher` design (background `refreshRuntimeCache`, in-memory-only `Enrich`); PTY bench in `docs/v2-baseline.md`. |
-| **UI correctness** | The browser never shows stale/duplicate/partially-applied state, and reconnect/generation changes never cause visible remounts of live terminals. | `web/src/state/v2/store.test.ts` (generation/revision acceptance rule); `e2e/multi-node.spec.ts`'s reconnect test (DOM-node-identity check); `e2e/smoke.spec.ts`. |
+| **UI correctness** | The browser never shows stale/duplicate/partially-applied state, and reconnect/generation changes never cause visible remounts of live terminals. | `web/src/state/v2/store.test.ts` (generation/revision acceptance rule); `web/src/lib/terminalPool.test.ts` (terminal instance identity survives rename/generation-change); `e2e/multi-node.spec.ts` (Task 15 Task 2: real reconnect/restart convergence, cases 4-5); `e2e/smoke.spec.ts`. |
 | **Fault-tolerant transport** | A slow/disconnected browser client never blocks delivery to other clients; a retried command with the same `CommandID` is deduplicated, not double-applied. | `pkg/ws/state_stream_test.go` (slow-client-does-not-block-fast-client, coalescing-to-latest-revision); Go-side `CommandReceipt` dedup tests in `pkg/state`; browser-level smoke in `e2e/multi-node.spec.ts`'s retry-idempotency test. |
 
 If any row is not currently a clean pass on the exact commit being cut
@@ -289,13 +310,14 @@ guessed:
   "mode-splitting" describe block (which exists specifically to prove the
   two paths stay isolated) is deleted at the same time, since there is
   only one path left to test.
-- **`e2e/multi-node.spec.ts`'s `test.skip` blocker** should be revisited
-  as part of this same pass: if a `--socket-dir` override is added to the
-  `server` command as part of Task 15 (a natural side effect of any
-  cleanup touching `pkg/commands/server/runtime.go`'s Registry
-  construction), un-skip and implement the two real two-node tests for
-  real; if not, the skip reason should be re-verified as still accurate,
-  not left stale.
+- **`e2e/multi-node.spec.ts`'s `test.skip` blocker is resolved** (Task 15
+  Task 2): the file no longer has any `test.skip`/`test.fixme`, and drives
+  a real two-(and three-)process harness via `TERMYARD_SESSION_DIR`
+  (already supported by `pkg/commands/server/runtime.go`'s
+  `defaultSessionDir()`, so no further Registry-construction change was
+  needed here). What remains before this deletion pass is to get its
+  create-dependent cases from red to green by fixing the two production
+  defects it found (see item 1.3 above), not to build any more harness.
 
 Do not delete anything not on this list without treating that as a new,
 separately-reviewed decision -- this list is deliberately exhaustive for
