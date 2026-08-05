@@ -168,9 +168,32 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	}
 
 	// Resolve pending creates whose daemon side effect is already complete.
+	// The adopt-via-probe step below is gated behind !DisablePendingCreates:
+	// when a command service owns create work (every production caller --
+	// see pkg/commands/server/runtime.go -- sets DisablePendingCreates: true
+	// precisely so this reconciler never touches pending creates), letting it
+	// probe-and-adopt anyway raced the command service's OWN in-flight
+	// executePendingCreate/Start/waitReady call for the exact same pending
+	// record. bindingForRef uses a generation-less binding (the reconciler
+	// never knows the assigned generation up front) to discover *any* live
+	// daemon for the owner/session and adopts it immediately -- which could
+	// win the race against the command service's own spawn attempt before
+	// that attempt's waitReady() ever observes ITS expected generation on the
+	// socket (causing it to time out and mark the session crashed even
+	// though a real daemon is live), and, prior to the Probe fix above that
+	// backfills the real discovered generation, committed the adopted
+	// session with a permanently empty Compat.Generation (which then can
+	// never satisfy mayRemoveClean, so a later kill of that exact session
+	// could classify it terminal but never actually be removed from the
+	// catalog). Only the simple "pending record whose session already
+	// exists" cleanup below is unconditional -- it is pure idempotent garbage
+	// collection, not a second actor resolving the create.
 	for _, pending := range r.catalog.PendingCreates() {
 		if _, exists := r.catalog.Session(pending.Ref.Session); exists {
 			_ = r.catalog.RemovePendingCreate(pending.IntentID)
+			continue
+		}
+		if r.opts.DisablePendingCreates {
 			continue
 		}
 		binding := bindingForRef(pending.Ref)

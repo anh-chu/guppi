@@ -466,6 +466,68 @@ func TestReconcilerPendingCreateAdoptsLiveDaemonPreservesDisplayName(t *testing.
 	}
 }
 
+// TestReconcilerDisablePendingCreatesSkipsProbeAdoption covers a real defect:
+// every production caller of NewReconciler (pkg/commands/server/runtime.go)
+// sets DisablePendingCreates: true specifically to hand off ALL pending-
+// create resolution to SessionCommandService, but ReconcileOnce's own
+// probe-and-adopt loop (unlike ResolveIntents, which already checked this
+// flag) never checked it -- so the reconciler kept independently probing and
+// adopting pending creates anyway, racing SessionCommandService's own
+// in-flight executePendingCreate/Start/waitReady call for the exact same
+// pending record. This test asserts that with DisablePendingCreates: true,
+// ReconcileOnce leaves a live-daemon pending create alone: it must not
+// adopt it into an active session record, and the pending record must
+// survive untouched.
+func TestReconcilerDisablePendingCreatesSkipsProbeAdoption(t *testing.T) {
+	owner := testOwner()
+	store, cleanup := newTestStore(t, owner)
+	defer cleanup()
+
+	catalog := NewCatalog(owner, store)
+	_ = catalog.Load()
+	backend := newFakeBackend()
+
+	ref := testRef(SessionID("sessdisabledpending"))
+	pending := PendingCreateRecord{
+		IntentID: NewCommandID(),
+		Ref:      ref,
+		Inserted: time.Now(),
+		Shell:    "/bin/zsh",
+		Cwd:      "/home/u",
+		Cols:     80,
+		Rows:     24,
+	}
+	_ = catalog.PutPendingCreate(pending)
+
+	// A real command service's spawn for THIS exact pending record could
+	// still be in flight (e.g. mid-waitReady); backend reporting the daemon
+	// live here mirrors that in-flight attempt's own daemon having already
+	// come up.
+	backend.setProbe(bindingForRef(ref), pty.ProbeEvidence{
+		Status: pty.ProbeLive,
+		Binding: pty.StableBinding{
+			Owner:      string(owner),
+			SessionID:  "sessdisabledpending",
+			Generation: "gen-pending",
+		},
+		DaemonPID: 200,
+		Reason:    "already running",
+	})
+
+	r := NewReconciler(catalog, backend, nil, ReconcilerOptions{DisablePendingCreates: true})
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := catalog.Session(ref.Session); ok {
+		t.Fatal("expected DisablePendingCreates to prevent ReconcileOnce from adopting the pending create into a session record, but it was adopted")
+	}
+	pendingList := catalog.PendingCreates()
+	if len(pendingList) != 1 {
+		t.Fatalf("expected the pending create to remain untouched, got %d pending records", len(pendingList))
+	}
+}
+
 func TestReconcilerStartPendingUsesDisplayNameWithSessionIDFallback(t *testing.T) {
 	owner := testOwner()
 	store, cleanup := newTestStore(t, owner)
