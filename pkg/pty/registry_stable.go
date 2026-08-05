@@ -266,10 +266,28 @@ func (r *Registry) Probe(binding StableBinding) ProbeEvidence {
 		return ev
 	}
 
-	// Verify socket + handshake for live daemons when we have a stable claim.
-	if binding.IsStable() {
+	// Verify socket + handshake for live daemons whenever we at least know
+	// which owner/session this binding claims (Generation may be empty --
+	// e.g. a pending-create probe that does not yet know the daemon's
+	// assigned generation and is asking Probe to discover it). Generation is
+	// only enforced as an exact-match guard when the CALLER already supplied
+	// one; when it doesn't, any live daemon answering for this owner/session
+	// is accepted and its real generation is reported back on ev.Binding so
+	// callers that adopt a probe result (e.g. Reconciler.adoptLivePending)
+	// record the daemon's actual generation instead of silently persisting
+	// an empty one. A previously-empty Compat.Generation is not just
+	// cosmetic: PutSession's own bindingForRecord seeds later Probe calls'
+	// Generation from Compat.Generation, so an empty value permanently
+	// disables the stable-identity check (binding.IsStable() requires a
+	// non-empty Generation) for that session going forward, and
+	// mayRemoveClean (reconciler.go) requires a non-empty, MATCHING
+	// generation before ever removing a cleanly-ended/killed session from
+	// the catalog -- so an empty generation here means that session can
+	// never be reaped again.
+	if binding.Owner != "" && binding.SessionID != "" {
 		info, err := r.queryIdentity(key)
-		if err == nil && sameReadyInfo(info, binding) && processAlive(info.DaemonPID) {
+		if err == nil && info.Owner == binding.Owner && info.SessionID == binding.SessionID &&
+			(binding.Generation == "" || info.Generation == binding.Generation) && processAlive(info.DaemonPID) {
 			if !sameStartTime(info.DaemonPID, rec.ProcStartTime) {
 				ev.Status = ProbeCrashed
 				ev.Reason = "PID reused by a different process"
@@ -278,6 +296,7 @@ func (r *Registry) Probe(binding StableBinding) ProbeEvidence {
 			ev.Status = ProbeLive
 			ev.DaemonPID = info.DaemonPID
 			ev.ShellPID = info.ShellPID
+			ev.Binding.Generation = info.Generation
 			ev.Reason = "identity handshake matches"
 			return ev
 		}
@@ -418,26 +437,37 @@ func (r *Registry) queryIdentity(key string) (ReadyInfo, error) {
 		return ReadyInfo{}, err
 	}
 
-	header := make([]byte, 5)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		return ReadyInfo{}, err
-	}
-	ftype := header[0]
-	plen := binary.BigEndian.Uint32(header[1:5])
-	if plen > identityMaxPayload {
-		return ReadyInfo{}, fmt.Errorf("identity response too large: %d", plen)
-	}
-	if ftype != FrameIdentity {
-		return ReadyInfo{}, fmt.Errorf("unexpected identity frame type: %02x", ftype)
-	}
-
-	payload := make([]byte, plen)
-	if plen > 0 {
-		if _, err := io.ReadFull(conn, payload); err != nil {
+	// A live daemon's PTY may already be broadcasting shell output (e.g. a
+	// prompt) to every connected client via FrameOutput/FrameReplay before
+	// our own FrameIdentity reply is written -- broadcast() fans out to ALL
+	// clients unconditionally, and there is no guarantee our identity
+	// request is served before some already-queued output frame lands on
+	// this brand-new connection. A single-shot read that treats any
+	// non-identity frame as fatal would then misreport a genuinely-live,
+	// correctly-identified daemon as unreachable/mismatched. Loop, discarding
+	// non-identity frames, until FrameIdentity arrives or the read deadline
+	// (already set above, still in effect across iterations) expires.
+	for {
+		header := make([]byte, 5)
+		if _, err := io.ReadFull(conn, header); err != nil {
 			return ReadyInfo{}, err
 		}
+		ftype := header[0]
+		plen := binary.BigEndian.Uint32(header[1:5])
+		if plen > identityMaxPayload {
+			return ReadyInfo{}, fmt.Errorf("identity response too large: %d", plen)
+		}
+		payload := make([]byte, plen)
+		if plen > 0 {
+			if _, err := io.ReadFull(conn, payload); err != nil {
+				return ReadyInfo{}, err
+			}
+		}
+		if ftype != FrameIdentity {
+			continue
+		}
+		return UnmarshalReadyInfo(payload)
 	}
-	return UnmarshalReadyInfo(payload)
 }
 
 // sendClose dials a daemon and sends FrameClose. Returns true on success.
