@@ -518,9 +518,10 @@ func handleSessionMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 	case MsgActivityUpdate,
 		MsgStats,
 		MsgPeerConnected,
-		MsgPeerDisconnected:
-		// Activity/stats/host-registration messages are not legacy session
-		// state and must keep working regardless of v2 mode.
+		MsgPeerDisconnected,
+		MsgToolEvent:
+		// Activity/stats/host-registration/tool-event messages are not legacy
+		// session state and must keep working regardless of v2 mode.
 		handleStateMessage(peerID, msg, pc, deps, log)
 
 	case MsgOpenTerminal,

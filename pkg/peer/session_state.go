@@ -84,6 +84,22 @@ func handleStateMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 		}
 		deps.Manager.UpdatePeerActivity(peerID, p.Snapshots)
 
+	case MsgToolEvent:
+		var p ToolEventPayload
+		if err := json.Unmarshal(msg.Payload, &p); err != nil {
+			log.WithError(err).Debug("invalid tool-event")
+			return
+		}
+		if p.Event == nil {
+			return
+		}
+		// Never trust a claimed host on the wire — stamp the authenticated
+		// identity of the connection this message arrived on, mirroring the
+		// MsgActivityUpdate case above.
+		p.Event.Host = peerID
+		p.Event.HostName = deps.Manager.GetHostName(peerID)
+		deps.ToolTracker.Record(p.Event)
+
 	case MsgStats:
 		var p StatsPayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
