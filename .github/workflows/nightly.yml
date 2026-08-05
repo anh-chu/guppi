@@ -14,7 +14,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  nightly:
+  # Kept intentionally separate from the proof jobs below (repeated-race,
+  # benchmarks, soak): a green/red GoReleaser snapshot build must never gate
+  # on, or mask the result of, any Task 15 nightly proof job, and vice
+  # versa. Do not add `needs:` between this job and the proof jobs.
+  snapshot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -59,3 +63,127 @@ jobs:
           path: dist/
           retention-days: 7
           if-no-files-found: error
+
+  # --- Task 15 nightly proof jobs -------------------------------------
+  # These are independent of `snapshot` above (no `needs:` either
+  # direction) so a release build can never mask a failed proof job, and a
+  # failed proof job never blocks producing a snapshot artifact.
+
+  repeated-race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: web
+
+      - name: Repeated full race suite (-count=10)
+        run: go test -race ./... -count=10 2>&1 | tee repeated-race.log
+
+      - name: Upload repeated-race log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repeated-race-${{ github.sha }}
+          path: repeated-race.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: PTY create-to-ready benchmark
+        run: |
+          RUN_BASELINE=1 go test ./pkg/pty -run '^$' -bench BenchmarkDaemonCreateToSocketReady -benchmem -count=5 \
+            2>&1 | tee benchmarks.log
+
+      - name: Stable echo latency benchmark
+        run: |
+          go test ./pkg/pty -run '^$' -bench BenchmarkStableEchoLatency -benchmem -count=5 \
+            2>&1 | tee -a benchmarks.log
+
+      - name: Serialized size benchmarks
+        run: |
+          go test ./pkg/state -run '^$' -bench BenchmarkSerializedSize -benchtime=1x -count=5 \
+            2>&1 | tee -a benchmarks.log
+
+      - name: Upload benchmark log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-${{ github.sha }}
+          path: benchmarks.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # scripts/task15-soak.sh is created by Task 15 Task 4 and is not part
+      # of this Task 1 change. Guard on its existence so the nightly
+      # workflow does not fail while that script has not landed yet; once
+      # it exists this step invokes it unconditionally.
+      - name: Run soak scenario (Task 15 Task 4 hook)
+        run: |
+          if [ -x scripts/task15-soak.sh ]; then
+            ./scripts/task15-soak.sh
+          elif [ -f scripts/task15-soak.sh ]; then
+            bash scripts/task15-soak.sh
+          else
+            echo "scripts/task15-soak.sh not present yet (Task 15 Task 4 not landed) — skipping soak run."
+          fi
+
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-${{ github.sha }}
+          path: |
+            .proof/task15-soak/**
+            soak.log
+          if-no-files-found: ignore
+          retention-days: 7

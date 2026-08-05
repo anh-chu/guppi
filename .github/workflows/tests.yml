@@ -74,10 +74,162 @@ jobs:
           path: pkg/server/dist
 
       - name: Go tests
-        run: go test ./...
+        run: go test ./... -count=1
 
-      - name: Go race tests
-        run: go test -race ./...
+      - name: Go race tests (targeted)
+        run: go test -race ./pkg/state ./pkg/peer ./pkg/pty ./pkg/server ./pkg/ws ./pkg/commands/server -count=1
+
+      - name: Go race tests (full)
+        run: go test -race ./... -count=1
 
       - name: Go vet
         run: go vet ./...
+
+      # Build the exact reviewed binary once here so the e2e job below
+      # consumes it as an artifact instead of building it again with a
+      # potentially different toolchain/state (Task 15 Task 1 requirement:
+      # E2E must use the artifact from this build, not an independent one).
+      - name: Build termyard binary
+        run: go build -trimpath -o termyard .
+
+      - name: Upload termyard binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: termyard-binary
+          path: termyard
+          if-no-files-found: error
+          retention-days: 7
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [web, go]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: web
+
+      # Reuse the exact artifacts produced by the `web` and `go` jobs above
+      # for this same commit instead of rebuilding them here. This is the
+      # Task 15 Task 1 requirement that E2E exercise the reviewed
+      # build/binary, not a second, independently-built one that could
+      # diverge.
+      - name: Download frontend dist (reused, not rebuilt)
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: pkg/server/dist
+
+      - name: Download termyard binary (reused, not rebuilt)
+        uses: actions/download-artifact@v4
+        with:
+          name: termyard-binary
+          path: .
+
+      - name: Restore binary executable bit
+        run: chmod +x ./termyard
+
+      - name: Install pinned Playwright browser
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+
+      - name: Prepare proof evidence directory
+        run: mkdir -p .proof/task15/${{ github.sha }}
+
+      - name: Run Playwright E2E suite
+        id: e2e
+        run: |
+          set -o pipefail
+          PLAYWRIGHT_JSON_OUTPUT_NAME="$GITHUB_WORKSPACE/.proof/task15/${{ github.sha }}/playwright-report.json" \
+          PLAYWRIGHT_HTML_REPORT="$GITHUB_WORKSPACE/.proof/task15/${{ github.sha }}/playwright-html-report" \
+            npm run test:e2e -- --reporter=list,json,html \
+            2>&1 | tee "$GITHUB_WORKSPACE/.proof/task15/${{ github.sha }}/e2e-playwright-run.log"
+        working-directory: web
+        env:
+          TERMYARD_BIN: ${{ github.workspace }}/termyard
+
+      - name: Fail on mandatory skip/fixme in multi-node.spec.ts
+        if: always() && steps.e2e.outcome != 'skipped'
+        run: |
+          REPORT="$GITHUB_WORKSPACE/.proof/task15/${{ github.sha }}/playwright-report.json"
+          if [ ! -f "$REPORT" ]; then
+            echo "no playwright-report.json produced (e2e step outcome: ${{ steps.e2e.outcome }}); skipping skip/fixme check, job already reflects the e2e step result"
+            exit 0
+          fi
+          node -e '
+            const fs = require("fs");
+            const path = process.argv[1];
+            const report = JSON.parse(fs.readFileSync(path, "utf8"));
+            const offenders = [];
+            function walk(suite) {
+              for (const spec of suite.specs || []) {
+                const file = spec.file || (suite.file || "");
+                if (!file.includes("multi-node.spec.ts")) continue;
+                for (const t of spec.tests || []) {
+                  const isFixme = (t.annotations || []).some(a => (a.type || "").toLowerCase() === "fixme");
+                  const hasSkippedResult = (t.results || []).some(r => r.status === "skipped");
+                  if (isFixme || t.status === "skipped" || hasSkippedResult) {
+                    offenders.push(`${file} :: ${spec.title}`);
+                  }
+                }
+              }
+              for (const s of suite.suites || []) walk(s);
+            }
+            for (const s of report.suites || []) walk(s);
+            if (offenders.length > 0) {
+              console.error("mandatory skip/fixme found in multi-node.spec.ts:");
+              for (const o of offenders) console.error("  - " + o);
+              process.exit(1);
+            }
+            console.log("no mandatory skip/fixme found in multi-node.spec.ts");
+          ' "$REPORT"
+
+      - name: Record proof metadata
+        if: always()
+        run: |
+          {
+            echo "sha: ${{ github.sha }}"
+            echo "job: e2e"
+            echo "e2e_outcome: ${{ steps.e2e.outcome }}"
+            echo "run_id: ${{ github.run_id }}"
+            echo "run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > .proof/task15/${{ github.sha }}/ci-e2e-metadata.txt
+
+      - name: Upload proof logs and metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task15-proof-logs-${{ github.sha }}
+          path: .proof/task15/${{ github.sha }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Playwright traces and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.sha }}
+          path: |
+            web/test-results
+            web/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload exact binary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: termyard-binary-evidence-${{ github.sha }}
+          path: termyard
+          if-no-files-found: warn
+          retention-days: 7
