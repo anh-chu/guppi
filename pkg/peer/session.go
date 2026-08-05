@@ -153,6 +153,7 @@ func runSession(
 	}
 
 	var unsubWorkspace func()
+	var unsubCatalog func()
 
 	// Subscribe to complete workspace snapshots after each accepted command
 	// so remote peers see the whole layout, never intermediate steps.
@@ -164,6 +165,26 @@ func runSession(
 				return
 			}
 			pc.EnqueueV2WorkspaceSnapshot(msg)
+		})
+
+		// Subscribe to complete catalog snapshots after each local mutation
+		// (session created/renamed/removed, etc.) so a connected peer's
+		// remote-catalog cache stays live, not just seeded once at connect
+		// time by sendInitialV2Catalog above. Without this, any local
+		// change made after pairing completes is never pushed to already-
+		// connected peers.
+		unsubCatalog = cat.SubscribeCatalog(func(snap state.OwnerCatalogSnapshot) {
+			payload := V2CatalogSnapshotPayload{
+				Owner:    snap.Owner,
+				Revision: snap.Revision,
+				Sessions: snap.Sessions,
+				Layouts:  snap.Layouts,
+			}
+			msg, err := NewMessage(MsgV2CatalogSnapshot, payload)
+			if err != nil {
+				return
+			}
+			pc.EnqueueV2CatalogSnapshot(msg)
 		})
 	}
 
@@ -180,6 +201,9 @@ func runSession(
 	defer func() {
 		if unsubWorkspace != nil {
 			unsubWorkspace()
+		}
+		if unsubCatalog != nil {
+			unsubCatalog()
 		}
 		cancel()
 		_ = conn.Close()
