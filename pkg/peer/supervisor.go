@@ -45,6 +45,7 @@ type LinkSnapshot struct {
 type peerLink struct {
 	peer      identity.Peer
 	cancel    context.CancelFunc
+	done      chan struct{} // closed by runReconnector when it returns; nil if no goroutine was spawned
 	statusMu  sync.RWMutex
 	status    LinkStatus
 	lastErr   string
@@ -222,14 +223,48 @@ func (s *LinkSupervisor) Status() []LinkSnapshot {
 // if and only if we are the dialer and the peer is enabled.
 func (s *LinkSupervisor) spawnLink(p identity.Peer) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
+	// Don't tear down an already-live connection just because spawnLink was
+	// invoked again for the same peer (e.g. an idempotent AddPeer during a
+	// pairing retry, or Start() finding a peer already added before it
+	// runs). Canceling the existing link's ctx here propagates into
+	// runSession's "close conn to unblock ReadJSON" goroutine and force-
+	// closes an otherwise healthy connection out from under it, which then
+	// races the listener's stale bookkeeping and can flip us to listener
+	// role for a peer that never dials back — see
+	// TestRunSession_LocalCatalogMutationAfterConnectReachesConnectedPeer.
+	if l, ok := s.links[p.PublicKey]; ok && s.deps.Manager.HasLiveConnection(p.Fingerprint()) {
+		l.peer = p
+		s.mu.Unlock()
+		return
+	}
+
+	// If a reconnector goroutine is still mid-dial (not yet live) for this
+	// peer, cancel it and wait for it to actually exit before starting a
+	// replacement. Without this wait, canceling ctx has no immediate effect
+	// on a goroutine blocked inside the auth handshake (dialOnce only
+	// checks ctx via the initial DialContext, not the subsequent blocking
+	// ReadJSON calls) — so the old goroutine kept dialing concurrently with
+	// the new one, producing two live dial attempts to the same peer at
+	// once (a self-inflicted "simultaneous initiate").
+	var old *peerLink
 	if l, ok := s.links[p.PublicKey]; ok {
-		if l.cancel != nil {
-			l.cancel()
-		}
+		old = l
 		delete(s.links, p.PublicKey)
 	}
+	s.mu.Unlock()
+
+	if old != nil {
+		if old.cancel != nil {
+			old.cancel()
+		}
+		if old.done != nil {
+			<-old.done
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	switch {
 	case !p.Enabled:
@@ -247,9 +282,13 @@ func (s *LinkSupervisor) spawnLink(p identity.Peer) {
 	}
 
 	ctx, cancel := context.WithCancel(s.rootCtx)
-	link := &peerLink{peer: p, cancel: cancel, status: StatusBackoff}
+	done := make(chan struct{})
+	link := &peerLink{peer: p, cancel: cancel, done: done, status: StatusBackoff}
 	s.links[p.PublicKey] = link
-	go s.runReconnector(ctx, link)
+	go func() {
+		defer close(done)
+		s.runReconnector(ctx, link)
+	}()
 }
 
 func jitter(d time.Duration) time.Duration {
@@ -342,6 +381,20 @@ func (s *LinkSupervisor) dialOnce(ctx context.Context, link *peerLink) error {
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", u.String(), err)
 	}
+
+	// If ctx is canceled while we're blocked in the handshake reads below
+	// (they use their own fixed deadlines, not ctx), close conn to unblock
+	// promptly instead of leaving this dial running concurrently with a
+	// replacement spawned by spawnLink.
+	handshakeDone := make(chan struct{})
+	defer close(handshakeDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-handshakeDone:
+		}
+	}()
 
 	// Auth: read challenge, sign, send response, read result.
 	var challengeMsg Message
