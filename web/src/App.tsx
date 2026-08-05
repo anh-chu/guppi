@@ -1551,7 +1551,10 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   // normalize incoming tool events (keyed by fingerprint + mutable display
   // label) to the same OwnerID/stable-session-id encoding before matching.
   const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents(hosts)
-  const { getSessionActivity, handleActivityEvent } = useActivity()
+  // Same OwnerID normalization rationale as useToolEvents(hosts) above --
+  // the server's activity snapshot is keyed by peer fingerprint, but AppV2
+  // looks activity up by OwnerID/SessionID.
+  const { getSessionActivity, handleActivityEvent } = useActivity(hosts)
   const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications()
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const { prefs: _ } = usePreferences() // already have prefs above
