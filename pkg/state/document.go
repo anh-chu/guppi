@@ -259,6 +259,17 @@ type BrowserSession struct {
 
 // CreateIntent captures a request to create or modify state. It carries enough
 // information to be idempotently retried by a worker.
+//
+// KNOWN-DORMANT SIBLING BUG: like the (fixed) RemoteCreateRequest.Target
+// before it, Target below is a non-pointer SessionRef with an `omitempty`
+// tag that encoding/json never honors for struct types, so a zero-value
+// Target would always marshal as SessionRef's custom ":0.0" representation
+// instead of being omitted. This is intentionally left unfixed here: as of
+// this note, CreateIntent is never constructed anywhere in non-test
+// production code (verified via a repo-wide reference search), so there is
+// no live path where the bug can currently manifest. If CreateIntent is
+// ever wired into a real construction path, apply the same fix used for
+// RemoteCreateRequest.Target (pointer + explicit nil check) before doing so.
 type CreateIntent struct {
 	ID       CommandID       `json:"id"`
 	Owner    OwnerID         `json:"owner"`
