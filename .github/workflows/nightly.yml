@@ -97,7 +97,9 @@ jobs:
         working-directory: web
 
       - name: Repeated full race suite (-count=10)
-        run: go test -race ./... -count=10 2>&1 | tee repeated-race.log
+        run: |
+          set -euo pipefail
+          go test -race ./... -count=10 2>&1 | tee repeated-race.log
 
       - name: Upload repeated-race log
         if: always()
@@ -122,16 +124,19 @@ jobs:
 
       - name: PTY create-to-ready benchmark
         run: |
+          set -euo pipefail
           RUN_BASELINE=1 go test ./pkg/pty -run '^$' -bench BenchmarkDaemonCreateToSocketReady -benchmem -count=5 \
             2>&1 | tee benchmarks.log
 
       - name: Stable echo latency benchmark
         run: |
+          set -euo pipefail
           go test ./pkg/pty -run '^$' -bench BenchmarkStableEchoLatency -benchmem -count=5 \
             2>&1 | tee -a benchmarks.log
 
       - name: Serialized size benchmarks
         run: |
+          set -euo pipefail
           go test ./pkg/state -run '^$' -bench BenchmarkSerializedSize -benchtime=1x -count=5 \
             2>&1 | tee -a benchmarks.log
 

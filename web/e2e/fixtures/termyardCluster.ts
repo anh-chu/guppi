@@ -1,6 +1,7 @@
 import { ChildProcess, spawn } from 'node:child_process'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as net from 'node:net'
 import * as os from 'node:os'
@@ -19,18 +20,53 @@ const EMBEDDED_DIST_DIR = path.join(REPO_ROOT, 'pkg', 'server', 'dist')
 const SHARED_TEST_PASSWORD = 'e2e-cluster-password-123'
 
 // ---------------------------------------------------------------------------
-// One reviewed binary, built once per Playwright process from the exact
-// checked-out source (frontend build embedded via pkg/server/embed.go, then
-// `go build`). Cached at module scope so every test/spec in the same worker
-// process reuses the identical binary instead of rebuilding per test.
+// One reviewed binary. In CI, `.github/workflows/tests.yml`'s `e2e` job
+// downloads the exact frontend-dist and termyard-binary artifacts produced
+// by the preceding `web`/`go` jobs FOR THIS SAME COMMIT and exports
+// TERMYARD_BIN pointing at that binary -- this harness MUST use that exact
+// file, never rebuild its own, or CI's E2E run would silently exercise a
+// second, locally-recompiled binary/frontend that was never reviewed. When
+// TERMYARD_BIN is unset (local dev, no CI artifact chain), fall back to a
+// fresh local build. Cached at module scope so every test/spec in the same
+// worker process reuses the identical binary instead of rebuilding per
+// test. The absolute path and a sha256 checksum of the selected binary are
+// always logged so CI runs record proof of exactly which artifact ran.
 // ---------------------------------------------------------------------------
 let binaryPromise: Promise<string> | null = null
 
 export function getReviewedBinary(): Promise<string> {
   if (!binaryPromise) {
-    binaryPromise = buildBinary()
+    binaryPromise = selectBinary()
   }
   return binaryPromise
+}
+
+function sha256File(filePath: string): string {
+  const hash = createHash('sha256')
+  hash.update(fs.readFileSync(filePath))
+  return hash.digest('hex')
+}
+
+async function selectBinary(): Promise<string> {
+  const reviewed = process.env.TERMYARD_BIN
+  if (reviewed) {
+    const absPath = path.resolve(reviewed)
+    if (!fs.existsSync(absPath)) {
+      throw new Error(`TERMYARD_BIN=${reviewed} does not exist -- CI's reviewed-artifact binary is missing`)
+    }
+    const st = fs.statSync(absPath)
+    // Mode bits: any execute bit (owner/group/other) set.
+    if (!st.isFile() || (st.mode & 0o111) === 0) {
+      throw new Error(`TERMYARD_BIN=${absPath} exists but is not an executable file (mode ${st.mode.toString(8)})`)
+    }
+    const checksum = sha256File(absPath)
+    console.log(`[termyardCluster] using reviewed CI artifact binary (no rebuild): path=${absPath} sha256=${checksum}`)
+    return absPath
+  }
+  const built = await buildBinary()
+  const checksum = sha256File(built)
+  console.log(`[termyardCluster] TERMYARD_BIN not set -- built local binary for dev run: path=${built} sha256=${checksum}`)
+  return built
 }
 
 async function buildBinary(): Promise<string> {
@@ -344,40 +380,112 @@ export class ClusterNode {
     await this.waitForReady()
   }
 
-  async stop(): Promise<void> {
+  /**
+   * Stops the server process (if running). When `opts.killDaemons` is set,
+   * ALSO terminates every session-daemon this node ever spawned -- and does
+   * so even when the server process had already exited on its own, since a
+   * dead server leaves its already-spawned daemons running (they are
+   * `Setsid: true`, in their OWN process group, per
+   * pkg/pty/registry_stable.go's `Start`, so killing the server's process
+   * group never touches them). `killDaemons` must stay false for the
+   * `restart()` path (cases 4/5 depend on daemons surviving a server
+   * restart) and true only for final, permanent teardown (`stopAll`).
+   */
+  async stop(opts: { killDaemons?: boolean } = {}): Promise<void> {
     const proc = this.proc
-    if (!proc || proc.pid === undefined || proc.exitCode !== null) return
+    if (proc && proc.pid !== undefined && proc.exitCode === null) {
+      const pid = proc.pid
+      const exited = new Promise<void>((resolve) => {
+        proc.once('exit', () => resolve())
+      })
 
-    const pid = proc.pid
-    const exited = new Promise<void>((resolve) => {
-      proc.once('exit', () => resolve())
-    })
-
-    const trySignal = (sig: NodeJS.Signals) => {
-      try {
-        // Negative pid signals the whole process group (proc was spawned
-        // detached, so pid === pgid).
-        process.kill(-pid, sig)
-      } catch {
+      const trySignal = (sig: NodeJS.Signals) => {
         try {
-          process.kill(pid, sig)
+          // Negative pid signals the whole process group (proc was spawned
+          // detached, so pid === pgid).
+          process.kill(-pid, sig)
         } catch {
-          /* already gone */
+          try {
+            process.kill(pid, sig)
+          } catch {
+            /* already gone */
+          }
         }
       }
+
+      trySignal('SIGTERM')
+      const termOk = await raceTimeout(exited, 5000)
+      if (!termOk) {
+        trySignal('SIGKILL')
+        await raceTimeout(exited, 5000)
+      }
+
+      this.outStream.end()
+      this.errStream.end()
+
+      await assertNoProcessGroup(pid, this.name)
     }
 
-    trySignal('SIGTERM')
-    const termOk = await raceTimeout(exited, 5000)
-    if (!termOk) {
-      trySignal('SIGKILL')
-      await raceTimeout(exited, 5000)
+    if (opts.killDaemons) {
+      await this.killDaemons()
     }
+  }
 
-    this.outStream.end()
-    this.errStream.end()
+  /** The lifecycle-record directory pkg/pty/lifecycle.go's DefaultStateDir
+   * resolves to under this node's own XDG_STATE_HOME (see spawnProcess's
+   * env) -- i.e. `$HOME/.local-state/termyard/sessions`. Every session
+   * daemon this node ever spawned (including ones from a prior `restart()`)
+   * writes a real `<id>.lifecycle.json` sidecar there with its own
+   * `daemon_pid`, so reading these files is real, on-disk process evidence,
+   * not a mock. */
+  private lifecycleStateDir(): string {
+    return path.join(this.homeDir, '.local-state', 'termyard', 'sessions')
+  }
 
-    await assertNoProcessGroup(pid, this.name)
+  /** Reads every `*.lifecycle.json` sidecar this node's registry ever wrote
+   * and returns the distinct set of `daemon_pid` values recorded, regardless
+   * of lifecycle state (a daemon can still be alive as `crashed`/`active`/
+   * etc. by the time teardown runs; we want to positively verify each one is
+   * actually gone, not just the ones the harness happens to know about). */
+  private listKnownDaemonPids(): number[] {
+    const dir = this.lifecycleStateDir()
+    let entries: string[] = []
+    try {
+      entries = fs.readdirSync(dir).filter((f) => f.endsWith('.lifecycle.json'))
+    } catch {
+      return []
+    }
+    const pids = new Set<number>()
+    for (const f of entries) {
+      try {
+        const rec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))
+        if (typeof rec.daemon_pid === 'number' && rec.daemon_pid > 0) {
+          pids.add(rec.daemon_pid)
+        }
+      } catch {
+        /* ignore a partially-written or unreadable record */
+      }
+    }
+    return Array.from(pids)
+  }
+
+  /**
+   * Terminates every session-daemon process this node's registry ever
+   * recorded (see `listKnownDaemonPids`), one process group at a time (TERM,
+   * bounded wait, escalate to KILL), then re-verifies via real `kill(pid, 0)`
+   * process inspection that each PID is actually gone. Throws if any PID
+   * survives, so a caller cannot silently swallow a leaked daemon.
+   */
+  async killDaemons(): Promise<void> {
+    const pids = this.listKnownDaemonPids()
+    await Promise.all(pids.map((pid) => killProcessGroupAndWait(pid)))
+
+    const survivors = pids.filter((pid) => isPidAlive(pid))
+    if (survivors.length > 0) {
+      throw new Error(
+        `node ${this.name}: ${survivors.length} session-daemon process(es) survived teardown: ${survivors.join(', ')}`,
+      )
+    }
   }
 
   /** Removes this node's short-path /tmp session-socket directory (see the
@@ -388,6 +496,48 @@ export class ClusterNode {
    * -- this must never run as part of a plain `stop()`/`restart()` cycle. */
   disposeSessionDir(): void {
     fs.rmSync(this.sessionDir, { recursive: true, force: true })
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Sends TERM to a process group, waits up to 5s, escalates to KILL and waits
+ * up to another 5s. `pid` is the daemon's own PID; session daemons are
+ * spawned with `Setsid: true` (pkg/pty/registry_stable.go's `Start`), so
+ * pid === pgid and any PTY child (the shell) inherits the same group. */
+async function killProcessGroupAndWait(pid: number): Promise<void> {
+  if (!isPidAlive(pid)) return
+
+  const trySignal = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, sig)
+    } catch {
+      try {
+        process.kill(pid, sig)
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+
+  trySignal('SIGTERM')
+  let deadline = Date.now() + 5000
+  while (isPidAlive(pid) && Date.now() < deadline) {
+    await sleep(50)
+  }
+  if (!isPidAlive(pid)) return
+
+  trySignal('SIGKILL')
+  deadline = Date.now() + 5000
+  while (isPidAlive(pid) && Date.now() < deadline) {
+    await sleep(50)
   }
 }
 
@@ -584,23 +734,76 @@ export interface StartClusterOptions {
 
 export async function startCluster(opts: StartClusterOptions): Promise<Cluster> {
   const binaryPath = await getReviewedBinary()
-  const [a, b] = await Promise.all([
+
+  // Promise.allSettled (not Promise.all): if one side fails to start, the
+  // OTHER side may have already started a real OS process. Promise.all
+  // would reject immediately and leak that already-started node forever
+  // (nothing else in this function's control flow would ever reach it to
+  // tear it down). allSettled lets us inspect both outcomes and tear down
+  // whichever node(s) did start before propagating the failure.
+  const results = await Promise.allSettled([
     ClusterNode.start({ name: 'A', rootDir: path.join(opts.rootDir, 'node-a'), binaryPath, v2: opts.aV2 }),
     ClusterNode.start({ name: 'B', rootDir: path.join(opts.rootDir, 'node-b'), binaryPath, v2: opts.bV2 }),
   ])
 
-  await Promise.all([a.authSetup(SHARED_TEST_PASSWORD), b.authSetup(SHARED_TEST_PASSWORD)])
+  const started: ClusterNode[] = []
+  const failures: string[] = []
+  for (const r of results) {
+    if (r.status === 'fulfilled') started.push(r.value)
+    else failures.push(r.reason instanceof Error ? r.reason.message : String(r.reason))
+  }
 
-  await assertDistinctIdentities(a, b)
+  if (failures.length > 0) {
+    await Promise.all(
+      started.map(async (n) => {
+        try {
+          await n.stop({ killDaemons: true })
+        } finally {
+          try {
+            n.disposeSessionDir()
+          } catch {
+            /* best-effort */
+          }
+        }
+      }),
+    )
+    throw new Error(`startCluster: node startup failed, tore down ${started.length} partially-started node(s): ${failures.join('; ')}`)
+  }
 
-  await pairNodes(a, b, SHARED_TEST_PASSWORD)
+  const [a, b] = results.map((r) => (r as PromiseFulfilledResult<ClusterNode>).value) as [ClusterNode, ClusterNode]
+
+  try {
+    await Promise.all([a.authSetup(SHARED_TEST_PASSWORD), b.authSetup(SHARED_TEST_PASSWORD)])
+
+    await assertDistinctIdentities(a, b)
+
+    await pairNodes(a, b, SHARED_TEST_PASSWORD)
+  } catch (err) {
+    // Both nodes are already-started real processes by this point --
+    // failing any of the above steps must still tear both down rather than
+    // leaking them.
+    await Promise.all(
+      [a, b].map(async (n) => {
+        try {
+          await n.stop({ killDaemons: true })
+        } finally {
+          try {
+            n.disposeSessionDir()
+          } catch {
+            /* best-effort */
+          }
+        }
+      }),
+    )
+    throw err
+  }
 
   return {
     a,
     b,
     password: SHARED_TEST_PASSWORD,
     async stopAll() {
-      await Promise.all([a.stop(), b.stop()])
+      await Promise.all([a.stop({ killDaemons: true }), b.stop({ killDaemons: true })])
       a.disposeSessionDir()
       b.disposeSessionDir()
     },

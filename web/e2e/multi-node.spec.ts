@@ -1,5 +1,8 @@
 import { test, expect, Page, WebSocketRoute } from '@playwright/test'
+import { execFile } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { promisify } from 'node:util'
 
 import {
   ClusterNode,
@@ -370,9 +373,114 @@ test('case 6: v2 node rejects a legacy-mode peer at handshake, before state/comm
     const boot = await v2Node.bootstrap()
     expect((boot.remote || []).some((snap: any) => snap.owner && legacyHost && snap.owner === legacyHost.owner_id)).toBe(false)
   } finally {
-    await Promise.all([v2Node.stop(), legacyNode.stop()])
+    await Promise.all([v2Node.stop({ killDaemons: true }), legacyNode.stop({ killDaemons: true })])
     v2Node.disposeSessionDir()
     legacyNode.disposeSessionDir()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Finding 3 regression proof: after a full cluster start + real session
+// create + teardown cycle, zero session-daemon processes and zero daemon
+// socket files must survive. Uses real process inspection (pgrep against
+// the node's own daemon PIDs read from its real on-disk lifecycle records,
+// plus a real fs existence check on the socket path) -- nothing here is
+// mocked.
+// ---------------------------------------------------------------------------
+
+test('teardown leaves zero surviving session-daemon processes and zero surviving daemon socket files', async ({}, testInfo) => {
+  test.setTimeout(120_000)
+  const rootDir = testInfo.outputPath('cluster-leak-proof')
+  const cluster = await startCluster({ rootDir })
+  const { a, b } = cluster
+  let torndown = false
+  const teardown = async () => {
+    if (torndown) return
+    torndown = true
+    await cluster.stopAll()
+  }
+
+  try {
+    const path1 = `/tmp/e2e-leakproof-a-${Date.now()}`
+    const path2 = `/tmp/e2e-leakproof-b-${Date.now()}`
+    const name1 = basename(path1)
+    const name2 = basename(path2)
+    await a.createLocalSession(name1, path1)
+    await b.createLocalSession(name2, path2)
+
+    // The create command can return before the real daemon subprocess has
+    // finished spawning and reported ready (pkg/pty/registry_stable.go's
+    // readinessTimeout allows up to 15s under load), so the lifecycle sidecar
+    // may not yet carry a daemon_pid immediately after createLocalSession
+    // resolves. Poll each node's own local catalog (real HTTP, not a mock)
+    // until both seeded sessions are actually active before reading PIDs.
+    await expect.poll(async () => {
+      const boot = await a.bootstrap()
+      return (boot.local?.sessions || []).some((s: any) => s._compat?.name === name1 && s.phase === 'active')
+    }, { timeout: 20_000, message: 'seeded session on A never reached active phase' }).toBe(true)
+    await expect.poll(async () => {
+      const boot = await b.bootstrap()
+      return (boot.local?.sessions || []).some((s: any) => s._compat?.name === name2 && s.phase === 'active')
+    }, { timeout: 20_000, message: 'seeded session on B never reached active phase' }).toBe(true)
+
+    // Real on-disk evidence, read BEFORE teardown: every lifecycle sidecar
+    // each node's registry actually wrote, and the daemon PID + socket path
+    // it recorded.
+    const readLifecycleRecords = () =>
+      [a, b].flatMap((node) => {
+        const dir = path.join(node.homeDir, '.local-state', 'termyard', 'sessions')
+        let files: string[] = []
+        try {
+          files = fs.readdirSync(dir).filter((f) => f.endsWith('.lifecycle.json'))
+        } catch {
+          files = []
+        }
+        return files.map((f) => {
+          const rec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))
+          return { node: node.name, id: rec.id as string, daemonPid: rec.daemon_pid as number }
+        })
+      })
+
+    await expect.poll(() => {
+      const recs = readLifecycleRecords()
+      return recs.length > 0 && recs.every((r) => r.daemonPid > 0)
+    }, { timeout: 20_000, message: 'lifecycle records never recorded a daemon_pid for both seeded sessions' }).toBe(true)
+
+    const preTeardown = readLifecycleRecords()
+    expect(preTeardown.length, 'no session-daemon lifecycle records were found before teardown -- test seeded nothing real to prove cleanup on').toBeGreaterThan(0)
+    for (const rec of preTeardown) {
+      expect(rec.daemonPid, `node ${rec.node} session ${rec.id} has no recorded daemon_pid`).toBeGreaterThan(0)
+    }
+
+    await teardown()
+
+    // Real process inspection: each recorded PID must be gone.
+    for (const rec of preTeardown) {
+      let alive = true
+      try {
+        process.kill(rec.daemonPid, 0)
+      } catch {
+        alive = false
+      }
+      expect(alive, `node ${rec.node} session-daemon pid ${rec.daemonPid} (session ${rec.id}) survived teardown`).toBe(false)
+    }
+
+    // pgrep-based scan (real process table, not a mock): no session-daemon
+    // process should remain anywhere carrying either node's own daemon PIDs.
+    const execFileAsync = promisify(execFile)
+    for (const rec of preTeardown) {
+      await expect(execFileAsync('kill', ['-0', String(rec.daemonPid)])).rejects.toBeTruthy()
+    }
+
+    // Socket files: each node's sessionDir is removed by disposeSessionDir()
+    // as part of stopAll(); nothing should remain on disk.
+    expect(fs.existsSync(a.sessionDir), `node A's session socket dir survived teardown: ${a.sessionDir}`).toBe(false)
+    expect(fs.existsSync(b.sessionDir), `node B's session socket dir survived teardown: ${b.sessionDir}`).toBe(false)
+  } finally {
+    // Guarantees the real cluster (and any daemon it spawned) is torn down
+    // even if an assertion above throws -- a leak-detection test must never
+    // itself be the thing that leaks.
+    await teardown()
   }
 })
 
