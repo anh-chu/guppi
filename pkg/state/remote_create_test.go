@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -143,5 +144,83 @@ func TestReplayRemoteCreateIntentIDReturnsOwnSessionNotAnother(t *testing.T) {
 		if replay.Ref.Session != results[i].Ref.Session {
 			t.Fatalf("replay of intent %d returned wrong session: got %q, want %q", i, replay.Ref.Session, results[i].Ref.Session)
 		}
+	}
+}
+
+// TestRemoteCreateRequest_JSONRoundTrip_NoSplitTarget is a regression test
+// for a production defect where RemoteCreateRequest.Target was declared as
+// a non-pointer SessionRef with `json:"target,omitempty"`. Go's
+// encoding/json never treats a non-empty-looking struct as "empty" for
+// omitempty purposes (structs are never considered empty regardless of
+// their field values), so every non-split remote create request (the
+// common case) serialized an invalid zero-value SessionRef (roughly
+// `":0.0"` per SessionRef.MarshalJSON's canonical string form), which
+// SessionRef.UnmarshalJSON correctly rejects as malformed on the receiving
+// side. This caused pkg/peer/session_state.go's handleV2RemoteCreateRequest
+// to fail every cross-node remote create with "malformed remote create
+// request", even when the request never intended a split. This test
+// exercises the exact same json.Marshal/json.Unmarshal round trip that
+// handler performs (json.Unmarshal(req.Command, &r) where req.Command was
+// produced by marshaling a RemoteCreateRequest), without a full peer/HTTP
+// harness.
+func TestRemoteCreateRequest_JSONRoundTrip_NoSplitTarget(t *testing.T) {
+	req := RemoteCreateRequest{
+		IntentID:  NewCommandID(),
+		Requester: OwnerID("requester-a"),
+		Name:      "no-split-session",
+		Shell:     "/bin/bash",
+		Cwd:       "/tmp",
+		Cols:      120,
+		Rows:      40,
+		// Target intentionally left unset: this is the common non-split
+		// remote create request shape.
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal RemoteCreateRequest: %v", err)
+	}
+
+	var decoded RemoteCreateRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal RemoteCreateRequest (a non-split remote create must never be rejected as malformed): %v\nwire payload: %s", err, data)
+	}
+
+	if decoded.Target != nil {
+		t.Errorf("Target = %+v, want nil for a non-split remote create request", decoded.Target)
+	}
+	if decoded.Name != req.Name || decoded.Requester != req.Requester {
+		t.Errorf("round trip lost fields: got %+v, want name=%q requester=%q", decoded, req.Name, req.Requester)
+	}
+}
+
+// TestRemoteCreateRequest_JSONRoundTrip_WithSplitTarget proves the pointer
+// Target field still round-trips correctly when a split IS requested, so
+// the omitempty fix did not regress the split-on-create path.
+func TestRemoteCreateRequest_JSONRoundTrip_WithSplitTarget(t *testing.T) {
+	target := SessionRef{Owner: testOwner(), Session: "existingsession"}
+	req := RemoteCreateRequest{
+		IntentID:  NewCommandID(),
+		Requester: testOwner(),
+		Name:      "split-session",
+		LayoutID:  LayoutID("layout-1"),
+		Target:    &target,
+		Direction: DirectionVertical,
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal RemoteCreateRequest: %v", err)
+	}
+
+	var decoded RemoteCreateRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal RemoteCreateRequest with split target: %v\nwire payload: %s", err, data)
+	}
+	if decoded.Target == nil {
+		t.Fatal("Target = nil, want non-nil for a split remote create request")
+	}
+	if *decoded.Target != target {
+		t.Errorf("Target = %+v, want %+v", *decoded.Target, target)
 	}
 }

@@ -56,7 +56,7 @@ type RemoteCreateRequest struct {
 	Cols           uint16         `json:"cols,omitempty"`
 	Rows           uint16         `json:"rows,omitempty"`
 	LayoutID       LayoutID       `json:"layout_id,omitempty"`
-	Target         SessionRef     `json:"target,omitempty"`
+	Target         *SessionRef    `json:"target,omitempty"`
 	Direction      SplitDirection `json:"direction,omitempty"`
 	NewFirst       bool           `json:"new_first,omitempty"`
 	AgentType      string         `json:"agent_type,omitempty"`
@@ -467,11 +467,11 @@ func (c *RemoteCreateCoordinator) placeRemoteRefLocked(doc *AppDocument, ref Ses
 	if req.LayoutID != "" {
 		for i := range doc.Layouts {
 			if doc.Layouts[i].ID == req.LayoutID {
-				if req.Target.Session != "" {
-					if !findLeaf(doc.Layouts[i].Tree, req.Target) {
+				if req.Target != nil && req.Target.Session != "" {
+					if !findLeaf(doc.Layouts[i].Tree, *req.Target) {
 						return "", StateError{Code: ErrMissingTarget, Field: "target", Detail: fmt.Sprintf("target leaf %q not in layout", req.Target.MapKey())}
 					}
-					tree, err := splitTree(doc.Layouts[i].Tree, req.Target, req.Direction, ref, req.NewFirst)
+					tree, err := splitTree(doc.Layouts[i].Tree, *req.Target, req.Direction, ref, req.NewFirst)
 					if err != nil {
 						return "", err
 					}

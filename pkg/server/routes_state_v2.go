@@ -201,7 +201,7 @@ func handleV2SessionCommand(w http.ResponseWriter, r *http.Request, opts *Option
 			AgentType:      params.AgentType,
 		}
 		if params.Target != nil {
-			remoteReq.Target = *params.Target
+			remoteReq.Target = params.Target
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), v2RemoteCommandTimeout)
 		defer cancel()
