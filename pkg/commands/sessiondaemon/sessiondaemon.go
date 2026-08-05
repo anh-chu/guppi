@@ -231,6 +231,26 @@ func init() {
 				Usage: "ring buffer size in bytes (default 1MB)",
 				Value: 1 << 20,
 			},
+			&cli.StringFlag{
+				Name:  "daemon-key",
+				Usage: "stable daemon binding key",
+			},
+			&cli.StringFlag{
+				Name:  "owner",
+				Usage: "v2 owner identity for this daemon's stable binding",
+			},
+			&cli.StringFlag{
+				Name:  "session-id",
+				Usage: "v2 session identifier for this daemon's stable binding",
+			},
+			&cli.StringFlag{
+				Name:  "generation",
+				Usage: "v2 generation for this daemon's stable binding",
+			},
+			&cli.StringFlag{
+				Name:  "command-id",
+				Usage: "optional command id associated with the spawn request",
+			},
 		},
 		Action: executeSessionDaemon,
 	}
