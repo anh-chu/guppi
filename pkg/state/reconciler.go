@@ -351,7 +351,7 @@ func (r *Reconciler) startPending(ctx context.Context, pending PendingCreateReco
 		Desired: DesiredRun,
 		Created: r.opts.Now(),
 		Compat: CompatLocalSession{
-			Name:       string(pending.Ref.Session),
+			Name:       pendingDisplayName(pending),
 			Shell:      pending.Shell,
 			Cwd:        pending.Cwd,
 			Cols:       pending.Cols,
@@ -375,7 +375,7 @@ func (r *Reconciler) adoptLivePending(ctx context.Context, pending PendingCreate
 		Desired: DesiredRun,
 		Created: r.opts.Now(),
 		Compat: CompatLocalSession{
-			Name:       string(pending.Ref.Session),
+			Name:       pendingDisplayName(pending),
 			Shell:      pending.Shell,
 			Cwd:        pending.Cwd,
 			Cols:       pending.Cols,
@@ -388,6 +388,18 @@ func (r *Reconciler) adoptLivePending(ctx context.Context, pending PendingCreate
 		return err
 	}
 	return r.catalog.RemovePendingCreate(pending.IntentID)
+}
+
+// pendingDisplayName returns the user-requested display name recorded on the
+// pending create, falling back to the raw session ID only when no display
+// name was ever set (mirrors the fallback in session_commands.go's create
+// path, which always populates DisplayName -- this is defensive belt-and-
+// braces for any pending record that predates that guarantee).
+func pendingDisplayName(pending PendingCreateRecord) string {
+	if pending.DisplayName != "" {
+		return pending.DisplayName
+	}
+	return string(pending.Ref.Session)
 }
 
 func bindingForRecord(rec *LocalSessionRecord) pty.StableBinding {

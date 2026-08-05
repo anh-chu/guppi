@@ -420,6 +420,118 @@ func TestReconcilerPendingCreateAdoptsLiveDaemon(t *testing.T) {
 	}
 }
 
+func TestReconcilerPendingCreateAdoptsLiveDaemonPreservesDisplayName(t *testing.T) {
+	owner := testOwner()
+	store, cleanup := newTestStore(t, owner)
+	defer cleanup()
+
+	catalog := NewCatalog(owner, store)
+	_ = catalog.Load()
+	backend := newFakeBackend()
+
+	ref := testRef(SessionID("sesspendingdisplay"))
+	pending := PendingCreateRecord{
+		IntentID:    NewCommandID(),
+		Ref:         ref,
+		Inserted:    time.Now(),
+		Shell:       "/bin/zsh",
+		Cwd:         "/home/u",
+		Cols:        80,
+		Rows:        24,
+		DisplayName: "manualtest",
+	}
+	_ = catalog.PutPendingCreate(pending)
+
+	backend.setProbe(bindingForRef(ref), pty.ProbeEvidence{
+		Status: pty.ProbeLive,
+		Binding: pty.StableBinding{
+			Owner:      string(owner),
+			SessionID:  "sesspendingdisplay",
+			Generation: "gen-pending",
+		},
+		DaemonPID: 200,
+		Reason:    "already running",
+	})
+
+	r := NewReconciler(catalog, backend, nil, ReconcilerOptions{})
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := catalog.Session(ref.Session)
+	if !ok {
+		t.Fatal("expected pending create to be adopted as active record")
+	}
+	if got.Compat.Name != "manualtest" {
+		t.Fatalf("expected Compat.Name to preserve user-requested display name %q, got %q", "manualtest", got.Compat.Name)
+	}
+}
+
+func TestReconcilerStartPendingUsesDisplayNameWithSessionIDFallback(t *testing.T) {
+	owner := testOwner()
+	store, cleanup := newTestStore(t, owner)
+	defer cleanup()
+
+	catalog := NewCatalog(owner, store)
+	_ = catalog.Load()
+	backend := newFakeBackend()
+
+	// Case 1: user-requested display name must survive startPending.
+	refNamed := testRef(SessionID("sessstartnamed"))
+	pendingNamed := PendingCreateRecord{
+		IntentID:    NewCommandID(),
+		Ref:         refNamed,
+		Inserted:    time.Now(),
+		Shell:       "/bin/bash",
+		Cwd:         "/tmp",
+		DisplayName: "manualtest",
+	}
+	_ = catalog.PutPendingCreate(pendingNamed)
+	backend.setStart(bindingForRef(refNamed), pty.ReadyInfo{
+		Owner:      string(owner),
+		SessionID:  "sessstartnamed",
+		Generation: "gen1",
+		DaemonPID:  111,
+	})
+
+	// Case 2: no display name requested -> falls back to raw session ID.
+	refUnnamed := testRef(SessionID("sessstartunnamed"))
+	pendingUnnamed := PendingCreateRecord{
+		IntentID: NewCommandID(),
+		Ref:      refUnnamed,
+		Inserted: time.Now(),
+		Shell:    "/bin/bash",
+		Cwd:      "/tmp",
+	}
+	_ = catalog.PutPendingCreate(pendingUnnamed)
+	backend.setStart(bindingForRef(refUnnamed), pty.ReadyInfo{
+		Owner:      string(owner),
+		SessionID:  "sessstartunnamed",
+		Generation: "gen1",
+		DaemonPID:  112,
+	})
+
+	r := NewReconciler(catalog, backend, nil, ReconcilerOptions{})
+	if err := r.ResolveIntents(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	gotNamed, ok := catalog.Session(refNamed.Session)
+	if !ok {
+		t.Fatal("expected named pending create to be started as active record")
+	}
+	if gotNamed.Compat.Name != "manualtest" {
+		t.Fatalf("expected Compat.Name to preserve user-requested display name %q, got %q", "manualtest", gotNamed.Compat.Name)
+	}
+
+	gotUnnamed, ok := catalog.Session(refUnnamed.Session)
+	if !ok {
+		t.Fatal("expected unnamed pending create to be started as active record")
+	}
+	if gotUnnamed.Compat.Name != string(refUnnamed.Session) {
+		t.Fatalf("expected Compat.Name fallback to raw session ID %q, got %q", string(refUnnamed.Session), gotUnnamed.Compat.Name)
+	}
+}
+
 func TestReconcilerStopDesiredCallsTerminate(t *testing.T) {
 	owner := testOwner()
 	store, cleanup := newTestStore(t, owner)
