@@ -118,13 +118,29 @@ export class ClusterNode {
     this.baseURL = `http://127.0.0.1:${opts.port}`
     this.rootDir = opts.rootDir
     this.homeDir = path.join(opts.rootDir, 'home')
-    this.sessionDir = path.join(opts.rootDir, 'sessions')
-    this.socketPath = path.join(opts.rootDir, 'notify.sock')
     this.v2 = opts.v2 !== false
     this.binaryPath = opts.binaryPath
 
+    // Unix domain socket paths are capped by the kernel's sun_path buffer
+    // (108 bytes on Linux, ~104 usable after the trailing NUL). Playwright's
+    // own test-output directory names embed the full (sanitized) test
+    // title -- e.g. "test-results/multi-node-real-two-node-c-<hash>-...
+    // -chromium/cluster-run-1/node-b/sessions/<sessionid>.sock" -- which
+    // alone is already well over 150 bytes, long before this node's own
+    // per-session socket name is appended. Every session-daemon spawned
+    // under such a path used to fail at its very first step (its own
+    // control-socket bind()) with a silent, hard-to-diagnose
+    // "bind: invalid argument" (EINVAL from a too-long sun_path), which the
+    // daemon's parent (pkg/pty/registry_stable.go's Start) can only observe
+    // as "daemon did not become ready" -- no amount of readiness-timeout or
+    // retry tuning fixes an always-EINVAL bind. So TERMYARD_SESSION_DIR (and
+    // the optional notify.sock) get a short, independent /tmp path here,
+    // decoupled from Playwright's long, test-title-derived rootDir, which
+    // stays in use for HOME/logs (never used as a socket path).
+    this.sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), `ty-e2e-${opts.name}-`))
+    this.socketPath = path.join(this.sessionDir, 'notify.sock')
+
     fs.mkdirSync(this.homeDir, { recursive: true })
-    fs.mkdirSync(this.sessionDir, { recursive: true })
     fs.mkdirSync(path.join(this.homeDir, '.config'), { recursive: true })
     fs.mkdirSync(path.join(this.homeDir, '.local-share'), { recursive: true })
     fs.mkdirSync(path.join(this.homeDir, '.local-state'), { recursive: true })
@@ -363,6 +379,16 @@ export class ClusterNode {
 
     await assertNoProcessGroup(pid, this.name)
   }
+
+  /** Removes this node's short-path /tmp session-socket directory (see the
+   * constructor's comment on why it is decoupled from rootDir). Only safe to
+   * call once this node is permanently done (final teardown): `restart()`
+   * calls `stop()` and then respawns reusing the SAME sessionDir so a
+   * restarted node can still reach its pre-restart session-daemon sockets
+   * -- this must never run as part of a plain `stop()`/`restart()` cycle. */
+  disposeSessionDir(): void {
+    fs.rmSync(this.sessionDir, { recursive: true, force: true })
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -575,6 +601,8 @@ export async function startCluster(opts: StartClusterOptions): Promise<Cluster> 
     password: SHARED_TEST_PASSWORD,
     async stopAll() {
       await Promise.all([a.stop(), b.stop()])
+      a.disposeSessionDir()
+      b.disposeSessionDir()
     },
   }
 }

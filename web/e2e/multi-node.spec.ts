@@ -153,19 +153,17 @@ for (const run of [1, 2] as const) {
     // serial-mode-skip the tests before it.
 
     test('case 2: attach from A to B terminal, write a unique marker, read it back through the real remote stream', async ({ browser }) => {
-      test.setTimeout(90_000)
+      test.setTimeout(60_000)
       const path = `/tmp/e2e-r${run}-attach-${Date.now()}`
       const name = basename(path)
       await b.createLocalSession(name, path)
-      // Real subprocess spawn (fork+exec+socket-bind+handshake, then a real
-      // cross-node websocket push) can take well over 15s under CPU
-      // contention on a busy host -- see pkg/pty/registry_stable.go's
-      // readinessTimeout comment. 30s gives real headroom without masking a
-      // genuine hang (test.setTimeout above still bounds the whole test).
+      // Real subprocess spawn (fork+exec+socket-bind+handshake) plus a real
+      // cross-node websocket push; see pkg/pty/registry_stable.go's
+      // readinessTimeout comment for the modest safety margin baked in.
       await expect.poll(async () => {
         const boot = await a.bootstrap()
         return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name))
-      }, { timeout: 30_000, message: 'seeded session on B never replicated to A remote catalog' }).toBe(true)
+      }, { timeout: 20_000, message: 'seeded session on B never replicated to A remote catalog' }).toBe(true)
 
       const marker = `E2E-MARKER-${run}-${Date.now()}`
       const page = await openAuthedPage(browser, a)
@@ -188,17 +186,15 @@ for (const run of [1, 2] as const) {
     })
 
     test('case 3: label and kill the remote session from A; B authoritative state and A projection converge', async ({ browser }) => {
-      test.setTimeout(90_000)
+      test.setTimeout(60_000)
       const path = `/tmp/e2e-r${run}-labelkill-${Date.now()}`
       const name = basename(path)
       const renamedName = `${name}-relabeled`
       await b.createLocalSession(name, path)
-      // See case 2's comment on the 30s window: real daemon spawn latency,
-      // not a correctness bound.
       await expect.poll(async () => {
         const boot = await a.bootstrap()
         return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name))
-      }, { timeout: 30_000, message: 'seeded session on B never replicated to A remote catalog' }).toBe(true)
+      }, { timeout: 20_000, message: 'seeded session on B never replicated to A remote catalog' }).toBe(true)
 
       const page = await openAuthedPage(browser, a)
       try {
@@ -237,12 +233,10 @@ for (const run of [1, 2] as const) {
       const name2 = basename(path2)
       await b.createLocalSession(name2, path2)
 
-      // See case 2's comment on the 30s window: real daemon spawn latency,
-      // not a correctness bound.
       await expect.poll(async () => {
         const boot = await a.bootstrap()
         return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name2))
-      }, { timeout: 30_000 }).toBe(true)
+      }, { timeout: 20_000 }).toBe(true)
 
       const lastKnownRemote = await a.bootstrap()
       const lastSnapForB = (lastKnownRemote.remote || []).find((snap: any) => snap.owner === b.ownerId)
@@ -377,6 +371,8 @@ test('case 6: v2 node rejects a legacy-mode peer at handshake, before state/comm
     expect((boot.remote || []).some((snap: any) => snap.owner && legacyHost && snap.owner === legacyHost.owner_id)).toBe(false)
   } finally {
     await Promise.all([v2Node.stop(), legacyNode.stop()])
+    v2Node.disposeSessionDir()
+    legacyNode.disposeSessionDir()
   }
 })
 
