@@ -136,6 +136,31 @@ describe('V2CommandClient', () => {
     expect('target_owner' in capturedBody).toBe(false)
   })
 
+  it('default id generator produces a backend-valid CommandID (no hyphens, lowercase alnum only)', async () => {
+    // pkg/state/ids.go's idPattern (`^[a-z0-9]+$`) is what the server
+    // validates every CommandID against (see ExecuteSessionCommand's
+    // cmd.ID.Validate() and RemoteCreateRequest's IntentID.Validate()).
+    // crypto.randomUUID() -- the default generator's underlying source --
+    // returns hyphenated hex groups, which never match that pattern: every
+    // real browser-issued v2 command (create/kill/label/recover/dismiss/
+    // retry, and every workspace command) was silently rejected with a 400
+    // until the generator stripped separators before returning an id.
+    const ids: unknown[] = []
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      ids.push(JSON.parse(init.body as string).id)
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const client = new V2CommandClient({ fetchImpl })
+    await client.sessionCommand(ref, { action: 'kill' })
+
+    expect(ids).toHaveLength(1)
+    const id = ids[0] as string
+    expect(id).toMatch(/^[a-z0-9]+$/)
+    expect(id.length).toBeGreaterThan(0)
+    expect(id.length).toBeLessThanOrEqual(64)
+  })
+
   it('sessionCommand generates a fresh id per call when none supplied', async () => {
     const ids: unknown[] = []
     const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {

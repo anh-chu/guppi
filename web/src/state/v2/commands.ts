@@ -115,9 +115,19 @@ export type V2CommandClientOptions = {
   retryDelayMs?: number
 }
 
+// The backend (pkg/state/ids.go's idPattern) requires every CommandID to
+// match `^[a-z0-9]+$` -- lowercase alphanumeric only, no hyphens. Every v2
+// session/workspace command a browser issues (create/kill/label/recover/
+// dismiss/retry, and every workspace action) is REJECTED with a 400
+// invalid_input error by handleV2SessionCommand/handleV2WorkspaceCommand's
+// cmd.ID.Validate() call unless this holds. crypto.randomUUID() (the
+// primary branch below) returns RFC 4122 hex groups joined by '-', which
+// never satisfies that pattern -- every real browser-issued v2 command was
+// silently 400ing (visible only in the console as "v2 label/kill/... command
+// failed", never surfaced to the user) until the hyphens were stripped here.
 function defaultGenId(): CommandID {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
-  return `cmd-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '') as CommandID
+  return `cmd${Date.now()}${Math.random().toString(36).slice(2)}`.replace(/[^a-z0-9]/g, '') as CommandID
 }
 
 async function postWithRetry(
