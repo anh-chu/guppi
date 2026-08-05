@@ -175,6 +175,20 @@ for (const run of [1, 2] as const) {
         const pane = page.locator('[data-pane-key]').first()
         await expect(pane).toBeVisible({ timeout: 15_000 })
 
+        // `.xterm` appears in the DOM as soon as TiledView swaps the
+        // "Connecting…" placeholder for the real <Terminal>, but xterm.js's
+        // own attach (lib/terminalPool.ts's `term.open(container)`) --
+        // which is what actually makes the pane focusable/clickable and
+        // creates its helper textarea -- can still be a beat behind that
+        // React render. Clicking `.xterm` before that attach finishes is a
+        // real UI-rendering race, not the catalog-replication defect this
+        // test otherwise exercises: Playwright's actionability check can
+        // time out if the element it's about to click is torn down and
+        // recreated by that attach. `textarea.xterm-helper-textarea` only
+        // exists once xterm.js has genuinely opened onto the container, so
+        // wait for it first -- a real readiness signal, not an arbitrary
+        // sleep.
+        await expect(pane.locator('textarea.xterm-helper-textarea')).toBeAttached({ timeout: 15_000 })
         await pane.locator('.xterm').click()
         await page.keyboard.type(`echo ${marker}`)
         await page.keyboard.press('Enter')
