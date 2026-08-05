@@ -22,7 +22,14 @@ const (
 	// readinessInterval is the poll interval between connect/query attempts.
 	readinessInterval = 25 * time.Millisecond
 	// readinessTimeout caps how long Start waits for the daemon handshake.
-	readinessTimeout = 5 * time.Second
+	// Real subprocess spawn (fork+exec+socket-bind+handshake) can take well
+	// over 5s under CPU contention (observed 10-15s+ in concurrent
+	// multi-node E2E runs and under general host load) -- 5s was tight
+	// enough that it routinely fired on a merely-busy host, not just a
+	// genuinely-hung daemon, causing the create-retry loop
+	// (pkg/state/reconciler.go / session_commands.go, 5 retries with
+	// exponential backoff) to exhaust before the daemon ever became ready.
+	readinessTimeout = 20 * time.Second
 
 	// identityDialTimeout is the per-attempt socket dial timeout.
 	identityDialTimeout = 500 * time.Millisecond

@@ -199,7 +199,25 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 			}
 		}
 	}
-	if !changed && len(r.catalog.PendingCreates()) == 0 {
+	// NOTE: this used to also force an apply+publish whenever any pending
+	// create existed, even if nothing about the classified sessions actually
+	// changed. That meant every tick (default 2s) re-committed and
+	// re-published an identical no-op snapshot for the entire lifetime of a
+	// slow-to-resolve pending create (e.g. a real daemon spawn taking
+	// several seconds under load) -- and because a layout leaf is inserted
+	// for the new session's ref before the session record itself lands in
+	// doc.Sessions (see SessionCommandService.executeCreate ->
+	// placeSessionInWorkspace), that repeatedly-republished snapshot is
+	// catalog-invariant-invalid (layout leaf references an as-yet-unknown
+	// session) and gets dropped by every connected peer's
+	// validateCatalogInvariants on every single tick, spamming
+	// "dropping v2 snapshot: layout leaf references unknown session"
+	// warnings without ever making progress. Pending-create resolution
+	// itself (adoptLivePending, above) already performs and publishes its
+	// own catalog.apply the moment it actually resolves; this batch
+	// reclassification commit only needs to run when something it
+	// classifies has actually changed.
+	if !changed {
 		return nil
 	}
 

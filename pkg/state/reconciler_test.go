@@ -661,6 +661,89 @@ func TestReconcilerNoChangeAvoidsDurableWrite(t *testing.T) {
 	}
 }
 
+// TestReconcilerUnresolvedPendingCreateAvoidsRepublish covers a real defect:
+// ReconcileOnce used to force an apply+publish on every single tick as long
+// as ANY pending create existed, even when nothing about the classified
+// sessions actually changed and the pending create was still genuinely
+// unresolved (e.g. a real daemon spawn still in flight under load). Because
+// SessionCommandService.executeCreate inserts the new session's layout leaf
+// before the session record itself lands in doc.Sessions, that forced
+// republish sends a catalog-invariant-invalid snapshot (layout references an
+// unknown session) to every connected peer on every tick until the create
+// resolves -- each of which pkg/peer/manager.go's validateCatalogInvariants
+// correctly rejects, so this was pure repeated no-op churn (and, over a real
+// peer link, a stream of "dropping v2 snapshot" warnings) rather than making
+// any progress. A tick that changes nothing must not commit or publish
+// anything, regardless of pending-create count.
+func TestReconcilerUnresolvedPendingCreateAvoidsRepublish(t *testing.T) {
+	owner := testOwner()
+	dir, err := os.MkdirTemp("", "termyard-state-pending-nowrite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	var writes int32
+	store, err := OpenStore(dir, "test-node", StoreOptions{
+		Owner: owner,
+		WriteHook: func(f *os.File, p []byte) error {
+			atomic.AddInt32(&writes, 1)
+			_, werr := f.Write(p)
+			return werr
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	catalog := NewCatalog(owner, store)
+	_ = catalog.Load()
+
+	ref := testRef(SessionID("sesspendingnowrite"))
+	pending := PendingCreateRecord{
+		IntentID:    NewCommandID(),
+		Ref:         ref,
+		Inserted:    time.Now(),
+		Shell:       "/bin/bash",
+		Cwd:         "/home/u",
+		DisplayName: "pending-session",
+	}
+	if err := catalog.PutPendingCreate(pending); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reset the write counter after the setup PutPendingCreate commit.
+	atomic.StoreInt32(&writes, 0)
+
+	var publishes int32
+	unsub := catalog.SubscribeCatalog(func(OwnerCatalogSnapshot) {
+		atomic.AddInt32(&publishes, 1)
+	})
+	defer unsub()
+
+	// backend never reports this pending create's daemon as live (default
+	// probe is ProbeUnknown, mirroring a real daemon spawn still in flight),
+	// so the pending create remains genuinely unresolved across every tick.
+	backend := newFakeBackend()
+	r := NewReconciler(catalog, backend, nil, ReconcilerOptions{DisablePendingCreates: true})
+
+	for i := 0; i < 5; i++ {
+		if err := r.ReconcileOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := atomic.LoadInt32(&writes); got != 0 {
+		t.Fatalf("expected no durable write while pending create stays unresolved and nothing else changed, got %d", got)
+	}
+	if got := atomic.LoadInt32(&publishes); got != 0 {
+		t.Fatalf("expected no catalog republish while pending create stays unresolved and nothing else changed, got %d", got)
+	}
+	if p := catalog.PendingCreates(); len(p) != 1 {
+		t.Fatalf("expected the pending create to remain, got %d", len(p))
+	}
+}
+
 func TestCatalogGettersReturnCopies(t *testing.T) {
 	owner := testOwner()
 	store, cleanup := newTestStore(t, owner)
