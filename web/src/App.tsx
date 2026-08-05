@@ -1545,11 +1545,15 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   // Shared non-session hooks (same as AppLegacy)
   const { prefs } = usePreferences()
   const wikiEnabled = !prefs.wiki_disabled
-  const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
+  const { hosts, refresh: refreshHosts } = useHosts()
+  // AppV2's session keys (sessionKey()) are always "ownerId/sessionId", never
+  // the raw peer transport fingerprint -- passing `hosts` lets useToolEvents
+  // normalize incoming tool events (keyed by fingerprint + mutable display
+  // label) to the same OwnerID/stable-session-id encoding before matching.
+  const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents(hosts)
   const { getSessionActivity, handleActivityEvent } = useActivity()
   const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications()
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
-  const { hosts, refresh: refreshHosts } = useHosts()
   const { prefs: _ } = usePreferences() // already have prefs above
   // AppV2 has no workspace reducer (unlike AppLegacy's useWorkspace), so
   // useWikiController -- which requires a real { state, actions } object --

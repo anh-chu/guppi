@@ -174,6 +174,7 @@ func (h *Hub) Run(ctx context.Context) {
 				"host":          evt.Host,
 				"host_name":     evt.HostName,
 				"session":       evt.Session,
+				"session_id":    evt.SessionID,
 				"window":        evt.Window,
 				"pane":          evt.Pane,
 				"message":       evt.Message,

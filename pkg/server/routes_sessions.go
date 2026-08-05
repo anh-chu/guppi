@@ -952,13 +952,14 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 	// a dropped "completed" WebSocket frame self-heals.
 	r.Get("/active-turns", func(w http.ResponseWriter, r *http.Request) {
 		type turn struct {
-			Host    string `json:"host,omitempty"`
-			Session string `json:"session"`
+			Host      string `json:"host,omitempty"`
+			Session   string `json:"session"`
+			SessionID string `json:"session_id,omitempty"`
 		}
 		turns := opts.Tracker.ActiveTurns()
 		out := make([]turn, 0, len(turns))
 		for _, evt := range turns {
-			out = append(out, turn{Host: evt.Host, Session: evt.Session})
+			out = append(out, turn{Host: evt.Host, Session: evt.Session, SessionID: evt.SessionID})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(out)

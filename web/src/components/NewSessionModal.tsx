@@ -51,13 +51,29 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   const dropdownOpenRef = useRef(dropdownOpen)
   dropdownOpenRef.current = dropdownOpen
   const resolvedCommand = command.trim()
+  // selectedHost is a Host.id (peer transport fingerprint, from HostSelect's
+  // options). AppLegacy's Session.host also carries the fingerprint (or is
+  // falsy for local), so a raw string comparison works there. AppV2's
+  // Session.host instead always carries the v2 OwnerID (a DIFFERENT string
+  // encoding -- see state.OwnerIDFromFingerprint) -- even for local
+  // sessions, which are never falsy under v2. Resolving the selected host's
+  // OwnerID once here and matching against either encoding keeps duplicate-
+  // name detection correct for both.
+  const selectedHostOwnerId = useMemo(
+    () => hosts.find(h => h.id === selectedHost)?.owner_id,
+    [hosts, selectedHost],
+  )
+  const isSelectedHost = (session: Session) => {
+    if (!session.host) return !selectedHost || selectedHost === localHost?.id
+    return session.host === selectedHost || (!!selectedHostOwnerId && session.host === selectedHostOwnerId)
+  }
   const existingNames = useMemo(() => {
     return new Set(
       sessions
-        .filter(session => (selectedHost ? session.host === selectedHost : !session.host))
+        .filter(isSelectedHost)
         .map(session => session.name),
     )
-  }, [selectedHost, sessions])
+  }, [selectedHost, selectedHostOwnerId, sessions])
   const uniqueSessionName = (value: string) => {
     const trimmed = value.trim()
     if (!trimmed) return ''
@@ -90,8 +106,19 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
 
   const recentLocations = useMemo<RecentLocation[]>(() => {
     const localId = localHost?.id || ''
+    const localOwnerId = localHost?.owner_id
     const onlineIds = new Set(onlineHosts.map(h => h.id))
     const hostNameById = new Map(onlineHosts.map(h => [h.id, h.name]))
+    // AppV2's Session.host is always the v2 OwnerID (never falsy, even for
+    // local sessions), a DIFFERENT string encoding than Host.id (the peer
+    // transport fingerprint) that onlineIds/hostNameById are keyed by --
+    // see state.OwnerIDFromFingerprint. Without this reverse lookup, every
+    // v2 session's location was silently dropped below (onlineIds never
+    // contains an OwnerID) instead of being resolved to its host's real
+    // fingerprint id.
+    const hostIdByOwnerId = new Map(
+      onlineHosts.filter(h => h.owner_id).map(h => [h.owner_id as string, h.id]),
+    )
     const seen = new Set<string>()
     const sorted = [...sessions]
       .filter(s => s.project_path && s.project_path.trim())
@@ -99,8 +126,8 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
     const unique: RecentLocation[] = []
     for (const s of sorted) {
       const p = s.project_path!
-      const local = !s.host
-      const hostId = local ? localId : s.host!
+      const local = !s.host || (!!localOwnerId && s.host === localOwnerId)
+      const hostId = local ? localId : (hostIdByOwnerId.get(s.host!) || s.host!)
       // Skip locations whose host is offline/unknown (cannot create there)
       if (!onlineIds.has(hostId)) continue
       const key = `${hostId}::${p}`
@@ -111,7 +138,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
         hostId,
         hostName: local
           ? (localHost?.name || s.host_name || 'Local')
-          : (hostNameById.get(s.host!) || s.host_name || s.host!),
+          : (hostNameById.get(hostId) || s.host_name || s.host!),
         local,
       })
       if (unique.length >= 10) break

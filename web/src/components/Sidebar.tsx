@@ -596,6 +596,24 @@ export function Sidebar({
     items: UnifiedItem[]
   }
 
+  // localOwnerId is the local host's v2 OwnerID (Host.owner_id), a
+  // DIFFERENT string encoding than localHostId (the peer transport
+  // fingerprint) -- see state.OwnerIDFromFingerprint. AppLegacy's
+  // Session.host carries the raw fingerprint (matches localHostId
+  // directly); AppV2's Session.host always carries the OwnerID (never the
+  // fingerprint), so comparing it against localHostId alone always fails
+  // for local v2 sessions, misclassifying every local session as a
+  // distinct "remote" host bucket keyed by an OwnerID no `hosts` entry's
+  // `id` field matches. isLocalHostId accepts either encoding.
+  const localOwnerId = useMemo(
+    () => hosts?.find(h => h.id === localHostId)?.owner_id,
+    [hosts, localHostId],
+  )
+  const isLocalHostId = useCallback(
+    (hostId: string | undefined) => !!hostId && (hostId === localHostId || (!!localOwnerId && hostId === localOwnerId)),
+    [localHostId, localOwnerId],
+  )
+
   const hostGroups = useMemo((): HostBucket[] => {
     if (!hasMultipleHosts) return []
     const localBucketId = localHostId ?? ''
@@ -613,10 +631,10 @@ export function Sidebar({
     const hostNameFor = (hostId: string, fallback?: string) => (
       hostId === localBucketId
         ? 'This machine'
-        : hosts?.find(host => host.id === hostId)?.name ?? fallback ?? hostId
+        : hosts?.find(host => host.id === hostId || host.owner_id === hostId)?.name ?? fallback ?? hostId
     )
 
-    const sessionHostId = (session: Session) => (session.host && session.host !== localHostId ? session.host : localBucketId)
+    const sessionHostId = (session: Session) => (session.host && !isLocalHostId(session.host) ? session.host : localBucketId)
 
     for (const item of unifiedItems) {
       if (item.kind === 'session') {
@@ -663,7 +681,7 @@ export function Sidebar({
       ...remoteBuckets,
       ...(mixedBucket && mixedBucket.items.length > 0 ? [mixedBucket] : []),
     ]
-  }, [hasMultipleHosts, hosts, localHostId, unifiedItems])
+  }, [hasMultipleHosts, hosts, localHostId, isLocalHostId, unifiedItems])
 
   // Schedule groups render in a dedicated pinned block above the Hidden section,
   // out of the scrolling session list — recurring/background work, not active.
@@ -727,7 +745,10 @@ export function Sidebar({
     const act = getSessionActivity(sk)
     const isRenaming = renamingSession?.key === sk
     const isOffline = session.host && session.host_online === false
-    const stripeColor = hasMultipleHosts ? hostColor(session.host, localHostId) : null
+    // isLocalHostId handles both the legacy fingerprint and v2 OwnerID
+    // encodings of "this is the local host" (see the comment above
+    // localOwnerId), so a local v2 session never gets a spurious stripe.
+    const stripeColor = hasMultipleHosts && !isLocalHostId(session.host) ? hostColor(session.host, localHostId) : null
     const hostLabel = stripeColor
       ? (hosts?.find(h => h.id === session.host)?.name ?? session.host_name ?? session.host ?? 'remote')
       : null

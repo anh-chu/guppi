@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Host } from './useHosts'
 
 export interface ToolEvent {
   tool: string
@@ -6,6 +7,13 @@ export interface ToolEvent {
   host?: string
   host_name?: string
   session: string
+  /**
+   * Durable session identity (state.SessionID on the wire); stable across
+   * renames, unlike `session` (a mutable display label). Prefer this for
+   * correlation whenever present; `session` remains for legacy events/tools
+   * that don't send it.
+   */
+  session_id?: string
   window: number
   pane?: string
   message?: string
@@ -13,14 +21,53 @@ export interface ToolEvent {
   auto_detected?: boolean
 }
 
-export function useToolEvents() {
+// useToolEvents optionally accepts the current host table (useHosts' Host[])
+// so callers whose session keys are built from the v2 OwnerID (AppV2's
+// sessionKey(), which is always `${ownerId}/${sessionId}`, never the raw
+// peer transport fingerprint) can match against it. Tool events arrive
+// keyed by `host` = peer fingerprint (empty = local) and `session`/
+// `session_id` = display label/stable id (see pkg/toolevents.Event) -- a
+// DIFFERENT identity encoding than AppV2's session keys. When `hosts` is
+// omitted (AppLegacy, whose Session.host is itself the raw fingerprint),
+// behavior is unchanged from before this normalization existed.
+export function useToolEvents(hosts?: Host[]) {
   const [events, setEvents] = useState<ToolEvent[]>([])
   // Tracks sessions with an in-progress hook-based agent turn.
-  // Keyed the same as sessionKey() in useSessions: "session" or "host/session".
+  // Keyed the same as sessionKey() in useSessions: "session" or "host/session"
+  // (AppLegacy), or "ownerId/sessionId" (AppV2, via buildKey below).
   // Set on hook-based active events; cleared on completed.
   // Outlives individual pane events so the badge doesn't flicker "idle"
   // during the brief gaps between tool calls within a single turn.
   const [activeSessions, setActiveSessions] = useState<Set<string>>(new Set())
+
+  // fingerprint (event.host; '' means local) -> v2 OwnerID, via the current
+  // host table. Only meaningful when `hosts` was supplied; otherwise every
+  // fingerprint maps to itself (identity), preserving pre-existing
+  // fingerprint-keyed behavior for AppLegacy.
+  const ownerIdFor = useCallback((fingerprint: string): string => {
+    if (!hosts) return fingerprint
+    if (fingerprint === '') return hosts.find(h => h.local)?.owner_id || ''
+    return hosts.find(h => h.id === fingerprint)?.owner_id || fingerprint
+  }, [hosts])
+
+  // buildKey produces the composite key used to correlate a tool event with
+  // a session. Preferring `session_id` (stable) over `session` (a mutable
+  // display label that changes on rename) avoids losing correlation across
+  // a rename. When `hosts` is supplied, the host component is normalized to
+  // the OwnerID and the key is ALWAYS "owner/session" (never bare), matching
+  // AppV2's sessionKey() -- which always includes the OwnerID, even for
+  // local sessions. Without `hosts`, the original AppLegacy-compatible
+  // "host ? host/session : session" shape is preserved exactly.
+  const buildKey = useCallback((host: string | undefined, sessionIdentity: string): string => {
+    const h = host || ''
+    if (hosts) {
+      const owner = ownerIdFor(h)
+      return owner ? `${owner}/${sessionIdentity}` : sessionIdentity
+    }
+    return h ? `${h}/${sessionIdentity}` : sessionIdentity
+  }, [hosts, ownerIdFor])
+
+  const eventKey = useCallback((e: ToolEvent): string => buildKey(e.host, e.session_id || e.session), [buildKey])
 
   // Fetch initial state
   const refresh = useCallback(async () => {
@@ -33,8 +80,8 @@ export function useToolEvents() {
       // dropped "completed" WebSocket frame can't leave the badge stuck on
       // "working". The server is reliable here: notify posts over HTTP.
       if (turnsRes.ok) {
-        const turns: { host?: string; session: string }[] = await turnsRes.json() || []
-        const keys = turns.map(t => (t.host ? `${t.host}/${t.session}` : t.session))
+        const turns: { host?: string; session: string; session_id?: string }[] = await turnsRes.json() || []
+        const keys = turns.map(t => buildKey(t.host, t.session_id || t.session))
         setActiveSessions(new Set(keys))
       }
       if (res.ok) {
@@ -56,7 +103,7 @@ export function useToolEvents() {
     } catch (err) {
       console.error('Failed to fetch tool events:', err)
     }
-  }, [])
+  }, [buildKey])
 
   useEffect(() => {
     refresh()
@@ -75,6 +122,7 @@ export function useToolEvents() {
       host: evt.host,
       host_name: evt.host_name,
       session: evt.session,
+      session_id: evt.session_id,
       window: evt.window,
       pane: evt.pane,
       message: evt.message,
@@ -84,7 +132,7 @@ export function useToolEvents() {
 
     // Session-level turn tracking (hook-based only — not auto-detected).
     // Both setEvents and setActiveSessions are batched into one render by React 18.
-    const sk = toolEvt.host ? `${toolEvt.host}/${toolEvt.session}` : toolEvt.session
+    const sk = eventKey(toolEvt)
     if (toolEvt.status === 'active' && !toolEvt.auto_detected) {
       setActiveSessions(prev => new Set([...prev, sk]))
     } else if (toolEvt.status === 'completed') {
@@ -106,31 +154,24 @@ export function useToolEvents() {
       // Subsequent waiting/completed events will naturally replace the active one.
       return [...filtered, toolEvt]
     })
-  }, [])
+  }, [eventKey])
 
-  // Get events for a specific session (accepts composite key: "host/name" or "name")
+  // Get events for a specific session. Accepts either the AppLegacy
+  // composite key ("host/name" or bare "name") or, when `hosts` was
+  // supplied, AppV2's "ownerId/sessionId" key -- eventKey normalizes each
+  // tracked event the same way, via `session_id` (stable) over `session`
+  // (mutable display label) and, for AppV2, the fingerprint->OwnerID host
+  // mapping, so both sides of the comparison use an identical encoding.
   const getSessionEvents = useCallback((key: string) => {
-    const idx = key.indexOf('/')
-    if (idx === -1) {
-      // Local session — match events with no host
-      return events.filter(e => e.session === key && !e.host)
-    }
-    const host = key.substring(0, idx)
-    const name = key.substring(idx + 1)
-    return events.filter(e => e.session === name && e.host === host)
-  }, [events])
+    return events.filter(e => eventKey(e) === key)
+  }, [events, eventKey])
 
-  // Check if a session has any "waiting" events (accepts composite key)
+  // Check if a session has any "waiting"/"stuck" events (same key contract
+  // as getSessionEvents).
   const sessionNeedsAttention = useCallback((key: string) => {
-    const idx = key.indexOf('/')
     const needsAttn = (e: ToolEvent) => e.status === 'waiting' || e.status === 'stuck'
-    if (idx === -1) {
-      return events.some(e => e.session === key && !e.host && needsAttn(e))
-    }
-    const host = key.substring(0, idx)
-    const name = key.substring(idx + 1)
-    return events.some(e => e.session === name && e.host === host && needsAttn(e))
-  }, [events])
+    return events.some(e => eventKey(e) === key && needsAttn(e))
+  }, [events, eventKey])
 
   // Returns true if the session has an in-progress hook-based agent turn.
   // More stable than checking events directly — persists across the brief
