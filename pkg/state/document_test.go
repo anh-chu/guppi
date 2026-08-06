@@ -188,3 +188,29 @@ func TestCommandReceiptBounds(t *testing.T) {
 		t.Error("expected too many commands to be rejected")
 	}
 }
+
+// TestFixtureSessionWithoutNewMetadataFieldsLoadsWithEmptyValues proves that
+// the existing testdata/fixtures.json session fixture -- authored before
+// LocalSessionRecord.AgentType/WorktreeBranch existed -- still unmarshals
+// cleanly into LocalSessionRecord, with the new optional fields simply
+// empty, instead of the fixture failing to load or the new fields being
+// required.
+func TestFixtureSessionWithoutNewMetadataFieldsLoadsWithEmptyValues(t *testing.T) {
+	f := loadFixtures(t)
+	var rec LocalSessionRecord
+	if err := json.Unmarshal(f.Session, &rec); err != nil {
+		t.Fatalf("unmarshal fixture session: %v", err)
+	}
+	if rec.ID != "sessionfixture1234567890" {
+		t.Fatalf("unexpected fixture session id: %q", rec.ID)
+	}
+	if rec.AgentType != "" {
+		t.Errorf("AgentType = %q, want empty for a fixture predating the field", rec.AgentType)
+	}
+	if rec.WorktreeBranch != "" {
+		t.Errorf("WorktreeBranch = %q, want empty for a fixture predating the field", rec.WorktreeBranch)
+	}
+	if rec.ScheduleID != "" {
+		t.Errorf("ScheduleID = %q, want empty for a fixture predating the field", rec.ScheduleID)
+	}
+}

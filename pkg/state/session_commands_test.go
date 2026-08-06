@@ -1318,3 +1318,198 @@ func TestSnapshotProjectionIncludesPresentationAndScheduleFields(t *testing.T) {
 		t.Fatalf("expected snapshot ScheduleID = sched-snap, got %q", found.ScheduleID)
 	}
 }
+
+// TestCreateMetadataCarriesThroughPendingToActive proves that a local create
+// carrying agent_type, worktree_branch, and schedule_id retains all three
+// through the pending record (before daemon completion) and the final
+// active LocalSessionRecord (after daemon completion), instead of any of
+// them being silently dropped along the way.
+func TestCreateMetadataCarriesThroughPendingToActive(t *testing.T) {
+	repo := initGitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	params, _ := json.Marshal(CreateParams{
+		Name:           "metatest",
+		Shell:          "/bin/bash",
+		Cwd:            repo,
+		AgentType:      "claude",
+		WorktreeBranch: "feature-x",
+		ScheduleID:     "sched-meta-1",
+	})
+	res, err := svc.ExecuteSessionCommand(ctx, SessionCommand{ID: NewCommandID(), Action: ActionCreate, Params: params})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Before the daemon worker runs, the pending record must already carry
+	// all three metadata values.
+	pendings := catalog.PendingCreates()
+	if len(pendings) != 1 {
+		t.Fatalf("expected 1 pending create, got %d", len(pendings))
+	}
+	p := pendings[0]
+	if p.AgentType != "claude" {
+		t.Errorf("pending AgentType = %q, want %q", p.AgentType, "claude")
+	}
+	if p.WorktreeBranch != "feature-x" {
+		t.Errorf("pending WorktreeBranch = %q, want %q", p.WorktreeBranch, "feature-x")
+	}
+	if p.ScheduleID != "sched-meta-1" {
+		t.Errorf("pending ScheduleID = %q, want %q", p.ScheduleID, "sched-meta-1")
+	}
+
+	startWorker(ctx, t, svc)
+
+	var rec LocalSessionRecord
+	var ok bool
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
+		if rec, ok = catalog.Session(res.Ref.Session); ok && rec.Phase == SessionPhaseActive {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ok || rec.Phase != SessionPhaseActive {
+		t.Fatalf("session did not become active: %+v", rec)
+	}
+	if rec.AgentType != "claude" {
+		t.Errorf("active AgentType = %q, want %q", rec.AgentType, "claude")
+	}
+	if rec.WorktreeBranch != "feature-x" {
+		t.Errorf("active WorktreeBranch = %q, want %q", rec.WorktreeBranch, "feature-x")
+	}
+	if rec.ScheduleID != "sched-meta-1" {
+		t.Errorf("active ScheduleID = %q, want %q", rec.ScheduleID, "sched-meta-1")
+	}
+}
+
+// TestFailedCreateRetainsMetadata proves that when a local create
+// permanently fails (exhausts retries), the resulting dismissed
+// LocalSessionRecord still carries agent_type, worktree_branch, and
+// schedule_id -- the metadata is not discarded on failure.
+func TestFailedCreateRetainsMetadata(t *testing.T) {
+	svc, catalog, backend, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	backend.startErr = errors.New("spawn failed")
+	svc.opts.MaxCreateRetries = 1
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startWorker(ctx, t, svc)
+
+	params, _ := json.Marshal(CreateParams{
+		Name:       "failmeta",
+		Shell:      "/bin/bash",
+		Cwd:        "/tmp",
+		AgentType:  "codex",
+		ScheduleID: "sched-fail-1",
+	})
+	res, err := svc.ExecuteSessionCommand(ctx, SessionCommand{ID: NewCommandID(), Action: ActionCreate, Params: params})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var rec LocalSessionRecord
+	var ok bool
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
+		if rec, ok = catalog.Session(res.Ref.Session); ok && rec.Phase == SessionPhaseDismissed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ok || rec.Phase != SessionPhaseDismissed {
+		t.Fatalf("expected dismissed session after exhausted retries: %+v", rec)
+	}
+	if rec.AgentType != "codex" {
+		t.Errorf("dismissed AgentType = %q, want %q", rec.AgentType, "codex")
+	}
+	if rec.ScheduleID != "sched-fail-1" {
+		t.Errorf("dismissed ScheduleID = %q, want %q", rec.ScheduleID, "sched-fail-1")
+	}
+}
+
+// TestRetryCarriesMetadataForward proves that retrying a dismissed session
+// (executeRetry) rebuilds the pending create record from the dismissed
+// LocalSessionRecord's agent_type, worktree_branch, and schedule_id instead
+// of discarding them, and that the resulting active session after retry
+// succeeds also retains them.
+func TestRetryCarriesMetadataForward(t *testing.T) {
+	repo := initGitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	dismissed := LocalSessionRecord{
+		ID:             SessionID("retrymeta1"),
+		Owner:          testOwner(),
+		Ref:            testRef(SessionID("retrymeta1")),
+		Phase:          SessionPhaseDismissed,
+		Desired:        DesiredStop,
+		Created:        time.Now(),
+		Name:           "retrymeta",
+		Shell:          "/bin/bash",
+		Cwd:            repo,
+		AgentType:      "gemini",
+		WorktreeBranch: "retry-branch",
+		ScheduleID:     "sched-retry-1",
+	}
+	if err := catalog.PutSession(dismissed); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	res, err := svc.ExecuteSessionCommand(ctx, SessionCommand{ID: NewCommandID(), Ref: dismissed.Ref, Action: ActionRetry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Accepted {
+		t.Fatalf("expected retry accepted, got %+v", res)
+	}
+
+	pendings := catalog.PendingCreates()
+	if len(pendings) != 1 {
+		t.Fatalf("expected 1 pending create after retry, got %d", len(pendings))
+	}
+	p := pendings[0]
+	if p.AgentType != "gemini" {
+		t.Errorf("retried pending AgentType = %q, want %q", p.AgentType, "gemini")
+	}
+	if p.WorktreeBranch != "retry-branch" {
+		t.Errorf("retried pending WorktreeBranch = %q, want %q", p.WorktreeBranch, "retry-branch")
+	}
+	if p.ScheduleID != "sched-retry-1" {
+		t.Errorf("retried pending ScheduleID = %q, want %q", p.ScheduleID, "sched-retry-1")
+	}
+
+	startWorker(ctx, t, svc)
+
+	var rec LocalSessionRecord
+	var ok bool
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
+		if rec, ok = catalog.Session(dismissed.ID); ok && rec.Phase == SessionPhaseActive {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ok || rec.Phase != SessionPhaseActive {
+		t.Fatalf("session did not become active after retry: %+v", rec)
+	}
+	if rec.AgentType != "gemini" {
+		t.Errorf("active-after-retry AgentType = %q, want %q", rec.AgentType, "gemini")
+	}
+	if rec.WorktreeBranch != "retry-branch" {
+		t.Errorf("active-after-retry WorktreeBranch = %q, want %q", rec.WorktreeBranch, "retry-branch")
+	}
+	if rec.ScheduleID != "sched-retry-1" {
+		t.Errorf("active-after-retry ScheduleID = %q, want %q", rec.ScheduleID, "sched-retry-1")
+	}
+}

@@ -418,6 +418,7 @@ func (s *SessionCommandService) executeCreate(ctx context.Context, cmd SessionCo
 			DisplayName:    displayName,
 			WorktreeBranch: params.WorktreeBranch,
 			ScheduleID:     params.ScheduleID,
+			AgentType:      params.AgentType,
 		})
 		result = CommandResult{ID: cmd.ID, Ref: ref, DisplayName: displayName, Path: path, Accepted: true}
 		receipt, err := newSuccessReceipt(cmd.ID, "session:"+ActionCreate, ref.MapKey(), nextCommandSeq(doc), s.opts.Now(), result)
@@ -590,20 +591,22 @@ func (s *SessionCommandService) executePendingCreate(ctx context.Context, p Pend
 		doc.PendingCreates = filtered
 
 		rec := LocalSessionRecord{
-			ID:         p.Ref.Session,
-			Owner:      p.Ref.Owner,
-			Ref:        p.Ref,
-			Phase:      SessionPhaseActive,
-			Desired:    DesiredRun,
-			Created:    now,
-			Name:       p.DisplayName,
-			Shell:      p.Shell,
-			Cwd:        cwd,
-			Cols:       p.Cols,
-			Rows:       p.Rows,
-			DaemonPID:  info.DaemonPID,
-			Generation: info.Generation,
-			ScheduleID: p.ScheduleID,
+			ID:             p.Ref.Session,
+			Owner:          p.Ref.Owner,
+			Ref:            p.Ref,
+			Phase:          SessionPhaseActive,
+			Desired:        DesiredRun,
+			Created:        now,
+			Name:           p.DisplayName,
+			Shell:          p.Shell,
+			Cwd:            cwd,
+			Cols:           p.Cols,
+			Rows:           p.Rows,
+			DaemonPID:      info.DaemonPID,
+			Generation:     info.Generation,
+			ScheduleID:     p.ScheduleID,
+			AgentType:      p.AgentType,
+			WorktreeBranch: p.WorktreeBranch,
 		}
 		found := false
 		for i := range doc.Sessions {
@@ -644,17 +647,20 @@ func (s *SessionCommandService) failPendingCreate(p PendingCreateRecord, cause e
 		_ = s.catalog.apply("session/create-failed", func(doc *AppDocument) error {
 			doc.PendingCreates = removePendingByID(doc.PendingCreates, p.IntentID)
 			rec := LocalSessionRecord{
-				ID:      p.Ref.Session,
-				Owner:   p.Ref.Owner,
-				Ref:     p.Ref,
-				Phase:   SessionPhaseDismissed,
-				Desired: DesiredStop,
-				Created: s.opts.Now(),
-				Name:    p.DisplayName,
-				Shell:   p.Shell,
-				Cwd:     p.Cwd,
-				Cols:    p.Cols,
-				Rows:    p.Rows,
+				ID:             p.Ref.Session,
+				Owner:          p.Ref.Owner,
+				Ref:            p.Ref,
+				Phase:          SessionPhaseDismissed,
+				Desired:        DesiredStop,
+				Created:        s.opts.Now(),
+				Name:           p.DisplayName,
+				Shell:          p.Shell,
+				Cwd:            p.Cwd,
+				Cols:           p.Cols,
+				Rows:           p.Rows,
+				ScheduleID:     p.ScheduleID,
+				AgentType:      p.AgentType,
+				WorktreeBranch: p.WorktreeBranch,
 			}
 			found := false
 			for i := range doc.Sessions {
@@ -947,15 +953,20 @@ func (s *SessionCommandService) executeRetry(ctx context.Context, cmd SessionCom
 		}
 		doc.PendingCreates = removePendingByID(doc.PendingCreates, cmd.ID)
 		doc.PendingCreates = append(doc.PendingCreates, PendingCreateRecord{
-			IntentID:       cmd.ID,
-			Ref:            rec.Ref,
-			Inserted:       s.opts.Now(),
-			Shell:          rec.Shell,
-			Cwd:            rec.Cwd,
-			Cols:           rec.Cols,
-			Rows:           rec.Rows,
-			DisplayName:    rec.Name,
-			WorktreeBranch: "", // original branch context is gone; caller can recover with explicit cwd
+			IntentID: cmd.ID,
+			Ref:      rec.Ref,
+			Inserted: s.opts.Now(),
+			Shell:    rec.Shell,
+			Cwd:      rec.Cwd,
+			Cols:     rec.Cols,
+			Rows:     rec.Rows,
+			DisplayName: rec.Name,
+			// WorktreeBranch/AgentType/ScheduleID are canonical creation
+			// metadata carried forward from the dismissed/crashed record
+			// being retried, not discarded on retry.
+			WorktreeBranch: rec.WorktreeBranch,
+			AgentType:      rec.AgentType,
+			ScheduleID:     rec.ScheduleID,
 		})
 		// Keep the logical session record as dismissed until the worker succeeds.
 		result = CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Name, Accepted: true}

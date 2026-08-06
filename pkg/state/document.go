@@ -94,6 +94,14 @@ type LocalSessionRecord struct {
 	// canonical catalog directly by SessionRef instead of a separate
 	// display-name-keyed attribute store.
 	ScheduleID string `json:"schedule_id,omitempty"`
+
+	// AgentType/WorktreeBranch are canonical creation metadata carried over
+	// from the pending create record (local or remote) when the create
+	// completes, so they survive through pending, active, failed, retry,
+	// recovery, and reconciler-adoption states instead of being discarded
+	// once the daemon starts.
+	AgentType      string `json:"agent_type,omitempty"`
+	WorktreeBranch string `json:"worktree_branch,omitempty"`
 }
 
 // WorkspaceRecord is the active workspace layout for an owner.
@@ -249,6 +257,9 @@ type PendingCreateRecord struct {
 	// by ValidateDocument to reject more than one in-flight create owning the
 	// same schedule slot at once (see ErrInconsistentScheduleOwnership).
 	ScheduleID string `json:"schedule_id,omitempty"`
+	// AgentType mirrors CreateParams.AgentType; it is carried through to
+	// LocalSessionRecord.AgentType when the create completes.
+	AgentType string `json:"agent_type,omitempty"`
 }
 
 // PendingRemoteCreateRecord is the only persisted distributed saga. It tracks
@@ -274,6 +285,9 @@ type PendingRemoteCreateRecord struct {
 	// ScheduleID mirrors PendingCreateRecord.ScheduleID for the remote-create
 	// saga (see RemoteCreateRequest.ScheduleID).
 	ScheduleID string `json:"schedule_id,omitempty"`
+	// AgentType mirrors RemoteCreateRequest.AgentType; it is carried through
+	// to LocalSessionRecord.AgentType when the remote create completes.
+	AgentType string `json:"agent_type,omitempty"`
 }
 
 // OwnerCatalogSnapshot is sent from an owner to the browser or to peers. It

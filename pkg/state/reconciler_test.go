@@ -924,3 +924,122 @@ func TestFirstSnapshotCompleteAfterRestart(t *testing.T) {
 		}
 	}
 }
+
+// TestReconcilerStartPendingCarriesMetadataToActive proves that
+// Reconciler.startPending (the direct-start reconciliation path, used when
+// no daemon was found live for a pending create) copies agent_type,
+// worktree_branch, and schedule_id from the PendingCreateRecord into the
+// resulting active LocalSessionRecord.
+func TestReconcilerStartPendingCarriesMetadataToActive(t *testing.T) {
+	owner := testOwner()
+	store, cleanup := newTestStore(t, owner)
+	defer cleanup()
+
+	catalog := NewCatalog(owner, store)
+	_ = catalog.Load()
+	backend := newFakeBackend()
+
+	ref := testRef(SessionID("startpendingmeta"))
+	pending := PendingCreateRecord{
+		IntentID:       NewCommandID(),
+		Ref:            ref,
+		Inserted:       time.Now(),
+		Shell:          "/bin/zsh",
+		Cwd:            "/home/u",
+		Cols:           80,
+		Rows:           24,
+		AgentType:      "claude",
+		WorktreeBranch: "start-branch",
+		ScheduleID:     "sched-start-1",
+	}
+	if err := catalog.PutPendingCreate(pending); err != nil {
+		t.Fatal(err)
+	}
+	backend.setStart(bindingForRef(ref), pty.ReadyInfo{
+		Owner:      string(owner),
+		SessionID:  "startpendingmeta",
+		Generation: "gen-start-meta",
+		DaemonPID:  111,
+	})
+
+	r := NewReconciler(catalog, backend, nil, ReconcilerOptions{})
+	if err := r.startPending(context.Background(), pending); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, ok := catalog.Session(ref.Session)
+	if !ok || rec.Phase != SessionPhaseActive {
+		t.Fatalf("expected active session after startPending, got %+v", rec)
+	}
+	if rec.AgentType != "claude" {
+		t.Errorf("startPending AgentType = %q, want %q", rec.AgentType, "claude")
+	}
+	if rec.WorktreeBranch != "start-branch" {
+		t.Errorf("startPending WorktreeBranch = %q, want %q", rec.WorktreeBranch, "start-branch")
+	}
+	if rec.ScheduleID != "sched-start-1" {
+		t.Errorf("startPending ScheduleID = %q, want %q", rec.ScheduleID, "sched-start-1")
+	}
+}
+
+// TestReconcilerAdoptLivePendingCarriesMetadataToActive proves that
+// Reconciler.adoptLivePending (the probe-and-adopt path used when a daemon
+// is found already live for a pending create) copies agent_type,
+// worktree_branch, and schedule_id from the PendingCreateRecord into the
+// adopted active LocalSessionRecord.
+func TestReconcilerAdoptLivePendingCarriesMetadataToActive(t *testing.T) {
+	owner := testOwner()
+	store, cleanup := newTestStore(t, owner)
+	defer cleanup()
+
+	catalog := NewCatalog(owner, store)
+	_ = catalog.Load()
+	backend := newFakeBackend()
+
+	ref := testRef(SessionID("adoptpendingmeta"))
+	pending := PendingCreateRecord{
+		IntentID:       NewCommandID(),
+		Ref:            ref,
+		Inserted:       time.Now(),
+		Shell:          "/bin/zsh",
+		Cwd:            "/home/u",
+		Cols:           80,
+		Rows:           24,
+		AgentType:      "gemini",
+		WorktreeBranch: "adopt-branch",
+		ScheduleID:     "sched-adopt-1",
+	}
+	if err := catalog.PutPendingCreate(pending); err != nil {
+		t.Fatal(err)
+	}
+
+	backend.setProbe(bindingForRef(ref), pty.ProbeEvidence{
+		Status: pty.ProbeLive,
+		Binding: pty.StableBinding{
+			Owner:      string(owner),
+			SessionID:  "adoptpendingmeta",
+			Generation: "gen-adopt-meta",
+		},
+		DaemonPID: 201,
+		Reason:    "already running",
+	})
+
+	r := NewReconciler(catalog, backend, nil, ReconcilerOptions{})
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, ok := catalog.Session(ref.Session)
+	if !ok || rec.Phase != SessionPhaseActive {
+		t.Fatalf("expected adopted active session, got %+v", rec)
+	}
+	if rec.AgentType != "gemini" {
+		t.Errorf("adoptLivePending AgentType = %q, want %q", rec.AgentType, "gemini")
+	}
+	if rec.WorktreeBranch != "adopt-branch" {
+		t.Errorf("adoptLivePending WorktreeBranch = %q, want %q", rec.WorktreeBranch, "adopt-branch")
+	}
+	if rec.ScheduleID != "sched-adopt-1" {
+		t.Errorf("adoptLivePending ScheduleID = %q, want %q", rec.ScheduleID, "sched-adopt-1")
+	}
+}

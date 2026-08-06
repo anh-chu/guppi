@@ -211,19 +211,23 @@ func (c *RemoteCreateCoordinator) ExecuteRemoteCreate(ctx context.Context, req R
 			UpdatedAt:      now,
 			WorktreeBranch: req.WorktreeBranch,
 			ScheduleID:     req.ScheduleID,
+			AgentType:      req.AgentType,
 		})
 		doc.Sessions = append(doc.Sessions, LocalSessionRecord{
-			ID:      ref.Session,
-			Owner:   c.opts.Owner,
-			Ref:     ref,
-			Phase:   SessionPhasePending,
-			Desired: DesiredRun,
-			Created: now,
-			Name:    displayName,
-			Shell:   req.Shell,
-			Cwd:     path,
-			Cols:    req.Cols,
-			Rows:    req.Rows,
+			ID:             ref.Session,
+			Owner:          c.opts.Owner,
+			Ref:            ref,
+			Phase:          SessionPhasePending,
+			Desired:        DesiredRun,
+			Created:        now,
+			Name:           displayName,
+			Shell:          req.Shell,
+			Cwd:            path,
+			Cols:           req.Cols,
+			Rows:           req.Rows,
+			ScheduleID:     req.ScheduleID,
+			AgentType:      req.AgentType,
+			WorktreeBranch: req.WorktreeBranch,
 		})
 		result = RemoteCreateResult{ID: req.IntentID, Ref: ref, DisplayName: displayName, Path: path, LayoutID: layoutID, Accepted: true}
 		receipt, err := newSuccessReceipt(req.IntentID, "remote-create:create", ref.MapKey(), nextCommandSeq(doc), now, result)
@@ -348,19 +352,22 @@ func (c *RemoteCreateCoordinator) executePendingRemoteCreate(ctx context.Context
 		doc.PendingRemoteCreates = filtered
 
 		session := LocalSessionRecord{
-			ID:         rec.Ref.Session,
-			Owner:      rec.Ref.Owner,
-			Ref:        rec.Ref,
-			Phase:      SessionPhaseActive,
-			Desired:    DesiredRun,
-			Created:    now,
-			Name:       rec.DisplayName,
-			Shell:      rec.Shell,
-			Cwd:        cwd,
-			Cols:       rec.Cols,
-			Rows:       rec.Rows,
-			DaemonPID:  info.DaemonPID,
-			Generation: info.Generation,
+			ID:             rec.Ref.Session,
+			Owner:          rec.Ref.Owner,
+			Ref:            rec.Ref,
+			Phase:          SessionPhaseActive,
+			Desired:        DesiredRun,
+			Created:        now,
+			Name:           rec.DisplayName,
+			Shell:          rec.Shell,
+			Cwd:            cwd,
+			Cols:           rec.Cols,
+			Rows:           rec.Rows,
+			DaemonPID:      info.DaemonPID,
+			Generation:     info.Generation,
+			ScheduleID:     rec.ScheduleID,
+			AgentType:      rec.AgentType,
+			WorktreeBranch: rec.WorktreeBranch,
 		}
 		found := false
 		for i := range doc.Sessions {
@@ -414,17 +421,20 @@ func (c *RemoteCreateCoordinator) failPendingRemoteCreate(p PendingRemoteCreateR
 		_ = c.catalog.apply("remote-create/failed", func(doc *AppDocument) error {
 			doc.PendingRemoteCreates = removeRemotePendingByID(doc.PendingRemoteCreates, p.IntentID)
 			rec := LocalSessionRecord{
-				ID:      p.Ref.Session,
-				Owner:   p.Ref.Owner,
-				Ref:     p.Ref,
-				Phase:   SessionPhaseDismissed,
-				Desired: DesiredStop,
-				Created: c.opts.Now(),
-				Name:    p.DisplayName,
-				Shell:   p.Shell,
-				Cwd:     p.Cwd,
-				Cols:    p.Cols,
-				Rows:    p.Rows,
+				ID:             p.Ref.Session,
+				Owner:          p.Ref.Owner,
+				Ref:            p.Ref,
+				Phase:          SessionPhaseDismissed,
+				Desired:        DesiredStop,
+				Created:        c.opts.Now(),
+				Name:           p.DisplayName,
+				Shell:          p.Shell,
+				Cwd:            p.Cwd,
+				Cols:           p.Cols,
+				Rows:           p.Rows,
+				ScheduleID:     p.ScheduleID,
+				AgentType:      p.AgentType,
+				WorktreeBranch: p.WorktreeBranch,
 			}
 			found := false
 			for i := range doc.Sessions {

@@ -224,3 +224,132 @@ func TestRemoteCreateRequest_JSONRoundTrip_WithSplitTarget(t *testing.T) {
 		t.Errorf("Target = %+v, want %+v", *decoded.Target, target)
 	}
 }
+
+// TestRemoteCreateMetadataCarriesThroughPendingToActive proves that a
+// remote create request carrying agent_type, worktree_branch, and
+// schedule_id retains all three through the pending remote-create record,
+// the immediate pending-phase LocalSessionRecord, and the final active
+// LocalSessionRecord after the daemon completes.
+func TestRemoteCreateMetadataCarriesThroughPendingToActive(t *testing.T) {
+	repo := initGitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+
+	coord, catalog, cleanup := newTestRemoteCreateCoordinator(t)
+	defer cleanup()
+
+	req := RemoteCreateRequest{
+		IntentID:       NewCommandID(),
+		Name:           "remote-meta",
+		Shell:          "/bin/bash",
+		Cwd:            repo,
+		AgentType:      "claude",
+		WorktreeBranch: "remote-branch",
+		ScheduleID:     "sched-remote-1",
+	}
+	res, err := coord.ExecuteRemoteCreate(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pendings := catalog.PendingRemoteCreates()
+	if len(pendings) != 1 {
+		t.Fatalf("expected 1 pending remote create, got %d", len(pendings))
+	}
+	p := pendings[0]
+	if p.AgentType != "claude" {
+		t.Errorf("pending remote AgentType = %q, want %q", p.AgentType, "claude")
+	}
+	if p.WorktreeBranch != "remote-branch" {
+		t.Errorf("pending remote WorktreeBranch = %q, want %q", p.WorktreeBranch, "remote-branch")
+	}
+	if p.ScheduleID != "sched-remote-1" {
+		t.Errorf("pending remote ScheduleID = %q, want %q", p.ScheduleID, "sched-remote-1")
+	}
+
+	// The pending-phase LocalSessionRecord committed immediately (before the
+	// daemon starts) must already carry the same metadata.
+	pendingSession, ok := catalog.Session(res.Ref.Session)
+	if !ok || pendingSession.Phase != SessionPhasePending {
+		t.Fatalf("expected pending-phase session record, got %+v", pendingSession)
+	}
+	if pendingSession.AgentType != "claude" {
+		t.Errorf("pending-phase AgentType = %q, want %q", pendingSession.AgentType, "claude")
+	}
+	if pendingSession.WorktreeBranch != "remote-branch" {
+		t.Errorf("pending-phase WorktreeBranch = %q, want %q", pendingSession.WorktreeBranch, "remote-branch")
+	}
+	if pendingSession.ScheduleID != "sched-remote-1" {
+		t.Errorf("pending-phase ScheduleID = %q, want %q", pendingSession.ScheduleID, "sched-remote-1")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = coord.Run(ctx) }()
+
+	var rec LocalSessionRecord
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
+		if rec, ok = catalog.Session(res.Ref.Session); ok && rec.Phase == SessionPhaseActive {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ok || rec.Phase != SessionPhaseActive {
+		t.Fatalf("remote session did not become active: %+v", rec)
+	}
+	if rec.AgentType != "claude" {
+		t.Errorf("active remote AgentType = %q, want %q", rec.AgentType, "claude")
+	}
+	if rec.WorktreeBranch != "remote-branch" {
+		t.Errorf("active remote WorktreeBranch = %q, want %q", rec.WorktreeBranch, "remote-branch")
+	}
+	if rec.ScheduleID != "sched-remote-1" {
+		t.Errorf("active remote ScheduleID = %q, want %q", rec.ScheduleID, "sched-remote-1")
+	}
+}
+
+// TestRemoteCreateFailureRetainsMetadata proves that when a remote create
+// permanently fails (exhausts retries), the resulting dismissed
+// LocalSessionRecord still carries agent_type, worktree_branch, and
+// schedule_id.
+func TestRemoteCreateFailureRetainsMetadata(t *testing.T) {
+	coord, catalog, cleanup := newTestRemoteCreateCoordinator(t)
+	defer cleanup()
+
+	coord.backend.(*testBackend).startErr = errors.New("spawn failed")
+	coord.opts.MaxRetries = 1
+
+	req := RemoteCreateRequest{
+		IntentID:   NewCommandID(),
+		Name:       "remote-fail-meta",
+		Shell:      "/bin/bash",
+		Cwd:        "/tmp",
+		AgentType:  "codex",
+		ScheduleID: "sched-remote-fail-1",
+	}
+	res, err := coord.ExecuteRemoteCreate(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = coord.Run(ctx) }()
+
+	var rec LocalSessionRecord
+	var ok bool
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
+		if rec, ok = catalog.Session(res.Ref.Session); ok && rec.Phase == SessionPhaseDismissed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ok || rec.Phase != SessionPhaseDismissed {
+		t.Fatalf("expected dismissed remote session after exhausted retries: %+v", rec)
+	}
+	if rec.AgentType != "codex" {
+		t.Errorf("dismissed remote AgentType = %q, want %q", rec.AgentType, "codex")
+	}
+	if rec.ScheduleID != "sched-remote-fail-1" {
+		t.Errorf("dismissed remote ScheduleID = %q, want %q", rec.ScheduleID, "sched-remote-fail-1")
+	}
+}

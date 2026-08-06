@@ -385,19 +385,22 @@ func (r *Reconciler) startPending(ctx context.Context, pending PendingCreateReco
 		return err
 	}
 	rec := LocalSessionRecord{
-		ID:         pending.Ref.Session,
-		Owner:      pending.Ref.Owner,
-		Ref:        pending.Ref,
-		Phase:      SessionPhaseActive,
-		Desired:    DesiredRun,
-		Created:    r.opts.Now(),
-		Name:       pendingDisplayName(pending),
-		Shell:      pending.Shell,
-		Cwd:        pending.Cwd,
-		Cols:       pending.Cols,
-		Rows:       pending.Rows,
-		DaemonPID:  info.DaemonPID,
-		Generation: info.Generation,
+		ID:             pending.Ref.Session,
+		Owner:          pending.Ref.Owner,
+		Ref:            pending.Ref,
+		Phase:          SessionPhaseActive,
+		Desired:        DesiredRun,
+		Created:        r.opts.Now(),
+		Name:           pendingDisplayName(pending),
+		Shell:          pending.Shell,
+		Cwd:            pending.Cwd,
+		Cols:           pending.Cols,
+		Rows:           pending.Rows,
+		DaemonPID:      info.DaemonPID,
+		Generation:     info.Generation,
+		ScheduleID:     pending.ScheduleID,
+		AgentType:      pending.AgentType,
+		WorktreeBranch: pending.WorktreeBranch,
 	}
 	if err := r.catalog.PutSession(rec); err != nil {
 		return err
@@ -407,19 +410,22 @@ func (r *Reconciler) startPending(ctx context.Context, pending PendingCreateReco
 
 func (r *Reconciler) adoptLivePending(ctx context.Context, pending PendingCreateRecord, ev pty.ProbeEvidence) error {
 	rec := LocalSessionRecord{
-		ID:         pending.Ref.Session,
-		Owner:      pending.Ref.Owner,
-		Ref:        pending.Ref,
-		Phase:      SessionPhaseActive,
-		Desired:    DesiredRun,
-		Created:    r.opts.Now(),
-		Name:       pendingDisplayName(pending),
-		Shell:      pending.Shell,
-		Cwd:        pending.Cwd,
-		Cols:       pending.Cols,
-		Rows:       pending.Rows,
-		DaemonPID:  ev.DaemonPID,
-		Generation: ev.Binding.Generation,
+		ID:             pending.Ref.Session,
+		Owner:          pending.Ref.Owner,
+		Ref:            pending.Ref,
+		Phase:          SessionPhaseActive,
+		Desired:        DesiredRun,
+		Created:        r.opts.Now(),
+		Name:           pendingDisplayName(pending),
+		Shell:          pending.Shell,
+		Cwd:            pending.Cwd,
+		Cols:           pending.Cols,
+		Rows:           pending.Rows,
+		DaemonPID:      ev.DaemonPID,
+		Generation:     ev.Binding.Generation,
+		ScheduleID:     pending.ScheduleID,
+		AgentType:      pending.AgentType,
+		WorktreeBranch: pending.WorktreeBranch,
 	}
 	if err := r.catalog.PutSession(rec); err != nil {
 		return err

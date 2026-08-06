@@ -66,6 +66,12 @@ export type LocalSessionRecord = {
   // toSessionView) since older servers/bootstrap snapshots may omit them.
   hidden?: boolean
   background?: boolean
+  // agent_type/worktree_branch/schedule_id: canonical creation metadata
+  // carried through pkg/state/document.go's LocalSessionRecord. Optional
+  // since older servers/bootstrap snapshots may omit them.
+  agent_type?: string
+  worktree_branch?: string
+  schedule_id?: string
 }
 
 export type WorkspaceRecord = {
