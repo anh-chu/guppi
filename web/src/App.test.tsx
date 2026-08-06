@@ -96,7 +96,18 @@ vi.mock('./hooks/useSessionState', () => ({
 
 // Mock other hooks with minimal implementations
 const createMockHook = (name: string) => vi.fn(() => {
-  if (name === 'useHosts') return { hosts: mockHostsList ?? [], refresh: vi.fn() }
+  if (name === 'useHosts') {
+    const hosts = mockHostsList ?? []
+    const byPeerId = new Map<string, any>()
+    const byOwnerId = new Map<string, any>()
+    let local: any
+    for (const h of hosts) {
+      byPeerId.set(h.id, h)
+      if (h.owner_id) byOwnerId.set(h.owner_id, h)
+      if (h.local) local = h
+    }
+    return { hosts, refresh: vi.fn(), hostIndex: { hosts, local, byPeerId, byOwnerId } }
+  }
   if (name === 'useToolEvents') return {
     events: [],
     handleEvent: vi.fn(),

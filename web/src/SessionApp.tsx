@@ -111,7 +111,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   // Shared non-session hooks
   const { prefs } = usePreferences()
   const wikiEnabled = !prefs.wiki_disabled
-  const { hosts, refresh: refreshHosts } = useHosts()
+  const { hosts, refresh: refreshHosts, hostIndex } = useHosts()
   // SessionApp's session keys (sessionKey()) are always "ownerId/sessionId", never
   // the raw peer transport fingerprint -- passing `hosts` lets useToolEvents
   // normalize incoming tool events (keyed by fingerprint + mutable display
@@ -390,8 +390,8 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   // frontend-prep notes for why those components aren't migrated to
   // SessionView wholesale yet.
   const sessionViews = useMemo<SessionView[]>(
-    () => Array.from(state.catalog.sessionsByRef.values()).map(toSessionView),
-    [state.catalog.sessionsByRef],
+    () => Array.from(state.catalog.sessionsByRef.values()).map(record => toSessionView(record, hostIndex, state.catalog.localOwner)),
+    [state.catalog.sessionsByRef, hostIndex, state.catalog.localOwner],
   )
 
   // Real session list backing Sidebar/Overview/QuickSwitcher/NewSessionModal
@@ -500,7 +500,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   const glance = useMemo(() => {
     let parked = 0, working = 0, waiting = 0
     for (const view of sessionViews) {
-      const signal = sessionViewSignal(getSessionEvents(view.key), getSessionActivity(view.key), isSessionInActiveTurn(view.key))
+      const signal = sessionViewSignal(view, getSessionEvents(view.key), getSessionActivity(view.key), isSessionInActiveTurn(view.key))
       if (signal.state === 'needs_you') waiting++
       else if (signal.state === 'working') working++
       else parked++

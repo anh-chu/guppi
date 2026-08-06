@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import type { HostIndex } from '../state/session/viewModel'
 
 export interface Host {
   id: string
@@ -8,8 +9,15 @@ export interface Host {
    * see state.OwnerIDFromFingerprint. Use this, never `id`, wherever a value
    * is sent to the server as a v2 identity (e.g. target_owner on a v2 create,
    * or a v2-routed terminal attach's `host` param, which server-side now
-   * resolves via ResolveHostParam). Empty when the host has no canonical catalog
-   * (legacy-only mode).
+   * resolves via ResolveHostParam).
+   *
+   * Genuinely absent (not just optional-by-caution) when the host has no
+   * canonical catalog wired: pkg/peer.Manager.GetHosts marshals this field
+   * with `omitempty`, and ownerIDForPeerLocked returns "" with ok=false for
+   * a peer with no catalog -- see pkg/peer/manager.go and the
+   * TestGetHosts_IncludesOwnerID boundary test in host_identity_test.go.
+   * Callers must treat an empty/missing owner_id as "no v2 identity for this
+   * host", not as a bug.
    */
   owner_id?: string
   name: string
@@ -42,5 +50,17 @@ export function useHosts() {
     return () => clearInterval(interval)
   }, [refresh])
 
-  return { hosts, refresh }
+  const hostIndex = useMemo<HostIndex>(() => {
+    const byPeerId = new Map<string, Host>()
+    const byOwnerId = new Map<string, Host>()
+    let local: Host | undefined
+    for (const h of hosts) {
+      byPeerId.set(h.id, h)
+      if (h.owner_id) byOwnerId.set(h.owner_id, h)
+      if (h.local) local = h
+    }
+    return { hosts, local, byPeerId, byOwnerId }
+  }, [hosts])
+
+  return { hosts, refresh, hostIndex }
 }
