@@ -497,18 +497,11 @@ describe('App: mode-splitting', () => {
       )
     })
 
-    it('handleCreateSession resolves the selected host fingerprint to its canonical OwnerID before calling v2State.createSession', async () => {
-      // The New Session modal's hostId is a peer transport fingerprint
-      // (HostInfo.ID from useHosts, matching /api/hosts). v2State.createSession's
-      // hostId is sent on the wire as target_owner, typed state.OwnerID
-      // server-side -- a DIFFERENT string encoding than the fingerprint (see
-      // state.OwnerIDFromFingerprint). handleCreateSession must resolve the
-      // selected host's real OwnerID (HostInfo.OwnerID, threaded through
-      // useHosts as owner_id) before calling createSession, never pass the
-      // fingerprint straight through.
-      mockHostsList = [
-        { id: 'remote-host-fingerprint', owner_id: 'remote-host-owner-id', name: 'remote', online: true, sessions: [], last_seen: '' },
-      ]
+    it('handleCreateSession passes the modal-selected targetOwner straight through, with no fingerprint-to-owner lookup', async () => {
+      // NewSessionModal's HostSelect option values are already canonical
+      // OwnerIDs (HostInfo.OwnerID / Host.owner_id) -- there is no separate
+      // fingerprint encoding left in this flow to resolve. handleCreateSession
+      // must forward NewSessionInput.targetOwner unchanged.
       const createSession = vi.fn().mockResolvedValue({ Ref: { owner: null, session: 'new-sess', window: 0, pane: 0 } })
       mockSessionState = {
         state: {
@@ -540,13 +533,52 @@ describe('App: mode-splitting', () => {
       act(() => { mockTopBarProps.onNewSession() })
 
       expect(mockNewSessionModalProps).not.toBeNull()
-      await mockNewSessionModalProps.onCreateSession('my-session', '/tmp', '', 'remote-host-fingerprint')
+      await mockNewSessionModalProps.onCreateSession({ name: 'my-session', cwd: '/tmp', targetOwner: 'remote-host-owner-id' })
 
-      // hostId passed to createSession must be the resolved OwnerID, never
-      // the raw fingerprint the modal selected.
       expect(createSession).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'my-session', hostId: 'remote-host-owner-id' }),
+        expect.objectContaining({ name: 'my-session', targetOwner: 'remote-host-owner-id' }),
       )
+    })
+
+    it('handleCreateSession resolves normally on success and rejects on failure -- no string carries dual success/error meaning', async () => {
+      const createSession = vi.fn()
+        .mockResolvedValueOnce({ Ref: { owner: null, session: 'my-session', window: 0, pane: 0 } })
+        .mockRejectedValueOnce(new Error('boom'))
+      mockSessionState = {
+        state: {
+          catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
+          workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          connectionGeneration: 0,
+          connectionOnline: false,
+          catalogBootstrapped: false,
+          workspaceBootstrapped: false,
+        },
+        bootstrapped: false,
+        connected: false,
+        paneTree: null,
+        activeKey: null,
+        layoutId: null,
+        createSession,
+        sessionCommand: vi.fn(),
+        workspaceCommand: vi.fn(),
+      }
+
+      v2Enabled = true
+      const { render, act } = await import('@testing-library/react')
+      const App = (await import('./App')).default
+      render(<App />)
+
+      expect(mockTopBarProps).not.toBeNull()
+      act(() => { mockTopBarProps.onNewSession() })
+      expect(mockNewSessionModalProps).not.toBeNull()
+
+      // Success resolves void -- historically the returned session name was
+      // treated as a truthy "error", which this asserts against.
+      await expect(mockNewSessionModalProps.onCreateSession({ name: 'my-session', cwd: '/tmp' })).resolves.toBeUndefined()
+
+      // Failure rejects; handleCreateSession does not swallow the error into
+      // a string return value.
+      await expect(mockNewSessionModalProps.onCreateSession({ name: 'my-session', cwd: '/tmp' })).rejects.toThrow('boom')
     })
 
     it('getTerminalIdentity resolver passed to TiledView always includes backend="daemon" and never surfaces an empty generation as ready', async () => {
@@ -673,7 +705,7 @@ describe('App: mode-splitting', () => {
       act(() => { mockTopBarProps.onSplitPane('v') })
 
       expect(mockNewSessionModalProps).not.toBeNull()
-      await mockNewSessionModalProps.onCreateSession('split-session', '/tmp', '')
+      await mockNewSessionModalProps.onCreateSession({ name: 'split-session', cwd: '/tmp' })
 
       // Placement is one atomic step: the split target/direction are sent as
       // part of the SAME create-session call, not as a separate follow-up

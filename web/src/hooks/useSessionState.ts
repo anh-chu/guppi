@@ -38,11 +38,15 @@ export type UseSessionStateResult = {
     cwd?: string
     worktreeBranch?: string
     layoutId?: LayoutID
-    // Target host (owner fingerprint) selected by the caller in the New
+    // Agent preset id selected in the New Session modal, sent on the wire
+    // as the top-level create param `agent_type` (see
+    // pkg/state/session_commands.go's CreateParams).
+    agentType?: string
+    // Target host (owner OwnerID) selected by the caller in the New
     // Session modal. Sent as the top-level target_owner wire field; the
     // server routes the create through peer.Manager.RequestRemoteCreate when
     // this differs from the local owner. Omitted means "create locally".
-    hostId?: string
+    targetOwner?: string
     // When set (together with layoutId), the new session is placed by
     // splitting the target leaf in one atomic step on the server -- see
     // CreateParams in pkg/state/session_commands.go. This replaces the old
@@ -140,12 +144,13 @@ export function useSessionState(): UseSessionStateResult {
         cwd?: string
         worktreeBranch?: string
         layoutId?: LayoutID
-        hostId?: string
+        agentType?: string
+        targetOwner?: string
         splitTarget?: SessionRef
         splitDirection?: SplitDirection
         splitNewFirst?: boolean
       }) => {
-        // params.hostId identifies the caller's selected target host and is
+        // params.targetOwner identifies the caller's selected target host and is
         // sent as the top-level target_owner wire field (see
         // v2SessionCommandRequest in pkg/server/routes_state_v2.go); when set
         // to a different owner than this node's own, the server forwards the
@@ -165,10 +170,11 @@ export function useSessionState(): UseSessionStateResult {
           cwd: params.cwd,
           worktree_branch: params.worktreeBranch,
           layout_id: params.layoutId,
+          agent_type: params.agentType,
           target: params.splitTarget,
           direction: params.splitDirection,
           new_first: params.splitNewFirst,
-          target_owner: params.hostId,
+          target_owner: params.targetOwner,
         })
       },
     [commandClient],

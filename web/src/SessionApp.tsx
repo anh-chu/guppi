@@ -3,7 +3,7 @@ import { tinykeys } from 'tinykeys'
 import { Sidebar } from './components/Sidebar'
 import { Terminal } from './components/Terminal'
 import { Overview } from './components/Overview'
-import { NewSessionModal } from './components/NewSessionModal'
+import { NewSessionModal, type NewSessionInput } from './components/NewSessionModal'
 import { PortForwardModal } from './components/PortForwardModal'
 import { ScheduleModal } from './components/ScheduleModal'
 import { TopBar } from './components/TopBar'
@@ -445,53 +445,41 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     }).catch(err => console.error('quick shell create failed:', err))
   }, [sessionState, refocusTerminal])
 
-  const handleCreateSession = useCallback(async (name: string, path: string, command: string, hostId?: string, worktreeBranch?: string, _agentType?: string): Promise<string | null> => {
-    // hostId is the fingerprint the New Session modal selected from useHosts'
-    // Host list (HostInfo.ID). sessionState.createSession's hostId param is sent
-    // on the wire as target_owner, which the server types as state.OwnerID --
-    // a DIFFERENT string encoding than the fingerprint (see
-    // state.OwnerIDFromFingerprint). Sending the raw fingerprint there would
-    // misroute every remote-host create (peer.Manager.RequestRemoteCreate
-    // looks the value up in its OwnerID-keyed catalog map, which would never
-    // match). Resolve the selected host's real OwnerID from the same hosts
-    // list (HostInfo.OwnerID, threaded through useHosts as owner_id) before
-    // handing it to sessionState.createSession.
-    const targetOwnerId = hostId ? hosts.find(h => h.id === hostId)?.owner_id : undefined
-    if (!worktreeBranch) setNewSessionModalOpen(false)
+  const handleCreateSession = useCallback(async (input: NewSessionInput): Promise<void> => {
+    // input.targetOwner is already the canonical OwnerID: HostSelect's option
+    // values are OwnerIDs directly (see NewSessionModal), so no
+    // fingerprint-to-owner lookup is needed here.
+    //
+    // Placement is one atomic step: when a split was requested (target set),
+    // the split's target/direction/new_first are sent as part of THIS create
+    // command (see CreateParams in pkg/state/session_commands.go), instead
+    // of a separate follow-up workspace "split" command. Doing create then
+    // split as two calls raced against create's own default placement
+    // (whichever leaf create picked first) and the follow-up split was then
+    // rejected as inserting a duplicate leaf for the ref create had just
+    // placed.
     const target = splitTargetRef.current
     splitTargetRef.current = null
-    try {
-      // Placement is one atomic step: when a split was requested (target set),
-      // the split's target/direction/new_first are sent as part of THIS create
-      // command (see CreateParams in pkg/state/session_commands.go), instead
-      // of a separate follow-up workspace "split" command. Doing create then
-      // split as two calls raced against create's own default placement
-      // (whichever leaf create picked first) and the follow-up split was then
-      // rejected as inserting a duplicate leaf for the ref create had just
-      // placed.
-      const result = await sessionState.createSession({
-        name,
-        shell: command || undefined,
-        cwd: path,
-        worktreeBranch: worktreeBranch || undefined,
-        layoutId: target ? (layoutId ?? undefined) : undefined,
-        hostId: targetOwnerId,
-        splitTarget: target ? keyToSessionRef(target.key) : undefined,
-        splitDirection: target?.direction,
-        splitNewFirst: target?.newFirst,
-      })
-      const resolvedName = result.ref?.session || result.displayName || name
-      if (worktreeBranch) setNewSessionModalOpen(false)
-      setViewMode('session')
-      setRemotePaneKey(null)
-      setTimeout(refocusTerminal, 150)
-      return resolvedName
-    } catch (err) {
-      console.error('Failed to create session:', err)
-      if (worktreeBranch) return err instanceof Error ? err.message : 'Failed to create worktree'
-      return null
-    }
-  }, [sessionState, layoutId, refocusTerminal, hosts])
+    await sessionState.createSession({
+      name: input.name,
+      shell: input.shell,
+      cwd: input.cwd,
+      worktreeBranch: input.worktreeBranch,
+      agentType: input.agentType,
+      layoutId: target ? (layoutId ?? undefined) : undefined,
+      targetOwner: input.targetOwner,
+      splitTarget: target ? keyToSessionRef(target.key) : undefined,
+      splitDirection: target?.direction,
+      splitNewFirst: target?.newFirst,
+    })
+    // Close only after the create resolved successfully; on failure the
+    // promise rejects (see sessionState.createSession) and the modal stays
+    // open with the error rendered by NewSessionModal itself.
+    setNewSessionModalOpen(false)
+    setViewMode('session')
+    setRemotePaneKey(null)
+    setTimeout(refocusTerminal, 150)
+  }, [sessionState, layoutId, refocusTerminal])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)

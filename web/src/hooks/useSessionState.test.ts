@@ -103,11 +103,11 @@ describe('useSessionState', () => {
     expect(sessionBefore).toBeDefined()
   })
 
-  it('threads hostId through to the top-level target_owner wire field on create, as a canonical OwnerID -- never a peer fingerprint', async () => {
+  it('threads targetOwner through to the top-level target_owner wire field on create, as a canonical OwnerID -- never a peer fingerprint', async () => {
     const { result } = renderHook(() => useSessionState())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
 
-    // hostId must already be the target host's canonical OwnerID (HostInfo.OwnerID
+    // targetOwner must already be the target host's canonical OwnerID (HostInfo.OwnerID
     // on the wire, e.g. via useHosts' Host.owner_id) by the time it reaches
     // this hook -- NOT the host's peer transport fingerprint (HostInfo.ID).
     // OwnerID is a different string encoding of a peer's identity than its
@@ -120,7 +120,7 @@ describe('useSessionState', () => {
     const remoteOwnerId = 'remote-host-owner-id'
     vi.mocked(fetch).mockResolvedValueOnce(okResponse({ Ref: { owner: remoteOwnerId, session: 'new-1' }, Accepted: true }))
     await act(async () => {
-      await result.current.createSession({ name: 'new-1', hostId: remoteOwnerId })
+      await result.current.createSession({ name: 'new-1', targetOwner: remoteOwnerId })
     })
 
     const lastCall = vi.mocked(fetch).mock.calls[vi.mocked(fetch).mock.calls.length - 1]
@@ -132,7 +132,7 @@ describe('useSessionState', () => {
     expect('target_owner' in body.params).toBe(false)
   })
 
-  it('omits target_owner entirely when no hostId is given (local create, unchanged default)', async () => {
+  it('omits target_owner entirely when no targetOwner is given (local create, unchanged default)', async () => {
     const { result } = renderHook(() => useSessionState())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
 

@@ -6,10 +6,27 @@ import { cn } from '../lib/utils'
 import { AgentMark } from './AgentMark'
 import { HostSelect } from './HostSelect'
 
+// NewSessionInput is the single typed contract for creating a session from
+// the New Session modal. targetOwner is already the canonical OwnerID
+// (HostInfo.OwnerID / Host.owner_id) -- HostSelect's option values are
+// OwnerIDs directly (see below), so no fingerprint-to-owner translation is
+// needed anywhere along this path.
+export interface NewSessionInput {
+  name?: string
+  cwd: string
+  shell?: string
+  targetOwner?: string
+  worktreeBranch?: string
+  agentType?: string
+}
+
 interface NewSessionModalProps {
   hosts: Host[]
   sessions: Session[]
-  onCreateSession: (name: string, path: string, command: string, hostId?: string, worktreeBranch?: string) => Promise<string | null>
+  // Resolves (void) on success, rejects (Error) on failure -- never a string
+  // that carries dual success/error meaning. Callers must not swallow the
+  // rejection; NewSessionModal catches it itself and renders the message.
+  onCreateSession: (input: NewSessionInput) => Promise<void>
   onClose: () => void
 }
 
@@ -39,11 +56,15 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   const [command, setCommand] = useState(() => presets.find(p => p.id === defaultAgent)?.command || defaultAgent)
   const [worktreeMode, setWorktreeMode] = useState(false)
   const [worktreeBranch, setWorktreeBranch] = useState('')
-  const [worktreeError, setWorktreeError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const onlineHosts = hosts.filter(h => h.online)
-  const showHostSelect = onlineHosts.length > 1
   const localHost = onlineHosts.find(h => h.local)
-  const [selectedHost, setSelectedHost] = useState<string>(localHost?.id || '')
+  // HostSelect option values are canonical OwnerIDs, matching Session.host's
+  // encoding directly -- a host with no owner_id has no v2 identity and
+  // cannot be a create target (see Host.owner_id's doc in useHosts.ts).
+  const selectableHosts = useMemo(() => onlineHosts.filter(h => h.owner_id), [onlineHosts])
+  const showHostSelect = selectableHosts.length > 1
+  const [selectedHost, setSelectedHost] = useState<string>(localHost?.owner_id || '')
   const pathInputRef = useRef<HTMLInputElement>(null)
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
@@ -51,73 +72,35 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   const dropdownOpenRef = useRef(dropdownOpen)
   dropdownOpenRef.current = dropdownOpen
   const resolvedCommand = command.trim()
-  // selectedHost is a Host.id (peer transport fingerprint, from HostSelect's
-  // options). A Session.host that carries the fingerprint (or is falsy for
-  // local) would allow a raw string comparison, but SessionApp's Session.host
-  // instead always carries the canonical OwnerID (a DIFFERENT string
-  // encoding -- see state.OwnerIDFromFingerprint) -- even for local
-  // sessions, which are never falsy. Resolving the selected host's
-  // OwnerID once here and matching against either encoding keeps duplicate-
-  // name detection correct for both.
-  const selectedHostOwnerId = useMemo(
-    () => hosts.find(h => h.id === selectedHost)?.owner_id,
-    [hosts, selectedHost],
-  )
-  const isSelectedHost = (session: Session) => {
-    if (!session.host) return !selectedHost || selectedHost === localHost?.id
-    return session.host === selectedHost || (!!selectedHostOwnerId && session.host === selectedHostOwnerId)
-  }
-  const existingNames = useMemo(() => {
-    return new Set(
-      sessions
-        .filter(isSelectedHost)
-        .map(session => session.name),
-    )
-  }, [selectedHost, selectedHostOwnerId, sessions])
-  const uniqueSessionName = (value: string) => {
-    const trimmed = value.trim()
-    if (!trimmed) return ''
-  if (trimmed === '~') return 'home'
-    if (!existingNames.has(trimmed)) return trimmed
-    let suffix = 2
-    let candidate = `${trimmed}-${suffix}`
-    while (existingNames.has(candidate)) {
-      suffix += 1
-      candidate = `${trimmed}-${suffix}`
-    }
-    return candidate
-  }
+
+  // suggestedName is display-only input assistance (a placeholder shown when
+  // the user hasn't typed a name, and the fallback actually sent if they
+  // never do). It is derived purely from the path/branch -- the backend
+  // already owns unique display-name selection, so this never checks
+  // existing session names for collisions.
   const suggestedName = useMemo(() => {
     const leaf = basename(path || '~')
     if (!leaf) return ''
     const branch = worktreeMode && worktreeBranch.trim()
       ? worktreeBranch.trim().replace(/\//g, '-')
       : ''
-    const base = branch ? `${leaf}-${branch}` : leaf
-    return uniqueSessionName(base)
-  }, [path, worktreeMode, worktreeBranch, existingNames])
+    return branch ? `${leaf}-${branch}` : leaf
+  }, [path, worktreeMode, worktreeBranch])
 
   interface RecentLocation {
     path: string
-    hostId: string   // value to assign to selectedHost
+    ownerId: string   // value to assign to selectedHost -- already a canonical OwnerID
     hostName: string
     local: boolean
   }
 
   const recentLocations = useMemo<RecentLocation[]>(() => {
-    const localId = localHost?.id || ''
-    const localOwnerId = localHost?.owner_id
-    const onlineIds = new Set(onlineHosts.map(h => h.id))
-    const hostNameById = new Map(onlineHosts.map(h => [h.id, h.name]))
-    // SessionApp's Session.host is always the canonical OwnerID (never falsy, even for
-    // local sessions), a DIFFERENT string encoding than Host.id (the peer
-    // transport fingerprint) that onlineIds/hostNameById are keyed by --
-    // see state.OwnerIDFromFingerprint. Without this reverse lookup, every
-    // session's location was silently dropped below (onlineIds never
-    // contains an OwnerID) instead of being resolved to its host's real
-    // fingerprint id.
-    const hostIdByOwnerId = new Map(
-      onlineHosts.filter(h => h.owner_id).map(h => [h.owner_id as string, h.id]),
+    const localOwnerId = localHost?.owner_id || ''
+    const onlineOwnerIds = new Set(
+      selectableHosts.map(h => h.owner_id as string).concat(localOwnerId ? [localOwnerId] : []),
+    )
+    const hostNameByOwnerId = new Map(
+      selectableHosts.map(h => [h.owner_id as string, h.name]),
     )
     const seen = new Set<string>()
     const sorted = [...sessions]
@@ -127,24 +110,24 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
     for (const s of sorted) {
       const p = s.project_path!
       const local = !s.host || (!!localOwnerId && s.host === localOwnerId)
-      const hostId = local ? localId : (hostIdByOwnerId.get(s.host!) || s.host!)
+      const ownerId = local ? localOwnerId : s.host!
       // Skip locations whose host is offline/unknown (cannot create there)
-      if (!onlineIds.has(hostId)) continue
-      const key = `${hostId}::${p}`
+      if (!onlineOwnerIds.has(ownerId)) continue
+      const key = `${ownerId}::${p}`
       if (seen.has(key)) continue
       seen.add(key)
       unique.push({
         path: p,
-        hostId,
+        ownerId,
         hostName: local
           ? (localHost?.name || s.host_name || 'Local')
-          : (hostNameById.get(hostId) || s.host_name || s.host!),
+          : (hostNameByOwnerId.get(ownerId) || s.host_name || ownerId),
         local,
       })
       if (unique.length >= 10) break
     }
     return unique
-  }, [sessions, onlineHosts, localHost])
+  }, [sessions, selectableHosts, localHost])
 
   const filteredLocations = useMemo(() => {
     if (!path) return recentLocations
@@ -164,7 +147,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
 
   const selectLocation = (loc: RecentLocation) => {
     setPath(loc.path)
-    setSelectedHost(loc.hostId)
+    setSelectedHost(loc.ownerId)
     setDropdownOpen(false)
     setHighlightedIndex(-1)
   }
@@ -244,11 +227,20 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
 
   const handleSubmit = async () => {
     const trimmedPath = path.trim() || '~'
-    const trimmedName = uniqueSessionName(name.trim() || suggestedName)
-    if (!trimmedName) return
-    setWorktreeError(null)
-    const err = await onCreateSession(trimmedName, trimmedPath, resolvedCommand, selectedHost || undefined, worktreeMode ? worktreeBranch.trim() || undefined : undefined)
-    if (err) setWorktreeError(err)
+    const trimmedName = name.trim() || suggestedName || undefined
+    setError(null)
+    try {
+      await onCreateSession({
+        name: trimmedName,
+        cwd: trimmedPath,
+        shell: resolvedCommand || undefined,
+        targetOwner: selectedHost || undefined,
+        worktreeBranch: worktreeMode ? worktreeBranch.trim() || undefined : undefined,
+        agentType: preset || undefined,
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -275,6 +267,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
               <div ref={containerRef} className="relative">
                 <input
                   ref={pathInputRef}
+                  data-testid="ns-path"
                   value={path}
                   onChange={e => setPath(e.target.value)}
                   onKeyDown={handlePathKeyDown}
@@ -286,7 +279,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
                   <div className="absolute left-0 right-0 top-full mt-0.5 bg-surface border border-hairline rounded-sm shadow-lg z-10 overflow-hidden">
                     {filteredLocations.map((loc, i) => (
                       <div
-                        key={`${loc.hostId}::${loc.path}`}
+                        key={`${loc.ownerId}::${loc.path}`}
                         onMouseDown={() => selectLocation(loc)}
                         className={cn(
                           'flex items-center justify-between gap-2 px-3 py-2 text-[13px] font-mono text-ink cursor-pointer',
@@ -319,62 +312,43 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
                 <span className="text-xs font-bold text-mute/60 uppercase tracking-wider">Create as worktree</span>
               </label>
               {worktreeMode && (
-                <>
-                  <input
-                    value={worktreeBranch}
-                    onChange={e => { setWorktreeBranch(e.target.value); setWorktreeError(null) }}
-                    onKeyDown={handleKeyDown}
-                    placeholder="branch-name"
-                    className="mt-2 w-full text-[13px] text-ink bg-surface-elevated border border-hairline rounded-sm px-3 py-2 outline-none font-mono placeholder:text-mute/40 focus:border-primary/60 transition-colors"
-                  />
-                  {worktreeError && (
-                    <div className="mt-1.5 text-xs text-red-400 font-mono break-all">{worktreeError}</div>
-                  )}
-                </>
+                <input
+                  data-testid="ns-worktree-branch"
+                  value={worktreeBranch}
+                  onChange={e => { setWorktreeBranch(e.target.value); setError(null) }}
+                  onKeyDown={handleKeyDown}
+                  placeholder="branch-name"
+                  className="mt-2 w-full text-[13px] text-ink bg-surface-elevated border border-hairline rounded-sm px-3 py-2 outline-none font-mono placeholder:text-mute/40 focus:border-primary/60 transition-colors"
+                />
+              )}
+              {error && (
+                <div className="mt-1.5 text-xs text-red-400 font-mono break-all">{error}</div>
               )}
             </div>
             <div>
               <div className="text-xs font-bold text-mute/60 uppercase tracking-wider mb-2 ml-1">Agent</div>
               <div className="grid grid-cols-3 gap-2">
                 {presets.map(option => {
-                  const active = option.id === preset
-                  const isDefault = option.id === defaultAgent
+                  const active = preset === option.id
                   return (
                     <button
                       key={option.id}
-                      type="button"
-                      onClick={() => handlePresetClick(option.id)}
+                      onClick={() => { handlePresetClick(option.id); void updatePrefs({ default_agent: option.id }) }}
                       className={cn(
-                        'relative flex flex-col items-center gap-2 rounded-lg border p-3 transition-all duration-200 group',
-                        active 
-                          ? 'border-primary bg-primary/5' 
-                          : 'border-hairline bg-surface-elevated/30 hover:border-hairline/60 grayscale opacity-70 hover:grayscale-0 hover:opacity-100'
+                        'flex items-center gap-1.5 justify-center px-2 py-2 rounded-sm border text-[12px] font-bold uppercase tracking-wide transition-colors',
+                        active
+                          ? 'border-primary/60 bg-primary/10 text-primary'
+                          : 'border-hairline text-mute/60 hover:text-ink hover:border-mute/40'
                       )}
                     >
-                      <span
-                        role="button"
-                        aria-label={isDefault ? 'Default agent' : 'Set as default'}
-                        title={isDefault ? 'Default agent' : 'Set as default'}
-                        onClick={e => { e.stopPropagation(); updatePrefs({ default_agent: option.id }) }}
-                        className={cn(
-                          'absolute top-1.5 right-1.5 w-4 h-4 flex items-center justify-center transition-opacity cursor-pointer',
-                          isDefault ? 'opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'
-                        )}
-                      >
-                        <svg viewBox="0 0 16 16" className={cn('w-3 h-3', isDefault ? 'fill-amber-400 text-amber-400' : 'fill-none text-mute stroke-current')} strokeWidth={isDefault ? 0 : 1.5}>
-                          <polygon points="8,1.5 10,6 15,6.5 11.5,10 12.5,15 8,12.5 3.5,15 4.5,10 1,6.5 6,6" />
-                        </svg>
-                      </span>
-                      <AgentMark agentType={option.id} className="h-6 min-w-10 px-2 shrink-0" />
-                      <span className={cn(
-                        'text-xs font-bold uppercase tracking-tight',
-                        active ? 'text-primary' : 'text-mute'
-                      )}>{option.label}</span>
+                      <AgentMark agentType={option.id} className="w-3.5 h-3.5 shrink-0" />
+                      {option.label}
                     </button>
                   )
                 })}
               </div>
               <input
+                data-testid="ns-command"
                 value={command}
                 onChange={e => { setCommand(e.target.value); setPreset(null) }}
                 onKeyDown={handleKeyDown}
@@ -385,6 +359,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
             <div>
               <div className="text-xs font-bold text-mute/60 uppercase tracking-wider mb-2 ml-1">Session Name</div>
               <input
+                data-testid="ns-name"
                 value={name}
                 onChange={e => setName(e.target.value)}
                 onKeyDown={handleKeyDown}
@@ -399,7 +374,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
               <HostSelect
                 value={selectedHost}
                 onChange={setSelectedHost}
-                options={onlineHosts.map(h => ({ value: h.id, label: `${h.name}${h.local ? ' (LOCAL)' : ''}` }))}
+                options={selectableHosts.map(h => ({ value: h.owner_id as string, label: `${h.name}${h.local ? ' (LOCAL)' : ''}` }))}
                 className="w-full text-[13px] font-bold text-ink bg-surface-elevated border border-hairline rounded-sm px-3 py-2 outline-none focus:border-primary/60 transition-colors cursor-pointer"
               />
             </div>
