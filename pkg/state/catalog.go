@@ -26,13 +26,9 @@ type Catalog struct {
 	remotePending      map[CommandID]PendingRemoteCreateRecord
 	workspaceSubs      []workspaceSubscription
 	nextWorkspaceSubID int
-	catalogSubs        []catalogSubscription
-	nextCatalogSubID   int
-	store              *Store
-
-	// activeKey stores the selected leaf ref in the singleton workspace.
-	// It is purely in-memory and intentionally not persisted.
-	activeKey *SessionRef
+	catalogSubs      []catalogSubscription
+	nextCatalogSubID int
+	store            *Store
 
 	// commands mirrors the last known receipts so in-memory catalogs can
 	// participate in the bounded receipt mechanism.
@@ -125,7 +121,20 @@ func (c *Catalog) SessionsByScheduleID(scheduleID string) []LocalSessionRecord {
 	return out
 }
 
-// Layout returns a copy of one layout record.
+// Workspace returns a copy of the singleton workspace record, or nil if none is set.
+func (c *Catalog) Workspace() *WorkspaceRecord {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.workspace == nil {
+		return nil
+	}
+	cp := *c.workspace
+	if cp.Tree != nil {
+		treecp := *cp.Tree
+		cp.Tree = &treecp
+	}
+	return &cp
+}
 
 
 
@@ -455,7 +464,6 @@ func (c *Catalog) resetLocked(doc AppDocument) error {
 	for _, p := range doc.PendingRemoteCreates {
 		c.remotePending[p.IntentID] = p
 	}
-	c.activeKey = nil
 	c.commands = make([]CommandReceipt, len(doc.Commands))
 	copy(c.commands, doc.Commands)
 	return nil

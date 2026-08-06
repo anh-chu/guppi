@@ -298,9 +298,6 @@ type workspaceSnapshotMessage struct {
 // they remain on the existing best-effort /ws/events hub.
 type StateStreamHub struct {
 	catalog *state.Catalog
-	// primaryLayout resolves the layout whose workspace is streamed. If nil
-	// or it returns "", the first known layout is used.
-	primaryLayout func() state.LayoutID
 
 	// remoteSource supplies cached remote-owner catalogs, if this node has a
 	// peer manager wired up (see AttachRemoteCatalogSource). Nil on a
@@ -332,11 +329,10 @@ type StateStreamHub struct {
 // AttachRemoteCatalogSource separately to also stream cached remote-owner
 // catalogs (multi-node); a hub with no remote source behaves exactly as a
 // single-node hub always has.
-func NewStateStreamHub(catalog *state.Catalog, primaryLayout func() state.LayoutID) *StateStreamHub {
+func NewStateStreamHub(catalog *state.Catalog) *StateStreamHub {
 	h := &StateStreamHub{
-		catalog:       catalog,
-		primaryLayout: primaryLayout,
-		clients:       make(map[*stateStreamClient]struct{}),
+		catalog: catalog,
+		clients: make(map[*stateStreamClient]struct{}),
 	}
 	h.unsubscribeCatalog = catalog.SubscribeCatalog(h.onCatalog)
 	h.unsubscribeWorkspace = catalog.SubscribeWorkspace(h.onWorkspace)
@@ -420,10 +416,7 @@ func (h *StateStreamHub) onRemoteCatalog(owner state.OwnerID, snap state.OwnerCa
 	}
 }
 
-func (h *StateStreamHub) onWorkspace(layout state.LayoutID, rec state.WorkspaceRecord) {
-	if want := h.currentLayout(); want != "" && want != layout {
-		return
-	}
+func (h *StateStreamHub) onWorkspace(rec state.WorkspaceRecord) {
 	encoded, err := json.Marshal(workspaceSnapshotMessage{Type: "workspace_snapshot", Workspace: rec})
 	if err != nil {
 		logrus.WithError(err).Warn("state stream: failed to encode workspace snapshot")
@@ -434,19 +427,6 @@ func (h *StateStreamHub) onWorkspace(layout state.LayoutID, rec state.WorkspaceR
 	for c := range h.clients {
 		c.publishWorkspace(rec.Revision, encoded)
 	}
-}
-
-func (h *StateStreamHub) currentLayout() state.LayoutID {
-	if h.primaryLayout != nil {
-		if id := h.primaryLayout(); id != "" {
-			return id
-		}
-	}
-	layouts := h.catalog.Layouts()
-	if len(layouts) == 0 {
-		return ""
-	}
-	return layouts[0].ID
 }
 
 // HandleState upgrades the connection and streams durable state. On
@@ -487,11 +467,9 @@ func (h *StateStreamHub) HandleState(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if layoutID := h.currentLayout(); layoutID != "" {
-		if wsRes, err := h.catalog.WorkspaceSnapshot(layoutID); err == nil {
-			if encoded, err := json.Marshal(workspaceSnapshotMessage{Type: "workspace_snapshot", Workspace: wsRes.Record}); err == nil {
-				c.publishWorkspace(wsRes.Record.Revision, encoded)
-			}
+	if wsRes, err := h.catalog.WorkspaceSnapshot(); err == nil {
+		if encoded, err := json.Marshal(workspaceSnapshotMessage{Type: "workspace_snapshot", Workspace: wsRes.Record}); err == nil {
+			c.publishWorkspace(wsRes.Record.Revision, encoded)
 		}
 	}
 	h.mu.Unlock()

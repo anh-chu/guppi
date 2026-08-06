@@ -105,12 +105,9 @@ type LocalSessionRecord struct {
 // one per document (or none if Workspace is nil). Tree is nullable and can be
 // nil to represent an empty workspace.
 type WorkspaceRecord struct {
-	Owner     OwnerID     `json:"owner"`
-	Revision  int64       `json:"revision"`
-	Tree      *PaneNode   `json:"tree,omitempty"`
-	ActiveKey *SessionRef `json:"active_key,omitempty"`
-	// Name is the mutable, human-selected workspace name.
-	Name string `json:"name,omitempty"`
+	Owner    OwnerID   `json:"owner"`
+	Revision int64     `json:"revision"`
+	Tree     *PaneNode `json:"tree,omitempty"`
 }
 
 

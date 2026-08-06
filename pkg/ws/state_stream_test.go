@@ -48,31 +48,25 @@ func readTyped(t *testing.T, conn *websocket.Conn) map[string]any {
 	return msg
 }
 
+// drainInitialBootstrap reads and discards both the catalog_snapshot and
+// workspace_snapshot sent on every connect. Tests that need to observe
+// subsequent mutations should call this first.
+func drainInitialBootstrap(t *testing.T, conn *websocket.Conn) {
+	_ = readTyped(t, conn) // catalog_snapshot
+	_ = readTyped(t, conn) // workspace_snapshot
+}
+
 // TestStateStreamSendsCompleteSnapshotOnConnect verifies that a connecting
 // client immediately receives a complete catalog_snapshot before any
 // incremental publication, satisfying "one bootstrap-equivalent frame
 // contains complete state".
 func TestStateStreamSendsCompleteSnapshotOnConnect(t *testing.T) {
 	catalog := newTestCatalog(t)
-	sessionID := state.NewSessionID()
-	if err := catalog.PutSession(state.LocalSessionRecord{
-		ID:         sessionID,
-		Owner:      catalog.Owner(),
-		Ref:        state.SessionRef{Owner: catalog.Owner(), Session: sessionID},
-		Phase:      state.SessionPhaseActive,
-		Generation: "test-gen",
-	}); err != nil {
-		t.Fatalf("PutSession: %v", err)
-	}
-	if err := catalog.PutLayout(state.LayoutRecord{
-		ID:    state.NewLayoutID(),
-		Owner: catalog.Owner(),
-		Tree:  state.Leaf(state.SessionRef{Owner: catalog.Owner(), Session: sessionID}),
-	}); err != nil {
-		t.Fatalf("PutLayout: %v", err)
-	}
+	_ = state.NewSessionID()
+	// Catalog starts with empty workspace; test verifies state stream sends
+	// workspace_snapshot even when workspace tree is nil.
 
-	hub := NewStateStreamHub(catalog, nil)
+	hub := NewStateStreamHub(catalog)
 	defer hub.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(hub.HandleState))
@@ -97,7 +91,7 @@ func TestStateStreamSendsCompleteSnapshotOnConnect(t *testing.T) {
 // repaired by the later complete snapshot.
 func TestStateStreamCoalescesToLatestRevision(t *testing.T) {
 	catalog := newTestCatalog(t)
-	hub := NewStateStreamHub(catalog, nil)
+	hub := NewStateStreamHub(catalog)
 	defer hub.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(hub.HandleState))
@@ -106,8 +100,8 @@ func TestStateStreamCoalescesToLatestRevision(t *testing.T) {
 	conn := dialStateStream(t, srv)
 	defer conn.Close()
 
-	// Drain the initial complete snapshot.
-	_ = readTyped(t, conn)
+	// Drain the initial complete snapshot (catalog + workspace).
+	drainInitialBootstrap(t, conn)
 
 	// Create a test gate to block the writeLoop before draining slots.
 	// This ensures multiple publishes accumulate before any flush occurs,
@@ -263,7 +257,7 @@ func TestStateStreamEnqueueCloseRaceNoPanic(t *testing.T) {
 // client's write.
 func TestStateStreamOneSlowClientDoesNotBlockOthers(t *testing.T) {
 	catalog := newTestCatalog(t)
-	hub := NewStateStreamHub(catalog, nil)
+	hub := NewStateStreamHub(catalog)
 	defer hub.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(hub.HandleState))
@@ -276,7 +270,7 @@ func TestStateStreamOneSlowClientDoesNotBlockOthers(t *testing.T) {
 
 	// Drain both initial snapshots on the fast client only; the slow client is
 	// intentionally never read from again.
-	_ = readTyped(t, fast)
+	drainInitialBootstrap(t, fast)
 
 	id := state.NewSessionID()
 	if err := catalog.PutSession(state.LocalSessionRecord{
@@ -323,7 +317,7 @@ func firstStateStreamClient(t *testing.T, h *StateStreamHub) *stateStreamClient 
 // (and eventually receive) revision 9.
 func TestStateStreamAdversarialOrderKeepsHigherRevision(t *testing.T) {
 	catalog := newTestCatalog(t)
-	hub := NewStateStreamHub(catalog, nil)
+	hub := NewStateStreamHub(catalog)
 	defer hub.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(hub.HandleState))
@@ -333,7 +327,7 @@ func TestStateStreamAdversarialOrderKeepsHigherRevision(t *testing.T) {
 	defer conn.Close()
 
 	// Drain the initial complete snapshot sent on connect.
-	_ = readTyped(t, conn)
+	drainInitialBootstrap(t, conn)
 
 	c := firstStateStreamClient(t, hub)
 
@@ -386,7 +380,7 @@ func TestStateStreamAdversarialOrderKeepsHigherRevision(t *testing.T) {
 // removal message carries no meaningful revision number of its own.
 func TestStateStreamRemovalTombstoneSurvivesStaleLateSnapshot(t *testing.T) {
 	catalog := newTestCatalog(t)
-	hub := NewStateStreamHub(catalog, nil)
+	hub := NewStateStreamHub(catalog)
 	defer hub.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(hub.HandleState))
@@ -395,7 +389,7 @@ func TestStateStreamRemovalTombstoneSurvivesStaleLateSnapshot(t *testing.T) {
 	conn := dialStateStream(t, srv)
 	defer conn.Close()
 
-	_ = readTyped(t, conn)
+	drainInitialBootstrap(t, conn)
 
 	c := firstStateStreamClient(t, hub)
 	remoteOwner := state.NewOwnerID()

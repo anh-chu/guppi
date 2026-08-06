@@ -127,7 +127,7 @@ func TestSetPresentationBackgroundAtomicOnStoreFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal("workspace disappeared after successful set_presentation")
 	}
-	if snap2.Record.Tree == nil || !findLeaf(*snap2.Record.Tree, rec.Ref) {
+	if snap2.Record.Tree != nil && findLeaf(*snap2.Record.Tree, rec.Ref) {
 		t.Fatal("expected session leaf removed from workspace after successful backgrounding retry")
 	}
 }

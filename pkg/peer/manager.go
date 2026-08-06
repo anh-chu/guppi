@@ -278,7 +278,7 @@ type remoteCatalogCache struct {
 type remoteRevisionState struct {
 	generation int64 // monotonic connection-generation token
 	catalog    int64
-	workspace  map[state.LayoutID]int64
+	workspace  int64
 }
 
 // NewManager creates a new peer manager
@@ -752,24 +752,14 @@ func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bo
 			return false
 		}
 	}
-	for _, layout := range snap.Layouts {
-		if layout.Owner != snap.Owner {
-			logrus.WithFields(logrus.Fields{
-				"peer":         peerID,
-				"owner":        string(snap.Owner),
-				"layout_id":    string(layout.ID),
-				"layout_owner": string(layout.Owner),
-			}).Warn("dropping snapshot: embedded layout owner mismatch")
-			return false
-		}
-	}
+	// Workspace is now a singleton and already owned by snap.Owner
 	return true
 }
 
 // validateCatalogInvariants checks deep structural invariants on the catalog snapshot:
 //  1. Each session's Ref.Session must match its own record ID
-//  2. Each layout tree must have valid structure (checked via ValidatePaneTree)
-//  3. Each layout leaf ref must have owner matching snap.Owner and must
+//  2. Workspace tree structure must be valid (checked via ValidatePaneTree)
+//  3. Workspace leaf refs must have owner matching snap.Owner and must
 //     correspond to an actual session in the snapshot
 //
 // Returns false and logs details if any check fails.
@@ -789,36 +779,33 @@ func validateCatalogInvariants(peerID string, snap state.OwnerCatalogSnapshot) b
 		}
 	}
 
-	// Validate each layout tree and check that leaf refs correspond to known sessions
-	for _, layout := range snap.Layouts {
+	// Validate the singleton workspace tree and check that leaf refs correspond to known sessions
+	if snap.Workspace != nil && snap.Workspace.Tree != nil {
 		// Use canonical ValidatePaneTree to check structure and duplicate leaves
-		if err := state.ValidatePaneTree(layout.Tree); err != nil {
+		if err := state.ValidatePaneTree(*snap.Workspace.Tree); err != nil {
 			var stateErr state.StateError
 			if errors.As(err, &stateErr) {
 				logrus.WithFields(logrus.Fields{
-					"peer":      peerID,
-					"layout_id": string(layout.ID),
-					"code":      stateErr.Code,
-					"field":     stateErr.Field,
-					"detail":    stateErr.Detail,
+					"peer":   peerID,
+					"code":   stateErr.Code,
+					"field":  stateErr.Field,
+					"detail": stateErr.Detail,
 				}).Warn("dropping snapshot: invalid pane tree structure")
 			} else {
 				logrus.WithFields(logrus.Fields{
-					"peer":      peerID,
-					"layout_id": string(layout.ID),
-					"error":     err.Error(),
+					"peer":  peerID,
+					"error": err.Error(),
 				}).Warn("dropping snapshot: invalid pane tree structure")
 			}
 			return false
 		}
 
 		// Check that all leaf refs correspond to known sessions
-		leaves, err := collectTreeLeaves(layout.Tree)
+		leaves, err := collectTreeLeaves(*snap.Workspace.Tree)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
-				"peer":      peerID,
-				"layout_id": string(layout.ID),
-				"error":     err.Error(),
+				"peer":  peerID,
+				"error": err.Error(),
 			}).Warn("dropping snapshot: failed to collect leaf refs")
 			return false
 		}
@@ -827,18 +814,16 @@ func validateCatalogInvariants(peerID string, snap state.OwnerCatalogSnapshot) b
 				logrus.WithFields(logrus.Fields{
 					"peer":      peerID,
 					"owner":     string(snap.Owner),
-					"layout_id": string(layout.ID),
 					"ref":       ref.String(),
 					"ref_owner": string(ref.Owner),
-				}).Warn("dropping snapshot: layout leaf ref owner mismatch")
+				}).Warn("dropping snapshot: workspace leaf ref owner mismatch")
 				return false
 			}
 			if _, exists := knownSessions[ref.Session]; !exists {
 				logrus.WithFields(logrus.Fields{
-					"peer":      peerID,
-					"layout_id": string(layout.ID),
-					"ref":       ref.String(),
-				}).Warn("dropping snapshot: layout leaf references unknown session")
+					"peer": peerID,
+					"ref":  ref.String(),
+				}).Warn("dropping snapshot: workspace leaf references unknown session")
 				return false
 			}
 		}
@@ -896,7 +881,6 @@ func validateWorkspaceTreeOwnership(peerID string, rec state.WorkspaceRecord) bo
 				logrus.WithFields(logrus.Fields{
 					"peer":      peerID,
 					"owner":     string(rec.Owner),
-					"layout_id": string(rec.ID),
 					"ref_owner": string(node.Ref.Owner),
 				}).Warn("dropping snapshot: embedded leaf owner mismatch")
 				return false
@@ -910,7 +894,7 @@ func validateWorkspaceTreeOwnership(peerID string, rec state.WorkspaceRecord) bo
 		}
 		return true
 	}
-	return checkNode(&rec.Tree)
+	return checkNode(rec.Tree)
 }
 
 // validateWorkspaceInvariants checks deep structural invariants on a workspace record:
@@ -919,21 +903,22 @@ func validateWorkspaceTreeOwnership(peerID string, rec state.WorkspaceRecord) bo
 // Returns false and logs details if any check fails.
 func validateWorkspaceInvariants(peerID string, rec state.WorkspaceRecord) bool {
 	// Use canonical ValidatePaneTree to check structure and duplicate leaves
-	if err := state.ValidatePaneTree(rec.Tree); err != nil {
+	if rec.Tree == nil {
+		return true // Empty workspace is valid
+	}
+	if err := state.ValidatePaneTree(*rec.Tree); err != nil {
 		var stateErr state.StateError
 		if errors.As(err, &stateErr) {
 			logrus.WithFields(logrus.Fields{
-				"peer":      peerID,
-				"layout_id": string(rec.ID),
-				"code":      stateErr.Code,
-				"field":     stateErr.Field,
-				"detail":    stateErr.Detail,
+				"peer":   peerID,
+				"code":   stateErr.Code,
+				"field":  stateErr.Field,
+				"detail": stateErr.Detail,
 			}).Warn("dropping snapshot: invalid workspace pane tree structure")
 		} else {
 			logrus.WithFields(logrus.Fields{
-				"peer":      peerID,
-				"layout_id": string(rec.ID),
-				"error":     err.Error(),
+				"peer":  peerID,
+				"error": err.Error(),
 			}).Warn("dropping snapshot: invalid workspace pane tree structure")
 		}
 		return false
@@ -1077,15 +1062,12 @@ func (m *Manager) UpdateRemoteWorkspace(peerID string, conn *PeerConnection, rec
 		m.catalogMu.Unlock()
 		return
 	}
-	if rs.workspace == nil {
-		rs.workspace = make(map[state.LayoutID]int64)
-	}
-	if last, seen := rs.workspace[rec.ID]; seen && rec.Revision <= last {
+	if rs.workspace > 0 && rec.Revision <= rs.workspace {
 		m.catalogMu.Unlock()
-		logrus.WithFields(logrus.Fields{"peer": peerID, "layout": string(rec.ID), "rev": rec.Revision, "last": last}).Debug("dropping stale workspace snapshot")
+		logrus.WithFields(logrus.Fields{"peer": peerID, "rev": rec.Revision, "last": rs.workspace}).Debug("dropping stale workspace snapshot")
 		return
 	}
-	rs.workspace[rec.ID] = rec.Revision
+	rs.workspace = rec.Revision
 	// Merge: preserve existing catalog, update workspace fields.
 	cache := m.remoteCatalogs[rec.Owner]
 	cache.Owner = rec.Owner
@@ -1189,67 +1171,7 @@ func (m *Manager) SetRemoteCreateCoordinator(c *state.RemoteCreateCoordinator) {
 	m.remoteCreate = c
 }
 
-// WorkspaceAuthority returns the owning owner for layout and, when the owner is
-// remote, the peer ID that last advertised it. The empty peerID means this node
-// is the authority.
-func (m *Manager) WorkspaceAuthority(layout state.LayoutID) (state.OwnerID, string, error) {
-	if cat := m.catalog; cat != nil {
-		if rec, ok := cat.Layout(layout); ok {
-			return rec.Owner, "", nil
-		}
-	}
-	m.catalogMu.RLock()
-	defer m.catalogMu.RUnlock()
-	for owner, cache := range m.remoteCatalogs {
-		for _, l := range cache.Snapshot.Layouts {
-			if l.ID == layout {
-				return owner, cache.PeerID, nil
-			}
-		}
-		if cache.Workspace != nil && cache.Workspace.ID == layout {
-			return owner, cache.PeerID, nil
-		}
-	}
-	return "", "", state.StateError{Code: state.ErrUnknownLayout, Field: "layout", Detail: fmt.Sprintf("workspace authority not found for layout %q", layout)}
-}
 
-// IsWorkspaceOwnerOnline reports whether owner is reachable for state commands.
-func (m *Manager) IsWorkspaceOwnerOnline(owner state.OwnerID) bool {
-	if owner == state.OwnerIDFromFingerprint(m.localID) {
-		return true
-	}
-	peerID := m.peerIDForOwner(owner)
-	if peerID == "" {
-		return false
-	}
-	pc := m.GetPeerConnection(peerID)
-	return pc != nil && pc.HasCanonicalCaps()
-}
-
-// ProxyWorkspaceCommand routes a workspace command to the layout's owner.
-// Local authority applies directly; remote authority is sent over the
-// command RPC. Legacy or offline owners return typed errors.
-func (m *Manager) ProxyWorkspaceCommand(ctx context.Context, cmd state.WorkspaceCommand) error {
-	owner, peerID, err := m.WorkspaceAuthority(cmd.Layout)
-	if err != nil {
-		return err
-	}
-	if owner == state.OwnerIDFromFingerprint(m.localID) {
-		cat := m.catalog
-		if cat == nil {
-			return fmt.Errorf("catalog not enabled")
-		}
-		return cat.ApplyWorkspaceCommand(cmd)
-	}
-	pc := m.GetPeerConnection(peerID)
-	if pc == nil {
-		return state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "owner", Detail: fmt.Sprintf("workspace owner %q is offline", owner)}
-	}
-	if !pc.HasCanonicalCaps() {
-		return state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %q does not support workspace commands", peerID)}
-	}
-	return m.SendWorkspaceCommand(ctx, peerID, cmd)
-}
 
 // RequestRemoteCreate routes a remote create to the workspace owner. The local
 // owner path runs directly in the coordinator; remote owners are reached over
@@ -1409,13 +1331,20 @@ func (m *Manager) resetRemoteRevisions(peerID string) int64 {
 func cloneOwnerCatalogSnapshot(s state.OwnerCatalogSnapshot) state.OwnerCatalogSnapshot {
 	sessions := make([]state.LocalSessionRecord, len(s.Sessions))
 	copy(sessions, s.Sessions)
-	layouts := make([]state.LayoutRecord, len(s.Layouts))
-	copy(layouts, s.Layouts)
+	var workspace *state.WorkspaceRecord
+	if s.Workspace != nil {
+		cp := *s.Workspace
+		if cp.Tree != nil {
+			treecp := *cp.Tree
+			cp.Tree = &treecp
+		}
+		workspace = &cp
+	}
 	return state.OwnerCatalogSnapshot{
-		Owner:    s.Owner,
-		Revision: s.Revision,
-		Sessions: sessions,
-		Layouts:  layouts,
+		Owner:     s.Owner,
+		Revision:  s.Revision,
+		Sessions:  sessions,
+		Workspace: workspace,
 	}
 }
 

@@ -245,10 +245,10 @@ type FileReadResultPayload struct {
 
 // CatalogSnapshotPayload is the wire form of state.OwnerCatalogSnapshot.
 type CatalogSnapshotPayload struct {
-	Owner    state.OwnerID              `json:"owner"`
-	Revision int64                      `json:"revision"`
-	Sessions []state.LocalSessionRecord `json:"sessions"`
-	Layouts  []state.LayoutRecord       `json:"layouts,omitempty"`
+	Owner     state.OwnerID         `json:"owner"`
+	Revision  int64                 `json:"revision"`
+	Sessions  []state.LocalSessionRecord `json:"sessions"`
+	Workspace *state.WorkspaceRecord `json:"workspace,omitempty"`
 }
 
 // WorkspaceSnapshotPayload is the wire form of a workspace snapshot.

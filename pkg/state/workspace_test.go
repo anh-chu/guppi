@@ -401,7 +401,7 @@ func TestWorkspaceRemoveCollapsesSingleChild(t *testing.T) {
 		t.Fatalf("expected collapsed 2-leaf tree, got leaves %v tree type %s", leaves, snap.Record.Tree.Type)
 	}
 
-	// Removing the last leaf deletes the layout.
+	// Removing the last leaves clears the tree but preserves the workspace record.
 	if err := c.ApplyWorkspaceCommand(WorkspaceCommand{
 		ID:     NewCommandID(),
 		Action: WorkspaceActionRemove,
@@ -416,8 +416,12 @@ func TestWorkspaceRemoveCollapsesSingleChild(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("remove s3: %v", err)
 	}
-	if _, err := c.WorkspaceSnapshot(); err == nil {
-		t.Fatal("expected layout deleted after last leaf removed")
+	snap2, err := c.WorkspaceSnapshot()
+	if err != nil {
+		t.Fatal("expected workspace record to exist, got error:", err)
+	}
+	if snap2.Record.Tree != nil {
+		t.Fatal("expected tree to be nil after all leaves removed")
 	}
 }
 
@@ -539,34 +543,6 @@ func TestWorkspaceResizeBySplitID(t *testing.T) {
 		}),
 	})
 	assertCode(t, err, ErrInvalidRatio)
-}
-
-func TestWorkspaceSelect(t *testing.T) {
-	c, owner, cleanup := mustNewWorkspaceCatalog(t)
-	defer cleanup()
-
-	setupWorkspace(t, c,
-		Split(DirectionHorizontal, Ratio(0.5), Leaf(ref(owner, "s1")), Leaf(ref(owner, "s2"))))
-
-	if err := c.ApplyWorkspaceCommand(WorkspaceCommand{
-		ID:     NewCommandID(),
-		Action: WorkspaceActionSelect,
-		Params: workspaceParams(map[string]interface{}{"ref": ref(owner, "s2")}),
-	}); err != nil {
-		t.Fatalf("select: %v", err)
-	}
-
-	snap, _ := c.WorkspaceSnapshot()
-	if snap.Record.ActiveKey == nil || snap.Record.ActiveKey.MapKey() != ref(owner, "s2").MapKey() {
-		t.Fatalf("active key not set: %+v", snap.Record.ActiveKey)
-	}
-
-	// Selecting an active key never persists a command receipt beyond the
-	// select itself.
-	doc := c.store.Snapshot()
-	if len(doc.Commands) != 1 {
-		t.Fatalf("expected only select receipt persisted, got %d", len(doc.Commands))
-	}
 }
 
 func TestWorkspaceAtomicRevisionIncrement(t *testing.T) {

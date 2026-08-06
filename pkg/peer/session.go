@@ -106,33 +106,20 @@ func runSession(
 		return fmt.Errorf("peer already connected")
 	}
 
-	var unsubWorkspace func()
 	var unsubCatalog func()
 
-	// Subscribe to complete workspace snapshots after each accepted command
-	// so remote peers see the whole layout, never intermediate steps.
+	// Subscribe to complete catalog snapshots after each local mutation
+	// (session created/renamed/removed, workspace changed, etc.) so a connected
+	// peer's remote-catalog cache stays live, not just seeded once at connect
+	// time by sendInitialCatalog above. Without this, any local change made
+	// after pairing completes is never pushed to already-connected peers.
 	if cat := deps.Manager.catalog; cat != nil {
-		unsubWorkspace = cat.SubscribeWorkspace(func(layout state.LayoutID, rec state.WorkspaceRecord) {
-			payload := WorkspaceSnapshotPayload{Owner: rec.Owner, Revision: rec.Revision, Workspace: rec}
-			msg, err := NewMessage(MsgWorkspaceSnapshot, payload)
-			if err != nil {
-				return
-			}
-			pc.EnqueueWorkspaceSnapshot(msg)
-		})
-
-		// Subscribe to complete catalog snapshots after each local mutation
-		// (session created/renamed/removed, etc.) so a connected peer's
-		// remote-catalog cache stays live, not just seeded once at connect
-		// time by sendInitialCatalog above. Without this, any local
-		// change made after pairing completes is never pushed to already-
-		// connected peers.
 		unsubCatalog = cat.SubscribeCatalog(func(snap state.OwnerCatalogSnapshot) {
 			payload := CatalogSnapshotPayload{
-				Owner:    snap.Owner,
-				Revision: snap.Revision,
-				Sessions: snap.Sessions,
-				Layouts:  snap.Layouts,
+				Owner:     snap.Owner,
+				Revision:  snap.Revision,
+				Sessions:  snap.Sessions,
+				Workspace: snap.Workspace,
 			}
 			msg, err := NewMessage(MsgCatalogSnapshot, payload)
 			if err != nil {
@@ -153,9 +140,6 @@ func runSession(
 	writerDone := make(chan struct{})
 	commandWritersDone := make(chan struct{})
 	defer func() {
-		if unsubWorkspace != nil {
-			unsubWorkspace()
-		}
 		if unsubCatalog != nil {
 			unsubCatalog()
 		}

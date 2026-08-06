@@ -63,11 +63,8 @@ func TestBootstrapReturnsOneCompleteSnapshot(t *testing.T) {
 	if resp.Pending == nil {
 		t.Error("expected pending field to be present (even if empty)")
 	}
-	if len(resp.Local.Layouts) == 0 {
-		t.Error("expected at least one layout after create")
-	}
 	if resp.Workspace == nil {
-		t.Error("expected a workspace snapshot once a layout exists")
+		t.Error("expected a workspace snapshot after create")
 	}
 }
 
@@ -149,29 +146,39 @@ func TestWorkspaceCommandRevisionConflict(t *testing.T) {
 	opts := &Options{Catalog: catalog, CommandSvc: svc}
 	r := newStateTestRouter(opts)
 
+	// Create two sessions for split
 	params, _ := json.Marshal(state.CreateParams{Name: "gamma"})
 	if _, err := svc.ExecuteSessionCommand(t.Context(), state.SessionCommand{
 		ID: state.NewCommandID(), Action: state.ActionCreate, Params: params,
 	}); err != nil {
-		t.Fatalf("create: %v", err)
+		t.Fatalf("create session 1: %v", err)
 	}
-	layouts := catalog.Layouts()
-	if len(layouts) != 1 {
-		t.Fatalf("expected one layout, got %d", len(layouts))
+	params2, _ := json.Marshal(state.CreateParams{Name: "delta"})
+	if _, err := svc.ExecuteSessionCommand(t.Context(), state.SessionCommand{
+		ID: state.NewCommandID(), Action: state.ActionCreate, Params: params2,
+	}); err != nil {
+		t.Fatalf("create session 2: %v", err)
 	}
-	layoutID := layouts[0].ID
-	sessions := catalog.PendingCreates()
-	if len(sessions) != 1 {
-		t.Fatalf("expected one pending create, got %d", len(sessions))
-	}
-	ref := sessions[0].Ref
 
+	// Get both sessions
+	sessions := catalog.PendingCreates()
+	if len(sessions) != 2 {
+		t.Fatalf("expected two pending creates, got %d", len(sessions))
+	}
+	targetRef := sessions[0].Ref
+	newRef := sessions[1].Ref
+
+	// Try split with stale revision expectation
 	stale := int64(999)
-	selectParams, _ := json.Marshal(map[string]any{"ref": ref, "expected_revision": &stale})
+	splitParams, _ := json.Marshal(map[string]any{
+		"target":    targetRef,
+		"direction": state.DirectionHorizontal,
+		"new":       newRef,
+		"expected_revision": &stale,
+	})
 	body, _ := json.Marshal(map[string]any{
-		"layout": layoutID,
-		"action": state.WorkspaceActionSelect,
-		"params": json.RawMessage(selectParams),
+		"action": state.WorkspaceActionSplit,
+		"params": json.RawMessage(splitParams),
 	})
 	req := httptest.NewRequest(http.MethodPost, "/state/workspace-commands", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -188,12 +195,14 @@ func TestWorkspaceCommandRevisionConflict(t *testing.T) {
 		t.Fatalf("expected revision_conflict, got %q", errResp.Code)
 	}
 
-	// A well-formed command with no revision guard succeeds and is never
-	// reported as accepted unless ApplyWorkspaceCommand actually returned nil.
-	okParams, _ := json.Marshal(map[string]any{"ref": ref})
+	// A well-formed split with no revision guard succeeds.
+	okParams, _ := json.Marshal(map[string]any{
+		"target":    targetRef,
+		"direction": state.DirectionHorizontal,
+		"new":       newRef,
+	})
 	okBody, _ := json.Marshal(map[string]any{
-		"layout": layoutID,
-		"action": state.WorkspaceActionSelect,
+		"action": state.WorkspaceActionSplit,
 		"params": json.RawMessage(okParams),
 	})
 	req = httptest.NewRequest(http.MethodPost, "/state/workspace-commands", bytes.NewReader(okBody))
@@ -295,11 +304,6 @@ func TestCommandBodyAsBrowserWouldProduceIt(t *testing.T) {
 		t.Fatalf("seed create: %v", err)
 	}
 
-	layouts := catalog.Layouts()
-	if len(layouts) != 1 {
-		t.Fatalf("expected one layout after create, got %d", len(layouts))
-	}
-	layoutID := layouts[0].ID
 	pending := catalog.PendingCreates()
 	if len(pending) != 1 {
 		t.Fatalf("expected one pending create, got %d", len(pending))
@@ -307,23 +311,37 @@ func TestCommandBodyAsBrowserWouldProduceIt(t *testing.T) {
 	realRef := pending[0].Ref
 	wireRef := realRef.String()
 
-	// 2. Workspace command: select, exactly as CommandClient.workspaceCommand
-	// would serialize { id, layout, action, params: { ref, expected_revision? } }
-	// -- this is encodeWorkspaceCommandAction's 'select' case in commands.ts.
-	selectBody := []byte(`{"id":"cmdbrowser3","layout":"` + string(layoutID) + `","action":"select","params":{"ref":"` + wireRef + `"}}`)
-	req := httptest.NewRequest(http.MethodPost, "/state/workspace-commands", bytes.NewReader(selectBody))
+	// Create a second session for split command
+	params2, _ := json.Marshal(state.CreateParams{Name: "second-session"})
+	if _, err := svc.ExecuteSessionCommand(t.Context(), state.SessionCommand{
+		ID: state.NewCommandID(), Action: state.ActionCreate, Params: params2,
+	}); err != nil {
+		t.Fatalf("seed create 2: %v", err)
+	}
+	pending2 := catalog.PendingCreates()
+	if len(pending2) != 2 {
+		t.Fatalf("expected two pending creates, got %d", len(pending2))
+	}
+	newRef := pending2[1].Ref
+	wireNewRef := newRef.String()
+
+	// 2. Workspace command: split, exactly as CommandClient.workspaceCommand
+	// would serialize { id, action, params: { target, direction, new } }
+	// This tests that refs in params are in string format.
+	splitBody := []byte(`{"id":"cmdbrowser3","action":"split","params":{"target":"` + wireRef + `","direction":"h","new":"` + wireNewRef + `"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/state/workspace-commands", bytes.NewReader(splitBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("select: expected 200, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("split: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var result workspaceCommandResult
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("decode select result: %v", err)
+		t.Fatalf("decode split result: %v", err)
 	}
 	if !result.Accepted {
-		t.Error("expected select command to be accepted")
+		t.Error("expected split command to be accepted")
 	}
 
 	// 3. Session command: kill, targeting the real ref by its canonical wire

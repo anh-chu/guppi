@@ -312,10 +312,9 @@ func TestRemoteSnapshot_OwnerBindingEnforced(t *testing.T) {
 
 	// peerB claiming ownerA is a spoof -> dropped.
 	mgr.UpdateRemoteWorkspace(peerB, connB, state.WorkspaceRecord{
-		ID:       "layout1",
 		Owner:    ownerA,
 		Revision: 1,
-		Tree:     state.Leaf(state.SessionRef{Owner: ownerA, Session: "s1"}),
+		Tree:     func() *state.PaneNode { l := state.Leaf(state.SessionRef{Owner: ownerA, Session: "s1"}); return &l }(),
 	})
 	if _, ok := mgr.RemoteWorkspaceSnapshot(ownerA); ok {
 		t.Fatal("spoofed workspace under bound owner accepted")
@@ -390,27 +389,28 @@ func TestRemoteWorkspace_StaleRevisionRejected(t *testing.T) {
 	conn := NewPeerConnection(peerID, 64)
 	mgr.RegisterPeer(peerID, "peera", "", conn)
 
-	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{ID: "layout1", Owner: owner, Revision: 5, Tree: leafA})
+	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{Owner: owner, Revision: 5, Tree: &leafA})
 
 	// Same layout, equal revision -> rejected.
-	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{ID: "layout1", Owner: owner, Revision: 5, Tree: leafB})
+	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{Owner: owner, Revision: 5, Tree: &leafB})
 	ws, _ := mgr.RemoteWorkspaceSnapshot(owner)
 	if ws.Tree.Ref == nil || ws.Tree.Ref.Session != "s1" {
 		t.Fatalf("equal-revision workspace regressed cache")
 	}
 
 	// Same layout, lower revision -> rejected.
-	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{ID: "layout1", Owner: owner, Revision: 4, Tree: leafB})
+	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{Owner: owner, Revision: 4, Tree: &leafB})
 	ws, _ = mgr.RemoteWorkspaceSnapshot(owner)
 	if ws.Tree.Ref == nil || ws.Tree.Ref.Session != "s1" {
 		t.Fatalf("lower-revision workspace regressed cache")
 	}
 
-	// A different layout has its own revision baseline.
-	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{ID: "layout2", Owner: owner, Revision: 1, Tree: leafB})
+	// Singleton workspace has one revision counter now; a stale revision
+	// (lower than the highest seen) must still be rejected.
+	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{Owner: owner, Revision: 1, Tree: &leafB})
 	ws, ok := mgr.RemoteWorkspaceSnapshot(owner)
-	if !ok || ws.ID != "layout2" {
-		t.Fatalf("independent workspace revisions should be accepted: %+v", ws)
+	if !ok || ws.Tree.Ref == nil || ws.Tree.Ref.Session != "s1" {
+		t.Fatalf("stale revision regressed cache: %+v", ws)
 	}
 }
 
@@ -484,47 +484,45 @@ func TestRemoteSnapshot_SpoofedSessionOwnerRejected(t *testing.T) {
 	}
 }
 
-// TestRemoteSnapshot_SpoofedLayoutOwnerRejected proves that a snapshot
-// containing a layout with embedded owner != snap.Owner is rejected.
-func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
+// TestRemoteSnapshot_SpoofedWorkspaceOwnerRejected proves that a snapshot
+// containing a workspace with embedded leaf owner != snap.Owner is rejected.
+func TestRemoteSnapshot_SpoofedWorkspaceOwnerRejected(t *testing.T) {
 	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
-	layoutID := state.NewLayoutID()
 
 	conn := NewPeerConnection(peerID, 64)
 	mgr.RegisterPeer(peerID, "peera", "", conn)
 
-	// Crafted snapshot with layout owner != snap.Owner
-	spoofedLayout := state.LayoutRecord{
-		ID:    layoutID,
-		Owner: ownerSpoof, // SPOOF: different from snapshot owner
-		Tree:  state.Leaf(state.SessionRef{Owner: owner, Session: "s1"}),
-	}
+	// Crafted snapshot with workspace tree leaf owner != snap.Owner
+	spoofedLeaf := state.Leaf(state.SessionRef{Owner: ownerSpoof, Session: "s1"}) // SPOOF: leaf owner != snap.Owner
 	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 1,
-		Layouts:  []state.LayoutRecord{spoofedLayout},
+		Workspace: &state.WorkspaceRecord{
+			Owner:    owner,
+			Revision: 1,
+			Tree:     &spoofedLeaf,
+		},
 	})
 
 	// Snapshot must be rejected; no cache entry should exist
 	if _, ok := mgr.RemoteCatalogSnapshot(owner); ok {
-		t.Fatal("spoofed layout owner snapshot was accepted")
+		t.Fatal("snapshot with spoofed workspace leaf owner was accepted")
 	}
 }
 
-// TestRemoteSnapshot_LayoutLeafForeignOwnerRejected proves that a layout leaf
+// TestRemoteSnapshot_WorkspaceLeafSessionMismatchRejected proves that a workspace leaf
 // whose Ref.Session matches a real session ID belonging to snap.Owner but whose
 // Ref.Owner is a different (foreign) owner is rejected. The leaf's owner must
 // be bound to the snapshot owner, not just its session ID.
-func TestRemoteSnapshot_LayoutLeafForeignOwnerRejected(t *testing.T) {
+func TestRemoteSnapshot_WorkspaceLeafSessionMismatchRejected(t *testing.T) {
 	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
 	sessionID := state.NewSessionID()
-	layoutID := state.NewLayoutID()
 
 	conn := NewPeerConnection(peerID, 64)
 	mgr.RegisterPeer(peerID, "peera", "", conn)
@@ -535,22 +533,22 @@ func TestRemoteSnapshot_LayoutLeafForeignOwnerRejected(t *testing.T) {
 		Owner: owner,
 		Ref:   state.SessionRef{Owner: owner, Session: sessionID},
 	}
-	// Layout leaf claims a foreign owner while referencing the real session ID.
-	spoofedLayout := state.LayoutRecord{
-		ID:    layoutID,
-		Owner: owner,
-		Tree:  state.Leaf(state.SessionRef{Owner: ownerSpoof, Session: sessionID}), // SPOOF: leaf owner != snap.Owner
-	}
+	// Workspace leaf claims a foreign owner while referencing the real session ID.
+	spoofedLeaf := state.Leaf(state.SessionRef{Owner: ownerSpoof, Session: sessionID}) // SPOOF: leaf owner != snap.Owner
 	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{realSession},
-		Layouts:  []state.LayoutRecord{spoofedLayout},
+		Workspace: &state.WorkspaceRecord{
+			Owner:    owner,
+			Revision: 1,
+			Tree:     &spoofedLeaf,
+		},
 	})
 
 	// Snapshot must be rejected; no cache entry should exist
 	if _, ok := mgr.RemoteCatalogSnapshot(owner); ok {
-		t.Fatal("catalog with foreign-owner layout leaf was accepted")
+		t.Fatal("catalog with foreign-owner workspace leaf was accepted")
 	}
 }
 
@@ -586,14 +584,13 @@ func TestRemoteSnapshot_SessionRefOwnerMismatchRejected(t *testing.T) {
 }
 
 // TestRemoteSnapshot_WellFormedAccepted proves that a snapshot with no owner
-// mismatches (session Owner, session Ref.Owner, layout leaf Ref.Owner all
+// mismatches (session Owner, session Ref.Owner, workspace leaf Ref.Owner all
 // bound to snap.Owner) is still accepted, guarding against false positives.
 func TestRemoteSnapshot_WellFormedAccepted(t *testing.T) {
 	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
-	layoutID := state.NewLayoutID()
 
 	conn := NewPeerConnection(peerID, 64)
 	mgr.RegisterPeer(peerID, "peera", "", conn)
@@ -603,16 +600,16 @@ func TestRemoteSnapshot_WellFormedAccepted(t *testing.T) {
 		Owner: owner,
 		Ref:   state.SessionRef{Owner: owner, Session: sessionID},
 	}
-	layout := state.LayoutRecord{
-		ID:    layoutID,
-		Owner: owner,
-		Tree:  state.Leaf(state.SessionRef{Owner: owner, Session: sessionID}),
-	}
+	leaf := state.Leaf(state.SessionRef{Owner: owner, Session: sessionID})
 	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{sess},
-		Layouts:  []state.LayoutRecord{layout},
+		Workspace: &state.WorkspaceRecord{
+			Owner:    owner,
+			Revision: 1,
+			Tree:     &leaf,
+		},
 	})
 
 	// Snapshot must be accepted and cached under snap.Owner.
@@ -620,8 +617,11 @@ func TestRemoteSnapshot_WellFormedAccepted(t *testing.T) {
 	if !ok {
 		t.Fatal("well-formed snapshot was rejected")
 	}
-	if len(snap.Sessions) != 1 || len(snap.Layouts) != 1 {
-		t.Fatalf("expected 1 session and 1 layout in cache, got %d sessions, %d layouts", len(snap.Sessions), len(snap.Layouts))
+	if len(snap.Sessions) != 1 {
+		t.Fatalf("expected 1 session in cache, got %d", len(snap.Sessions))
+	}
+	if snap.Workspace == nil || snap.Workspace.Tree == nil {
+		t.Fatal("expected workspace with tree in cache")
 	}
 }
 
@@ -638,11 +638,11 @@ func TestRemoteWorkspace_SpoofedLeafOwnerRejected(t *testing.T) {
 
 	// Crafted leaf with owner != record owner
 	spoofedRef := state.SessionRef{Owner: ownerSpoof, Session: "s1"}
+	spoofedLeaf := state.Leaf(spoofedRef)
 	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{
-		ID:       "layout1",
 		Owner:    owner,
 		Revision: 1,
-		Tree:     state.Leaf(spoofedRef), // SPOOF: leaf owner != record owner
+		Tree:     &spoofedLeaf, // SPOOF: leaf owner != record owner
 	})
 
 	// Workspace must be rejected; no cache entry should exist

@@ -97,12 +97,7 @@ func handleBootstrap(w http.ResponseWriter, r *http.Request, opts *Options) {
 	} else {
 		resp.Hosts = []interface{}{}
 	}
-	if len(agg.Local.Layouts) > 0 {
-		if wsRes, err := opts.Catalog.WorkspaceSnapshot(agg.Local.Layouts[0].ID); err == nil {
-			ws := wsRes.Record
-			resp.Workspace = &ws
-		}
-	}
+	resp.Workspace = agg.Local.Workspace
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -193,7 +188,6 @@ func handleSessionCommand(w http.ResponseWriter, r *http.Request, opts *Options)
 			WorktreeBranch: params.WorktreeBranch,
 			Cols:           params.Cols,
 			Rows:           params.Rows,
-			LayoutID:       params.LayoutID,
 			Direction:      params.Direction,
 			NewFirst:       params.NewFirst,
 			AgentType:      params.AgentType,
@@ -274,7 +268,6 @@ func handleSessionCommand(w http.ResponseWriter, r *http.Request, opts *Options)
 // POST /api/state/workspace-commands. Unknown fields are rejected.
 type workspaceCommandRequest struct {
 	ID     string          `json:"id,omitempty"`
-	Layout state.LayoutID  `json:"layout"`
 	Action string          `json:"action"`
 	Params json.RawMessage `json:"params,omitempty"`
 }
@@ -285,7 +278,6 @@ type workspaceCommandRequest struct {
 // success -- a non-nil error always maps to a non-2xx typed error response.
 type workspaceCommandResult struct {
 	ID       state.CommandID `json:"id"`
-	Layout   state.LayoutID  `json:"layout"`
 	Accepted bool            `json:"accepted"`
 }
 
@@ -317,7 +309,6 @@ func handleWorkspaceCommand(w http.ResponseWriter, r *http.Request, opts *Option
 
 	cmd := state.WorkspaceCommand{
 		ID:     id,
-		Layout: req.Layout,
 		Action: req.Action,
 		Params: req.Params,
 	}
@@ -327,7 +318,7 @@ func handleWorkspaceCommand(w http.ResponseWriter, r *http.Request, opts *Option
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(workspaceCommandResult{ID: id, Layout: req.Layout, Accepted: true})
+	json.NewEncoder(w).Encode(workspaceCommandResult{ID: id, Accepted: true})
 }
 
 // checkContentType enforces application/json bodies for command endpoints,

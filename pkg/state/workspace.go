@@ -7,13 +7,12 @@ import (
 )
 
 const (
-	WorkspaceActionSplit          = "split"
-	WorkspaceActionMove           = "move"
-	WorkspaceActionSwap           = "swap"
-	WorkspaceActionPopOut         = "pop_out"
-	WorkspaceActionRemove         = "remove"
-	WorkspaceActionResize         = "resize"
-	WorkspaceActionSelect         = "select"
+	WorkspaceActionSplit   = "split"
+	WorkspaceActionMove    = "move"
+	WorkspaceActionSwap    = "swap"
+	WorkspaceActionPopOut  = "pop_out"
+	WorkspaceActionRemove  = "remove"
+	WorkspaceActionResize  = "resize"
 )
 
 // WorkspaceSnapshotResult is the read-only view returned by WorkspaceSnapshot.
@@ -64,10 +63,7 @@ type workspaceResizeParams struct {
 	Ratio   float64 `json:"ratio"`
 }
 
-type workspaceSelectParams struct {
-	workspaceBaseParams
-	Ref SessionRef `json:"ref"`
-}
+
 
 // ApplyWorkspaceCommand applies one atomic workspace command. Accepted commands
 // append a bounded receipt and increment the catalog revision exactly once.
@@ -170,32 +166,29 @@ func (c *Catalog) validatePeerWorkspaceRefOwnership(cmd WorkspaceCommand) error 
 			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
 		}
 		return checkRef("ref", p.Ref)
-	case WorkspaceActionSelect:
-		var p workspaceSelectParams
-		if err := json.Unmarshal(cmd.Params, &p); err != nil {
-			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
-		}
-		return checkRef("ref", p.Ref)
+
 	default:
 		// Reorder/present/etc. carry no SessionRef to check here.
 		return nil
 	}
 }
 
-// WorkspaceSnapshot returns the active singleton workspace view.
+// WorkspaceSnapshot returns the active singleton workspace view. Even when
+// workspace is nil (not yet created), it returns a valid WorkspaceRecord
+// with Revision 0 and Tree=nil, so the state stream sends workspace_snapshot
+// on every connect and state change, giving the browser a complete bootstrap.
 func (c *Catalog) WorkspaceSnapshot() (WorkspaceSnapshotResult, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if c.workspace == nil {
-		return WorkspaceSnapshotResult{}, StateError{Code: ErrUnknownLayout, Field: "workspace", Detail: "workspace does not exist"}
-	}
-
 	ws := WorkspaceRecord{
-		Owner:     c.owner,
-		Revision:  c.workspace.Revision,
-		Tree:      cloneTreePtr(c.workspace.Tree),
-		ActiveKey: cloneRefPtr(c.activeKey),
+		Owner:    c.owner,
+		Revision: 0,
+		Tree:     nil,
+	}
+	if c.workspace != nil {
+		ws.Revision = c.workspace.Revision
+		ws.Tree = cloneTreePtr(c.workspace.Tree)
 	}
 
 	return WorkspaceSnapshotResult{Record: ws}, nil
@@ -340,14 +333,11 @@ func applyWorkspaceCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) e
 			return err
 		}
 		if tree.Type == "" {
-			doc.Workspace = nil
-			if c != nil {
-				c.deleteActiveKeyLocked()
-			}
+			rec.Tree = nil
 		} else {
 			rec.Tree = &tree
-			rec.Revision = nextRev
 		}
+		rec.Revision = nextRev
 
 	case WorkspaceActionResize:
 		var p workspaceResizeParams
@@ -370,26 +360,7 @@ func applyWorkspaceCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) e
 		rec.Tree = &tree
 		rec.Revision = nextRev
 
-	case WorkspaceActionSelect:
-		var p workspaceSelectParams
-		if err := json.Unmarshal(cmd.Params, &p); err != nil {
-			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
-		}
-		if err := checkExpectedRevision(rec.Revision, p.ExpectedRevision); err != nil {
-			return err
-		}
-		if rec.Tree == nil {
-			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: "workspace tree is empty"}
-		}
-		if !findLeaf(*rec.Tree, p.Ref) {
-			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: fmt.Sprintf("leaf %q not in workspace", p.Ref.MapKey())}
-		}
-		// Active key is stored on an in-memory workspace view so it does not
-		// require a persisted workspace mutation.
-		if c != nil {
-			c.setActiveKeyLocked(p.Ref)
-		}
-		rec.Revision = nextRev
+
 
 	default:
 		return StateError{Code: ErrMalformedSplit, Field: "action", Detail: fmt.Sprintf("unknown workspace action %q", cmd.Action)}
@@ -419,11 +390,11 @@ func removeSessionFromWorkspacesLocked(doc *AppDocument, ref SessionRef) error {
 		return err
 	}
 	if tree.Type == "" {
-		doc.Workspace = nil
+		doc.Workspace.Tree = nil
 	} else {
 		doc.Workspace.Tree = &tree
-		doc.Workspace.Revision = doc.Revision + 1
 	}
+	doc.Workspace.Revision = doc.Revision + 1
 	return nil
 }
 
@@ -462,19 +433,7 @@ func appendCommandReceipt(doc *AppDocument, id CommandID, seq int64, kind, targe
 	return nil
 }
 
-func (c *Catalog) setActiveKeyLocked(ref SessionRef) {
-	if c.activeKey == nil {
-		cp := ref
-		c.activeKey = &cp
-	} else {
-		cp := ref
-		c.activeKey = &cp
-	}
-}
 
-func (c *Catalog) deleteActiveKeyLocked() {
-	c.activeKey = nil
-}
 
 type workspaceSubscription struct {
 	id int
@@ -534,10 +493,9 @@ func (c *Catalog) workspaceRecordLocked() (WorkspaceRecord, bool) {
 		return WorkspaceRecord{}, false
 	}
 	ws := WorkspaceRecord{
-		Owner:     c.owner,
-		Revision:  c.workspace.Revision,
-		Tree:      cloneTreePtr(c.workspace.Tree),
-		ActiveKey: cloneRefPtr(c.activeKey),
+		Owner:    c.owner,
+		Revision: c.workspace.Revision,
+		Tree:     cloneTreePtr(c.workspace.Tree),
 	}
 	return ws, true
 }

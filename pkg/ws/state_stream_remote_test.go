@@ -70,7 +70,7 @@ func (f *fakeRemoteCatalogNotifier) publishRemoval(owner state.OwnerID) {
 // the local catalog_snapshot.
 func TestStateStreamIncludesRemoteCatalogOnConnect(t *testing.T) {
 	catalog := newTestCatalog(t)
-	hub := NewStateStreamHub(catalog, nil)
+	hub := NewStateStreamHub(catalog)
 	defer hub.Close()
 
 	remoteOwner := state.NewOwnerID()
@@ -121,7 +121,7 @@ func TestStateStreamIncludesRemoteCatalogOnConnect(t *testing.T) {
 // removal signal (distinct from silence) when that owner is forgotten.
 func TestStateStreamRemoteCatalogUpdateAndRemoval(t *testing.T) {
 	catalog := newTestCatalog(t)
-	hub := NewStateStreamHub(catalog, nil)
+	hub := NewStateStreamHub(catalog)
 	defer hub.Close()
 
 	notifier := &fakeRemoteCatalogNotifier{}
@@ -133,8 +133,8 @@ func TestStateStreamRemoteCatalogUpdateAndRemoval(t *testing.T) {
 	conn := dialStateStream(t, srv)
 	defer conn.Close()
 
-	// Drain the initial (local-only, no remote owners yet) snapshot.
-	_ = readTyped(t, conn)
+	// Drain the initial (local-only, no remote owners yet) snapshot (catalog + workspace).
+	drainInitialBootstrap(t, conn)
 
 	remoteOwner := state.NewOwnerID()
 	notifier.publishUpdate(state.OwnerCatalogSnapshot{Owner: remoteOwner, Revision: 1})

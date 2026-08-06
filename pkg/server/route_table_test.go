@@ -51,7 +51,7 @@ func TestRouteTableSnapshot(t *testing.T) {
 		Hub:              ws.NewHub(tracker),
 		Catalog:          catalog,
 		CommandSvc:       svc,
-		StateStream:      ws.NewStateStreamHub(catalog, nil),
+		StateStream:      ws.NewStateStreamHub(catalog),
 		PortForwardStore: portforward.NewStore(),
 	}
 
@@ -343,7 +343,7 @@ func TestLegacyStoreRoutesNeverExist(t *testing.T) {
 		Hub:              hub,
 		Catalog:          catalog,
 		CommandSvc:       svc,
-		StateStream:      ws.NewStateStreamHub(catalog, nil),
+		StateStream:      ws.NewStateStreamHub(catalog),
 		PortForwardStore: portforward.NewStore(),
 	}
 
@@ -412,7 +412,7 @@ func TestSchema4HostsAndActivityRoutesDELETED_FAILS(t *testing.T) {
 		Hub:              hub,
 		Catalog:          catalog,
 		CommandSvc:       svc,
-		StateStream:      ws.NewStateStreamHub(catalog, nil),
+		StateStream:      ws.NewStateStreamHub(catalog),
 		PortForwardStore: portforward.NewStore(),
 	}
 

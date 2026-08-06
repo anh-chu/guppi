@@ -84,7 +84,7 @@ func TestRatioFiniteValidation(t *testing.T) {
 
 func TestAppDocumentSchemaValidation(t *testing.T) {
 	owner := OwnerID("ownerdoc1234567890abcd")
-	leaf := Leaf(SessionRef{Owner: owner, Session: SessionID("s1")})
+	leaf := Leaf(SessionRef{Owner: owner, Session: SessionID("sessdoc1234567890ab")})
 	base := AppDocument{
 		Schema:     SchemaVersion,
 		Owner:      owner,

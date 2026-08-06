@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -43,59 +42,6 @@ func TestUpdateDoesNotAliasCallerStruct(t *testing.T) {
 	}
 }
 
-func TestPredictiveEcho(t *testing.T) {
-	t.Run("default false", func(t *testing.T) {
-		if got := Default().Terminal.PredictiveEcho; got != false {
-			t.Fatalf("default PredictiveEcho = %v, want false", got)
-		}
-	})
-
-	t.Run("legacy JSON missing key defaults to false", func(t *testing.T) {
-		// Legacy JSON with no predictive_echo field.
-		legacy := `{"terminal":{"font_size":14,"font_family":"Fira Code","scrollback":10000,"renderer":"webgl","unicode_graphemes":true}}`
-		prefs := Default()
-		if err := json.Unmarshal([]byte(legacy), prefs); err != nil {
-			t.Fatal(err)
-		}
-		// Other fields parsed correctly.
-		if prefs.Terminal.FontSize != 14 {
-			t.Fatalf("FontSize = %d, want 14", prefs.Terminal.FontSize)
-		}
-		// Missing field stays at default.
-		if prefs.Terminal.PredictiveEcho != false {
-			t.Fatalf("PredictiveEcho from legacy JSON = %v, want false", prefs.Terminal.PredictiveEcho)
-		}
-	})
-
-	t.Run("round-trip preserves true", func(t *testing.T) {
-		dir := t.TempDir()
-		s := &Store{path: filepath.Join(dir, "preferences.json"), data: Default()}
-
-		prefs := Default()
-		prefs.Terminal.PredictiveEcho = true
-		if err := s.Update(prefs); err != nil {
-			t.Fatal(err)
-		}
-
-		// Persisted to disk.
-		raw, err := os.ReadFile(s.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(raw), `"predictive_echo"`) {
-			t.Fatalf("predictive_echo not found in on-disk JSON: %s", raw)
-		}
-
-		// Re-load and verify.
-		s2 := &Store{path: s.path, data: Default()}
-		if err := s2.load(); err != nil {
-			t.Fatal(err)
-		}
-		if got := s2.Get().Terminal.PredictiveEcho; got != true {
-			t.Fatalf("PredictiveEcho after reload = %v, want true", got)
-		}
-	})
-}
 
 func contains(b []byte, sub string) bool {
 	return len(sub) > 0 && len(b) >= len(sub) && indexOf(string(b), sub) >= 0

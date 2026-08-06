@@ -73,10 +73,10 @@ func sendInitialCatalog(pc *PeerConnection, deps SessionDeps) {
 	}
 	snap := catalog.LocalCatalogSnapshot()
 	payload := CatalogSnapshotPayload{
-		Owner:    snap.Owner,
-		Revision: snap.Revision,
-		Sessions: snap.Sessions,
-		Layouts:  snap.Layouts,
+		Owner:     snap.Owner,
+		Revision:  snap.Revision,
+		Sessions:  snap.Sessions,
+		Workspace: snap.Workspace,
 	}
 	msg, err := NewMessage(MsgCatalogSnapshot, payload)
 	if err != nil {
@@ -93,21 +93,17 @@ func sendInitialWorkspace(pc *PeerConnection, deps SessionDeps) {
 	if catalog == nil {
 		return
 	}
-	// Send the first layout as a complete workspace snapshot. The
-	// per-connection subscriber below forwards updates after each accepted
-	// command so the remote cache never sees intermediate steps.
-	layouts := catalog.Layouts()
-	if len(layouts) == 0 {
-		return
-	}
-	snap, err := catalog.WorkspaceSnapshot(layouts[0].ID)
-	if err != nil {
+	// Send the singleton workspace snapshot. The per-connection subscriber
+	// below forwards updates after each accepted command so the remote cache
+	// never sees intermediate steps.
+	ws := catalog.Workspace()
+	if ws == nil {
 		return
 	}
 	msg, err := NewMessage(MsgWorkspaceSnapshot, WorkspaceSnapshotPayload{
-		Owner:     snap.Record.Owner,
-		Revision:  snap.Record.Revision,
-		Workspace: snap.Record,
+		Owner:     ws.Owner,
+		Revision:  ws.Revision,
+		Workspace: *ws,
 	})
 	if err != nil {
 		return
@@ -125,10 +121,10 @@ func handleCommandMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 			return
 		}
 		deps.Manager.UpdateRemoteCatalog(peerID, pc, state.OwnerCatalogSnapshot{
-			Owner:    p.Owner,
-			Revision: p.Revision,
-			Sessions: p.Sessions,
-			Layouts:  p.Layouts,
+			Owner:     p.Owner,
+			Revision:  p.Revision,
+			Sessions:  p.Sessions,
+			Workspace: p.Workspace,
 		})
 
 	case MsgWorkspaceSnapshot:

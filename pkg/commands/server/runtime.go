@@ -196,7 +196,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	rt.stateReconciler = state.NewReconciler(rt.catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
 	rt.commandSvc = state.NewSessionCommandService(rt.catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.catalog.Owner()})
 	rt.remoteCreate = state.NewRemoteCreateCoordinator(rt.catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.catalog.Owner()})
-	rt.stateStream = ws.NewStateStreamHub(rt.catalog, nil)
+	rt.stateStream = ws.NewStateStreamHub(rt.catalog)
 	logrus.WithField("owner", rt.catalog.Owner()).Info("canonical state store opened")
 
 	peerStore, err := identity.NewPeerStore()

@@ -36,7 +36,7 @@ func TestRemoteCatalog_SessionRefSessionMismatchRejected(t *testing.T) {
 	}
 }
 
-// TestRemoteCatalog_DuplicateLeavesRejected proves that a layout tree with
+// TestRemoteCatalog_DuplicateLeavesRejected proves that a workspace tree with
 // duplicate leaf references is rejected.
 func TestRemoteCatalog_DuplicateLeavesRejected(t *testing.T) {
 	mgr := makeTestManager(t)
@@ -58,20 +58,20 @@ func TestRemoteCatalog_DuplicateLeavesRejected(t *testing.T) {
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{s1},
-		Layouts: []state.LayoutRecord{{
-			ID:    state.NewLayoutID(),
-			Owner: owner,
-			Tree:  duplicateTree,
-		}},
+		Workspace: &state.WorkspaceRecord{
+			Owner:    owner,
+			Revision: 1,
+			Tree:     &duplicateTree,
+		},
 	})
 
 	// Snapshot must be rejected; no cache entry should exist
 	if _, ok := mgr.RemoteCatalogSnapshot(owner); ok {
-		t.Fatal("layout tree with duplicate leaves was accepted")
+		t.Fatal("workspace tree with duplicate leaves was accepted")
 	}
 }
 
-// TestRemoteCatalog_MalformedSplitNodeRejected proves that a layout tree with
+// TestRemoteCatalog_MalformedSplitNodeRejected proves that a workspace tree with
 // missing children is rejected.
 func TestRemoteCatalog_MalformedSplitNodeRejected(t *testing.T) {
 	mgr := makeTestManager(t)
@@ -98,11 +98,11 @@ func TestRemoteCatalog_MalformedSplitNodeRejected(t *testing.T) {
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{s1},
-		Layouts: []state.LayoutRecord{{
-			ID:    state.NewLayoutID(),
-			Owner: owner,
-			Tree:  malformedTree,
-		}},
+		Workspace: &state.WorkspaceRecord{
+			Owner:    owner,
+			Revision: 1,
+			Tree:     &malformedTree,
+		},
 	})
 
 	// Snapshot must be rejected; no cache entry should exist
@@ -111,7 +111,7 @@ func TestRemoteCatalog_MalformedSplitNodeRejected(t *testing.T) {
 	}
 }
 
-// TestRemoteCatalog_InvalidRatioRejected proves that a layout tree with an
+// TestRemoteCatalog_InvalidRatioRejected proves that a workspace tree with an
 // invalid split ratio is rejected.
 func TestRemoteCatalog_InvalidRatioRejected(t *testing.T) {
 	mgr := makeTestManager(t)
@@ -139,11 +139,11 @@ func TestRemoteCatalog_InvalidRatioRejected(t *testing.T) {
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{s1},
-		Layouts: []state.LayoutRecord{{
-			ID:    state.NewLayoutID(),
-			Owner: owner,
-			Tree:  invalidRatioTree,
-		}},
+		Workspace: &state.WorkspaceRecord{
+			Owner:    owner,
+			Revision: 1,
+			Tree:     &invalidRatioTree,
+		},
 	})
 
 	// Snapshot must be rejected; no cache entry should exist
@@ -152,7 +152,7 @@ func TestRemoteCatalog_InvalidRatioRejected(t *testing.T) {
 	}
 }
 
-// TestRemoteCatalog_UnknownSessionRefRejected proves that a layout tree
+// TestRemoteCatalog_UnknownSessionRefRejected proves that a workspace tree
 // referencing a session not in the catalog is rejected.
 func TestRemoteCatalog_UnknownSessionRefRejected(t *testing.T) {
 	mgr := makeTestManager(t)
@@ -174,11 +174,11 @@ func TestRemoteCatalog_UnknownSessionRefRejected(t *testing.T) {
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{s1},
-		Layouts: []state.LayoutRecord{{
-			ID:    state.NewLayoutID(),
-			Owner: owner,
-			Tree:  unknownRefTree,
-		}},
+		Workspace: &state.WorkspaceRecord{
+			Owner:    owner,
+			Revision: 1,
+			Tree:     &unknownRefTree,
+		},
 	})
 
 	// Snapshot must be rejected; no cache entry should exist
@@ -208,10 +208,9 @@ func TestRemoteWorkspace_MalformedTreeRejected(t *testing.T) {
 	}
 
 	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{
-		ID:       state.NewLayoutID(),
 		Owner:    owner,
 		Revision: 1,
-		Tree:     malformedTree,
+		Tree:     &malformedTree,
 	})
 
 	// Workspace must be rejected; no cache entry should exist
@@ -236,10 +235,9 @@ func TestRemoteWorkspace_DuplicateLeavesRejected(t *testing.T) {
 	duplicateTree := state.Split(state.DirectionHorizontal, 0.5, state.Leaf(ref), state.Leaf(ref))
 
 	mgr.UpdateRemoteWorkspace(peerID, conn, state.WorkspaceRecord{
-		ID:       state.NewLayoutID(),
 		Owner:    owner,
 		Revision: 1,
-		Tree:     duplicateTree,
+		Tree:     &duplicateTree,
 	})
 
 	// Workspace must be rejected; no cache entry should exist

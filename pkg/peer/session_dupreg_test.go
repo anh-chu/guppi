@@ -30,7 +30,7 @@ func TestRunSession_RejectedDuplicateLeavesNoDanglingWorkspaceSubscription(t *te
 	if !mgr.TryRegisterPeer(peerID, "remote", remoteID.PublicKey, "", pc1) {
 		t.Fatal("expected first registration to succeed")
 	}
-	unsub1 := cat.SubscribeWorkspace(func(state.LayoutID, state.WorkspaceRecord) {})
+	unsub1 := cat.SubscribeWorkspace(func(state.WorkspaceRecord) {})
 	defer unsub1()
 
 	if got := cat.WorkspaceSubscriberCount(); got != 1 {
