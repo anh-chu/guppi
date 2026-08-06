@@ -59,12 +59,6 @@ type DaemonRegistry interface {
 	Create(name, shell, cwd string, cols, rows uint16) error
 }
 
-// StateManager stores explicit agent-type overrides for a session.
-type StateManager interface {
-	SetSessionAgentType(sessionName, agentType string)
-	GetSessions() []*model.Session
-}
-
 // ScheduleAttr is the metadata snapshot the launch service stores and fans out.
 type ScheduleAttr struct {
 	Background bool
@@ -120,7 +114,6 @@ type V2Commander interface {
 // Service is the sole owner of session launch semantics.
 type Service struct {
 	DaemonReg   DaemonRegistry
-	StateMgr    StateManager
 	Attrs       ScheduleAttrStore
 	Hub         BrowserHub
 	Identity    Identity
@@ -252,10 +245,6 @@ func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) 
 		return Result{}, err
 	}
 
-	if s.StateMgr != nil && req.AgentType != "" {
-		s.StateMgr.SetSessionAgentType(req.Name, req.AgentType)
-	}
-
 	if s.Attrs != nil && req.ScheduleID != "" {
 		key := sessionKey(req.LocalHost, req.Name)
 		attr, err := s.Attrs.SetScheduleID(key, req.ScheduleID)
@@ -301,12 +290,6 @@ func (s *Service) createLocalV2(ctx context.Context, req Request) (Result, error
 	})
 	if err != nil {
 		return Result{}, err
-	}
-	// Skip the legacy StateMgr write when v2 is authoritative: the v2 catalog
-	// already carries AgentType via CreateParams above, so writing it into
-	// the legacy manager here would be a shadow write.
-	if s.StateMgr != nil && req.AgentType != "" && s.V2Commander == nil {
-		s.StateMgr.SetSessionAgentType(res.DisplayName, req.AgentType)
 	}
 	if s.Attrs != nil && req.ScheduleID != "" {
 		key := sessionKey(req.LocalHost, res.DisplayName)

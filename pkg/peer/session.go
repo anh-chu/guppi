@@ -80,11 +80,9 @@ type DaemonRegistry interface {
 
 // SessionDeps groups the runtime dependencies needed by a peer session.
 type SessionDeps struct {
-	Manager  *Manager
-	LocalMgr *state.Manager
-	// V2Catalog is this node's own v2 catalog, decoupled from LocalMgr. It is
-	// non-nil exactly when this node runs in v2 mode, independent of whether
-	// LocalMgr itself is nil (v2 mode) or a real legacy manager (legacy mode).
+	Manager *Manager
+	// V2Catalog is this node's own v2 catalog, non-nil exactly when this node
+	// runs in v2 mode.
 	V2Catalog               *state.Catalog
 	Identity                *identity.Identity
 	ActTracker              *activity.Tracker
@@ -290,17 +288,8 @@ func runSession(
 		}
 	}()
 
-	// Initial pushes — both sides advertise themselves. In v2-only mode
-	// (deps.V2CommandSvc != nil), the legacy state.Manager backing
-	// sendStateUpdate/sendInitialPeerState is a neutered shim that never
-	// carries real session state (see v2Mode gating in
-	// pkg/commands/server/runtime.go), so both are skipped entirely; the v2
-	// catalog/workspace snapshot pushes below are the real state sync for
-	// this node.
-	if deps.V2CommandSvc == nil {
-		sendStateUpdate(pc, deps)
-		sendInitialPeerState(pc, deps, peerID)
-	}
+	// Initial pushes — both sides advertise themselves. The v2 catalog/
+	// workspace snapshot pushes below are the real state sync for this node.
 	sendInitialSessionAttrs(pc, deps)
 	sendInitialSessionOrder(pc, deps)
 	sendInitialGroups(pc, deps)
@@ -318,24 +307,7 @@ func runSession(
 	go pingLoop(sessionCtx, cw)
 	go periodicActivity(sessionCtx, pc, deps)
 	go periodicStats(sessionCtx, pc, deps)
-	// forwardStateEvents subscribes to the legacy state.Manager's event
-	// channel and re-sends sendStateUpdate on every event. In v2-only mode
-	// that channel never fires (the legacy manager is a neutered shim, see
-	// v2Mode gating in pkg/commands/server/runtime.go), so starting it would
-	// only leak a Subscribe() channel and goroutine for the life of the
-	// connection; skip it entirely instead.
-	if deps.V2CommandSvc == nil {
-		go forwardStateEvents(sessionCtx, pc, deps)
-	}
 	go forwardToolEvents(sessionCtx, pc, deps, peerID)
-	// forwardPeerStateChanges subscribes to deps.Manager's legacy state event
-	// channel and pushes a peer-state snapshot on every change. In v2-only
-	// mode that legacy channel carries no meaningful state (same reasoning as
-	// forwardStateEvents above); skip it entirely instead of forwarding
-	// shadow updates to the remote peer.
-	if deps.V2CommandSvc == nil {
-		go forwardPeerStateChanges(sessionCtx, pc, deps, peerID)
-	}
 
 	for {
 		_, raw, err := conn.ReadMessage()
@@ -402,15 +374,7 @@ func periodicActivity(ctx context.Context, pc *PeerConnection, deps SessionDeps)
 }
 
 func collectStats(deps SessionDeps) map[string]interface{} {
-	s := stats.SystemStats()
-	// In v2-only mode deps.LocalMgr is a neutered shim that always reports
-	// zero sessions; skip the call rather than publish a misleading
-	// always-zero process count.
-	if deps.V2CommandSvc == nil {
-		sessions := deps.LocalMgr.GetSessions()
-		s["processes"] = stats.ProcessCountsFromSessions(sessions)
-	}
-	return s
+	return stats.SystemStats()
 }
 
 func periodicStats(ctx context.Context, pc *PeerConnection, deps SessionDeps) {
@@ -428,31 +392,6 @@ func periodicStats(ctx context.Context, pc *PeerConnection, deps SessionDeps) {
 			if msg, err := NewMessage(MsgStats, StatsPayload{Stats: collectStats(deps)}); err == nil {
 				pc.Enqueue(msg)
 			}
-		}
-	}
-}
-
-func forwardStateEvents(ctx context.Context, pc *PeerConnection, deps SessionDeps) {
-	ch := deps.LocalMgr.Subscribe()
-	defer deps.LocalMgr.Unsubscribe(ch)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case evt, ok := <-ch:
-			if !ok {
-				return
-			}
-			msg, err := NewMessage(MsgStateEvent, StateEventPayload{
-				EventType: evt.Type,
-				Session:   evt.Session,
-				Data:      evt.Data,
-			})
-			if err != nil {
-				continue
-			}
-			pc.Enqueue(msg)
-			sendStateUpdate(pc, deps)
 		}
 	}
 }
@@ -481,39 +420,6 @@ func forwardToolEvents(ctx context.Context, pc *PeerConnection, deps SessionDeps
 				continue
 			}
 			msg, err := NewMessage(MsgToolEvent, ToolEventPayload{Event: evt})
-			if err != nil {
-				continue
-			}
-			pc.Enqueue(msg)
-		}
-	}
-}
-
-// forwardPeerStateChanges pushes a peer-state snapshot whenever local state
-// changes, so the remote sees our updated session list / activity / stats.
-func forwardPeerStateChanges(ctx context.Context, pc *PeerConnection, deps SessionDeps, remotePeerID string) {
-	ch := deps.Manager.Subscribe()
-	defer deps.Manager.Unsubscribe(ch)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case evt, ok := <-ch:
-			if !ok {
-				return
-			}
-			// Don't echo the peer's own events back.
-			if evt.Host == remotePeerID {
-				continue
-			}
-			// Only push peer-state when our local host changed; we don't
-			// transitively expose other peers.
-			if evt.Host != "" && evt.Host != deps.Manager.LocalID() {
-				continue
-			}
-			msg, err := NewMessage(MsgPeerState, PeerStatePayload{
-				Hosts: deps.Manager.GetHostsForPeer(remotePeerID),
-			})
 			if err != nil {
 				continue
 			}

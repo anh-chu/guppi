@@ -32,7 +32,7 @@ func setupHub(opts *Options) *ws.Hub {
 	// legacy state source to build a fallback one from.
 	hub := opts.Hub
 	if hub == nil {
-		hub = ws.NewHub(nil, opts.Tracker)
+		hub = ws.NewHub(opts.Tracker)
 		opts.Hub = hub
 	}
 	var peerActivity ws.ActivitySource

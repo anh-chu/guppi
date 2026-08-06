@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -81,8 +80,7 @@ type Runtime struct {
 	sessionMgr      *auth.SessionManager
 
 	// Helpers
-	fgProvider ForegroundProvider
-	hub        *ws.Hub
+	hub *ws.Hub
 
 	// Test hook: if set, overrides DetectAndCleanupCrashes in runDaemonRefresh.
 	detectCrashesFn func() []pty.LifecycleRecord
@@ -95,7 +93,6 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		tracker:    toolevents.NewTracker(),
 		actTracker: activity.NewTracker(),
 		ready:      make(chan struct{}),
-		fgProvider: newForegroundProvider(),
 	}
 	rt.tracker.EnablePersistence()
 
@@ -207,10 +204,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		return nil, fmt.Errorf("failed to load peer store: %w", err)
 	}
 
-	// peer.Manager's third argument is the narrow legacy LocalSessionSource
-	// interface; no legacy local source is ever constructed, so this is
-	// always nil. The catalog is wired separately via SetV2Catalog below.
-	rt.peerMgr = peer.NewManager(nodeIdentity, peerStore, nil)
+	rt.peerMgr = peer.NewManager(nodeIdentity, peerStore)
 	rt.peerMgr.SetV2Catalog(rt.catalog)
 	rt.peerMgr.SetRemoteCreateCoordinator(rt.remoteCreate)
 	rt.peerMgr.SetRemoteStore(rt.store)
@@ -308,7 +302,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	rt.wikiSup = wikilite.NewSupervisor()
 
 	// ws.Hub no longer takes a legacy state source: there is none to give it.
-	rt.hub = ws.NewHub(nil, rt.tracker)
+	rt.hub = ws.NewHub(rt.tracker)
 	rt.hub.SetActivityTracker(rt.actTracker, rt.peerMgr, rt.peerMgr.LocalID(), false)
 
 	var (
@@ -643,24 +637,6 @@ func (a *daemonAdapter) GenerationFor(name string) string { return a.reg.Generat
 
 func (a *daemonAdapter) IsSessionDead(name string) bool { return a.reg.IsSessionDead(name) }
 
-func (a *daemonAdapter) CrashedSessions() []state.CrashedSessionInfo {
-	recs := a.reg.CrashedSessions()
-	out := make([]state.CrashedSessionInfo, len(recs))
-	for i, rec := range recs {
-		out[i] = state.CrashedSessionInfo{
-			ID:         rec.ID,
-			Shell:      rec.Shell,
-			Cwd:        rec.Cwd,
-			Cols:       rec.Cols,
-			Rows:       rec.Rows,
-			CreatedAt:  rec.CreatedAt.Format(time.RFC3339),
-			DaemonPID:  rec.DaemonPID,
-			Generation: rec.Generation,
-		}
-	}
-	return out
-}
-
 func (a *daemonAdapter) SessionCWD(session string) string {
 	for _, d := range a.List() {
 		if d.ID == session {
@@ -678,83 +654,6 @@ func (a *daemonAdapter) CapturePaneContent(paneID string) (string, error) {
 		return "", err
 	}
 	return a.Capture(ref.Session)
-}
-
-// runShellNameWatcher polls active-pane foreground commands and triggers AI
-// naming for meaningful new processes.
-func runShellNameWatcher(ctx context.Context, mgr *state.Manager, adapter *daemonAdapter, provider ForegroundProvider) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	lastCmd := make(map[string]string)
-	lastFire := make(map[string]time.Time)
-	named := make(map[string]bool)
-	const firstInterval = 20 * time.Second
-	const renameInterval = 3 * time.Minute
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			for _, d := range adapter.List() {
-				pid := d.ShellPid
-				if pid == 0 {
-					pid = d.Pid
-				}
-				cmd, ok := provider.Foreground(pid)
-				if !ok {
-					continue
-				}
-				cmd = strings.TrimSpace(cmd)
-				if cmd == "" || shellNames[cmd] || trivialCmds[cmd] || cmd == lastCmd[d.ID] {
-					continue
-				}
-				lastCmd[d.ID] = cmd
-
-				interval := firstInterval
-				if named[d.ID] {
-					interval = renameInterval
-				}
-				if t, ok := lastFire[d.ID]; ok && time.Since(t) < interval {
-					continue
-				}
-				lastFire[d.ID] = time.Now()
-				named[d.ID] = true
-
-				cmds := []string{cmd}
-				if content, err := adapter.Capture(d.ID); err == nil {
-					cmds = recentCommands(content, cmd)
-				}
-				go mgr.TriggerShellNaming(d.ID, cmds)
-			}
-		}
-	}
-}
-
-// recentCommands extracts up to a handful of recent input lines from captured
-// pane content as a hint for naming.
-func recentCommands(content, foreground string) []string {
-	lines := strings.Split(content, "\n")
-	var out []string
-	for i := len(lines) - 1; i >= 0 && len(out) < 6; i-- {
-		l := strings.TrimSpace(lines[i])
-		if l == "" {
-			continue
-		}
-		l = strings.TrimLeft(l, "$#%> ")
-		if l == "" {
-			continue
-		}
-		out = append(out, l)
-	}
-	if len(out) == 0 {
-		return []string{foreground}
-	}
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
-	}
-	return out
 }
 
 func defaultSessionDir() string {
@@ -800,8 +699,7 @@ var readProcCwd = func(pid int) (string, error) {
 
 // previewCacheEntry holds a throttled prompt-preview snapshot for a single
 // session so the (up to) 64KiB PTY capture only runs periodically instead of
-// on every catalog enrichment call. This mirrors the throttle pattern used by
-// state.Manager's legacy preview cache (see pkg/state/preview.go).
+// on every catalog enrichment call.
 type previewCacheEntry struct {
 	preview     string
 	lastAttempt time.Time

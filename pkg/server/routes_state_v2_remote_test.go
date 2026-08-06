@@ -37,7 +37,7 @@ func TestV2BootstrapIncludesRemoteOwnerCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peerMgr := peer.NewManager(localID, peerStore, state.NewManager())
+	peerMgr := peer.NewManager(localID, peerStore)
 
 	// Node A's own local catalog and session, exactly as handleV2Bootstrap
 	// reads it today.

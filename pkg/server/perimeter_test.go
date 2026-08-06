@@ -29,7 +29,7 @@ func toolEventRouter(t *testing.T, authEnabled bool) (chi.Router, *Options) {
 		opts.AuthLimiter = auth.NewLimiter()
 		opts.NotifyToken = "supersecrettoken"
 	}
-	hub := ws.NewHub(nil, tracker)
+	hub := ws.NewHub(tracker)
 	r := chi.NewRouter()
 	registerAPIRoutes(r, opts, hub)
 	return r, opts

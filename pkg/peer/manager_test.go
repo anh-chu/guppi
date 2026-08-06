@@ -6,7 +6,6 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/identity"
 	"github.com/anh-chu/termyard/pkg/model"
-	"github.com/anh-chu/termyard/pkg/state"
 )
 
 func testManager(t *testing.T) (*Manager, *identity.Identity) {
@@ -21,8 +20,7 @@ func testManager(t *testing.T) (*Manager, *identity.Identity) {
 	if err != nil {
 		t.Fatalf("peer store: %v", err)
 	}
-	localMgr := state.NewManager()
-	return NewManager(id, peerStore, localMgr), id
+	return NewManager(id, peerStore), id
 }
 
 // TestGetAllSessions_PointerMutation documents the current failing semantics:

@@ -26,7 +26,7 @@ func makeV2Manager(t *testing.T) *Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewManager(id, ps, state.NewManager())
+	return NewManager(id, ps)
 }
 
 func TestUnregisterPeerConn_StaleCannotReplaceLive(t *testing.T) {
@@ -216,7 +216,7 @@ func TestHandleV2CatalogSnapshot_UpdatesCache(t *testing.T) {
 	}
 	pc := NewPeerConnection(peerID, 64)
 	mgr.RegisterPeer(peerID, "remotea", "", pc)
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager)}
+	deps := SessionDeps{Manager: mgr}
 
 	// DEBUG: verify payload marshals/unmarshals correctly
 	var p V2CatalogSnapshotPayload
@@ -322,28 +322,16 @@ func TestLocalCapabilities_ExcludesV2WhenDisabled(t *testing.T) {
 	}
 }
 
-func TestLegacyPeer_InitialStateUpdateStillSent(t *testing.T) {
+// TestLegacyPeer_NoV2CatalogFrame proves a peer that never advertises v2
+// capabilities gets no v2 catalog slot frame.
+func TestLegacyPeer_NoV2CatalogFrame(t *testing.T) {
 	mgr := makeV2Manager(t)
 	peerID := "legacya"
 	pc := NewPeerConnection(peerID, 8)
 	pc.Caps = []string{CapPerStream, CapUpload} // no v2 caps
 	mgr.RegisterPeer(peerID, "legacya", "", pc)
 
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager)}
-	sendStateUpdate(pc, deps)
-
-	select {
-	case f := <-pc.LoLane():
-		var msg Message
-		if err := json.Unmarshal(f.data, &msg); err != nil {
-			t.Fatal(err)
-		}
-		if msg.Type != MsgStateUpdate {
-			t.Fatalf("expected legacy %s, got %s", MsgStateUpdate, msg.Type)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for legacy state-update")
-	}
+	deps := SessionDeps{Manager: mgr}
 
 	// No v2 catalog slot frame should be produced for legacy peers.
 	sendInitialV2Catalog(pc, deps)

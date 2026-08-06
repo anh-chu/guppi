@@ -9,7 +9,6 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/activity"
 	"github.com/anh-chu/termyard/pkg/identity"
-	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
@@ -29,10 +28,9 @@ func makeTestDeps(t *testing.T) (SessionDeps, *LinkSupervisor, *identity.PeerSto
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(id, ps, state.NewManager())
+	mgr := NewManager(id, ps)
 	deps := SessionDeps{
 		Manager:     mgr,
-		LocalMgr:    state.NewManager(),
 		Identity:    id,
 		ActTracker:  activity.NewTracker(),
 		ToolTracker: toolevents.NewTracker(),
@@ -158,7 +156,7 @@ func TestGetHostsForPeerOnlyLocal(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(tmpHome, ".config", "termyard"), 0o700)
 	id, _ := identity.Generate("local-node")
 	ps, _ := identity.NewPeerStore()
-	mgr := NewManager(id, ps, state.NewManager())
+	mgr := NewManager(id, ps)
 
 	// Register two fake remote peers.
 	mgr.RegisterPeer("fp-a", "remote-a", "pk-a", nil)

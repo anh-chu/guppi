@@ -51,7 +51,6 @@ func handleSessionAction(payload *SessionActionPayload, pc *PeerConnection, deps
 			log.WithError(err).Warn("new session via peer failed")
 			return
 		}
-		sendStateUpdate(pc, deps)
 
 	case "rename":
 		// Daemon sessions don't support rename — no-op.
@@ -73,43 +72,16 @@ func handleSessionAction(payload *SessionActionPayload, pc *PeerConnection, deps
 		if err := recovery.ForgetSession(params.Name); err != nil {
 			log.WithError(err).Warn("failed to remove session from recovery manifest")
 		}
-		sendStateUpdate(pc, deps)
 
 	case "regenerate-name":
-		var params struct {
-			Session string `json:"session"`
-			Name    string `json:"name"`
-		}
-		if err := json.Unmarshal(payload.Params, &params); err != nil || params.Session == "" {
-			return
-		}
-		if deps.LocalMgr == nil {
-			log.Warn("no state manager available for regenerate-name action")
-			return
-		}
-		if params.Name != "" {
-			deps.LocalMgr.ApplyAIName(params.Session, params.Name)
-		} else if _, err := deps.LocalMgr.RegenerateName(params.Session); err != nil {
-			log.WithError(err).Warn("regenerate name via peer failed")
-			return
-		}
-		sendStateUpdate(pc, deps)
+		// No legacy state manager exists to regenerate a name against; v2
+		// peers use MsgV2CommandRequest instead.
+		log.Warn("no state manager available for regenerate-name action")
 
 	case "set-display-name":
-		var params struct {
-			Session     string `json:"session"`
-			DisplayName string `json:"display_name"`
-			Clear       bool   `json:"clear"`
-		}
-		if err := json.Unmarshal(payload.Params, &params); err != nil || params.Session == "" {
-			return
-		}
-		if deps.LocalMgr == nil {
-			log.Warn("no state manager available for set-display-name action")
-			return
-		}
-		deps.LocalMgr.SetDisplayName(params.Session, params.DisplayName, !params.Clear)
-		sendStateUpdate(pc, deps)
+		// No legacy state manager exists to set a display name against; v2
+		// peers use MsgV2CommandRequest instead.
+		log.Warn("no state manager available for set-display-name action")
 	default:
 		log.WithField("action", payload.Action).Debug("unknown session action")
 	}

@@ -16,7 +16,6 @@ import (
 	"github.com/anh-chu/termyard/pkg/auth"
 	"github.com/anh-chu/termyard/pkg/identity"
 	"github.com/anh-chu/termyard/pkg/peer"
-	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
@@ -30,10 +29,9 @@ func newTestOpts(t *testing.T) *Options {
 	ps, _ := identity.NewPeerStore()
 	pStore, _ := auth.NewPasswordStore()
 	_ = pStore.SetPassword("supersecret")
-	mgr := peer.NewManager(id, ps, state.NewManager())
+	mgr := peer.NewManager(id, ps)
 	deps := peer.SessionDeps{
 		Manager:     mgr,
-		LocalMgr:    state.NewManager(),
 		Identity:    id,
 		ActTracker:  activity.NewTracker(),
 		ToolTracker: toolevents.NewTracker(),

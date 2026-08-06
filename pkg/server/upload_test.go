@@ -89,7 +89,7 @@ func TestHandleUploadRemotePeerMissing(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/upload?session=test&host=gone&filename=f.txt", strings.NewReader("x"))
 	rec := httptest.NewRecorder()
-	opts := &Options{PeerMgr: peer.NewManager(id, nil, nil)}
+	opts := &Options{PeerMgr: peer.NewManager(id, nil)}
 	handleUpload(rec, req, opts)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", rec.Code)
@@ -101,7 +101,7 @@ func TestHandleUploadRemoteMissingCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pm := peer.NewManager(id, nil, nil)
+	pm := peer.NewManager(id, nil)
 	pc := peer.NewPeerConnection("peer-1", 128)
 	// Do NOT add CapUpload.
 	pm.RegisterPeer("peer-1", "peer-one", "pubkey", pc)

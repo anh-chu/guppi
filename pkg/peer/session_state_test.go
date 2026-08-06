@@ -1,7 +1,6 @@
 package peer
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,10 +8,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/anh-chu/termyard/pkg/common"
 	"github.com/anh-chu/termyard/pkg/identity"
 	"github.com/anh-chu/termyard/pkg/model"
-	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
@@ -28,7 +25,7 @@ func makeTestManager(t *testing.T) *Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewManager(id, ps, state.NewManager())
+	return NewManager(id, ps)
 }
 
 func TestGetPeerSessions(t *testing.T) {
@@ -46,39 +43,11 @@ func TestGetPeerSessions(t *testing.T) {
 	}
 }
 
-func TestSendStateUpdate(t *testing.T) {
-	mgr := makeTestManager(t)
-	pc := NewPeerConnection("peer", 1)
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager)}
-
-	sendStateUpdate(pc, deps)
-
-	select {
-	case f := <-pc.LoLane():
-		var msg Message
-		if err := json.Unmarshal(f.data, &msg); err != nil {
-			t.Fatal(err)
-		}
-		if msg.Type != MsgStateUpdate {
-			t.Fatalf("expected %s, got %s", MsgStateUpdate, msg.Type)
-		}
-		var p StateUpdatePayload
-		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			t.Fatal(err)
-		}
-		if p.Version != common.VERSION {
-			t.Fatalf("expected version %q, got %q", common.VERSION, p.Version)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for state-update")
-	}
-}
-
 func TestHandleStateMessageUpdate(t *testing.T) {
 	mgr := makeTestManager(t)
 	mgr.RegisterPeer("peera", "remotea", "", nil)
 	pc := NewPeerConnection("peer", 1)
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager)}
+	deps := SessionDeps{Manager: mgr}
 	log := logrus.NewEntry(logrus.New())
 
 	payload := StateUpdatePayload{
@@ -111,7 +80,7 @@ func TestHandleSessionMessage_ToolEventStampsAuthenticatedHost(t *testing.T) {
 	mgr.RegisterPeer("peera", "remote-a-display-name", "", nil)
 	tracker := toolevents.NewTracker()
 	pc := NewPeerConnection("peer", 1)
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager), ToolTracker: tracker}
+	deps := SessionDeps{Manager: mgr, ToolTracker: tracker}
 	log := logrus.NewEntry(logrus.New())
 
 	// Subscribe before recording so we can also assert the broadcast fires,
@@ -160,10 +129,13 @@ func TestHandleSessionMessage_ToolEventStampsAuthenticatedHost(t *testing.T) {
 	}
 }
 
+// TestHandleStateMessageRequestState proves a legacy MsgRequestState from a
+// peer is dropped silently: there is no legacy session state to reply with,
+// v2 peers exchange catalog/workspace snapshots instead.
 func TestHandleStateMessageRequestState(t *testing.T) {
 	mgr := makeTestManager(t)
 	pc := NewPeerConnection("peer", 1)
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr.(*state.Manager)}
+	deps := SessionDeps{Manager: mgr}
 	log := logrus.NewEntry(logrus.New())
 
 	msg, err := NewMessage(MsgRequestState, struct{}{})
@@ -175,14 +147,7 @@ func TestHandleStateMessageRequestState(t *testing.T) {
 
 	select {
 	case f := <-pc.LoLane():
-		var msg Message
-		if err := json.Unmarshal(f.data, &msg); err != nil {
-			t.Fatal(err)
-		}
-		if msg.Type != MsgStateUpdate {
-			t.Fatalf("expected %s, got %s", MsgStateUpdate, msg.Type)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for state-update")
+		t.Fatalf("expected no reply frame, got %+v", f)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

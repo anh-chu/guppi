@@ -38,7 +38,7 @@ func makeTestV2Manager(t *testing.T) *Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewManager(id, ps, state.NewManager())
+	return NewManager(id, ps)
 }
 
 func newV2PeerConnection(hostID string) *PeerConnection {

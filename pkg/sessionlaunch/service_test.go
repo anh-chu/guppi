@@ -2,6 +2,7 @@ package sessionlaunch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -10,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/state"
 )
 
@@ -30,20 +30,6 @@ func (f *fakeDaemon) Create(name, shell, cwd string, cols, rows uint16) error {
 	f.created = append(f.created, createCall{name: name, shell: shell, cwd: cwd, cols: cols, rows: rows})
 	return f.err
 }
-
-type fakeStateMgr struct {
-	agentTypes map[string]string
-	sessions   []*model.Session
-}
-
-func (f *fakeStateMgr) SetSessionAgentType(sessionName, agentType string) {
-	if f.agentTypes == nil {
-		f.agentTypes = map[string]string{}
-	}
-	f.agentTypes[sessionName] = agentType
-}
-
-func (f *fakeStateMgr) GetSessions() []*model.Session { return f.sessions }
 
 type fakeAttrs struct {
 	calls []struct{ key, scheduleID string }
@@ -94,23 +80,21 @@ func (f *fanoutSpy) Fanout(key string, attr ScheduleAttr) {
 	}{key, attr})
 }
 
-func newService() (*Service, *fakeDaemon, *fakeStateMgr, *fakeAttrs, *fakeHub) {
+func newService() (*Service, *fakeDaemon, *fakeAttrs, *fakeHub) {
 	d := &fakeDaemon{}
-	st := &fakeStateMgr{}
 	a := &fakeAttrs{}
 	h := &fakeHub{}
 	s := &Service{
 		DaemonReg: d,
-		StateMgr:  st,
 		Attrs:     a,
 		Hub:       h,
 		Refresh:   func() {},
 	}
-	return s, d, st, a, h
+	return s, d, a, h
 }
 
 func TestCreateLocalSuccess(t *testing.T) {
-	s, d, st, a, h := newService()
+	s, d, a, h := newService()
 
 	res, err := s.Create(context.Background(), Request{Name: "foo", Path: "/tmp", Command: "bash", Cols: 100, Rows: 30})
 	if err != nil {
@@ -129,16 +113,13 @@ func TestCreateLocalSuccess(t *testing.T) {
 	if call.name != "foo" || call.shell != "bash" || call.cwd != "/tmp" || call.cols != 100 || call.rows != 30 {
 		t.Fatalf("unexpected call: %+v", call)
 	}
-	if len(st.agentTypes) != 0 {
-		t.Fatalf("agent type should not be set")
-	}
 	if len(a.calls) != 0 || len(h.broadcasts) != 0 {
 		t.Fatalf("schedule metadata should not be written without schedule id")
 	}
 }
 
 func TestCreateGeneratesName(t *testing.T) {
-	s, d, _, _, _ := newService()
+	s, d, _, _ := newService()
 
 	res, err := s.Create(context.Background(), Request{Command: "node server.js", Path: "/home/proj"})
 	if err != nil {
@@ -153,7 +134,7 @@ func TestCreateGeneratesName(t *testing.T) {
 }
 
 func TestCreateDeduplicatesName(t *testing.T) {
-	s, d, _, _, _ := newService()
+	s, d, _, _ := newService()
 	s.Names = func(host string) []string {
 		return []string{"foo", "foo-2"}
 	}
@@ -171,7 +152,7 @@ func TestCreateDeduplicatesName(t *testing.T) {
 }
 
 func TestCreateRemoteSuccess(t *testing.T) {
-	s, d, _, a, h := newService()
+	s, d, a, h := newService()
 	remote := &fakeRemote{result: Result{Name: "foo"}}
 	s.Remote = remote.Launch
 	s.Fanout = (&fanoutSpy{}).Fanout
@@ -213,7 +194,7 @@ func (fakeV2Commander) ExecuteSessionCommand(ctx context.Context, cmd state.Sess
 // must never fall back to the legacy fire-and-forget Remote launcher, even
 // though both are configured on the Service.
 func TestCreateRemoteV2ModePrefersV2RemoteOverLegacy(t *testing.T) {
-	s, _, _, a, h := newService()
+	s, _, a, h := newService()
 	s.V2Commander = fakeV2Commander{}
 	s.Fanout = (&fanoutSpy{}).Fanout
 
@@ -249,7 +230,7 @@ func TestCreateRemoteV2ModePrefersV2RemoteOverLegacy(t *testing.T) {
 // (V2Commander nil) is completely unchanged: it must still use the legacy
 // Remote launcher exactly as before, even if a V2Remote happens to be set.
 func TestCreateRemoteLegacyModeUnaffected(t *testing.T) {
-	s, _, _, _, _ := newService()
+	s, _, _, _ := newService()
 	// V2Commander intentionally left nil: this is a legacy-mode Service.
 
 	legacyRemote := &fakeRemote{result: Result{Name: "foo", Host: "peer-1"}}
@@ -286,11 +267,11 @@ func (f *fakeV2CommanderWithDisplayName) ExecuteSessionCommand(ctx context.Conte
 	return state.CommandResult{DisplayName: f.displayName}, nil
 }
 
-// TestCreateLocalV2SkipsLegacyAgentTypeWrite proves the shadow-write fix in
-// createLocalV2: once V2Commander is set, AgentType must not be written into
-// the legacy StateMgr (the v2 catalog already carries it via CreateParams).
-func TestCreateLocalV2SkipsLegacyAgentTypeWrite(t *testing.T) {
-	s, _, st, _, _ := newService()
+// TestCreateLocalV2CarriesAgentType proves AgentType flows into the v2
+// CreateParams command payload; there is no legacy state manager to shadow-
+// write it into.
+func TestCreateLocalV2CarriesAgentType(t *testing.T) {
+	s, _, _, _ := newService()
 	v2 := &fakeV2CommanderWithDisplayName{displayName: "foo"}
 	s.V2Commander = v2
 
@@ -304,29 +285,17 @@ func TestCreateLocalV2SkipsLegacyAgentTypeWrite(t *testing.T) {
 	if len(v2.calls) != 1 {
 		t.Fatalf("expected exactly one v2 create command, got %d", len(v2.calls))
 	}
-	if len(st.agentTypes) != 0 {
-		t.Fatalf("legacy StateMgr.SetSessionAgentType must not be called in v2 mode, got %+v", st.agentTypes)
+	var params state.CreateParams
+	if err := json.Unmarshal(v2.calls[0].Params, &params); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
 	}
-}
-
-// TestCreateLocalLegacyModeStillWritesAgentType proves legacy-mode local
-// creation (V2Commander nil) is unaffected: AgentType is still written into
-// the legacy StateMgr exactly as before.
-func TestCreateLocalLegacyModeStillWritesAgentType(t *testing.T) {
-	s, _, st, _, _ := newService()
-	// V2Commander intentionally left nil: this is a legacy-mode Service.
-
-	_, err := s.Create(context.Background(), Request{Name: "foo", Path: "/tmp", Command: "bash", AgentType: "claude"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if st.agentTypes["foo"] != "claude" {
-		t.Fatalf("expected legacy StateMgr to record agent type, got %+v", st.agentTypes)
+	if params.AgentType != "claude" {
+		t.Fatalf("expected AgentType to be carried in v2 CreateParams, got %+v", params)
 	}
 }
 
 func TestCreateLocalHostQualifiedRequestUsesLocalDaemon(t *testing.T) {
-	s, d, _, a, h := newService()
+	s, d, a, h := newService()
 
 	var namesHost string
 	s.Names = func(host string) []string {
@@ -377,7 +346,7 @@ func TestCreateLocalHostQualifiedRequestUsesLocalDaemon(t *testing.T) {
 }
 
 func TestCreateRemoteUnavailable(t *testing.T) {
-	s, _, _, _, _ := newService()
+	s, _, _, _ := newService()
 
 	_, err := s.Create(context.Background(), Request{Host: "peer-1", Name: "foo"})
 	if !errors.Is(err, ErrPeerUnavailable) {
@@ -386,7 +355,7 @@ func TestCreateRemoteUnavailable(t *testing.T) {
 }
 
 func TestCreateRemoteQueueFull(t *testing.T) {
-	s, _, _, _, _ := newService()
+	s, _, _, _ := newService()
 	remote := &fakeRemote{err: ErrPeerQueueFull}
 	s.Remote = remote.Launch
 
@@ -401,7 +370,7 @@ func TestCreateNormalizesPath(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	// Exact "~" becomes empty so the daemon uses its default.
-	s, d, _, _, _ := newService()
+	s, d, _, _ := newService()
 	_, err := s.Create(context.Background(), Request{Name: "foo", Path: "~", Command: "bash"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -430,7 +399,7 @@ func TestCreateNormalizesPath(t *testing.T) {
 func TestCreateWorktree(t *testing.T) {
 	repo := initGitRepo(t)
 	t.Setenv("HOME", t.TempDir())
-	s, d, _, _, _ := newService()
+	s, d, _, _ := newService()
 
 	res, err := s.Create(context.Background(), Request{Name: "feat", Path: repo, WorktreeBranch: "feature", Command: "bash"})
 	if err != nil {
@@ -451,7 +420,7 @@ func TestCreateWorktree(t *testing.T) {
 func TestCreateWorktreeRollbackOnSpawnFailure(t *testing.T) {
 	repo := initGitRepo(t)
 	t.Setenv("HOME", t.TempDir())
-	s, d, _, _, _ := newService()
+	s, d, _, _ := newService()
 	d.err = errors.New("spawn-err")
 
 	_, err := s.Create(context.Background(), Request{Name: "feat", Path: repo, WorktreeBranch: "feature", Command: "bash"})
@@ -464,20 +433,8 @@ func TestCreateWorktreeRollbackOnSpawnFailure(t *testing.T) {
 	}
 }
 
-func TestCreateAgentType(t *testing.T) {
-	s, _, st, _, _ := newService()
-
-	_, err := s.Create(context.Background(), Request{Name: "foo", AgentType: "go"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if st.agentTypes["foo"] != "go" {
-		t.Fatalf("agent type = %q", st.agentTypes["foo"])
-	}
-}
-
 func TestCreateScheduleMetadataLocalHost(t *testing.T) {
-	s, _, _, a, h := newService()
+	s, _, a, h := newService()
 
 	_, err := s.Create(context.Background(), Request{Name: "foo", ScheduleID: "sched-1", LocalHost: "host1"})
 	if err != nil {
@@ -492,7 +449,7 @@ func TestCreateScheduleMetadataLocalHost(t *testing.T) {
 }
 
 func TestCreateScheduleMetadataBareKey(t *testing.T) {
-	s, _, _, a, _ := newService()
+	s, _, a, _ := newService()
 
 	_, err := s.Create(context.Background(), Request{Name: "foo", ScheduleID: "sched-1"})
 	if err != nil {
@@ -504,7 +461,7 @@ func TestCreateScheduleMetadataBareKey(t *testing.T) {
 }
 
 func TestCreateRefreshOnce(t *testing.T) {
-	s, _, _, _, _ := newService()
+	s, _, _, _ := newService()
 	var refreshCount int
 	s.Refresh = func() { refreshCount++ }
 
@@ -518,7 +475,7 @@ func TestCreateRefreshOnce(t *testing.T) {
 }
 
 func TestCreateInvalidInput(t *testing.T) {
-	s, _, _, _, _ := newService()
+	s, _, _, _ := newService()
 
 	_, err := s.Create(context.Background(), Request{})
 	if !errors.Is(err, ErrInvalidInput) {
@@ -532,7 +489,7 @@ func TestCreateInvalidInput(t *testing.T) {
 }
 
 func TestCreateNoPartialMetadataOnSpawnFailure(t *testing.T) {
-	s, d, _, a, h := newService()
+	s, d, a, h := newService()
 	d.err = errors.New("boom")
 
 	_, err := s.Create(context.Background(), Request{Name: "foo", ScheduleID: "sched-1"})
@@ -545,7 +502,7 @@ func TestCreateNoPartialMetadataOnSpawnFailure(t *testing.T) {
 }
 
 func TestCreateCommandShellNormalized(t *testing.T) {
-	s, d, _, _, _ := newService()
+	s, d, _, _ := newService()
 
 	_, err := s.Create(context.Background(), Request{Name: "foo", Command: "shell"})
 	if err != nil {
@@ -557,7 +514,7 @@ func TestCreateCommandShellNormalized(t *testing.T) {
 }
 
 func TestResolveNameUsesFallback(t *testing.T) {
-	s, d, _, _, _ := newService()
+	s, d, _, _ := newService()
 
 	res, err := s.Create(context.Background(), Request{Fallback: "fallback-123"})
 	if err != nil {

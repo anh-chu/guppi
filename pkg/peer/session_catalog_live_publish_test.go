@@ -33,13 +33,12 @@ func makeTestDepsV2(t *testing.T, name string) (SessionDeps, *LinkSupervisor, *i
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(id, ps, state.NewManager())
+	mgr := NewManager(id, ps)
 	owner := state.OwnerIDFromFingerprint(id.Fingerprint())
 	cat := state.NewCatalog(owner, nil)
 	mgr.SetV2Catalog(cat)
 	deps := SessionDeps{
 		Manager:      mgr,
-		LocalMgr:     state.NewManager(),
 		Identity:     id,
 		ActTracker:   activity.NewTracker(),
 		ToolTracker:  toolevents.NewTracker(),

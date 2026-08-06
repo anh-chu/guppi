@@ -38,7 +38,7 @@ func TestHandleRemoteSessionPreUpgradeErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("identity.Generate: %v", err)
 		}
-		pm := peer.NewManager(id, nil, nil)
+		pm := peer.NewManager(id, nil)
 		pm.RegisterPeer("peer-1", "peer-one", "pubkey", pc)
 
 		opts := &Options{PeerMgr: pm}
@@ -68,7 +68,7 @@ func TestHandleRemoteSessionPostUpgradeCloseCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity.Generate: %v", err)
 	}
-	pm := peer.NewManager(id, nil, nil)
+	pm := peer.NewManager(id, nil)
 	pm.RegisterPeer("peer-1", "peer-one", "pubkey", pc)
 
 	// opts.Identity is nil so serveViewerPerStream returns false after upgrade.

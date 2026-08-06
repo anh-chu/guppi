@@ -11,7 +11,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
@@ -22,8 +21,7 @@ import (
 // distinct from the {"type":"tool-event",...} shape used for real hook events.
 func TestHubBroadcastArtifactEvent(t *testing.T) {
 	tracker := toolevents.NewTracker()
-	stateMgr := state.NewManager()
-	hub := NewHub(stateMgr, tracker)
+	hub := NewHub(tracker)
 	go hub.Run(context.Background())
 
 	srv := httptest.NewServer(http.HandlerFunc(hub.HandleEvents))

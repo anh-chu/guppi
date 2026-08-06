@@ -88,7 +88,7 @@ func TestV2SessionCommand_RemoteRefRouting(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		peerMgr := peer.NewManager(localID, peerStore, state.NewManager())
+		peerMgr := peer.NewManager(localID, peerStore)
 		opts := &Options{Catalog: catalog, CommandSvc: svc, PeerMgr: peerMgr}
 		r := newV2TestRouter(opts)
 		w := post(r, body(remoteOwner))
@@ -196,7 +196,7 @@ func TestV2SessionCommand_CreateTargetOwnerRouting(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		peerMgr := peer.NewManager(localID, peerStore, state.NewManager())
+		peerMgr := peer.NewManager(localID, peerStore)
 		opts := &Options{Catalog: catalog, CommandSvc: svc, PeerMgr: peerMgr}
 		r := newV2TestRouter(opts)
 		w := post(r, createBody(remoteOwner))

@@ -14,7 +14,6 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/identity"
 	"github.com/anh-chu/termyard/pkg/pty"
-	"github.com/anh-chu/termyard/pkg/state"
 )
 
 type fakeDaemonReg struct {
@@ -191,7 +190,7 @@ func TestOpenTerminal_NameOnlyPayloadResolvesDaemonKey(t *testing.T) {
 		pc := NewPeerConnection(hostID, 8)
 		pc.Role = RoleDialer
 
-		mgr := NewManager(dialerID, store, state.NewManager())
+		mgr := NewManager(dialerID, store)
 		mgr.RegisterPeerWithAddress(hostID, "dialer", dialerID.PublicKey, addr, pc)
 
 		token := NewToken()
@@ -216,7 +215,7 @@ func TestOpenTerminal_NameOnlyPayloadResolvesDaemonKey(t *testing.T) {
 		pc := NewPeerConnection(hostID, 8)
 		pc.Role = RoleDialer
 
-		mgr := NewManager(dialerID, store, state.NewManager())
+		mgr := NewManager(dialerID, store)
 		mgr.RegisterPeerWithAddress(hostID, "dialer", dialerID.PublicKey, addr, pc)
 
 		token := NewToken()

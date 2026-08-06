@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-
-	"github.com/anh-chu/termyard/pkg/state"
 )
 
 type fakeAttrSink struct {
@@ -69,7 +67,6 @@ func makeLocalDeps(t *testing.T) SessionDeps {
 	mgr := makeTestManager(t)
 	return SessionDeps{
 		Manager:    mgr,
-		LocalMgr:   mgr.localMgr.(*state.Manager),
 		Identity:   mgr.identity,
 		BrowserHub: &fakeBrowserHub{},
 	}

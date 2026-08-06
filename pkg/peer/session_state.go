@@ -7,30 +7,9 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/anh-chu/termyard/pkg/common"
 	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/state"
 )
-
-// sendInitialPeerState pushes a snapshot containing only the local host
-// (transitivity off, see plan §3.5).
-func sendInitialPeerState(pc *PeerConnection, deps SessionDeps, remotePeerID string) {
-	hosts := deps.Manager.GetHostsForPeer(remotePeerID)
-	msg, err := NewMessage(MsgPeerState, PeerStatePayload{Hosts: hosts})
-	if err != nil {
-		return
-	}
-	pc.Enqueue(msg)
-}
-
-func sendStateUpdate(pc *PeerConnection, deps SessionDeps) {
-	sessions := deps.LocalMgr.GetSessions()
-	msg, err := NewMessage(MsgStateUpdate, StateUpdatePayload{Sessions: sessions, Version: common.VERSION})
-	if err != nil {
-		return
-	}
-	pc.Enqueue(msg)
-}
 
 // handleStateMessage processes peer-state and session-state control messages.
 func handleStateMessage(peerID string, msg *Message, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
@@ -137,12 +116,8 @@ func handleStateMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 		deps.Manager.UnregisterPeer(p.ID)
 
 	case MsgRequestState:
-		// In v2-only mode, deps.LocalMgr is a neutered shim carrying no real
-		// session state; skip the legacy reply so we don't advertise an
-		// always-empty legacy session list in response to a peer's request.
-		if deps.V2CommandSvc == nil {
-			sendStateUpdate(pc, deps)
-		}
+		// No legacy session state exists to reply with (v2 peers exchange
+		// catalog/workspace snapshots instead); drop silently.
 	}
 }
 

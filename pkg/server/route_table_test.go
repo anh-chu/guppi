@@ -47,7 +47,7 @@ func TestRouteTableSnapshot(t *testing.T) {
 		AuthLimiter:      auth.NewLimiter(),
 		NotifyToken:      "notify-token-test",
 		Tracker:          tracker,
-		Hub:              ws.NewHub(nil, tracker),
+		Hub:              ws.NewHub(tracker),
 		Catalog:          catalog,
 		CommandSvc:       svc,
 		StateStream:      ws.NewStateStreamHub(catalog, nil),
@@ -299,7 +299,7 @@ func TestLegacyStoreRoutesNeverExist(t *testing.T) {
 	t.Setenv("HOME", dir)
 
 	tracker := toolevents.NewTracker()
-	hub := ws.NewHub(nil, tracker)
+	hub := ws.NewHub(tracker)
 	catalog, svc := newV2TestCatalog(t)
 
 	opts := &Options{

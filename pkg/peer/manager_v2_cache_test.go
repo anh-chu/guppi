@@ -54,7 +54,7 @@ func TestRemoteCatalogCacheReloadRestoresPeerFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr1 := NewManager(id1, ps1, nil)
+	mgr1 := NewManager(id1, ps1)
 	store1, err := state.OpenStore(storeDir, "node-a", state.StoreOptions{Owner: state.NewOwnerID()})
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestRemoteCatalogCacheReloadRestoresPeerFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr2 := NewManager(id2, ps2, nil)
+	mgr2 := NewManager(id2, ps2)
 	store2, err := state.OpenStore(storeDir, "node-a", state.StoreOptions{Owner: store1.Owner()})
 	if err != nil {
 		t.Fatal(err)

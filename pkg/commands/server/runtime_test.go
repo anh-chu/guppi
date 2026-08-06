@@ -83,8 +83,6 @@ func TestDaemonAdapterSharesSnapshot(t *testing.T) {
 	}
 	adapter := &daemonAdapter{reg: reg}
 
-	// Both interface shapes can be assigned without a second conversion.
-	var _ state.DaemonRegistry = adapter
 	var _ peer.DaemonRegistry = adapter
 
 	first := adapter.refresh()
