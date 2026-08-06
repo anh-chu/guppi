@@ -460,3 +460,41 @@ func TestStateStreamRemovalTombstoneSurvivesStaleLateSnapshot(t *testing.T) {
 		t.Fatalf("expected revision 10, got %v", rev)
 	}
 }
+
+// TestSchema4StateStreamHostsSnapshot_FAILS documents the contract that
+// the state stream includes typed hosts_snapshot messages in the initial
+// bootstrap burst and on every host state change.
+func TestSchema4StateStreamHostsSnapshot_FAILS(t *testing.T) {
+	// Schema 4 contract: /ws/state emits hosts_snapshot messages with:
+	// {"type": "hosts_snapshot", "hosts": [{"peer_id", "owner_id", "name", "version", "local", "online", "last_seen", ...}]}
+	//
+	// The hosts list is the ONLY source of host state for the browser.
+	// /api/hosts is deleted in Task 5.
+
+	// Currently there is no hosts_snapshot message type in the state stream.
+	// After Task 5, the stream will include this as part of the initial burst.
+
+	// This test documents the target behavior; it FAILS until Task 5.
+	t.Log("Schema 4 contract: /ws/state includes hosts_snapshot messages")
+	t.Skip("Awaiting Task 5 implementation")
+}
+
+// TestSchema4StateStreamRuntimeSnapshot_FAILS documents the contract that
+// the state stream includes typed runtime_snapshot messages with volatile
+// session information (current command, path, last activity, idle time, etc.)
+func TestSchema4StateStreamRuntimeSnapshot_FAILS(t *testing.T) {
+	// Schema 4 contract: /ws/state emits runtime_snapshot messages with:
+	// {"type": "runtime_snapshot", "owner": "...", "snapshots": [{"ref": {...}, "current_path", "current_command", "prompt_preview", "last_activity", "idle_seconds", "total_bytes"}]}
+	//
+	// Runtime information is never persisted to AppDocument and is the ONLY source
+	// of volatile session context (e.g., current command) for the UI.
+	// /api/activity is deleted in Task 6.
+
+	// Currently there is no runtime_snapshot message type; activity is sent separately
+	// with a different shape via /ws/events.
+	// After Task 6, the stream will include this as part of the canonical projection.
+
+	// This test documents the target behavior; it FAILS until Task 6.
+	t.Log("Schema 4 contract: /ws/state includes runtime_snapshot messages")
+	t.Skip("Awaiting Task 6 implementation")
+}

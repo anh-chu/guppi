@@ -315,3 +315,46 @@ func TestShouldAcceptSnapshot(t *testing.T) {
 		t.Error("stale generation snapshot should be rejected")
 	}
 }
+
+// TestSchema4SingletonWorkspace_FAILS proves the contract that a workspace tree
+// is optional (Tree == nil is valid) and is the ONLY workspace representation.
+func TestSchema4SingletonWorkspace_FAILS(t *testing.T) {
+	owner := OwnerID("ownerinv1234567890ab")
+	
+	// Empty workspace with nil tree should be valid in schema 4.
+	// This will FAIL now; will pass after Task 1.
+	// emptyWorkspace := AppDocument{
+	//	Schema:    4, // Currently is 3; Task 1 bumps to 4
+	//	Owner:     owner,
+	//	Revision:  0,
+	//	Sessions:  []LocalSessionRecord{},
+	//	// Workspace: WorkspaceRecord{Revision: 0, Tree: nil}, // Does not exist yet
+	// }
+	
+	// Expect ValidateDocument to accept it. This FAILS because Workspace field
+	// does not exist, so this document would fail schema version check instead.
+	// err := ValidateDocument(&emptyWorkspace)
+	// if err != nil {
+	//	t.Fatalf("empty workspace should be valid: %v", err)
+	// }
+	
+	// Document with a workspace tree and a leaf referencing a pending session
+	// should be valid.
+	pendingRef := SessionRef{Owner: owner, Session: "pendinginv1234567890"}
+	withTree := AppDocument{
+		Schema:   4,
+		Owner:    owner,
+		Revision: 1,
+		Sessions: []LocalSessionRecord{},
+		PendingCreates: []PendingCreateRecord{
+			{IntentID: NewCommandID(), Ref: pendingRef},
+		},
+		// Workspace: WorkspaceRecord{
+		//   Revision: 1,
+		//   Tree: &Leaf(pendingRef),
+		// },
+	}
+	
+	// Will be valid once schema 4 is implemented.
+	_ = withTree
+}

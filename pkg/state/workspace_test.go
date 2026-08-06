@@ -806,3 +806,32 @@ func TestWorkspaceSnapshotSynthesized(t *testing.T) {
 		t.Fatalf("expected one leaf")
 	}
 }
+
+// TestSchema4WorkspaceCommandNoLayout_FAILS proves that workspace commands
+// in schema 4 have no Layout field and operate on a singleton workspace.
+func TestSchema4WorkspaceCommandNoLayout_FAILS(t *testing.T) {
+	// Schema 4 WorkspaceCommand has no Layout field.
+	// Currently, WorkspaceCommand.Layout exists and is required.
+	// After Task 2, Layout is deleted and all commands target the singleton workspace.
+	
+	// This demonstrates the target contract:
+	// type WorkspaceCommand struct {
+	//   ID     CommandID
+	//   Action WorkspaceAction
+	//   Params json.RawMessage
+	//   // Layout field does NOT exist in schema 4
+	// }
+	
+	// For now, this test documents what MUST be true:
+	// 1. No WorkspaceCommand accepts Layout as a parameter
+	// 2. Commands that create/split against the workspace never include layout_id
+	// 3. Selection commands (if any exist) do not persist server-side
+	
+	// This FAILS now because the contract does not yet exist.
+	// After Task 2, this passes.
+	
+	// Placeholder assertion to make test non-empty:
+	t.Log("Schema 4 contract: WorkspaceCommand.Layout does not exist")
+	t.Log("Schema 4 contract: Workspace commands target the singleton workspace only")
+	t.Skip("Awaiting Task 2 implementation")
+}

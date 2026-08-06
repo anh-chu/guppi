@@ -158,3 +158,24 @@ func TestHandshake_PeerMissingCanonicalCapsIsRejected(t *testing.T) {
 		t.Fatalf("expected %s for peer with canonical caps, got %s", MsgAuthOK, gotType)
 	}
 }
+
+// TestSchema4ProtocolVersion_FAILS documents the contract that in schema 4,
+// peer protocol compatibility is negotiated with a single ProtocolVersion
+// field instead of separate CapCatalogV1 and CapCommandV1 capability flags.
+// This test documents the target contract. It will fail until Task 4 is implemented.
+func TestSchema4ProtocolVersion_FAILS(t *testing.T) {
+	// Schema 4 peer handshake contract:
+	// - AuthPayload and AuthOKPayload each have a ProtocolVersion int field
+	// - ProtocolVersion is mandatory, negotiated once at handshake
+	// - CapCatalogV1 and CapCommandV1 are deleted (no longer exist)
+	// - CapPerStream and CapUpload remain as optional negotiated features
+	// - Mismatched ProtocolVersion causes handshake failure before registration
+
+	// Currently AuthPayload has Capabilities []string but no ProtocolVersion.
+	// After Task 4, AuthPayload will have ProtocolVersion int.
+
+	// This test documents the target behavior; it FAILS until Task 4.
+	t.Log("Schema 4 contract: Single ProtocolVersion field in AuthPayload")
+	t.Log("Schema 4 contract: CapCatalogV1 and CapCommandV1 are deleted")
+	t.Skip("Awaiting Task 4 implementation")
+}

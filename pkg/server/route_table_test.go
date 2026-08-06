@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/anh-chu/termyard/pkg/activity"
 	"github.com/anh-chu/termyard/pkg/auth"
 	"github.com/anh-chu/termyard/pkg/portforward"
 	"github.com/anh-chu/termyard/pkg/toolevents"
@@ -142,6 +143,12 @@ func TestRouteTableSnapshot(t *testing.T) {
 	}
 	// Wiki routes only appear when opts.WikiLite is set.
 	// Peer WebSocket routes only appear when opts.PeerHandler is set.
+
+	// Note: Task 0 documents that in the final schema, /api/hosts and
+	// /api/activity routes will be deleted because:
+	// - Host state comes from bootstrap and /ws/state only.
+	// - Activity is replaced by canonical runtime snapshots.
+	// Until Task 5-6 implement those changes, these routes remain.
 
 	missing, extra := diff(want, routes)
 	if len(missing)+len(extra) > 0 {
@@ -381,6 +388,73 @@ func TestLegacyStoreRoutesNeverExist(t *testing.T) {
 			if resp.StatusCode != http.StatusNotFound {
 				t.Errorf("%s returned %d, want %d (Not Found -- route must not be registered)",
 					tt.name, resp.StatusCode, http.StatusNotFound)
+			}
+		})
+	}
+}
+
+// TestSchema4HostsAndActivityRoutesDELETED_FAILS documents the contract that
+// /api/hosts and /api/activity routes are deleted in the final canonical design.
+// These routes will be removed during Task 5-6 when host and runtime state
+// moves to bootstrap and /ws/state streaming.
+func TestSchema4HostsAndActivityRoutesDELETED_FAILS(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	tracker := toolevents.NewTracker()
+	hub := ws.NewHub(tracker)
+	catalog, svc := newStateTestCatalog(t)
+
+	opts := &Options{
+		Port:             7654,
+		Tracker:          tracker,
+		ActivityTracker:  activity.NewTracker(),
+		Hub:              hub,
+		Catalog:          catalog,
+		CommandSvc:       svc,
+		StateStream:      ws.NewStateStreamHub(catalog, nil),
+		PortForwardStore: portforward.NewStore(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r, _, err := BuildRouter(ctx, opts)
+	if err != nil {
+		t.Fatalf("BuildRouter: %v", err)
+	}
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	// After Task 5-6, these routes must return 404 (not be registered at all).
+	// Currently they exist, so this test documents what MUST be true.
+	neededRoutes := []struct {
+		name   string
+		path   string
+		method string
+	}{
+		{"GET /api/hosts must be deleted", "/api/hosts", http.MethodGet},
+		{"GET /api/activity must be deleted", "/api/activity", http.MethodGet},
+	}
+
+	for _, tt := range neededRoutes {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(tt.method, srv.URL+tt.path, nil)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			defer resp.Body.Close()
+
+			// In the final schema, these must return 404.
+			// Currently they return 200/data, so this test documents the target contract.
+			if resp.StatusCode == http.StatusOK {
+				t.Logf("EXPECTED FAILURE: %s currently returns 200; will be deleted in Task 5-6", tt.name)
+				t.Fail()
 			}
 		})
 	}

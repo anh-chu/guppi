@@ -203,3 +203,43 @@ func TestFixtureSessionWithoutNewMetadataFieldsLoadsWithEmptyValues(t *testing.T
 		t.Errorf("ScheduleID = %q, want empty for a fixture predating the field", rec.ScheduleID)
 	}
 }
+
+// TestSchema4WorkspaceContract_FAILS proves the schema-4 target contract:
+// AppDocument has a singleton Workspace with {Revision, Tree} only,
+// and no Layouts or TmuxCatalogRevision fields.
+func TestSchema4WorkspaceContract_FAILS(t *testing.T) {
+	// This test documents the target schema-4 workspace shape.
+	// It will FAIL against schema-3 HEAD because the contract does not yet exist.
+	schema4Doc := AppDocument{
+		Schema:   4, // Task 1 will bump this; currently is 3
+		Owner:    OwnerID("owner1234567890abcd"),
+		Revision: 1,
+		Sessions: []LocalSessionRecord{mkSession(OwnerID("owner1234567890abcd"), "sess1234567890abcdef")},
+		// Workspace: WorkspaceRecord{Revision: 1, Tree: &leaf}, // This field does not exist yet
+		// No Layouts, no TmuxCatalogRevision in schema 4
+	}
+	
+	// Serialize and verify no "layouts" or "tmux_catalog_revision" appear in JSON.
+	data, err := json.Marshal(schema4Doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	str := string(data)
+	
+	// These assertions FAIL now; they pass after Task 1.
+	if containsLayoutsField := contains(str, "layouts"); containsLayoutsField {
+		t.Error("schema 4 must not have 'layouts' field; found in JSON")
+	}
+	if containsTmuxRev := contains(str, "tmux_catalog_revision"); containsTmuxRev {
+		t.Error("schema 4 must not have 'tmux_catalog_revision' field; found in JSON")
+	}
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

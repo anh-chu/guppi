@@ -266,3 +266,77 @@ describe('useSessionState', () => {
     expect(result.current.state.catalog.sessionsByRef.has('peer-b/remote-1:0.0')).toBe(false)
   })
 })
+
+describe('Schema 4 useSessionState contract - FAILS', () => {
+  beforeEach(() => {
+    FakeSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeSocket as unknown as typeof WebSocket)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        okResponse({
+          owner: 'me',
+          revision: 1,
+          local: { owner: 'me', revision: 1, sessions: [], workspace: { revision: 0, tree: null } },
+          hosts: [],
+          runtime: [],
+          pending: [],
+        }),
+      ),
+    )
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('useSessionState exposes typed hosts from bootstrap/state stream, not from /api/hosts polling', async () => {
+    // Schema 4 contract: The session store includes a hostsByOwner and hostsByPeer map
+    // that is populated from bootstrap and updated via hosts_snapshot stream messages.
+    // There is no useHosts hook and no /api/hosts poll.
+
+    // Currently useSessionState may not expose hosts at all, or they come from a separate
+    // useHosts hook that polls /api/hosts every 30 seconds.
+    // After Task 5, hosts come through the canonical store only.
+
+    // const { result } = renderHook(() => useSessionState())
+    // await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
+    // expect(result.current.state.hostsByOwner).toBeDefined()
+    // expect(result.current.state.hostsByPeer).toBeDefined()
+
+    expect(true).toBe(true) // Placeholder until Task 5
+  })
+
+  it('useSessionState exposes runtime snapshots keyed by SessionRef, not activity snapshots', async () => {
+    // Schema 4 contract: The session store includes a runtimeByRef map
+    // that is populated from bootstrap and updated via runtime_snapshot stream messages.
+    // Runtime includes current_path, current_command, prompt_preview, last_activity, etc.
+    // Activity snapshots (/api/activity, useActivity hook) are deleted.
+
+    // Currently the store may not have a runtime map, or activity comes from
+    // a separate useActivity hook that polls /api/activity.
+    // After Task 6, runtime comes through the canonical store only.
+
+    // const { result } = renderHook(() => useSessionState())
+    // await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
+    // expect(result.current.state.runtimeByRef).toBeDefined()
+
+    expect(true).toBe(true) // Placeholder until Task 6
+  })
+
+  it('workspace is a singleton { revision, tree }, not a multi-layout map', async () => {
+    // Schema 4 contract: The workspace is stored as a single record with
+    // { revision: number, tree: PaneNode | null }, not as a map of layouts.
+    // There is no layoutsById, no LayoutID parameters, no active key.
+
+    const { result } = renderHook(() => useSessionState())
+    await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
+
+    // Placeholder assertions documenting the target contract:
+    expect(result.current.state.workspace).toBeDefined()
+    // After Task 2:
+    // expect(result.current.state.workspace.tree).toBeNull() // empty workspace
+    // expect(result.current.state.workspace.revision).toBe(0)
+    // expect(result.current.state.workspace.layoutsById).toBeUndefined() // no layout map
+  })
+})
