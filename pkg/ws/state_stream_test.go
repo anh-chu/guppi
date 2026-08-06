@@ -56,10 +56,11 @@ func TestStateStreamSendsCompleteSnapshotOnConnect(t *testing.T) {
 	catalog := newTestCatalog(t)
 	sessionID := state.NewSessionID()
 	if err := catalog.PutSession(state.LocalSessionRecord{
-		ID:    sessionID,
-		Owner: catalog.Owner(),
-		Ref:   state.SessionRef{Owner: catalog.Owner(), Session: sessionID},
-		Phase: state.SessionPhaseActive,
+		ID:         sessionID,
+		Owner:      catalog.Owner(),
+		Ref:        state.SessionRef{Owner: catalog.Owner(), Session: sessionID},
+		Phase:      state.SessionPhaseActive,
+		Generation: "test-gen",
 	}); err != nil {
 		t.Fatalf("PutSession: %v", err)
 	}
@@ -123,10 +124,11 @@ func TestStateStreamCoalescesToLatestRevision(t *testing.T) {
 		params, _ := json.Marshal(state.LabelParams{Label: "irrelevant"})
 		id := state.NewSessionID()
 		if err := catalog.PutSession(state.LocalSessionRecord{
-			ID:    id,
-			Owner: catalog.Owner(),
-			Ref:   state.SessionRef{Owner: catalog.Owner(), Session: id},
-			Phase: state.SessionPhaseActive,
+			ID:         id,
+			Owner:      catalog.Owner(),
+			Ref:        state.SessionRef{Owner: catalog.Owner(), Session: id},
+			Phase:      state.SessionPhaseActive,
+			Generation: "test-gen",
 		}); err != nil {
 			t.Fatalf("PutSession %d: %v", i, err)
 		}
@@ -279,10 +281,11 @@ func TestStateStreamOneSlowClientDoesNotBlockOthers(t *testing.T) {
 
 	id := state.NewSessionID()
 	if err := catalog.PutSession(state.LocalSessionRecord{
-		ID:    id,
-		Owner: catalog.Owner(),
-		Ref:   state.SessionRef{Owner: catalog.Owner(), Session: id},
-		Phase: state.SessionPhaseActive,
+		ID:         id,
+		Owner:      catalog.Owner(),
+		Ref:        state.SessionRef{Owner: catalog.Owner(), Session: id},
+		Phase:      state.SessionPhaseActive,
+		Generation: "test-gen",
 	}); err != nil {
 		t.Fatalf("PutSession: %v", err)
 	}

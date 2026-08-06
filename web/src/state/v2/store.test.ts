@@ -215,13 +215,13 @@ describe('rename/layout stability (zero-remount acceptance check)', () => {
   it('renaming a session (display_name change only) keeps the same ref key and does not appear in removed', () => {
     const s0 = initialV2StoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(1, [session('a')]), 1)
-    const renamed: LocalSessionRecord = { ...session('a', 'active', 2), _compat: { name: 'renamed-a' } }
+    const renamed: LocalSessionRecord = { ...session('a', 'active', 2), name: 'renamed-a' }
     const { state: s2, diff } = replaceCatalog(s1, catalogSnapshot(2, [renamed]), 1)
     expect(diff.removed).toEqual([])
     const found = selectSessionByRef(s2.catalog, ref('a'))
     expect(found).toBeDefined()
     expect(found?.ref).toEqual(ref('a')) // identical ref: no remount trigger for pool/terminal keyed by ref
-    expect(found?._compat?.name).toBe('renamed-a')
+    expect(found?.name).toBe('renamed-a')
   })
 
   it('moving a session between layouts (workspace tree change) does not remove or replace its session-catalog identity', () => {
@@ -282,14 +282,14 @@ describe('v2 session identity extraction for terminal pool', () => {
   it('selectSessionByRef extracts sessionId and ownerId for terminal checkout', () => {
     const store = new V2Store()
     const sess = session('shell-1', 'active', 10)
-    sess._compat = { generation: 'gen-recovery-5' }
+    sess.generation = 'gen-recovery-5'
     store.replaceCatalog(catalogSnapshot(1, [sess]), 1)
 
     const found = selectSessionByRef(store.getState().catalog, ref('shell-1'))
     expect(found).toBeDefined()
     expect(found?.id).toBe('shell-1') // sessionId for pool key
     expect(found?.owner).toBe('owner1') // ownerId for pool key
-    expect(found?._compat?.generation).toBe('gen-recovery-5') // generation for daemon reconnect
+    expect(found?.generation).toBe('gen-recovery-5') // generation for daemon reconnect
   })
 
   it('selectSessionByRef returns undefined for missing session', () => {
@@ -308,12 +308,12 @@ describe('v2 session identity extraction for terminal pool', () => {
 
     // Catalog update removes old and adds new session
     const newSess = session('new-name', 'active', 5)
-    newSess._compat = { generation: 'gen-2' }
+    newSess.generation = 'gen-2'
     store.replaceCatalog(catalogSnapshot(2, [newSess]), 1)
 
     const newSession = selectSessionByRef(store.getState().catalog, ref('new-name'))
     expect(newSession?.id).toBe('new-name')
-    expect(newSession?._compat?.generation).toBe('gen-2')
+    expect(newSession?.generation).toBe('gen-2')
 
     // Old session is gone
     const notFound = selectSessionByRef(store.getState().catalog, oldRef)

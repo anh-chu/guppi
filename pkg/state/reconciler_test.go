@@ -20,13 +20,16 @@ func testRef(id SessionID) SessionRef {
 
 func activeRecord(id SessionID, gen string) LocalSessionRecord {
 	return LocalSessionRecord{
-		ID:      id,
-		Owner:   testOwner(),
-		Ref:     testRef(id),
-		Phase:   SessionPhaseActive,
-		Desired: DesiredRun,
-		Created: time.Now(),
-		Compat:  CompatLocalSession{Name: string(id), Generation: gen, Shell: "/bin/bash", Cwd: "/tmp"},
+		ID:         id,
+		Owner:      testOwner(),
+		Ref:        testRef(id),
+		Phase:      SessionPhaseActive,
+		Desired:    DesiredRun,
+		Created:    time.Now(),
+		Name:       string(id),
+		Generation: gen,
+		Shell:      "/bin/bash",
+		Cwd:        "/tmp",
 	}
 }
 
@@ -310,34 +313,34 @@ func TestReconcilerStaleGenerationKeepsClean(t *testing.T) {
 	}
 }
 
-func TestReconcilerMissingLifecycleTreatsActiveAsLive(t *testing.T) {
+// TestPutSessionRejectsActiveRecordMissingGeneration replaces the former
+// TestReconcilerMissingLifecycleTreatsActiveAsLive, which asserted that a
+// pre-schema-3 "legacy" active session record with no known daemon
+// generation could be persisted and would be treated as live. Schema 3
+// finished the durable model: an active (or starting) session record
+// without a generation is now a structurally invalid document (see
+// ValidateDocument/ErrMissingGeneration) -- there is no more untruthful
+// "legacy lifecycle" state to fall back into, so PutSession must reject it
+// outright instead of silently accepting it.
+func TestPutSessionRejectsActiveRecordMissingGeneration(t *testing.T) {
 	owner := testOwner()
 	store, cleanup := newTestStore(t, owner)
 	defer cleanup()
 
 	catalog := NewCatalog(owner, store)
 	_ = catalog.Load()
-	backend := newFakeBackend()
 	rec := activeRecord(SessionID("sessnolc"), "")
-	_ = catalog.PutSession(rec)
 
-	backend.setProbe(bindingForRecord(&rec), pty.ProbeEvidence{
-		Status: pty.ProbeLive,
-		Binding: pty.StableBinding{
-			Owner:      string(owner),
-			SessionID:  "sessnolc",
-			Generation: "",
-		},
-		Reason: "legacy socket live",
-	})
-
-	r := NewReconciler(catalog, backend, nil, ReconcilerOptions{})
-	if err := r.ReconcileOnce(context.Background()); err != nil {
-		t.Fatal(err)
+	err := catalog.PutSession(rec)
+	if err == nil {
+		t.Fatal("expected PutSession to reject an active record with no generation")
 	}
-	got, _ := catalog.Session(rec.ID)
-	if got.Phase != SessionPhaseActive {
-		t.Fatalf("expected active for legacy live, got %v", got.Phase)
+	var se StateError
+	if !errors.As(err, &se) || se.Code != ErrMissingGeneration {
+		t.Fatalf("expected ErrMissingGeneration, got %v", err)
+	}
+	if _, ok := catalog.Session(rec.ID); ok {
+		t.Fatal("rejected session must not be persisted")
 	}
 }
 
@@ -351,7 +354,7 @@ func TestReconcilerStartingBecomesActive(t *testing.T) {
 	backend := newFakeBackend()
 	rec := activeRecord(SessionID("sessstart"), "gen1")
 	rec.Phase = SessionPhaseStarting
-	rec.Compat.Generation = "gen1"
+	rec.Generation = "gen1"
 	_ = catalog.PutSession(rec)
 
 	backend.setProbe(bindingForRecord(&rec), pty.ProbeEvidence{
@@ -461,8 +464,8 @@ func TestReconcilerPendingCreateAdoptsLiveDaemonPreservesDisplayName(t *testing.
 	if !ok {
 		t.Fatal("expected pending create to be adopted as active record")
 	}
-	if got.Compat.Name != "manualtest" {
-		t.Fatalf("expected Compat.Name to preserve user-requested display name %q, got %q", "manualtest", got.Compat.Name)
+	if got.Name != "manualtest" {
+		t.Fatalf("expected Name to preserve user-requested display name %q, got %q", "manualtest", got.Name)
 	}
 }
 
@@ -581,16 +584,16 @@ func TestReconcilerStartPendingUsesDisplayNameWithSessionIDFallback(t *testing.T
 	if !ok {
 		t.Fatal("expected named pending create to be started as active record")
 	}
-	if gotNamed.Compat.Name != "manualtest" {
-		t.Fatalf("expected Compat.Name to preserve user-requested display name %q, got %q", "manualtest", gotNamed.Compat.Name)
+	if gotNamed.Name != "manualtest" {
+		t.Fatalf("expected Name to preserve user-requested display name %q, got %q", "manualtest", gotNamed.Name)
 	}
 
 	gotUnnamed, ok := catalog.Session(refUnnamed.Session)
 	if !ok {
 		t.Fatal("expected unnamed pending create to be started as active record")
 	}
-	if gotUnnamed.Compat.Name != string(refUnnamed.Session) {
-		t.Fatalf("expected Compat.Name fallback to raw session ID %q, got %q", string(refUnnamed.Session), gotUnnamed.Compat.Name)
+	if gotUnnamed.Name != string(refUnnamed.Session) {
+		t.Fatalf("expected Name fallback to raw session ID %q, got %q", string(refUnnamed.Session), gotUnnamed.Name)
 	}
 }
 
@@ -656,7 +659,7 @@ func TestReconcilerResolveIntentRecoversCrashed(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := catalog.Session(rec.ID)
-	if got.Phase != SessionPhaseActive || got.Desired != DesiredRun || got.Compat.Generation != "gen2" {
+	if got.Phase != SessionPhaseActive || got.Desired != DesiredRun || got.Generation != "gen2" {
 		t.Fatalf("expected recovered active record, got %v", got)
 	}
 }

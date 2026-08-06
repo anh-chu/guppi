@@ -180,7 +180,7 @@ func TestV2SessionCommand_CreateTargetOwnerRouting(t *testing.T) {
 		}
 		// Prove the create did NOT silently land on this node's own catalog.
 		for _, s := range catalog.Sessions() {
-			if s.Compat.Name == "should-not-run-locally" {
+			if s.Name == "should-not-run-locally" {
 				t.Fatal("REMOTE-CREATE-ROUTING BUG: create with a remote target_owner silently executed against " +
 					"the local catalog instead of failing to reach the remote owner")
 			}
@@ -204,7 +204,7 @@ func TestV2SessionCommand_CreateTargetOwnerRouting(t *testing.T) {
 			t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
 		}
 		for _, s := range catalog.Sessions() {
-			if s.Compat.Name == "should-not-run-locally" {
+			if s.Name == "should-not-run-locally" {
 				t.Fatal("REMOTE-CREATE-ROUTING BUG: create with a remote target_owner silently executed against " +
 					"the local catalog instead of failing to reach the remote owner")
 			}

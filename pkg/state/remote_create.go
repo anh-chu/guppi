@@ -60,6 +60,9 @@ type RemoteCreateRequest struct {
 	Direction      SplitDirection `json:"direction,omitempty"`
 	NewFirst       bool           `json:"new_first,omitempty"`
 	AgentType      string         `json:"agent_type,omitempty"`
+	// ScheduleID mirrors CreateParams.ScheduleID for a remote create; it is
+	// carried through to PendingRemoteCreateRecord.ScheduleID.
+	ScheduleID string `json:"schedule_id,omitempty"`
 }
 
 // RemoteCreateResult acknowledges an accepted remote create and gives the
@@ -207,6 +210,7 @@ func (c *RemoteCreateCoordinator) ExecuteRemoteCreate(ctx context.Context, req R
 			Inserted:       now,
 			UpdatedAt:      now,
 			WorktreeBranch: req.WorktreeBranch,
+			ScheduleID:     req.ScheduleID,
 		})
 		doc.Sessions = append(doc.Sessions, LocalSessionRecord{
 			ID:      ref.Session,
@@ -215,13 +219,11 @@ func (c *RemoteCreateCoordinator) ExecuteRemoteCreate(ctx context.Context, req R
 			Phase:   SessionPhasePending,
 			Desired: DesiredRun,
 			Created: now,
-			Compat: CompatLocalSession{
-				Name:  displayName,
-				Shell: req.Shell,
-				Cwd:   path,
-				Cols:  req.Cols,
-				Rows:  req.Rows,
-			},
+			Name:    displayName,
+			Shell:   req.Shell,
+			Cwd:     path,
+			Cols:    req.Cols,
+			Rows:    req.Rows,
 		})
 		result = RemoteCreateResult{ID: req.IntentID, Ref: ref, DisplayName: displayName, Path: path, LayoutID: layoutID, Accepted: true}
 		receipt, err := newSuccessReceipt(req.IntentID, "remote-create:create", ref.MapKey(), nextCommandSeq(doc), now, result)
@@ -346,21 +348,19 @@ func (c *RemoteCreateCoordinator) executePendingRemoteCreate(ctx context.Context
 		doc.PendingRemoteCreates = filtered
 
 		session := LocalSessionRecord{
-			ID:      rec.Ref.Session,
-			Owner:   rec.Ref.Owner,
-			Ref:     rec.Ref,
-			Phase:   SessionPhaseActive,
-			Desired: DesiredRun,
-			Created: now,
-			Compat: CompatLocalSession{
-				Name:       rec.DisplayName,
-				Shell:      rec.Shell,
-				Cwd:        cwd,
-				Cols:       rec.Cols,
-				Rows:       rec.Rows,
-				DaemonPID:  info.DaemonPID,
-				Generation: info.Generation,
-			},
+			ID:         rec.Ref.Session,
+			Owner:      rec.Ref.Owner,
+			Ref:        rec.Ref,
+			Phase:      SessionPhaseActive,
+			Desired:    DesiredRun,
+			Created:    now,
+			Name:       rec.DisplayName,
+			Shell:      rec.Shell,
+			Cwd:        cwd,
+			Cols:       rec.Cols,
+			Rows:       rec.Rows,
+			DaemonPID:  info.DaemonPID,
+			Generation: info.Generation,
 		}
 		found := false
 		for i := range doc.Sessions {
@@ -420,13 +420,11 @@ func (c *RemoteCreateCoordinator) failPendingRemoteCreate(p PendingRemoteCreateR
 				Phase:   SessionPhaseDismissed,
 				Desired: DesiredStop,
 				Created: c.opts.Now(),
-				Compat: CompatLocalSession{
-					Name:  p.DisplayName,
-					Shell: p.Shell,
-					Cwd:   p.Cwd,
-					Cols:  p.Cols,
-					Rows:  p.Rows,
-				},
+				Name:    p.DisplayName,
+				Shell:   p.Shell,
+				Cwd:     p.Cwd,
+				Cols:    p.Cols,
+				Rows:    p.Rows,
 			}
 			found := false
 			for i := range doc.Sessions {
@@ -510,7 +508,7 @@ func (c *RemoteCreateCoordinator) placeRemoteRefLocked(doc *AppDocument, ref Ses
 func (c *RemoteCreateCoordinator) uniqueDisplayNameLocked(doc *AppDocument, name string) string {
 	used := make(map[string]struct{}, len(doc.Sessions)+len(doc.PendingCreates)+len(doc.PendingRemoteCreates))
 	for _, rec := range doc.Sessions {
-		if n := rec.Compat.Name; n != "" {
+		if n := rec.Name; n != "" {
 			used[n] = struct{}{}
 		}
 		used[string(rec.ID)] = struct{}{}

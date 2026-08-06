@@ -20,9 +20,7 @@ func TestHandleDaemonSessionStableRejectsStaleGeneration(t *testing.T) {
 		Owner: owner,
 		Ref:   state.SessionRef{Owner: owner, Session: sid},
 		Phase: state.SessionPhaseActive,
-		Compat: state.CompatLocalSession{
-			Name: "label", Generation: "gen-live",
-		},
+		Name:  "label", Generation: "gen-live",
 	}); err != nil {
 		t.Fatalf("PutSession: %v", err)
 	}
@@ -82,9 +80,7 @@ func TestHandleDaemonSessionStableNotReadyForPendingPhase(t *testing.T) {
 		Owner: owner,
 		Ref:   state.SessionRef{Owner: owner, Session: sid},
 		Phase: state.SessionPhasePending,
-		Compat: state.CompatLocalSession{
-			Name: "label",
-		},
+		Name:  "label",
 	}); err != nil {
 		t.Fatalf("PutSession: %v", err)
 	}
@@ -117,14 +113,12 @@ func TestHandleDaemonSessionStableRejectsCrashedWithGeneration(t *testing.T) {
 	catalog := state.NewCatalog(owner, nil)
 	sid := state.NewSessionID()
 	if err := catalog.PutSession(state.LocalSessionRecord{
-		ID:    sid,
-		Owner: owner,
-		Ref:   state.SessionRef{Owner: owner, Session: sid},
-		Phase: state.SessionPhaseCrashed,
-		Compat: state.CompatLocalSession{
-			Name:       "label",
-			Generation: "gen-stale",
-		},
+		ID:         sid,
+		Owner:      owner,
+		Ref:        state.SessionRef{Owner: owner, Session: sid},
+		Phase:      state.SessionPhaseCrashed,
+		Name:       "label",
+		Generation: "gen-stale",
 	}); err != nil {
 		t.Fatalf("PutSession: %v", err)
 	}

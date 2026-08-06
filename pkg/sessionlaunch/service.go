@@ -291,6 +291,7 @@ func (s *Service) createLocalV2(ctx context.Context, req Request) (Result, error
 		Cols:           req.Cols,
 		Rows:           req.Rows,
 		AgentType:      req.AgentType,
+		ScheduleID:     req.ScheduleID,
 	})
 	res, err := s.V2Commander.ExecuteSessionCommand(ctx, state.SessionCommand{
 		ID:     cmdID,

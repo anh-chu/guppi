@@ -193,7 +193,7 @@ func TestCreateReturnsStableIDAndActivates(t *testing.T) {
 	if !ok || rec.Phase != SessionPhaseActive {
 		t.Fatalf("expected active session: %+v", rec)
 	}
-	if rec.Compat.Generation == "" {
+	if rec.Generation == "" {
 		t.Fatal("expected generation set")
 	}
 	if backend.startCount() != 1 {
@@ -519,12 +519,12 @@ func TestExecuteSessionCommandFromPeer_LabelOwnershipMismatchRejected(t *testing
 		t.Fatalf("expected ownership_mismatch error, got %v", err)
 	}
 	got, _ := catalog.Session(rec.ID)
-	if got.Compat.Name == "renamed" {
+	if got.Name == "renamed" {
 		t.Fatal("label must not be applied when ownership check fails")
 	}
 }
 
-func TestLabelOnlyMutatesCompatName(t *testing.T) {
+func TestLabelOnlyMutatesDisplayName(t *testing.T) {
 	svc, catalog, _, _, cleanup := newTestCommandService(t)
 	defer cleanup()
 
@@ -541,8 +541,8 @@ func TestLabelOnlyMutatesCompatName(t *testing.T) {
 	}
 
 	got, _ := catalog.Session(rec.ID)
-	if got.Compat.Name != "renamed" {
-		t.Fatalf("expected display name changed, got %q", got.Compat.Name)
+	if got.Name != "renamed" {
+		t.Fatalf("expected display name changed, got %q", got.Name)
 	}
 	if got.Ref != origRef {
 		t.Fatalf("label changed session ref: %v -> %v", origRef, got.Ref)
@@ -571,7 +571,7 @@ func TestRecoverCreatesNewGeneration(t *testing.T) {
 	}
 
 	got, _ := catalog.Session(rec.ID)
-	if got.Phase != SessionPhaseActive || got.Compat.Generation != "gen-new" {
+	if got.Phase != SessionPhaseActive || got.Generation != "gen-new" {
 		t.Fatalf("expected active with new generation, got %+v", got)
 	}
 	if got.Ref != rec.Ref {

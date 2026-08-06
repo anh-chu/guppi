@@ -163,12 +163,80 @@ func TestOpenStoreWrongSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	owner := OwnerID("ownerschema123456789")
 	future := mkBasicDoc(owner)
-	future.Schema = 3
+	future.Schema = SchemaVersion + 1
 	mustWriteJSON(t, filepath.Join(dir, "node1.state.json"), future)
 
 	_, err := OpenStore(dir, "node1", StoreOptions{})
 	if err == nil {
-		t.Fatal("expected schema 3 to be rejected")
+		t.Fatalf("expected schema %d to be rejected", SchemaVersion+1)
+	}
+}
+
+// TestOpenStoreSchema2FailsClosed proves the destructive-reset contract for
+// schema 3: an old schema-2 document (the pre-canonical-schema transition
+// layout, with `_compat`-nested fields) is never transformed, migrated, or
+// partially read. OpenStore must fail closed with an explicit, actionable
+// error, and the caller-visible remedy is to delete the store directory
+// (every file OpenStore itself created: NodeID+".state.json" and its
+// ".bak" sibling) and let a fresh schema-3 document be created in its place.
+func TestOpenStoreSchema2FailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	owner := OwnerID("ownerschema2v1234567")
+
+	// A schema-2 document literal, including the legacy `_compat` JSON shape
+	// schema 3 removed. json.Unmarshal into the current AppDocument simply
+	// drops the unknown `_compat` key (it is not a recognized field anymore);
+	// the decisive failure is the schema number itself.
+	legacy := []byte(`{
+		"schema": 2,
+		"owner": "` + string(owner) + `",
+		"revision": 1,
+		"sessions": [
+			{
+				"id": "sessschema2v123456789",
+				"owner": "` + string(owner) + `",
+				"ref": "` + string(owner) + `/sessschema2v123456789:0.0",
+				"phase": "active",
+				"desired": "run",
+				"revision": 1,
+				"created_at": "2025-01-01T00:00:00Z",
+				"_compat": {"name": "legacy-session", "generation": "gen-legacy"}
+			}
+		]
+	}`)
+	currentPath := filepath.Join(dir, "node1.state.json")
+	if err := os.WriteFile(currentPath, legacy, 0600); err != nil {
+		t.Fatalf("write legacy schema-2 document: %v", err)
+	}
+
+	_, err := OpenStore(dir, "node1", StoreOptions{})
+	if err == nil {
+		t.Fatal("expected schema 2 to be rejected")
+	}
+	var stateErr StateError
+	if !errors.As(err, &stateErr) {
+		t.Fatalf("expected a StateError wrapping the schema rejection, got %T: %v", err, err)
+	}
+	if stateErr.Code != ErrBadSchema {
+		t.Fatalf("expected code %q, got %q", ErrBadSchema, stateErr.Code)
+	}
+
+	// The destructive-reset remedy: delete the store directory (every file
+	// OpenStore manages lives directly under it) and re-open. A fresh schema-3
+	// document is created in its place -- no partial read, no migration.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("delete store directory %q: %v", dir, err)
+	}
+	fresh, err := OpenStore(dir, "node1", StoreOptions{})
+	if err != nil {
+		t.Fatalf("open fresh store after destructive reset: %v", err)
+	}
+	snap := fresh.Snapshot()
+	if snap.Schema != SchemaVersion {
+		t.Fatalf("expected fresh store schema %d, got %d", SchemaVersion, snap.Schema)
+	}
+	if len(snap.Sessions) != 0 {
+		t.Fatalf("expected fresh store to have no sessions, got %d", len(snap.Sessions))
 	}
 }
 
@@ -209,11 +277,12 @@ func TestUpdatePersistsAndIncrementsRevision(t *testing.T) {
 	owner := s.Owner()
 	err := s.Update("add-session", func(doc *AppDocument) error {
 		doc.Sessions = append(doc.Sessions, LocalSessionRecord{
-			ID:      SessionID("sessadd1234567890123"),
-			Owner:   owner,
-			Ref:     SessionRef{Owner: owner, Session: SessionID("sessadd1234567890123")},
-			Phase:   SessionPhaseActive,
-			Desired: DesiredRun,
+			ID:         SessionID("sessadd1234567890123"),
+			Owner:      owner,
+			Ref:        SessionRef{Owner: owner, Session: SessionID("sessadd1234567890123")},
+			Phase:      SessionPhaseActive,
+			Desired:    DesiredRun,
+			Generation: "test-gen",
 		})
 		return nil
 	})
@@ -325,11 +394,12 @@ func TestUpdateFailureDoesNotAlterMemory(t *testing.T) {
 			owner := s.Owner()
 			err := s.Update("add-session", func(doc *AppDocument) error {
 				doc.Sessions = append(doc.Sessions, LocalSessionRecord{
-					ID:      SessionID("sessfail123456789012"),
-					Owner:   owner,
-					Ref:     SessionRef{Owner: owner, Session: SessionID("sessfail123456789012")},
-					Phase:   SessionPhaseActive,
-					Desired: DesiredRun,
+					ID:         SessionID("sessfail123456789012"),
+					Owner:      owner,
+					Ref:        SessionRef{Owner: owner, Session: SessionID("sessfail123456789012")},
+					Phase:      SessionPhaseActive,
+					Desired:    DesiredRun,
+					Generation: "test-gen",
 				})
 				return nil
 			})
@@ -382,11 +452,12 @@ func TestUpdateSyncDirFailureAfterRenameAdoptsDocument(t *testing.T) {
 	owner := s.Owner()
 	err := s.Update("add-session", func(doc *AppDocument) error {
 		doc.Sessions = append(doc.Sessions, LocalSessionRecord{
-			ID:      SessionID("sesssyncdir123456789"),
-			Owner:   owner,
-			Ref:     SessionRef{Owner: owner, Session: SessionID("sesssyncdir123456789")},
-			Phase:   SessionPhaseActive,
-			Desired: DesiredRun,
+			ID:         SessionID("sesssyncdir123456789"),
+			Owner:      owner,
+			Ref:        SessionRef{Owner: owner, Session: SessionID("sesssyncdir123456789")},
+			Phase:      SessionPhaseActive,
+			Desired:    DesiredRun,
+			Generation: "test-gen",
 		})
 		return nil
 	})
@@ -552,11 +623,12 @@ func TestConcurrentReadersAndWriters(t *testing.T) {
 				err := s.Update("add", func(doc *AppDocument) error {
 					sid := fmt.Sprintf("sessconc%04d%04d", idx, j)
 					doc.Sessions = append(doc.Sessions, LocalSessionRecord{
-						ID:      SessionID(sid),
-						Owner:   owner,
-						Ref:     SessionRef{Owner: owner, Session: SessionID(sid)},
-						Phase:   SessionPhaseActive,
-						Desired: DesiredRun,
+						ID:         SessionID(sid),
+						Owner:      owner,
+						Ref:        SessionRef{Owner: owner, Session: SessionID(sid)},
+						Phase:      SessionPhaseActive,
+						Desired:    DesiredRun,
+						Generation: "test-gen",
 					})
 					return nil
 				})
@@ -672,11 +744,12 @@ func mkBasicDoc(owner OwnerID) AppDocument {
 		Revision: 7,
 		Sessions: []LocalSessionRecord{
 			{
-				ID:      SessionID("sessbasic12345678901"),
-				Owner:   owner,
-				Ref:     SessionRef{Owner: owner, Session: SessionID("sessbasic12345678901")},
-				Phase:   SessionPhaseActive,
-				Desired: DesiredRun,
+				ID:         SessionID("sessbasic12345678901"),
+				Owner:      owner,
+				Ref:        SessionRef{Owner: owner, Session: SessionID("sessbasic12345678901")},
+				Phase:      SessionPhaseActive,
+				Desired:    DesiredRun,
+				Generation: "test-gen",
 			},
 		},
 		Layouts: []LayoutRecord{
@@ -702,12 +775,13 @@ func mkLargeDoc(owner OwnerID, sessions, layouts int) AppDocument {
 	for i := 0; i < sessions; i++ {
 		id := SessionID(fmt.Sprintf("sess%025d", i))
 		doc.Sessions[i] = LocalSessionRecord{
-			ID:       id,
-			Owner:    owner,
-			Ref:      SessionRef{Owner: owner, Session: id},
-			Phase:    SessionPhaseActive,
-			Desired:  DesiredRun,
-			Revision: 1,
+			ID:         id,
+			Owner:      owner,
+			Ref:        SessionRef{Owner: owner, Session: id},
+			Phase:      SessionPhaseActive,
+			Desired:    DesiredRun,
+			Generation: "test-gen",
+			Revision:   1,
 		}
 	}
 	for i := 0; i < layouts; i++ {
@@ -884,11 +958,12 @@ func TestCatalogApplyFailsClosedOnSyncDirFailureAfterRename(t *testing.T) {
 	store.opts.SyncDirHook = makeFailingSyncDirHookOnCall(2)
 
 	rec := LocalSessionRecord{
-		ID:      SessionID("sesscatalogfsync1234"),
-		Owner:   owner,
-		Ref:     SessionRef{Owner: owner, Session: SessionID("sesscatalogfsync1234")},
-		Phase:   SessionPhaseActive,
-		Desired: DesiredRun,
+		ID:         SessionID("sesscatalogfsync1234"),
+		Owner:      owner,
+		Ref:        SessionRef{Owner: owner, Session: SessionID("sesscatalogfsync1234")},
+		Phase:      SessionPhaseActive,
+		Desired:    DesiredRun,
+		Generation: "test-gen",
 	}
 	// Per the fail-closed durability contract, a directory-fsync failure
 	// after a successful rename must NOT be reported as success: the caller

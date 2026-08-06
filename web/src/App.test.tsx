@@ -271,13 +271,13 @@ describe('App: mode-splitting', () => {
       expect(codePathTaken).toBe('appv2')
     })
 
-    it('getTerminalIdentity uses session._compat.generation (per-session daemon generation), not catalog.generation (websocket connection generation)', () => {
+    it('getTerminalIdentity uses session.generation (per-session daemon generation), not catalog.generation (websocket connection generation)', () => {
       // This verifies the high-severity bug fix: terminal attachment must use
-      // the per-session daemon binding generation (session._compat.generation),
+      // the per-session daemon binding generation (session.generation),
       // NOT the websocket connection generation (state.catalog.generation).
       
       // The logic under test is in App.tsx getTerminalIdentity:
-      // const sessionGeneration = session._compat?.generation ?? ''
+      // const sessionGeneration = session.generation ?? ''
       // return { sessionId, ownerId, generation: String(sessionGeneration) }
       
       // Mock data: a session with a real daemon generation
@@ -294,13 +294,11 @@ describe('App: mode-splitting', () => {
         desired: 'run' as const,
         revision: 5,
         created_at: '2024-01-01T00:00:00Z',
-        _compat: {
-          generation: daemonGeneration, // Per-session daemon generation
-        },
+        generation: daemonGeneration, // Per-session daemon generation
       }
       
       // Simulate the getTerminalIdentity logic (from App.tsx)
-      const sessionGeneration = session._compat?.generation ?? ''
+      const sessionGeneration = session.generation ?? ''
       const identity = {
         sessionId: session.id,
         ownerId: session.owner,
@@ -325,11 +323,10 @@ describe('App: mode-splitting', () => {
         desired: 'run' as const,
         revision: 1,
         created_at: '2024-01-01T00:00:00Z',
-        _compat: { /* no generation field */ },
       }
       
       // Simulate the getTerminalIdentity logic (from App.tsx)
-      const sessionGeneration = session._compat?.generation ?? ''
+      const sessionGeneration = session.generation ?? ''
       const identity = {
         sessionId: session.id,
         ownerId: session.owner,
@@ -363,7 +360,7 @@ describe('App: mode-splitting', () => {
       mockHostsList = null
     })
 
-    it('v2 session rows derive keys from the immutable id, not the mutable _compat label', async () => {
+    it('v2 session rows derive keys from the immutable id, not the mutable name label', async () => {
       const sessionId = 'sess-abc-123'
       const label = 'Friendly Renamed Label'
       const workspaceCommand = vi.fn().mockResolvedValue({})
@@ -376,7 +373,7 @@ describe('App: mode-splitting', () => {
         desired: 'run',
         revision: 3,
         created_at: '2025-01-01T00:00:00Z',
-        _compat: { name: label },
+        name: label,
       }
       const sessionsByRef = new Map([[encodeSessionRef(session.ref), session]])
       mockV2State = {
@@ -548,7 +545,7 @@ describe('App: mode-splitting', () => {
         desired: 'run',
         revision: 1,
         created_at: '2025-01-01T00:00:00Z',
-        _compat: { generation: 'daemon-gen-1' },
+        generation: 'daemon-gen-1',
       }
       const pendingSession: any = {
         id: pendingSessionId,
@@ -558,7 +555,6 @@ describe('App: mode-splitting', () => {
         desired: 'run',
         revision: 1,
         created_at: '2025-01-01T00:00:00Z',
-        _compat: {}, // no daemon generation assigned yet
       }
       const sessionsByRef = new Map([
         [encodeSessionRef(readySession.ref), readySession],
@@ -630,7 +626,7 @@ describe('App: mode-splitting', () => {
         desired: 'run',
         revision: 1,
         created_at: '2025-01-01T00:00:00Z',
-        _compat: { generation: 'gen-1' },
+        generation: 'gen-1',
       }
       const sessionsByRef = new Map([[encodeSessionRef(activeSession.ref), activeSession]])
       mockV2State = {
@@ -704,7 +700,7 @@ describe('App: mode-splitting', () => {
         desired: 'run',
         revision: 1,
         created_at: '2025-01-01T00:00:00Z',
-        _compat: { name: 'remote shell', generation: remoteGeneration },
+        name: 'remote shell', generation: remoteGeneration,
       }
       const localSession: any = {
         id: localSessionId,
@@ -714,7 +710,7 @@ describe('App: mode-splitting', () => {
         desired: 'run',
         revision: 1,
         created_at: '2025-01-01T00:00:00Z',
-        _compat: { name: 'local shell', generation: 'daemon-gen-local-1' },
+        name: 'local shell', generation: 'daemon-gen-local-1',
       }
 
       const sessionsByRef = new Map([
@@ -865,11 +861,11 @@ describe('App: mode-splitting', () => {
       const localRef = { owner: localOwner, session: localSessionId, window: 0, pane: 0 }
       const remoteSession: any = {
         id: remoteSessionId, owner: remoteOwner, ref: remoteRef, phase: 'active', desired: 'run',
-        revision: 1, created_at: '2025-01-01T00:00:00Z', _compat: { generation: 'gen-r' },
+        revision: 1, created_at: '2025-01-01T00:00:00Z', generation: 'gen-r',
       }
       const localSession: any = {
         id: localSessionId, owner: localOwner, ref: localRef, phase: 'active', desired: 'run',
-        revision: 1, created_at: '2025-01-01T00:00:00Z', _compat: { generation: 'gen-l' },
+        revision: 1, created_at: '2025-01-01T00:00:00Z', generation: 'gen-l',
       }
       const sessionsByRef = new Map([
         [encodeSessionRef(remoteRef), remoteSession],

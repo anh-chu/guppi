@@ -1664,10 +1664,10 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
     const session = selectSessionByRef(state.catalog, ref)
     if (!session) return { ready: false, backend: 'daemon' as const }
     // generation is the per-session daemon binding generation from the session's
-    // compat field, NOT the websocket connection generation (tracked per-owner in
+    // generation field, NOT the websocket connection generation (tracked per-owner in
     // state.catalog.ownerMeta). If the session has no daemon generation yet
     // (e.g., still pending), it is not ready to attach.
-    const sessionGeneration = session._compat?.generation
+    const sessionGeneration = session.generation
     if (!sessionGeneration) return { ready: false, backend: 'daemon' as const }
     return {
       ready: true,
@@ -1686,7 +1686,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
     const ref = keyToSessionRef(legacyKey)
     const session = selectSessionByRef(state.catalog, ref)
     if (!session) return legacyKey
-    const label = session._compat?.name
+    const label = session.name
     return label && label.trim() !== '' ? label : session.id
   }, [state.catalog])
 
@@ -1819,7 +1819,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   // name MUST be the immutable canonical session id (s.id): sessionKey(session)
   // is `host/name`, and the pane tree / workspace path keys sessions by
   // sessionRefToKey(ref) = `owner/ref.session`, where ref.session is the same
-  // canonical id. If name held the MUTABLE display label (_compat.name, set by
+  // canonical id. If name held the MUTABLE display label (name, set by
   // the label/rename command), sessionKey() and sessionRefToKey() would diverge
   // after any rename, and keyToSessionRef() would reconstruct a bogus ref whose
   // .session is the label string. The friendly label therefore goes into
@@ -1828,7 +1828,7 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
     () => Array.from(state.catalog.sessionsByRef.values()).map(s => ({
       id: s.id,
       name: s.id,
-      display_name: s._compat?.name || undefined,
+      display_name: s.name || undefined,
       host: s.owner,
       windows: [],
       created: s.created_at,

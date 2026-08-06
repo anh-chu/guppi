@@ -618,7 +618,10 @@ func (c *Catalog) applyPresentLocked(layout LayoutID, presents []PresentationRec
 	}
 	for _, pr := range presents {
 		if pr.Ref.Session == "" {
-			return StateError{Code: ErrInvalidIdentity, Field: "ref", Detail: "presentation ref has empty session id"}
+			return StateError{Code: ErrInvalidPresentation, Field: "ref", Detail: "presentation ref has empty session id"}
+		}
+		if pr.ZIndex < 0 {
+			return StateError{Code: ErrInvalidPresentation, Field: "z_index", Detail: fmt.Sprintf("presentation z_index %d must be non-negative", pr.ZIndex)}
 		}
 		m[pr.Ref.MapKey()] = pr
 	}

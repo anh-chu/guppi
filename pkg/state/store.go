@@ -363,35 +363,46 @@ func (s *Store) loadBestDocument() (AppDocument, bool, error) {
 
 	curDoc, curErr := s.readDocument(current)
 	if curErr == nil {
-		if err := ValidateDocument(&curDoc); err == nil {
-			if err := CheckSessionMembershipAcrossLayouts(&curDoc); err == nil {
-				return curDoc, false, nil
-			}
+		if err := ValidateDocument(&curDoc); err != nil {
+			curErr = err
+		} else if err := CheckSessionMembershipAcrossLayouts(&curDoc); err != nil {
+			curErr = err
+		} else {
+			return curDoc, false, nil
 		}
 	}
 
 	bakDoc, bakErr := s.readDocument(backup)
 	if bakErr == nil {
-		if err := ValidateDocument(&bakDoc); err == nil {
-			if err := CheckSessionMembershipAcrossLayouts(&bakDoc); err == nil {
-				if curErr == nil {
-					logrus.WithFields(logrus.Fields{
-						"path":   current,
-						"backup": backup,
-					}).Warn("current state corrupt or incompatible; recovered from backup")
-				}
-				// Restore current from backup so the next write starts clean.
-				if err := s.restoreCurrent(&bakDoc); err == nil {
-					return bakDoc, true, nil
-				}
-				// The backup is usable even if we cannot rewrite current.
+		if err := ValidateDocument(&bakDoc); err != nil {
+			bakErr = err
+		} else if err := CheckSessionMembershipAcrossLayouts(&bakDoc); err != nil {
+			bakErr = err
+		} else {
+			if curErr == nil {
+				logrus.WithFields(logrus.Fields{
+					"path":   current,
+					"backup": backup,
+				}).Warn("current state corrupt or incompatible; recovered from backup")
+			}
+			// Restore current from backup so the next write starts clean.
+			if err := s.restoreCurrent(&bakDoc); err == nil {
 				return bakDoc, true, nil
 			}
+			// The backup is usable even if we cannot rewrite current.
+			return bakDoc, true, nil
 		}
 	}
 
 	if _, statErr := os.Stat(current); statErr == nil {
-		return AppDocument{}, false, fmt.Errorf("current state at %q unusable: %w; backup also unusable: %w", current, curErr, bakErr)
+		// Fail closed: current (and, if present, backup) is unusable -- either
+		// corrupt JSON or a schema/invariant violation (see ValidateDocument).
+		// This is intentionally NOT a migration point: an old schema is never
+		// transformed or partially read. The explicit, actionable remedy is to
+		// delete the store directory (every file OpenStore manages lives
+		// directly under it: "<nodeID>.state.json" and "<nodeID>.state.json.bak")
+		// and let a fresh schema-3 document be created in its place.
+		return AppDocument{}, false, fmt.Errorf("state at %q is unusable and cannot be migrated (destructive reset required: delete directory %q and restart to create a fresh schema-%d store): current error: %w; backup error: %v", current, s.path, SchemaVersion, curErr, bakErr)
 	}
 
 	return s.newDocument(), false, nil

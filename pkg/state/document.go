@@ -6,8 +6,15 @@ import (
 	"time"
 )
 
-// SchemaVersion is the only supported lean v2 document schema.
-const SchemaVersion = 2
+// SchemaVersion is the only supported canonical v2 document schema.
+//
+// Schema 3 finished the v2 transition: every field that used to live in a
+// `_compat`-nested Compat* struct (a holdover from the v1->v2 migration) is
+// now a direct, first-class field on its parent record. There is no
+// migrator from schema 2 (or earlier) to schema 3 -- an older document
+// fails closed (see ValidateDocument/ErrBadSchema) rather than being
+// transformed, partially read, or silently upgraded.
+const SchemaVersion = 3
 
 // SessionPhase is the observed runtime phase of a session.
 type SessionPhase string
@@ -31,9 +38,8 @@ const (
 )
 
 // AppDocument is the persisted owner-scope state. It contains the session
-// catalog and workspace layouts for exactly one owner.
-//
-// Identity fields are IDs; mutable display labels live in compatibility records.
+// catalog and workspace layouts for exactly one owner. Every field is
+// canonical and direct -- schema 3 removed the `_compat` transition layer.
 type AppDocument struct {
 	Schema               int                         `json:"schema"`
 	Owner                OwnerID                     `json:"owner"`
@@ -44,7 +50,9 @@ type AppDocument struct {
 	Commands             []CommandReceipt            `json:"commands,omitempty"`
 	PendingCreates       []PendingCreateRecord       `json:"pending_creates,omitempty"`
 	PendingRemoteCreates []PendingRemoteCreateRecord `json:"pending_remote_creates,omitempty"`
-	Compat               CompatAppDocument           `json:"_compat,omitempty"`
+	// TmuxCatalogRevision tracks the legacy tmux-backed catalog revision this
+	// document was last known to correspond to, for v1/v2 shadow diagnostics.
+	TmuxCatalogRevision int64 `json:"tmux_catalog_revision,omitempty"`
 }
 
 // LocalSessionRecord is the canonical per-session row known to an owner.
@@ -56,27 +64,44 @@ type LocalSessionRecord struct {
 	Desired  DesiredSessionState `json:"desired"`
 	Revision int64               `json:"revision"`
 	Created  time.Time           `json:"created_at"`
-	Compat   CompatLocalSession  `json:"_compat,omitempty"`
+
+	// Name is the mutable, user-facing display label.
+	Name string `json:"name,omitempty"`
+	// Shell/Cwd/Cols/Rows are the daemon spawn parameters last used (or to be
+	// used) for this session.
+	Shell string `json:"shell,omitempty"`
+	Cwd   string `json:"cwd,omitempty"`
+	Cols  uint16 `json:"cols,omitempty"`
+	Rows  uint16 `json:"rows,omitempty"`
+	// DaemonPID is the last known daemon process id.
+	DaemonPID int `json:"daemon_pid,omitempty"`
+	// SystemdUnit is the last known systemd unit name managing the daemon.
+	SystemdUnit string `json:"systemd_unit,omitempty"`
+	// Generation is the daemon generation identity used for stable binding and
+	// exact-generation termination/adoption (see reconciler.go).
+	Generation string `json:"generation,omitempty"`
 }
 
 // WorkspaceRecord is the active workspace layout for an owner.
 type WorkspaceRecord struct {
-	ID        LayoutID        `json:"id"`
-	Owner     OwnerID         `json:"owner"`
-	Revision  int64           `json:"revision"`
-	Tree      PaneNode        `json:"tree"`
-	ActiveKey *SessionRef     `json:"active_key,omitempty"`
-	Compat    CompatWorkspace `json:"_compat,omitempty"`
+	ID        LayoutID    `json:"id"`
+	Owner     OwnerID     `json:"owner"`
+	Revision  int64       `json:"revision"`
+	Tree      PaneNode    `json:"tree"`
+	ActiveKey *SessionRef `json:"active_key,omitempty"`
+	// Name is the mutable, human-selected workspace name.
+	Name string `json:"name,omitempty"`
 }
 
 // LayoutRecord is a named, persisted layout in the owner's catalog.
 type LayoutRecord struct {
-	ID       LayoutID     `json:"id"`
-	Owner    OwnerID      `json:"owner"`
-	Order    int64        `json:"order"`
-	Revision int64        `json:"revision"`
-	Tree     PaneNode     `json:"tree"`
-	Compat   CompatLayout `json:"_compat,omitempty"`
+	ID       LayoutID `json:"id"`
+	Owner    OwnerID  `json:"owner"`
+	Order    int64    `json:"order"`
+	Revision int64    `json:"revision"`
+	Tree     PaneNode `json:"tree"`
+	// Name is the mutable, human-selected layout name.
+	Name string `json:"name,omitempty"`
 }
 
 // PaneNode is a concrete tagged-union node in a workspace layout tree.
@@ -204,6 +229,12 @@ type PendingCreateRecord struct {
 	NextAttempt    time.Time  `json:"next_attempt,omitempty"`
 	DisplayName    string     `json:"display_name,omitempty"`
 	WorktreeBranch string     `json:"worktree_branch,omitempty"`
+	// ScheduleID, when non-empty, is the identity of the scheduler job that
+	// fired this create. It is carried through to the materialized session so
+	// a schedule can be correlated with the sessions it produced, and is used
+	// by ValidateDocument to reject more than one in-flight create owning the
+	// same schedule slot at once (see ErrInconsistentScheduleOwnership).
+	ScheduleID string `json:"schedule_id,omitempty"`
 }
 
 // PendingRemoteCreateRecord is the only persisted distributed saga. It tracks
@@ -226,6 +257,9 @@ type PendingRemoteCreateRecord struct {
 	Attempts       int        `json:"attempts,omitempty"`
 	NextAttempt    time.Time  `json:"next_attempt,omitempty"`
 	WorktreeBranch string     `json:"worktree_branch,omitempty"`
+	// ScheduleID mirrors PendingCreateRecord.ScheduleID for the remote-create
+	// saga (see RemoteCreateRequest.ScheduleID).
+	ScheduleID string `json:"schedule_id,omitempty"`
 }
 
 // OwnerCatalogSnapshot is sent from an owner to the browser or to peers. It
@@ -251,32 +285,16 @@ type BrowserWorkspaceSnapshot struct {
 
 // BrowserSession is the read-only session projection shown to the browser.
 type BrowserSession struct {
-	Ref      SessionRef           `json:"ref"`
-	Phase    SessionPhase         `json:"phase"`
-	Revision int64                `json:"revision"`
-	Compat   CompatBrowserSession `json:"_compat,omitempty"`
-}
+	Ref      SessionRef   `json:"ref"`
+	Phase    SessionPhase `json:"phase"`
+	Revision int64        `json:"revision"`
 
-// CreateIntent captures a request to create or modify state. It carries enough
-// information to be idempotently retried by a worker.
-//
-// KNOWN-DORMANT SIBLING BUG: like the (fixed) RemoteCreateRequest.Target
-// before it, Target below is a non-pointer SessionRef with an `omitempty`
-// tag that encoding/json never honors for struct types, so a zero-value
-// Target would always marshal as SessionRef's custom ":0.0" representation
-// instead of being omitted. This is intentionally left unfixed here: as of
-// this note, CreateIntent is never constructed anywhere in non-test
-// production code (verified via a repo-wide reference search), so there is
-// no live path where the bug can currently manifest. If CreateIntent is
-// ever wired into a real construction path, apply the same fix used for
-// RemoteCreateRequest.Target (pointer + explicit nil check) before doing so.
-type CreateIntent struct {
-	ID       CommandID       `json:"id"`
-	Owner    OwnerID         `json:"owner"`
-	Kind     string          `json:"kind"`
-	Target   SessionRef      `json:"target,omitempty"`
-	Params   json.RawMessage `json:"params,omitempty"`
-	Inserted time.Time       `json:"inserted_at"`
+	// DisplayName/ProjectPath/PromptPreview/AgentType are mutable display
+	// fields shown to the browser.
+	DisplayName   string `json:"display_name,omitempty"`
+	ProjectPath   string `json:"project_path,omitempty"`
+	PromptPreview string `json:"prompt_preview,omitempty"`
+	AgentType     string `json:"agent_type,omitempty"`
 }
 
 // CommandReceiptError is the durable, stable representation of a command
@@ -387,38 +405,4 @@ type WorkspaceCommand struct {
 	Params json.RawMessage `json:"params,omitempty"`
 }
 
-// CompatAppDocument holds legacy fields needed during the v2 transition.
-type CompatAppDocument struct {
-	TmuxCatalogRevision int64 `json:"tmux_catalog_revision,omitempty"`
-}
 
-// CompatLocalSession holds mutable display and runtime details that are not
-// part of canonical identity.
-type CompatLocalSession struct {
-	Name        string `json:"name,omitempty"`
-	Shell       string `json:"shell,omitempty"`
-	Cwd         string `json:"cwd,omitempty"`
-	Cols        uint16 `json:"cols,omitempty"`
-	Rows        uint16 `json:"rows,omitempty"`
-	DaemonPID   int    `json:"daemon_pid,omitempty"`
-	SystemdUnit string `json:"systemd_unit,omitempty"`
-	Generation  string `json:"generation,omitempty"`
-}
-
-// CompatWorkspace holds legacy workspace fields.
-type CompatWorkspace struct {
-	Name string `json:"name,omitempty"`
-}
-
-// CompatLayout holds legacy layout fields, including human-selected names.
-type CompatLayout struct {
-	Name string `json:"name,omitempty"`
-}
-
-// CompatBrowserSession holds legacy display fields for the browser.
-type CompatBrowserSession struct {
-	DisplayName   string `json:"display_name,omitempty"`
-	ProjectPath   string `json:"project_path,omitempty"`
-	PromptPreview string `json:"prompt_preview,omitempty"`
-	AgentType     string `json:"agent_type,omitempty"`
-}

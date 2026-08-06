@@ -214,7 +214,7 @@ func TestV2WorkspaceCommandRevisionConflict(t *testing.T) {
 
 func TestV2BootstrapIncludesPerSessionDaemonGeneration(t *testing.T) {
 	// Verify that the v2 bootstrap response exposes per-session daemon binding
-	// generation (from Compat.Generation), NOT the websocket connection generation.
+	// generation (from Generation), NOT the websocket connection generation.
 	// This is critical for terminal attachment identity resolution.
 	catalog, svc := newV2TestCatalog(t)
 	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
@@ -236,7 +236,7 @@ func TestV2BootstrapIncludesPerSessionDaemonGeneration(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// The create is durable-before-reply; the daemon start (and Compat.Generation)
+	// The create is durable-before-reply; the daemon start (and Generation)
 	// is committed asynchronously by a background worker. Wait for it.
 	for start := time.Now(); time.Since(start) < 5*time.Second; {
 		if rec, ok := catalog.Session(res.Ref.Session); ok && rec.Phase == state.SessionPhaseActive {
@@ -262,13 +262,13 @@ func TestV2BootstrapIncludesPerSessionDaemonGeneration(t *testing.T) {
 		t.Fatalf("expected at least one session in bootstrap response (worker did not activate in time); body=%s", w.Body.String())
 	}
 
-	// Verify the session includes per-session daemon generation in _compat
+	// Verify the session includes per-session daemon generation directly on the session record
 	session := resp.Local.Sessions[0]
-	if session.Compat.Generation == "" {
-		t.Error("expected session.Compat.Generation to be non-empty (should be 'gen-test' from noopBackend)")
+	if session.Generation == "" {
+		t.Error("expected session.Generation to be non-empty (should be 'gen-test' from noopBackend)")
 	}
-	if session.Compat.Generation != "gen-test" {
-		t.Errorf("expected session.Compat.Generation='gen-test', got %q", session.Compat.Generation)
+	if session.Generation != "gen-test" {
+		t.Errorf("expected session.Generation='gen-test', got %q", session.Generation)
 	}
 }
 

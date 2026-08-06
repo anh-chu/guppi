@@ -12,7 +12,7 @@ export type LayoutID = string
 export type SplitID = string
 export type CommandID = string
 
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export type SessionRef = {
   owner: OwnerID | null
@@ -44,7 +44,14 @@ export type SessionPhase =
 
 export type DesiredSessionState = 'run' | 'stop' | 'restart'
 
-export type CompatLocalSession = {
+export type LocalSessionRecord = {
+  id: SessionID
+  owner: OwnerID
+  ref: SessionRef
+  phase: SessionPhase
+  desired: DesiredSessionState
+  revision: number
+  created_at: string
   name?: string
   shell?: string
   cwd?: string
@@ -55,29 +62,14 @@ export type CompatLocalSession = {
   generation?: string
 }
 
-export type LocalSessionRecord = {
-  id: SessionID
-  owner: OwnerID
-  ref: SessionRef
-  phase: SessionPhase
-  desired: DesiredSessionState
-  revision: number
-  created_at: string
-  _compat?: CompatLocalSession
-}
-
-export type CompatWorkspace = { name?: string }
-
 export type WorkspaceRecord = {
   id: LayoutID
   owner: OwnerID
   revision: number
   tree: PaneNode
   active_key?: SessionRef
-  _compat?: CompatWorkspace
+  name?: string
 }
-
-export type CompatLayout = { name?: string }
 
 export type LayoutRecord = {
   id: LayoutID
@@ -85,25 +77,17 @@ export type LayoutRecord = {
   order: number
   revision: number
   tree: PaneNode
-  _compat?: CompatLayout
-}
-
-export type CompatBrowserSession = {
-  display_name?: string
-  project_path?: string
-  prompt_preview?: string
-  agent_type?: string
+  name?: string
 }
 
 export type BrowserSession = {
   ref: SessionRef
   phase: SessionPhase
   revision: number
-  _compat?: CompatBrowserSession
-}
-
-export type CompatAppDocument = {
-  tmux_catalog_revision?: number
+  display_name?: string
+  project_path?: string
+  prompt_preview?: string
+  agent_type?: string
 }
 
 export type AppDocument = {
@@ -114,7 +98,7 @@ export type AppDocument = {
   workspaces?: WorkspaceRecord[]
   layouts?: LayoutRecord[]
   commands?: CommandReceipt[]
-  _compat?: CompatAppDocument
+  tmux_catalog_revision?: number
 }
 
 export type OwnerCatalogSnapshot = {
@@ -128,6 +112,7 @@ export type PendingCreateRecord = {
   intent_id: CommandID
   ref: SessionRef
   inserted_at: string
+  schedule_id?: string
 }
 
 export type BrowserWorkspaceSnapshot = {
@@ -137,15 +122,6 @@ export type BrowserWorkspaceSnapshot = {
   sessions: BrowserSession[]
   workspace?: WorkspaceRecord
   pending?: PendingCreateRecord[]
-}
-
-export type CreateIntent = {
-  id: CommandID
-  owner: OwnerID
-  kind: string
-  target?: SessionRef
-  params?: unknown
-  inserted_at: string
 }
 
 export type CommandReceipt = {

@@ -75,6 +75,12 @@ type CreateParams struct {
 	Target         *SessionRef    `json:"target,omitempty"`
 	Direction      SplitDirection `json:"direction,omitempty"`
 	NewFirst       bool           `json:"new_first,omitempty"`
+	// ScheduleID, when non-empty, identifies the scheduler job requesting this
+	// create. It is carried through to PendingCreateRecord.ScheduleID so a
+	// schedule can be correlated with the session it produces; ValidateDocument
+	// rejects more than one in-flight pending create sharing the same
+	// ScheduleID.
+	ScheduleID string `json:"schedule_id,omitempty"`
 }
 
 // RecoverParams overrides the saved shell/cwd for crash recovery.
@@ -279,7 +285,7 @@ func (s *SessionCommandService) LookupRefByDisplayName(name string) (SessionRef,
 		return SessionRef{}, false
 	}
 	for _, rec := range s.catalog.Sessions() {
-		if rec.Compat.Name == name || string(rec.ID) == name {
+		if rec.Name == name || string(rec.ID) == name {
 			return rec.Ref, true
 		}
 	}
@@ -385,6 +391,7 @@ func (s *SessionCommandService) executeCreate(ctx context.Context, cmd SessionCo
 			Rows:           params.Rows,
 			DisplayName:    displayName,
 			WorktreeBranch: params.WorktreeBranch,
+			ScheduleID:     params.ScheduleID,
 		})
 		result = CommandResult{ID: cmd.ID, Ref: ref, DisplayName: displayName, Path: path, Accepted: true}
 		receipt, err := newSuccessReceipt(cmd.ID, "session:"+ActionCreate, ref.MapKey(), nextCommandSeq(doc), s.opts.Now(), result)
@@ -405,7 +412,7 @@ func (s *SessionCommandService) executeCreate(ctx context.Context, cmd SessionCo
 func (s *SessionCommandService) resultFromDocLocked(doc *AppDocument, ref SessionRef, displayName, path string) CommandResult {
 	for _, rec := range doc.Sessions {
 		if rec.ID == ref.Session {
-			return CommandResult{Ref: rec.Ref, DisplayName: rec.Compat.Name, Path: path, Accepted: true}
+			return CommandResult{Ref: rec.Ref, DisplayName: rec.Name, Path: path, Accepted: true}
 		}
 	}
 	for _, p := range doc.PendingCreates {
@@ -476,7 +483,7 @@ func (s *SessionCommandService) commitSessionReceipt(cmd SessionCommand, kind st
 func (s *SessionCommandService) uniqueDisplayNameLocked(doc *AppDocument, name string) string {
 	used := make(map[string]struct{}, len(doc.Sessions)+len(doc.PendingCreates))
 	for _, rec := range doc.Sessions {
-		if n := rec.Compat.Name; n != "" {
+		if n := rec.Name; n != "" {
 			used[n] = struct{}{}
 		}
 		used[string(rec.ID)] = struct{}{}
@@ -557,21 +564,19 @@ func (s *SessionCommandService) executePendingCreate(ctx context.Context, p Pend
 		doc.PendingCreates = filtered
 
 		rec := LocalSessionRecord{
-			ID:      p.Ref.Session,
-			Owner:   p.Ref.Owner,
-			Ref:     p.Ref,
-			Phase:   SessionPhaseActive,
-			Desired: DesiredRun,
-			Created: now,
-			Compat: CompatLocalSession{
-				Name:       p.DisplayName,
-				Shell:      p.Shell,
-				Cwd:        cwd,
-				Cols:       p.Cols,
-				Rows:       p.Rows,
-				DaemonPID:  info.DaemonPID,
-				Generation: info.Generation,
-			},
+			ID:         p.Ref.Session,
+			Owner:      p.Ref.Owner,
+			Ref:        p.Ref,
+			Phase:      SessionPhaseActive,
+			Desired:    DesiredRun,
+			Created:    now,
+			Name:       p.DisplayName,
+			Shell:      p.Shell,
+			Cwd:        cwd,
+			Cols:       p.Cols,
+			Rows:       p.Rows,
+			DaemonPID:  info.DaemonPID,
+			Generation: info.Generation,
 		}
 		found := false
 		for i := range doc.Sessions {
@@ -618,13 +623,11 @@ func (s *SessionCommandService) failPendingCreate(p PendingCreateRecord, cause e
 				Phase:   SessionPhaseDismissed,
 				Desired: DesiredStop,
 				Created: s.opts.Now(),
-				Compat: CompatLocalSession{
-					Name:  p.DisplayName,
-					Shell: p.Shell,
-					Cwd:   p.Cwd,
-					Cols:  p.Cols,
-					Rows:  p.Rows,
-				},
+				Name:    p.DisplayName,
+				Shell:   p.Shell,
+				Cwd:     p.Cwd,
+				Cols:    p.Cols,
+				Rows:    p.Rows,
 			}
 			found := false
 			for i := range doc.Sessions {
@@ -680,7 +683,7 @@ func (s *SessionCommandService) executeKill(ctx context.Context, cmd SessionComm
 		logrus.WithFields(logrus.Fields{
 			"command_id": cmd.ID,
 			"session_id": ref.Session,
-			"generation": rec.Compat.Generation,
+			"generation": rec.Generation,
 			"outcome":    outcome,
 		}).Info("session kill issued")
 		return s.commitSessionReceipt(cmd, "session:"+ActionKill, ref, CommandResult{ID: cmd.ID, Ref: ref, Accepted: true})
@@ -723,7 +726,7 @@ func (s *SessionCommandService) executeLabel(ctx context.Context, cmd SessionCom
 	}
 
 	if rec, ok := s.catalog.Session(ref.Session); ok {
-		rec.Compat.Name = label
+		rec.Name = label
 		if err := s.catalog.PutSession(rec); err != nil {
 			return CommandResult{}, err
 		}
@@ -762,8 +765,8 @@ func (s *SessionCommandService) executeRecover(ctx context.Context, cmd SessionC
 		return CommandResult{}, StateError{Code: ErrMalformedSplit, Field: "phase", Detail: fmt.Sprintf("session is %q, not crashed", rec.Phase)}
 	}
 
-	shell := rec.Compat.Shell
-	cwd := rec.Compat.Cwd
+	shell := rec.Shell
+	cwd := rec.Cwd
 	if params.Shell != "" {
 		shell = params.Shell
 	}
@@ -780,8 +783,8 @@ func (s *SessionCommandService) executeRecover(ctx context.Context, cmd SessionC
 		},
 		Shell: shell,
 		Cwd:   cwd,
-		Cols:  rec.Compat.Cols,
-		Rows:  rec.Compat.Rows,
+		Cols:  rec.Cols,
+		Rows:  rec.Rows,
 	})
 	if err != nil {
 		return CommandResult{}, err
@@ -789,13 +792,13 @@ func (s *SessionCommandService) executeRecover(ctx context.Context, cmd SessionC
 
 	rec.Phase = SessionPhaseActive
 	rec.Desired = DesiredRun
-	rec.Compat.Generation = info.Generation
-	rec.Compat.DaemonPID = info.DaemonPID
+	rec.Generation = info.Generation
+	rec.DaemonPID = info.DaemonPID
 	if err := s.catalog.PutSession(rec); err != nil {
 		return CommandResult{}, err
 	}
 
-	return s.commitSessionReceipt(cmd, "session:"+ActionRecover, ref, CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Compat.Name, Accepted: true})
+	return s.commitSessionReceipt(cmd, "session:"+ActionRecover, ref, CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Name, Accepted: true})
 }
 
 func (s *SessionCommandService) executeDismiss(ctx context.Context, cmd SessionCommand) (CommandResult, error) {
@@ -845,15 +848,15 @@ func (s *SessionCommandService) executeRetry(ctx context.Context, cmd SessionCom
 			IntentID:       cmd.ID,
 			Ref:            rec.Ref,
 			Inserted:       s.opts.Now(),
-			Shell:          rec.Compat.Shell,
-			Cwd:            rec.Compat.Cwd,
-			Cols:           rec.Compat.Cols,
-			Rows:           rec.Compat.Rows,
-			DisplayName:    rec.Compat.Name,
+			Shell:          rec.Shell,
+			Cwd:            rec.Cwd,
+			Cols:           rec.Cols,
+			Rows:           rec.Rows,
+			DisplayName:    rec.Name,
 			WorktreeBranch: "", // original branch context is gone; caller can recover with explicit cwd
 		})
 		// Keep the logical session record as dismissed until the worker succeeds.
-		result = CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Compat.Name, Accepted: true}
+		result = CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Name, Accepted: true}
 		receipt, err := newSuccessReceipt(cmd.ID, "session:"+ActionRetry, ref.MapKey(), nextCommandSeq(doc), s.opts.Now(), result)
 		if err != nil {
 			return err

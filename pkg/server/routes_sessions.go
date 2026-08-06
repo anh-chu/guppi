@@ -47,7 +47,7 @@ func lookupRemoteSessionRef(peerMgr *peer.Manager, peerID, name string) (state.S
 		return state.SessionRef{}, false
 	}
 	for _, rec := range snap.Sessions {
-		if rec.Compat.Name == name || string(rec.ID) == name {
+		if rec.Name == name || string(rec.ID) == name {
 			return rec.Ref, true
 		}
 	}
@@ -736,15 +736,15 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 				if rec.Phase != state.SessionPhaseCrashed {
 					continue
 				}
-				name := rec.Compat.Name
+				name := rec.Name
 				if name == "" {
 					name = string(rec.ID)
 				}
 				out = append(out, map[string]string{
 					"id":         name,
-					"shell":      rec.Compat.Shell,
-					"cwd":        rec.Compat.Cwd,
-					"generation": rec.Compat.Generation,
+					"shell":      rec.Shell,
+					"cwd":        rec.Cwd,
+					"generation": rec.Generation,
 				})
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -1671,7 +1671,7 @@ func handleDaemonSessionStable(w http.ResponseWriter, r *http.Request, opts *Opt
 	phaseOK := true
 	if opts.V2Catalog != nil {
 		if rec, ok := opts.V2Catalog.Session(sid); ok {
-			currentGen = rec.Compat.Generation
+			currentGen = rec.Generation
 			phaseOK = rec.Phase == state.SessionPhaseActive || rec.Phase == state.SessionPhaseStarting
 		}
 	}

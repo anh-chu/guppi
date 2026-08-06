@@ -102,7 +102,7 @@ describe('Fixtures', () => {
         },
       ],
     }
-    expect(doc.schema).toBe(2)
+    expect(doc.schema).toBe(3)
     expect(doc.sessions[0]?.id).toBe(fixtureSession)
   })
 })

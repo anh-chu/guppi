@@ -51,6 +51,24 @@ const (
 	// never touch (e.g. the old "rename" action rewrote SessionRef identity
 	// inside pane-tree leaves). The error detail names the replacement.
 	ErrDeprecatedAction         ErrorCode = "deprecated_action"
+	// ErrOwnerRefMismatch is returned when a LocalSessionRecord's own Owner
+	// field disagrees with its Ref.Owner. Both are supposed to name the same
+	// owning node; a mismatch means the record was corrupted or constructed
+	// incorrectly (e.g. a copy that updated one field but not the other).
+	ErrOwnerRefMismatch ErrorCode = "owner_ref_mismatch"
+	// ErrMissingGeneration is returned when a session record's lifecycle phase
+	// (active or starting) requires a live daemon generation identity but
+	// none is recorded. A session cannot be considered live without a
+	// generation: it is what exact-generation termination/adoption and
+	// mayRemoveClean (reconciler.go) key off of.
+	ErrMissingGeneration ErrorCode = "missing_generation"
+	// ErrInvalidPresentation is returned when a PresentationRecord carries an
+	// invalid field (an empty ref, or a negative z-index).
+	ErrInvalidPresentation ErrorCode = "invalid_presentation"
+	// ErrInconsistentScheduleOwnership is returned when more than one pending
+	// create (local or remote) in the same document carries the same non-empty
+	// ScheduleID. A schedule may own at most one in-flight create at a time.
+	ErrInconsistentScheduleOwnership ErrorCode = "inconsistent_schedule_ownership"
 )
 
 // StateError reports a typed contract violation.
@@ -153,6 +171,40 @@ func ValidateDocument(doc *AppDocument) error {
 		}
 	}
 
+	if err := checkScheduleOwnership(doc); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// checkScheduleOwnership rejects a document where the same non-empty
+// ScheduleID owns more than one in-flight pending create (local or remote)
+// at once.
+func checkScheduleOwnership(doc *AppDocument) error {
+	seen := make(map[string]string, len(doc.PendingCreates)+len(doc.PendingRemoteCreates))
+	for i := range doc.PendingCreates {
+		id := doc.PendingCreates[i].ScheduleID
+		if id == "" {
+			continue
+		}
+		field := fmt.Sprintf("pending_creates[%d].schedule_id", i)
+		if prev, exists := seen[id]; exists {
+			return StateError{Code: ErrInconsistentScheduleOwnership, Field: field, Detail: fmt.Sprintf("schedule %q already owns pending create %q", id, prev)}
+		}
+		seen[id] = field
+	}
+	for i := range doc.PendingRemoteCreates {
+		id := doc.PendingRemoteCreates[i].ScheduleID
+		if id == "" {
+			continue
+		}
+		field := fmt.Sprintf("pending_remote_creates[%d].schedule_id", i)
+		if prev, exists := seen[id]; exists {
+			return StateError{Code: ErrInconsistentScheduleOwnership, Field: field, Detail: fmt.Sprintf("schedule %q already owns pending create %q", id, prev)}
+		}
+		seen[id] = field
+	}
 	return nil
 }
 
@@ -171,8 +223,14 @@ func ValidateLocalSession(s *LocalSessionRecord, owner OwnerID) error {
 	if err := s.Ref.Session.Validate(); err != nil {
 		return StateError{Code: ErrInvalidIdentity, Field: "ref.session", Detail: err.Error()}
 	}
+	if s.Ref.Owner != s.Owner {
+		return StateError{Code: ErrOwnerRefMismatch, Field: "ref.owner", Detail: fmt.Sprintf("session ref owner %q does not match session owner %q", s.Ref.Owner, s.Owner)}
+	}
 	if s.Revision < 0 {
 		return StateError{Code: ErrBadSchema, Field: "revision", Detail: "revision must be non-negative"}
+	}
+	if (s.Phase == SessionPhaseActive || s.Phase == SessionPhaseStarting) && s.Generation == "" {
+		return StateError{Code: ErrMissingGeneration, Field: "generation", Detail: fmt.Sprintf("session phase %q requires a non-empty generation", s.Phase)}
 	}
 	return nil
 }

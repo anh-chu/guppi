@@ -21,10 +21,11 @@ func TestAggregateCatalog_MergesLocalAndRemote(t *testing.T) {
 	}
 	localSessionID := NewSessionID()
 	if err := local.PutSession(LocalSessionRecord{
-		ID:    localSessionID,
-		Owner: localOwner,
-		Ref:   SessionRef{Owner: localOwner, Session: localSessionID},
-		Phase: SessionPhaseActive,
+		ID:         localSessionID,
+		Owner:      localOwner,
+		Ref:        SessionRef{Owner: localOwner, Session: localSessionID},
+		Phase:      SessionPhaseActive,
+		Generation: "test-gen",
 	}); err != nil {
 		t.Fatalf("PutSession: %v", err)
 	}

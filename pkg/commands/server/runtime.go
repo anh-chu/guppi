@@ -365,6 +365,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 				Cols:           req.Cols,
 				Rows:           req.Rows,
 				AgentType:      req.AgentType,
+				ScheduleID:     req.ScheduleID,
 			}
 			res, err := rt.peerMgr.SendRemoteCreate(ctx, req.Host, rreq)
 			if err != nil {

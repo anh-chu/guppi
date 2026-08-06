@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"testing"
 	"time"
@@ -84,7 +85,7 @@ func TestRatioFiniteValidation(t *testing.T) {
 func TestAppDocumentSchemaValidation(t *testing.T) {
 	owner := OwnerID("ownerdoc1234567890abcd")
 	base := AppDocument{
-		Schema:     2,
+		Schema:     SchemaVersion,
 		Owner:      owner,
 		Revision:   1,
 		Sessions:   []LocalSessionRecord{mkSession(owner, "sessdoc1234567890ab")},
@@ -97,9 +98,24 @@ func TestAppDocumentSchemaValidation(t *testing.T) {
 	}
 
 	future := base
-	future.Schema = 3
+	future.Schema = SchemaVersion + 1
 	if err := ValidateDocument(&future); err == nil {
-		t.Error("expected schema 3 to be rejected")
+		t.Errorf("expected schema %d to be rejected", SchemaVersion+1)
+	}
+
+	// Schema 2 -- the pre-canonical-schema transition layout (with
+	// `_compat`-nested fields) -- is an old, unsupported schema under schema
+	// 3 and must fail closed the same way any other unsupported schema does:
+	// no migrator ever transforms or partially reads it.
+	old2 := base
+	old2.Schema = 2
+	if err := ValidateDocument(&old2); err == nil {
+		t.Error("expected schema 2 to be rejected")
+	} else {
+		var se StateError
+		if !errors.As(err, &se) || se.Code != ErrBadSchema {
+			t.Fatalf("expected ErrBadSchema, got %v", err)
+		}
 	}
 
 	old := base
@@ -111,12 +127,13 @@ func TestAppDocumentSchemaValidation(t *testing.T) {
 
 func mkSession(owner OwnerID, id string) LocalSessionRecord {
 	return LocalSessionRecord{
-		ID:      SessionID(id),
-		Owner:   owner,
-		Ref:     SessionRef{Owner: owner, Session: SessionID(id)},
-		Phase:   SessionPhaseActive,
-		Desired: DesiredRun,
-		Created: time.Unix(0, 0).UTC(),
+		ID:         SessionID(id),
+		Owner:      owner,
+		Ref:        SessionRef{Owner: owner, Session: SessionID(id)},
+		Phase:      SessionPhaseActive,
+		Desired:    DesiredRun,
+		Created:    time.Unix(0, 0).UTC(),
+		Generation: "test-gen",
 	}
 }
 

@@ -182,7 +182,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	// socket (causing it to time out and mark the session crashed even
 	// though a real daemon is live), and, prior to the Probe fix above that
 	// backfills the real discovered generation, committed the adopted
-	// session with a permanently empty Compat.Generation (which then can
+	// session with a permanently empty Generation (which then can
 	// never satisfy mayRemoveClean, so a later kill of that exact session
 	// could classify it terminal but never actually be removed from the
 	// catalog). Only the simple "pending record whose session already
@@ -362,8 +362,8 @@ func (r *Reconciler) startRecord(ctx context.Context, rec LocalSessionRecord) er
 	}
 	rec.Phase = SessionPhaseActive
 	rec.Desired = DesiredRun
-	rec.Compat.DaemonPID = info.DaemonPID
-	rec.Compat.Generation = info.Generation
+	rec.DaemonPID = info.DaemonPID
+	rec.Generation = info.Generation
 	return r.catalog.PutSession(rec)
 }
 
@@ -385,21 +385,19 @@ func (r *Reconciler) startPending(ctx context.Context, pending PendingCreateReco
 		return err
 	}
 	rec := LocalSessionRecord{
-		ID:      pending.Ref.Session,
-		Owner:   pending.Ref.Owner,
-		Ref:     pending.Ref,
-		Phase:   SessionPhaseActive,
-		Desired: DesiredRun,
-		Created: r.opts.Now(),
-		Compat: CompatLocalSession{
-			Name:       pendingDisplayName(pending),
-			Shell:      pending.Shell,
-			Cwd:        pending.Cwd,
-			Cols:       pending.Cols,
-			Rows:       pending.Rows,
-			DaemonPID:  info.DaemonPID,
-			Generation: info.Generation,
-		},
+		ID:         pending.Ref.Session,
+		Owner:      pending.Ref.Owner,
+		Ref:        pending.Ref,
+		Phase:      SessionPhaseActive,
+		Desired:    DesiredRun,
+		Created:    r.opts.Now(),
+		Name:       pendingDisplayName(pending),
+		Shell:      pending.Shell,
+		Cwd:        pending.Cwd,
+		Cols:       pending.Cols,
+		Rows:       pending.Rows,
+		DaemonPID:  info.DaemonPID,
+		Generation: info.Generation,
 	}
 	if err := r.catalog.PutSession(rec); err != nil {
 		return err
@@ -409,21 +407,19 @@ func (r *Reconciler) startPending(ctx context.Context, pending PendingCreateReco
 
 func (r *Reconciler) adoptLivePending(ctx context.Context, pending PendingCreateRecord, ev pty.ProbeEvidence) error {
 	rec := LocalSessionRecord{
-		ID:      pending.Ref.Session,
-		Owner:   pending.Ref.Owner,
-		Ref:     pending.Ref,
-		Phase:   SessionPhaseActive,
-		Desired: DesiredRun,
-		Created: r.opts.Now(),
-		Compat: CompatLocalSession{
-			Name:       pendingDisplayName(pending),
-			Shell:      pending.Shell,
-			Cwd:        pending.Cwd,
-			Cols:       pending.Cols,
-			Rows:       pending.Rows,
-			DaemonPID:  ev.DaemonPID,
-			Generation: ev.Binding.Generation,
-		},
+		ID:         pending.Ref.Session,
+		Owner:      pending.Ref.Owner,
+		Ref:        pending.Ref,
+		Phase:      SessionPhaseActive,
+		Desired:    DesiredRun,
+		Created:    r.opts.Now(),
+		Name:       pendingDisplayName(pending),
+		Shell:      pending.Shell,
+		Cwd:        pending.Cwd,
+		Cols:       pending.Cols,
+		Rows:       pending.Rows,
+		DaemonPID:  ev.DaemonPID,
+		Generation: ev.Binding.Generation,
 	}
 	if err := r.catalog.PutSession(rec); err != nil {
 		return err
@@ -447,7 +443,7 @@ func bindingForRecord(rec *LocalSessionRecord) pty.StableBinding {
 	return pty.StableBinding{
 		Owner:      string(rec.Ref.Owner),
 		SessionID:  string(rec.Ref.Session),
-		Generation: rec.Compat.Generation,
+		Generation: rec.Generation,
 		DaemonKey:  string(rec.Ref.Session),
 	}
 }
@@ -500,7 +496,7 @@ func classifyRecord(rec LocalSessionRecord, ev pty.ProbeEvidence) (SessionPhase,
 func classifyStop(rec LocalSessionRecord, ev pty.ProbeEvidence) (SessionPhase, bool) {
 	switch ev.Status {
 	case pty.ProbeClean:
-		return SessionPhaseCleanlyEnded, mayRemoveClean(rec.Compat.Generation, ev.Binding.Generation)
+		return SessionPhaseCleanlyEnded, mayRemoveClean(rec.Generation, ev.Binding.Generation)
 	case pty.ProbeCrashed:
 		return SessionPhaseCrashed, false
 	case pty.ProbeLive:
@@ -518,7 +514,7 @@ func classifyRun(rec LocalSessionRecord, ev pty.ProbeEvidence) (SessionPhase, bo
 	case pty.ProbeLive:
 		return SessionPhaseActive, false
 	case pty.ProbeClean:
-		return SessionPhaseCleanlyEnded, mayRemoveClean(rec.Compat.Generation, ev.Binding.Generation)
+		return SessionPhaseCleanlyEnded, mayRemoveClean(rec.Generation, ev.Binding.Generation)
 	case pty.ProbeCrashed:
 		return SessionPhaseCrashed, false
 	case pty.ProbeUnknown:
@@ -547,10 +543,10 @@ func startRequestForRecord(rec LocalSessionRecord) pty.StartRequest {
 			Generation: "",
 			DaemonKey:  string(rec.Ref.Session),
 		},
-		Shell: rec.Compat.Shell,
-		Cwd:   rec.Compat.Cwd,
-		Cols:  rec.Compat.Cols,
-		Rows:  rec.Compat.Rows,
+		Shell: rec.Shell,
+		Cwd:   rec.Cwd,
+		Cols:  rec.Cols,
+		Rows:  rec.Rows,
 	}
 }
 
@@ -558,6 +554,6 @@ func sessionEqual(a, b LocalSessionRecord) bool {
 	return a.ID == b.ID &&
 		a.Phase == b.Phase &&
 		a.Desired == b.Desired &&
-		a.Compat.Generation == b.Compat.Generation &&
-		a.Compat.DaemonPID == b.Compat.DaemonPID
+		a.Generation == b.Generation &&
+		a.DaemonPID == b.DaemonPID
 }

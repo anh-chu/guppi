@@ -64,12 +64,13 @@ func registerTestSession(t testing.TB, c *Catalog, ref SessionRef) {
 			}
 		}
 		doc.Sessions = append(doc.Sessions, LocalSessionRecord{
-			ID:      ref.Session,
-			Owner:   ref.Owner,
-			Ref:     ref,
-			Phase:   SessionPhaseActive,
-			Desired: DesiredRun,
-			Created: time.Now(),
+			ID:         ref.Session,
+			Owner:      ref.Owner,
+			Ref:        ref,
+			Phase:      SessionPhaseActive,
+			Desired:    DesiredRun,
+			Created:    time.Now(),
+			Generation: "test-gen",
 		})
 		return nil
 	}); err != nil {

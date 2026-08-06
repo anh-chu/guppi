@@ -10,7 +10,7 @@ import (
 func TestInvariantDuplicateSessionIDs(t *testing.T) {
 	owner := OwnerID("ownerinv1234567890ab")
 	doc := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []LocalSessionRecord{
@@ -33,7 +33,7 @@ func TestInvariantDuplicateSessionIDs(t *testing.T) {
 
 func TestInvariantInvalidOwner(t *testing.T) {
 	doc := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    "bad/owner",
 		Revision: 1,
 	}
@@ -52,7 +52,7 @@ func TestInvariantSessionOwnerMismatch(t *testing.T) {
 	s := mkSession(owner, "sessinv1234567890ab")
 	s.Owner = "otherowner1234567890ab"
 	doc := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []LocalSessionRecord{s},
@@ -70,7 +70,7 @@ func TestInvariantSessionOwnerMismatch(t *testing.T) {
 func TestInvariantDuplicateLayoutIDs(t *testing.T) {
 	owner := OwnerID("ownerinv1234567890ab")
 	doc := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []LocalSessionRecord{
@@ -94,7 +94,7 @@ func TestInvariantDuplicateLayoutIDs(t *testing.T) {
 func TestInvariantDuplicateLayoutOrder(t *testing.T) {
 	owner := OwnerID("ownerinv1234567890ab")
 	doc := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []LocalSessionRecord{
@@ -119,7 +119,7 @@ func TestInvariantDuplicateLayoutOrder(t *testing.T) {
 func TestInvariantUnknownWorkspaceLayoutID(t *testing.T) {
 	owner := OwnerID("ownerinv1234567890ab")
 	doc := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Workspaces: []WorkspaceRecord{
@@ -215,7 +215,7 @@ func TestInvariantSessionInMultipleLayouts(t *testing.T) {
 	owner := OwnerID("ownerinv1234567890ab")
 	ref := SessionRef{Owner: owner, Session: "sessinv1234567890ab"}
 	doc := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Layouts: []LayoutRecord{
@@ -247,7 +247,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 	orphan := SessionRef{Owner: owner, Session: "orphaninv1234567890a"}
 
 	doc := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []LocalSessionRecord{
@@ -276,7 +276,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 	// the same way, even if the session ID happens to collide with a real one.
 	foreignOwnerLeaf := SessionRef{Owner: "foreignownerabcd12345", Session: "sessdoc1234567890ab"}
 	doc2 := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []LocalSessionRecord{
@@ -301,7 +301,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 	// orphaned ref.
 	pendingRef := SessionRef{Owner: owner, Session: "pendinginv1234567890"}
 	doc3 := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		PendingCreates: []PendingCreateRecord{
@@ -320,7 +320,7 @@ func TestInvariantSessionInWorkspaceAndLayout(t *testing.T) {
 	owner := OwnerID("ownerinv1234567890ab")
 	ref := SessionRef{Owner: owner, Session: "sessinv1234567890ab"}
 	doc := AppDocument{
-		Schema:   2,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []LocalSessionRecord{
