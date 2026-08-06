@@ -355,10 +355,6 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       setRemotePaneKey(key)
     } else {
       setRemotePaneKey(null)
-      if (layoutId && activeKey !== key) {
-        void sessionState.workspaceCommand(layoutId, { action: 'select', ref })
-          .catch(err => console.error('select command failed:', err))
-      }
     }
     setTimeout(refocusTerminal, 150)
   }
@@ -624,12 +620,8 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
               tree={remotePaneKey ? { type: 'leaf', sessionKey: remotePaneKey } : paneTree}
               activeKey={remotePaneKey ?? activeKey}
               onActivate={(key) => {
-                // remotePaneKey's synthetic tree has exactly one leaf, so this
-                // only fires for the local paneTree case.
-                if (!remotePaneKey && layoutId && activeKey !== key) {
-                  void sessionState.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
-                    .catch(err => console.error('select command failed:', err))
-                }
+                // Selection is purely local in schema 4; no server command is sent.
+                // TiledView actively maintains activeKey through its own state.
                 refocusTerminal()
               }}
               onClose={(key) => {

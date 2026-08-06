@@ -350,22 +350,15 @@ describe('App: mode-splitting', () => {
       expect(key).toBe(sessionId)
       expect(keyToSessionRef(key)).toEqual({ owner: null, session: sessionId, window: 0, pane: 0 })
 
-      // Sidebar row select -> real handleSessionSelect -> v2 select command with
-      // the canonical ref (session === immutable id, NOT the label).
+      // Sidebar row select -> pure local selection. No server command sent in schema 4.
       mockSidebarProps.onSessionSelect(sess)
-      expect(workspaceCommand).toHaveBeenCalledWith('g1', {
-        action: 'select',
-        ref: { owner: null, session: sessionId, window: 0, pane: 0 },
-      })
+      expect(workspaceCommand).not.toHaveBeenCalled()
 
-      // Quick-switcher / TopBar jump resolves the same row by the id-based key.
+      // Quick-switcher / TopBar jump selects locally, no server command.
       expect(mockTopBarProps).not.toBeNull()
       workspaceCommand.mockClear()
       mockTopBarProps.onJumpToSession(sess.key)
-      expect(workspaceCommand).toHaveBeenCalledWith('g1', {
-        action: 'select',
-        ref: { owner: null, session: sessionId, window: 0, pane: 0 },
-      })
+      expect(workspaceCommand).not.toHaveBeenCalled()
 
       // Kill from the sidebar context menu routes the id-based key to a canonical ref.
       sessionCommand.mockClear()
@@ -958,9 +951,9 @@ describe('App: mode-splitting', () => {
       workspaceCommand.mockClear()
       act(() => { mockSidebarProps.onSessionSelect(localRow) })
 
-      // Back to the real local paneTree, sent through workspaceCommand as usual.
+      // Back to the real local paneTree. Selection is purely local in schema 4.
       expect(mockTiledViewProps.tree).toEqual({ type: 'leaf', sessionKey: localKey })
-      expect(workspaceCommand).toHaveBeenCalledWith('g1', { action: 'select', ref: localRef })
+      expect(workspaceCommand).not.toHaveBeenCalled()
     })
   })
 })
