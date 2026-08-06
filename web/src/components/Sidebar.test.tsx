@@ -49,7 +49,6 @@ function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> = {}
       getSessionEvents={() => []}
       sessionNeedsAttention={() => false}
       isSessionInActiveTurn={() => false}
-      getSessionActivity={() => undefined}
       sessionAttrs={sessionAttrs}
       setSessionAttr={() => {}}
       pruningSuspended={false}

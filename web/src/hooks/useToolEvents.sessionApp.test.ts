@@ -133,7 +133,6 @@ describe('useToolEvents SessionApp identity normalization (Finding C)', () => {
     const signal = sessionViewSignal(
       view,
       result.current.getSessionEvents(v2SessionKey),
-      undefined,
       result.current.isSessionInActiveTurn(v2SessionKey),
     )
     expect(signal.state).toBe('needs_you')
@@ -179,7 +178,7 @@ describe('useToolEvents SessionApp identity normalization (Finding C)', () => {
     expect(result.current.isSessionInActiveTurn(v2SessionKey)).toBe(true)
 
     const view = makeView(ownerId, stableSessionId)
-    const signal = sessionViewSignal(view, [], undefined, result.current.isSessionInActiveTurn(v2SessionKey))
+    const signal = sessionViewSignal(view, [], result.current.isSessionInActiveTurn(v2SessionKey))
     expect(signal.state).toBe('working')
   })
 

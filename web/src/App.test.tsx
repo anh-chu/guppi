@@ -118,7 +118,6 @@ const createMockHook = (name: string) => vi.fn(() => {
     dismissEvent: vi.fn(),
     dismissAll: vi.fn(),
   }
-  if (name === 'useActivity') return { getSessionActivity: () => null, handleActivityEvent: vi.fn() }
   if (name === 'useNotifications') return { processToolEvent: vi.fn() }
   if (name === 'useWebSocket') return { connected: false } // overridden below for useWebSocket specifically
   if (name === 'usePushNotifications') return { pushState: 'unsupported', subscribe: vi.fn(), unsubscribe: vi.fn() }

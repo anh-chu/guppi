@@ -44,6 +44,7 @@ type bootstrapResponse struct {
 	Remote        []state.OwnerCatalogSnapshot      `json:"remote,omitempty"`
 	Hosts         []state.HostSnapshot              `json:"hosts"`
 	Workspace     *state.WorkspaceRecord            `json:"workspace,omitempty"`
+	Runtime       []state.OwnerRuntimeSnapshot      `json:"runtime,omitempty"`
 	Pending       []state.PendingCreateRecord       `json:"pending"`
 	PendingRemote []state.PendingRemoteCreateRecord `json:"pending_remote,omitempty"`
 }
@@ -105,6 +106,15 @@ func handleBootstrap(w http.ResponseWriter, r *http.Request, opts *Options) {
 		}}
 	}
 	resp.Workspace = agg.Local.Workspace
+	// Include local runtime snapshots in bootstrap if a source is attached.
+	if opts.StateStream != nil {
+		if localSnaps := opts.StateStream.GetRuntimeSnapshots(); len(localSnaps) > 0 {
+			resp.Runtime = []state.OwnerRuntimeSnapshot{{
+				Owner:     agg.Local.Owner,
+				Snapshots: localSnaps,
+			}}
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)

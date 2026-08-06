@@ -8,12 +8,10 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 
-	"github.com/anh-chu/termyard/pkg/activity"
 	"github.com/anh-chu/termyard/pkg/common"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
@@ -53,21 +51,11 @@ type client struct {
 	mu   sync.Mutex
 }
 
-// ActivitySource provides activity snapshots for broadcasting.
-// This avoids importing the peer package directly.
-type ActivitySource interface {
-	GetAllActivity() []*activity.Snapshot
-}
-
 // Hub manages WebSocket connections for state events and tool events
 type Hub struct {
-	mu              sync.RWMutex
-	clients         map[*client]bool
-	tracker         *toolevents.Tracker
-	activityTracker *activity.Tracker
-	peerActivity    ActivitySource // optional, for multi-host
-	localHostID     string         // optional, set in multi-host mode
-	localOnly       bool
+	mu      sync.RWMutex
+	clients map[*client]bool
+	tracker *toolevents.Tracker
 }
 
 // NewHub creates a new WebSocket hub.
@@ -78,28 +66,12 @@ func NewHub(tracker *toolevents.Tracker) *Hub {
 	}
 }
 
-// SetActivityTracker configures the hub to broadcast activity snapshots
-func (h *Hub) SetActivityTracker(at *activity.Tracker, peerActivity ActivitySource, localHostID string, localOnly bool) {
-	h.activityTracker = at
-	h.peerActivity = peerActivity
-	h.localHostID = localHostID
-	h.localOnly = localOnly
-}
 
 // Run starts broadcasting state events and tool events to connected clients.
 // Blocks until ctx is cancelled or its subscriptions are closed.
 func (h *Hub) Run(ctx context.Context) {
 	toolCh := h.tracker.Subscribe()
 	defer h.tracker.Unsubscribe(toolCh)
-
-	// Activity ticker — broadcast snapshots every 5 seconds
-	var activityTicker *time.Ticker
-	var activityCh <-chan time.Time
-	if h.activityTracker != nil {
-		activityTicker = time.NewTicker(5 * time.Second)
-		activityCh = activityTicker.C
-		defer activityTicker.Stop()
-	}
 
 	for {
 		select {
@@ -114,21 +86,27 @@ func (h *Hub) Run(ctx context.Context) {
 				h.broadcastArtifactEvent(evt)
 				continue
 			}
-			// Wrap tool event with a type prefix so frontend can distinguish
+			// Wrap tool event with a type prefix so frontend can distinguish.
+			// Include additional context fields (cwd, agent_session_id, user_prompt, agent_message, files).
 			wrapped := map[string]interface{}{
-				"type":          "tool-event",
-				"tool":          evt.Tool,
-				"status":        evt.Status,
-				"host":          evt.Host,
-				"host_name":     evt.HostName,
-				"session":       evt.Session,
-				"session_id":    evt.SessionID,
-				"window":        evt.Window,
-				"pane":          evt.Pane,
-				"message":       evt.Message,
-				"timestamp":     evt.Timestamp,
-				"auto_detected": evt.AutoDetected,
-				"artifacts":     evt.Artifacts,
+				"type":              "tool-event",
+				"tool":              evt.Tool,
+				"status":            evt.Status,
+				"host":              evt.Host,
+				"host_name":         evt.HostName,
+				"session":           evt.Session,
+				"session_id":        evt.SessionID,
+				"window":            evt.Window,
+				"pane":              evt.Pane,
+				"message":           evt.Message,
+				"cwd":               evt.CWD,
+				"agent_session_id":  evt.AgentSessionID,
+				"user_prompt":       evt.UserPrompt,
+				"agent_message":     evt.AgentMessage,
+				"files":             evt.Files,
+				"timestamp":         evt.Timestamp,
+				"auto_detected":     evt.AutoDetected,
+				"artifacts":         evt.Artifacts,
 			}
 			data, err := json.Marshal(wrapped)
 			if err != nil {
@@ -140,9 +118,6 @@ func (h *Hub) Run(ctx context.Context) {
 				"pane": evt.Pane, "auto_detected": evt.AutoDetected,
 			}).Trace("hub: broadcasting tool event to WebSocket clients")
 			h.broadcastMessage(data)
-
-		case <-activityCh:
-			h.broadcastActivity()
 		}
 	}
 }
@@ -151,15 +126,11 @@ func (h *Hub) broadcastArtifactEvent(evt *toolevents.Event) {
 	if evt == nil {
 		return
 	}
-	broadcastEvt := *evt
-	if broadcastEvt.Host == "" && h.localHostID != "" {
-		broadcastEvt.Host = h.localHostID
-	}
 	wrapped := map[string]interface{}{
 		"type":      "artifacts",
-		"host":      broadcastEvt.Host,
-		"session":   broadcastEvt.Session,
-		"artifacts": broadcastEvt.Artifacts,
+		"host":      evt.Host,
+		"session":   evt.Session,
+		"artifacts": evt.Artifacts,
 	}
 	data, err := json.Marshal(wrapped)
 	if err != nil {
@@ -167,49 +138,13 @@ func (h *Hub) broadcastArtifactEvent(evt *toolevents.Event) {
 		return
 	}
 	logrus.WithFields(logrus.Fields{
-		"session": broadcastEvt.Session,
-		"count":   len(broadcastEvt.Artifacts),
-		"host":    broadcastEvt.Host,
+		"session": evt.Session,
+		"count":   len(evt.Artifacts),
+		"host":    evt.Host,
 	}).Trace("hub: broadcasting artifact event to WebSocket clients")
 	h.broadcastMessage(data)
 }
 
-// broadcastActivity sends activity snapshots to all connected clients
-func (h *Hub) broadcastActivity() {
-	h.mu.RLock()
-	clientCount := len(h.clients)
-	h.mu.RUnlock()
-	if clientCount == 0 {
-		return
-	}
-
-	snapshots := h.activityTracker.GetAll()
-
-	// Stamp local host ID in multi-host mode
-	if h.localHostID != "" {
-		for _, s := range snapshots {
-			if s.Host == "" {
-				s.Host = h.localHostID
-			}
-		}
-		// Merge peer activity if not local-only
-		if !h.localOnly && h.peerActivity != nil {
-			peerSnaps := h.peerActivity.GetAllActivity()
-			snapshots = append(snapshots, peerSnaps...)
-		}
-	}
-
-	wrapped := map[string]interface{}{
-		"type":      "activity",
-		"snapshots": snapshots,
-	}
-	data, err := json.Marshal(wrapped)
-	if err != nil {
-		logrus.WithError(err).Warn("failed to marshal activity")
-		return
-	}
-	h.broadcastMessage(data)
-}
 
 // BroadcastJSON marshals v and sends it to every connected client. Failed
 // connections are pruned.

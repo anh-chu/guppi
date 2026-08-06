@@ -6,7 +6,6 @@ import type { SessionView } from '../state/session/viewModel'
 import type { HostSnapshot } from '../state/session/wireTypes'
 type Host = HostSnapshot
 import type { ToolEvent } from '../hooks/useToolEvents'
-import type { ActivitySnapshot } from '../hooks/useActivity'
 
 function makeSession(id: string, overrides: Partial<SessionView> = {}): SessionView {
   return {
@@ -80,7 +79,6 @@ describe('Overview', () => {
         scheduleIDs={new Map()}
         onSessionSelect={vi.fn()}
         getSessionEvents={() => []}
-        getSessionActivity={() => undefined}
         isSessionInActiveTurn={() => false}
         onJumpToSession={vi.fn()}
         onDismissAlert={vi.fn()}
@@ -111,7 +109,6 @@ describe('Overview', () => {
         scheduleIDs={new Map()}
         onSessionSelect={vi.fn()}
         getSessionEvents={() => []}
-        getSessionActivity={() => undefined}
         isSessionInActiveTurn={() => false}
         onJumpToSession={vi.fn()}
         onDismissAlert={vi.fn()}
@@ -149,7 +146,6 @@ describe('Overview', () => {
         scheduleIDs={new Map()}
         onSessionSelect={vi.fn()}
         getSessionEvents={() => []}
-        getSessionActivity={() => undefined}
         isSessionInActiveTurn={() => false}
         onJumpToSession={vi.fn()}
         onDismissAlert={vi.fn()}
@@ -176,7 +172,6 @@ describe('Overview', () => {
         scheduleIDs={new Map()}
         onSessionSelect={vi.fn()}
         getSessionEvents={() => []}
-        getSessionActivity={() => undefined}
         isSessionInActiveTurn={() => false}
         onJumpToSession={vi.fn()}
         onDismissAlert={vi.fn()}
@@ -212,7 +207,6 @@ describe('Overview', () => {
         scheduleIDs={new Map()}
         onSessionSelect={vi.fn()}
         getSessionEvents={() => []}
-        getSessionActivity={() => undefined}
         isSessionInActiveTurn={() => false}
         onJumpToSession={vi.fn()}
         onDismissAlert={vi.fn()}

@@ -440,34 +440,6 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 		json.NewEncoder(w).Encode(result)
 	})
 
-	// Activity endpoints
-	r.Get("/activity", func(w http.ResponseWriter, r *http.Request) {
-		session := r.URL.Query().Get("session")
-		w.Header().Set("Content-Type", "application/json")
-		if session != "" {
-			snap := opts.ActivityTracker.Get(session)
-			// Stamp host on local snapshot in multi-host mode
-			if snap != nil && opts.PeerMgr != nil && snap.Host == "" {
-				snap.Host = opts.PeerMgr.LocalID()
-			}
-			json.NewEncoder(w).Encode(snap)
-		} else {
-			snapshots := opts.ActivityTracker.GetAll()
-			// Stamp host on local snapshots in multi-host mode
-			if opts.PeerMgr != nil {
-				localID := opts.PeerMgr.LocalID()
-				for _, s := range snapshots {
-					if s.Host == "" {
-						s.Host = localID
-					}
-				}
-				peerActivity := opts.PeerMgr.GetAllActivity()
-				snapshots = append(snapshots, peerActivity...)
-			}
-			json.NewEncoder(w).Encode(snapshots)
-		}
-	})
-
 	// Push notification endpoints
 	r.Get("/push/vapid-key", func(w http.ResponseWriter, r *http.Request) {
 		if opts.PushKeys == nil {

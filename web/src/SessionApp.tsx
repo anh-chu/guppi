@@ -17,7 +17,6 @@ import { Login } from './components/Login'
 import { Setup } from './components/Setup'
 // Hosts now come from sessionState instead of useHosts polling
 import { useToolEvents } from './hooks/useToolEvents'
-import { useActivity } from './hooks/useActivity'
 import { useNotifications } from './hooks/useNotifications'
 import { useWebSocket } from './hooks/useWebSocket'
 import { usePushNotifications } from './hooks/usePushNotifications'
@@ -116,10 +115,6 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     return { hosts, local, byPeerId, byOwnerId }
   }, [sessionState.hosts])
   const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents(hostIndex)
-  // Same OwnerID normalization rationale as useToolEvents(hostIndex) above --
-  // the server's activity snapshot is keyed by peer fingerprint, but SessionApp
-  // looks activity up by OwnerID/SessionID.
-  const { getSessionActivity, handleActivityEvent } = useActivity(hostIndex)
   const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications()
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const { prefs: _ } = usePreferences() // already have prefs above
@@ -300,8 +295,6 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       window.dispatchEvent(new CustomEvent('termyard:artifacts', { detail: evt }))
     } else if (evt.type === 'artifacts') {
       window.dispatchEvent(new CustomEvent('termyard:artifacts', { detail: evt }))
-    } else if (evt.type === 'activity') {
-      handleActivityEvent(evt.snapshots || [])
     } else if (evt.type === 'recovery-started' || evt.type === 'recovery-finished' || evt.type === 'session-order-updated' || evt.type === 'groups-updated') {
       // Canonical state doesn't use these, but listen silently
     } else if (['peer-connected', 'peer-disconnected'].includes(evt.type)) {
@@ -314,7 +307,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     } else if (evt.type === 'sessions-crashed') {
       crashedHook.refresh()
     }
-  }, [handleToolEvent, processToolEvent, handleActivityEvent, crashedHook.refresh])
+  }, [handleToolEvent, processToolEvent, crashedHook.refresh])
 
   const { connected } = useWebSocket('/ws/events', onEvent)
 
@@ -447,13 +440,13 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   const glance = useMemo(() => {
     let parked = 0, working = 0, waiting = 0
     for (const view of sessionViews) {
-      const signal = sessionViewSignal(view, getSessionEvents(view.key), getSessionActivity(view.key), isSessionInActiveTurn(view.key))
+      const signal = sessionViewSignal(view, getSessionEvents(view.key), isSessionInActiveTurn(view.key))
       if (signal.state === 'needs_you') waiting++
       else if (signal.state === 'working') working++
       else parked++
     }
     return { parked, working, waiting }
-  }, [sessionViews, getSessionEvents, getSessionActivity, isSessionInActiveTurn, allToolEvents])
+  }, [sessionViews, getSessionEvents, isSessionInActiveTurn, allToolEvents])
 
   const openNewSessionModal = useCallback(() => {
     setNewSessionModalOpen(true)
@@ -571,7 +564,6 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
             getSessionEvents={getSessionEvents}
             sessionNeedsAttention={sessionNeedsAttention}
             isSessionInActiveTurn={isSessionInActiveTurn}
-            getSessionActivity={getSessionActivity}
             glance={glance}
             onToggleCollapse={() => setSidebarCollapsed(c => !c)}
             onSessionKilled={handleKillSession}
@@ -672,7 +664,6 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
               scheduleIDs={sessionAttrs.scheduleIDs}
               onSessionSelect={handleSessionSelect}
               getSessionEvents={getSessionEvents}
-              getSessionActivity={getSessionActivity}
               isSessionInActiveTurn={isSessionInActiveTurn}
               onJumpToSession={handleJumpToSession}
               onDismissAlert={dismissEvent}

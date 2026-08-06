@@ -14,15 +14,17 @@ import (
 // messages received from an authenticated peer connection.
 func handleStateMessage(peerID string, msg *Message, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
 	switch msg.Type {
-	case MsgActivityUpdate:
-		var p ActivityUpdatePayload
+	case MsgSessionRuntime:
+		var p SessionRuntimePayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
 			return
 		}
-		for _, s := range p.Snapshots {
-			s.Host = peerID
+		// Verify peer's runtime snapshots match their authenticated owner.
+		// Cache by canonical key (ref owner + session ID).
+		if p.Owner != deps.Manager.GetRemoteOwner(peerID) {
+			return
 		}
-		deps.Manager.UpdatePeerActivity(peerID, p.Snapshots)
+		deps.Manager.UpdatePeerRuntime(peerID, p.Owner, p.Snapshots)
 
 	case MsgToolEvent:
 		var p ToolEventPayload
@@ -35,7 +37,7 @@ func handleStateMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 		}
 		// Never trust a claimed host on the wire — stamp the authenticated
 		// identity of the connection this message arrived on, mirroring the
-		// MsgActivityUpdate case above.
+		// MsgSessionRuntime case above.
 		p.Event.Host = peerID
 		p.Event.HostName = deps.Manager.GetHostName(peerID)
 		deps.ToolTracker.Record(p.Event)

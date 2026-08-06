@@ -3,7 +3,6 @@ import { toSessionView, toPresentationAttrs, sessionViewSignal, stateRank, type 
 import type { LocalSessionRecord } from './types'
 import type { HostSnapshot } from './wireTypes'
 import type { ToolEvent } from '../../hooks/useToolEvents'
-import type { ActivitySnapshot } from '../../hooks/useActivity'
 type Host = HostSnapshot
 
 function mkRecord(over: Partial<LocalSessionRecord> = {}): LocalSessionRecord {
@@ -54,7 +53,7 @@ function mkEvent(over: Partial<ToolEvent> = {}): ToolEvent {
   } as ToolEvent
 }
 
-const activity = (idleSeconds: number): ActivitySnapshot => ({ idle_seconds: idleSeconds, total_bytes: 0 } as ActivitySnapshot)
+
 
 describe('toSessionView', () => {
   it('keys by sessionRefToKey(record.ref), not by name', () => {
@@ -186,27 +185,27 @@ describe('sessionViewSignal', () => {
   const offlineView = toSessionView(mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner-local', local: true, online: true })]), 'owner-local')
 
   it('reports needs_you for a loud (waiting/stuck/error) event, regardless of activity or connectivity', () => {
-    const signal = sessionViewSignal(offlineView, [mkEvent({ status: 'waiting' })], activity(0), true)
+    const signal = sessionViewSignal(offlineView, [mkEvent({ status: 'waiting' })], true)
     expect(signal.state).toBe('needs_you')
     expect(signal.loud).toBe(true)
     expect(signal.reason).toBe('waiting')
   })
 
   it('reports offline when view.hostOnline is false', () => {
-    expect(sessionViewSignal(offlineView, [], undefined, false).state).toBe('offline')
+    expect(sessionViewSignal(offlineView, [], false).state).toBe('offline')
   })
 
   it('reports working when inActiveTurn is true and the host is online', () => {
-    expect(sessionViewSignal(onlineView, [], undefined, true).state).toBe('working')
+    expect(sessionViewSignal(onlineView, [], true).state).toBe('working')
   })
 
-  it('reports working when the activity snapshot is recent (<= 5 idle seconds) and the host is online', () => {
-    expect(sessionViewSignal(onlineView, [], activity(5), false).state).toBe('working')
-    expect(sessionViewSignal(onlineView, [], activity(6), false).state).toBe('idle')
+  it('reports working only when inActiveTurn is true and the host is online (activity snapshots are no longer used)', () => {
+    // Activity-based working status was removed; only inActiveTurn determines working state now
+    expect(sessionViewSignal(onlineView, [], false).state).toBe('idle')
   })
 
   it('reports idle when nothing else applies and the host is online', () => {
-    expect(sessionViewSignal(onlineView, [], undefined, false).state).toBe('idle')
+    expect(sessionViewSignal(onlineView, [], false).state).toBe('idle')
   })
 
   it('classifies all four states (needs_you/working/idle/offline) via stateRank ordering', () => {

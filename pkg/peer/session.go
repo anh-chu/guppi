@@ -55,6 +55,12 @@ type SessionDeps struct {
 	Launch                  *sessionlaunch.Service
 	CommandSvc              *state.SessionCommandService
 	RemoteCreateCoordinator *state.RemoteCreateCoordinator
+	RuntimeEnricher         RuntimeEnricher // supplies volatile session runtime snapshots
+}
+
+// RuntimeEnricher supplies runtime snapshots for periodic broadcast to peers.
+type RuntimeEnricher interface {
+	RuntimeSnapshots() []state.SessionRuntimeSnapshot
 }
 
 // connWriter serializes WebSocket writes from multiple goroutines.
@@ -242,7 +248,7 @@ func runSession(
 
 	// Background loops.
 	go pingLoop(sessionCtx, cw)
-	go periodicActivity(sessionCtx, pc, deps)
+	go periodicRuntime(sessionCtx, pc, deps)
 	go periodicStats(sessionCtx, pc, deps)
 	go forwardToolEvents(sessionCtx, pc, deps, peerID)
 
@@ -286,22 +292,27 @@ func pingLoop(ctx context.Context, cw *connWriter) {
 	}
 }
 
-func periodicActivity(ctx context.Context, pc *PeerConnection, deps SessionDeps) {
+func periodicRuntime(ctx context.Context, pc *PeerConnection, deps SessionDeps) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
-	localID := deps.Manager.LocalID()
+	if deps.Catalog == nil {
+		return // canonical state is always available in production; guard defensively for tests
+	}
+	localOwner := deps.Catalog.Owner()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			snapshots := deps.ActTracker.GetAll()
-			for _, s := range snapshots {
-				if s.Host == "" {
-					s.Host = localID
-				}
+			if deps.RuntimeEnricher == nil || deps.Catalog == nil {
+				continue
 			}
-			msg, err := NewMessage(MsgActivityUpdate, ActivityUpdatePayload{Snapshots: snapshots})
+			snapshots := deps.RuntimeEnricher.RuntimeSnapshots()
+			payload := SessionRuntimePayload{
+				Owner:     localOwner,
+				Snapshots: snapshots,
+			}
+			msg, err := NewMessage(MsgSessionRuntime, payload)
 			if err != nil {
 				continue
 			}
@@ -368,7 +379,7 @@ func forwardToolEvents(ctx context.Context, pc *PeerConnection, deps SessionDeps
 // handleSessionMessage dispatches messages received from the remote peer.
 func handleSessionMessage(peerID string, msg *Message, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
 	switch msg.Type {
-	case MsgActivityUpdate,
+	case MsgSessionRuntime,
 		MsgStats,
 		MsgPeerConnected,
 		MsgPeerDisconnected,

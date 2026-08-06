@@ -44,6 +44,8 @@ import type {
   BootstrapResponse,
   WorkspaceSnapshotMessage,
   HostsSnapshotMessage,
+  RuntimeSnapshotMessage,
+  SessionRuntimeSnapshot,
 } from './wireTypes'
 
 // ---------------------------------------------------------------------------
@@ -114,6 +116,13 @@ export function decodeOwnerCatalogSnapshot(raw: any): OwnerCatalogSnapshot {
   }
 }
 
+export function decodeSessionRuntimeSnapshot(raw: any): SessionRuntimeSnapshot {
+  return {
+    ref: decodeSessionRef(raw.ref),
+    runtime: raw.runtime,
+  }
+}
+
 export function decodeBootstrapResponse(raw: any): BootstrapResponse {
   return {
     owner: raw.owner,
@@ -122,6 +131,7 @@ export function decodeBootstrapResponse(raw: any): BootstrapResponse {
     remote: raw.remote ? raw.remote.map(decodeOwnerCatalogSnapshot) : undefined,
     hosts: raw.hosts,
     workspace: raw.workspace ? decodeWorkspaceRecord(raw.workspace) : undefined,
+    runtime: raw.runtime ? raw.runtime : undefined,
     pending: (raw.pending ?? []).map(decodePendingCreateRecord),
     pending_remote: raw.pending_remote ? raw.pending_remote.map(decodePendingRemoteCreateRecord) : undefined,
   }
@@ -145,6 +155,14 @@ export function decodeWorkspaceSnapshotMessage(raw: any): WorkspaceSnapshotMessa
 
 export function decodeHostsSnapshotMessage(raw: any): HostsSnapshotMessage {
   return { type: 'hosts_snapshot', hosts: raw.hosts ?? [] }
+}
+
+export function decodeRuntimeSnapshotMessage(raw: any): RuntimeSnapshotMessage {
+  return {
+    type: 'runtime_snapshot',
+    owner: raw.owner,
+    snapshots: (raw.snapshots ?? []).map(decodeSessionRuntimeSnapshot),
+  }
 }
 
 // decodeCommandResult decodes a raw POST /api/state/session-commands response

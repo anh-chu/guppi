@@ -16,8 +16,8 @@ const (
 	MsgAuth = "auth"
 	// MsgToolEvent forwards a local tool event
 	MsgToolEvent = "tool-event"
-	// MsgActivityUpdate sends periodic activity data
-	MsgActivityUpdate = "activity-update"
+	// MsgSessionRuntime sends periodic session runtime snapshots (volatile state)
+	MsgSessionRuntime = "session-runtime"
 	// MsgStats sends system stats
 	MsgStats = "stats"
 	// MsgCapturePaneResult returns a capture-pane snapshot to the hub.
@@ -132,9 +132,10 @@ type ToolEventPayload struct {
 	Event *toolevents.Event `json:"event"`
 }
 
-// ActivityUpdatePayload carries activity data from a peer
-type ActivityUpdatePayload struct {
-	Snapshots []*activity.Snapshot `json:"snapshots"`
+// SessionRuntimePayload carries runtime snapshots from a peer.
+type SessionRuntimePayload struct {
+	Owner     state.OwnerID                  `json:"owner"`
+	Snapshots []state.SessionRuntimeSnapshot `json:"snapshots"`
 }
 
 // StatsPayload carries system stats from a peer

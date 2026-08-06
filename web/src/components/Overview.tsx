@@ -4,7 +4,6 @@ import { sessionViewSignal } from '../state/session/viewModel'
 import type { HostSnapshot } from '../state/session/wireTypes'
 type Host = HostSnapshot
 import { ToolEvent } from '../hooks/useToolEvents'
-import { ActivitySnapshot } from '../hooks/useActivity'
 import { toolColors, statusConfig, signalTreatment } from '../theme'
 import { formatSessionUptime, formatSystemUptime } from '../lib/time'
 import { SessionActionsMenu, SessionMenuTarget } from './SessionActionsMenu'
@@ -23,7 +22,6 @@ interface OverviewProps {
   scheduleIDs: Map<string, string>
   onSessionSelect: (session: SessionView) => void
   getSessionEvents: (session: string) => ToolEvent[]
-  getSessionActivity: (session: string) => ActivitySnapshot | undefined
   isSessionInActiveTurn: (key: string) => boolean
   onJumpToSession: (session: string, windowIndex?: number, pane?: string) => void
   onDismissAlert: (evt: ToolEvent) => void
@@ -128,7 +126,6 @@ type CardItem = {
   signal: ReturnType<typeof sessionViewSignal>
   event: ToolEvent | undefined
   events: ToolEvent[]
-  activity: ActivitySnapshot | undefined
   scheduleRunCount?: number
 }
 
@@ -161,7 +158,7 @@ function SessionCard({
   selected: boolean
   glanceTrigger: (t: GlanceTarget) => DOMAttributes<HTMLElement>
 }) {
-  const { session, key, signal, event, events, activity } = item
+  const { session, key, signal, event, events } = item
   const isWaiting = signal.state === 'needs_you'
   const loudEvent = event || getSessionEvents(key).find(e => e.status === 'waiting' || e.status === 'stuck' || e.status === 'error')
   // The event message is the only task/status text available now -- there
@@ -230,7 +227,7 @@ function SessionCard({
   )
 }
 
-export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, onOpenFile, onRenameSession }: OverviewProps) {
+export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, onOpenFile, onRenameSession }: OverviewProps) {
   const { schedules } = useSchedules()
   const scheduleById = useMemo(() => new Map(schedules.map(s => [s.id, s])), [schedules])
   const scheduleIdFor = useCallback((session: SessionView) => (
@@ -330,11 +327,10 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
   const buildItem = useCallback((session: SessionView): CardItem => {
     const key = session.key
     const events = getSessionEvents(key)
-    const activity = getSessionActivity(key)
-    const signal = sessionViewSignal(session, events, activity, isSessionInActiveTurn(key))
+    const signal = sessionViewSignal(session, events, isSessionInActiveTurn(key))
     const event = events.find(e => e.status === 'waiting' || e.status === 'stuck' || e.status === 'error')
-    return { session, key, signal, event, events, activity }
-  }, [getSessionEvents, getSessionActivity, isSessionInActiveTurn])
+    return { session, key, signal, event, events }
+  }, [getSessionEvents, isSessionInActiveTurn])
 
   const items = useMemo<CardItem[]>(() => foregroundSessions.map(buildItem), [foregroundSessions, buildItem])
   const hiddenItems = useMemo<CardItem[]>(() => sessions.filter(s => hiddenSet.has(s.key) && !scheduledSet.has(s.key)).map(buildItem), [sessions, hiddenSet, scheduledSet, buildItem])

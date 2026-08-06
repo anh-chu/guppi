@@ -191,7 +191,12 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		return nil, fmt.Errorf("failed to load catalog: %w", err)
 	}
 
-	enricher := &runtimeEnricher{adapter: rt.adapter, actTracker: rt.actTracker}
+	enricher := &runtimeEnricher{
+		adapter:     rt.adapter,
+		actTracker:  rt.actTracker,
+		catalog:     rt.catalog,
+		subscribers: make(map[string]func([]state.SessionRuntimeSnapshot)),
+	}
 	rt.enricher = enricher
 	rt.stateReconciler = state.NewReconciler(rt.catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
 	rt.commandSvc = state.NewSessionCommandService(rt.catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.catalog.Owner()})
@@ -217,6 +222,8 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	rt.stateStream.AttachRemoteCatalogSource(rt.peerMgr)
 	// Stream host snapshots (peer identity + connectivity) to browser.
 	rt.stateStream.AttachHostSnapshotSource(rt.peerMgr)
+	// Stream runtime snapshots (volatile session state: cwd, command, activity).
+	rt.stateStream.AttachRuntimeSnapshotSource(rt.enricher)
 	rt.detector.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.silenceMonitor.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.reconciler.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
@@ -273,6 +280,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		FileReadReg:             fileReadReg,
 		CommandSvc:              rt.commandSvc,
 		RemoteCreateCoordinator: rt.remoteCreate,
+		RuntimeEnricher:         rt.enricher,
 	}
 
 	peerHandler := peer.NewHandler(deps, streamReg)
@@ -281,10 +289,9 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 
 	rt.wikiSup = wikilite.NewSupervisor()
 
-	// ws.Hub has no separate state source to wire in: the canonical catalog
-	// is the only state authority.
+	// ws.Hub broadcasts discrete tool events only. Runtime snapshots are
+	// streamed via the canonical /ws/state path and peer transport.
 	rt.hub = ws.NewHub(rt.tracker)
-	rt.hub.SetActivityTracker(rt.actTracker, rt.peerMgr, rt.peerMgr.LocalID(), false)
 
 	var (
 		pushKeys  *webpush.VAPIDKeys
@@ -480,6 +487,8 @@ func (rt *Runtime) refreshDaemonState() {
 	// that performs the blocking /proc/<pid>/cwd read; Enrich itself only does
 	// an in-memory map lookup, keeping catalog projection off the I/O path.
 	rt.enricher.refreshRuntimeCache()
+	// Publish runtime snapshots to all subscribers after each cache refresh.
+	rt.enricher.publishRuntimeSnapshots()
 }
 
 // runDaemonRefresh keeps an up-to-date snapshot of daemon sessions and runs
@@ -645,12 +654,17 @@ func defaultSessionDir() string {
 type runtimeEnricher struct {
 	adapter    *daemonAdapter
 	actTracker *activity.Tracker
+	catalog    *state.Catalog
 
 	previewMu    sync.Mutex
 	previewCache map[string]*previewCacheEntry
 
 	runtimeMu    sync.RWMutex
 	runtimeCache map[string]runtimeCacheEntry
+
+	// subscribers holds callbacks for runtime snapshot changes, keyed by subscription ID
+	subscriberMu sync.RWMutex
+	subscribers  map[string]func([]state.SessionRuntimeSnapshot)
 
 	// readCwd, when set, overrides the package-level readProcCwd for this
 	// enricher instance. Tests use this instead of monkeypatching the
@@ -828,7 +842,58 @@ func (e *runtimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionRec
 	if e.actTracker != nil {
 		if snap := e.actTracker.Get(id); snap != nil && snap.IdleSeconds >= 0 {
 			rt.LastActivity = snap.LastActive
+			rt.IdleSeconds = snap.IdleSeconds
+			rt.TotalBytes = snap.TotalBytes
 		}
 	}
 	return rt
+}
+
+// RuntimeSnapshots returns the current runtime state of all catalog sessions,
+// using only cached data (no blocking I/O).
+func (e *runtimeEnricher) RuntimeSnapshots() []state.SessionRuntimeSnapshot {
+	if e.catalog == nil {
+		return nil
+	}
+
+	recs := e.catalog.Sessions()
+	snaps := make([]state.SessionRuntimeSnapshot, 0, len(recs))
+
+	for _, rec := range recs {
+		rt := e.Enrich(rec.Ref, rec)
+		snaps = append(snaps, state.SessionRuntimeSnapshot{
+			Ref:     rec.Ref,
+			Runtime: rt,
+		})
+	}
+
+	return snaps
+}
+
+// SubscribeRuntimeSnapshots registers a callback to be called each time the
+// runtime cache is refreshed. It returns an unsubscribe function.
+func (e *runtimeEnricher) SubscribeRuntimeSnapshots(fn func([]state.SessionRuntimeSnapshot)) func() {
+	id := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	e.subscriberMu.Lock()
+	e.subscribers[id] = fn
+	e.subscriberMu.Unlock()
+
+	return func() {
+		e.subscriberMu.Lock()
+		delete(e.subscribers, id)
+		e.subscriberMu.Unlock()
+	}
+}
+
+// publishRuntimeSnapshots notifies all subscribers of the current runtime snapshots.
+func (e *runtimeEnricher) publishRuntimeSnapshots() {
+	snaps := e.RuntimeSnapshots()
+
+	e.subscriberMu.RLock()
+	defer e.subscriberMu.RUnlock()
+
+	for _, fn := range e.subscribers {
+		fn(snaps)
+	}
 }

@@ -27,13 +27,14 @@ const (
 
 // HostState holds all known state for a single peer
 type HostState struct {
-	ID         string // public key fingerprint
-	Name       string
-	Version    string
+	ID       string // public key fingerprint
+	Name     string
+	Version  string
 	PublicKey  string
 	Address    string // network address (empty for local)
 	Stats      map[string]interface{}
 	Activity   []*activity.Snapshot
+	Runtime    []state.SessionRuntimeSnapshot // cached remote runtime snapshots
 	ToolEvents []*toolevents.Event
 	Connected  bool
 	LastSeen   time.Time
@@ -1521,6 +1522,47 @@ func (m *Manager) GetAllActivity() []*activity.Snapshot {
 		all = append(all, h.Activity...)
 	}
 	return all
+}
+
+// UpdatePeerRuntime caches a peer's runtime snapshots (volatile session state).
+func (m *Manager) UpdatePeerRuntime(id string, owner state.OwnerID, snapshots []state.SessionRuntimeSnapshot) {
+	m.mu.Lock()
+	if h, ok := m.hosts[id]; ok {
+		h.Runtime = snapshots
+		h.LastSeen = time.Now()
+	}
+	m.mu.Unlock()
+}
+
+// GetAllRuntimeSnapshots returns runtime snapshots from all remote peers (not local).
+func (m *Manager) GetAllRuntimeSnapshots() []state.OwnerRuntimeSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var all []state.OwnerRuntimeSnapshot
+	for id, h := range m.hosts {
+		if id == m.localID {
+			continue
+		}
+		if len(h.Runtime) == 0 {
+			continue
+		}
+		// Determine owner from peerOwner binding.
+		if owner, ok := m.peerOwner[id]; ok {
+			all = append(all, state.OwnerRuntimeSnapshot{
+				Owner:     owner,
+				Snapshots: h.Runtime,
+			})
+		}
+	}
+	return all
+}
+
+// GetRemoteOwner returns the owner ID bound to a peer connection ID.
+func (m *Manager) GetRemoteOwner(peerID string) state.OwnerID {
+	m.catalogMu.RLock()
+	defer m.catalogMu.RUnlock()
+	return m.peerOwner[peerID]
 }
 
 // GetHostName returns the display name for a host ID

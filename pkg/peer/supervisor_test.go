@@ -9,6 +9,7 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/activity"
 	"github.com/anh-chu/termyard/pkg/identity"
+	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
@@ -29,8 +30,12 @@ func makeTestDeps(t *testing.T) (SessionDeps, *LinkSupervisor, *identity.PeerSto
 		t.Fatal(err)
 	}
 	mgr := NewManager(id, ps)
+	owner := state.OwnerIDFromFingerprint(id.Fingerprint())
+	cat := state.NewCatalog(owner, nil)
+	mgr.SetCatalog(cat)
 	deps := SessionDeps{
 		Manager:     mgr,
+		Catalog:     cat,
 		Identity:    id,
 		ActTracker:  activity.NewTracker(),
 		ToolTracker: toolevents.NewTracker(),

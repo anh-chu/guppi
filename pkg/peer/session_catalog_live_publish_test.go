@@ -39,6 +39,7 @@ func makeTestDepsWithCatalog(t *testing.T, name string) (SessionDeps, *LinkSuper
 	mgr.SetCatalog(cat)
 	deps := SessionDeps{
 		Manager:      mgr,
+		Catalog:      cat,
 		Identity:     id,
 		ActTracker:   activity.NewTracker(),
 		ToolTracker:  toolevents.NewTracker(),

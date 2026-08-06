@@ -55,6 +55,27 @@ export type HostSnapshot = {
 // connected); the LIVE stream (see CatalogOwnerRemovedMessage below) is what
 // carries an explicit removal signal distinct from silence. Hosts is the
 // complete current host snapshot list, streamed live via HostsSnapshotMessage.
+export type SessionRuntime = {
+  current_path?: string
+  current_command?: string
+  daemon_pid?: number
+  shell_pid?: number
+  prompt_preview?: string
+  last_active?: string
+  idle_seconds?: number
+  total_bytes?: number
+}
+
+export type SessionRuntimeSnapshot = {
+  ref: SessionRef
+  runtime: SessionRuntime
+}
+
+export type OwnerRuntimeSnapshot = {
+  owner: OwnerID
+  snapshots: SessionRuntimeSnapshot[]
+}
+
 export type BootstrapResponse = {
   owner: OwnerID
   revision: number
@@ -62,6 +83,7 @@ export type BootstrapResponse = {
   remote?: OwnerCatalogSnapshot[]
   hosts: HostSnapshot[]
   workspace?: WorkspaceRecord
+  runtime?: OwnerRuntimeSnapshot[]
   pending: PendingCreateRecord[]
   pending_remote?: PendingRemoteCreateRecord[]
 }
@@ -94,16 +116,23 @@ export type HostsSnapshotMessage = {
   hosts: HostSnapshot[]
 }
 
+export type RuntimeSnapshotMessage = {
+  type: 'runtime_snapshot'
+  owner: OwnerID
+  snapshots: SessionRuntimeSnapshot[]
+}
+
 export type StateStreamMessage =
   | CatalogSnapshotMessage
   | CatalogOwnerRemovedMessage
   | WorkspaceSnapshotMessage
   | HostsSnapshotMessage
+  | RuntimeSnapshotMessage
 
 export function isStateStreamMessage(v: unknown): v is StateStreamMessage {
   if (typeof v !== 'object' || v === null) return false
   const t = (v as { type?: unknown }).type
-  return t === 'catalog_snapshot' || t === 'catalog_owner_removed' || t === 'workspace_snapshot' || t === 'hosts_snapshot'
+  return t === 'catalog_snapshot' || t === 'catalog_owner_removed' || t === 'workspace_snapshot' || t === 'hosts_snapshot' || t === 'runtime_snapshot'
 }
 
 export type ErrorResponse = {

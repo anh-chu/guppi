@@ -82,7 +82,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"DELETE /proxy/{port}/*",
 		"GET /*",
 		"GET /api/active-turns",
-		"GET /api/activity",
 		"GET /api/agent-status",
 		"GET /api/artifacts",
 		"GET /api/auth/check",

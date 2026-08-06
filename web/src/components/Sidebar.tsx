@@ -4,7 +4,6 @@ import { sessionViewSignal, stateRank, type SessionPresentationAttrs } from '../
 import type { HostSnapshot } from '../state/session/wireTypes'
 type Host = HostSnapshot
 import { ToolEvent } from '../hooks/useToolEvents'
-import { ActivitySnapshot } from '../hooks/useActivity'
 import { useSchedules } from '../hooks/useSchedules'
 import { cn } from '../lib/utils'
 import { describeCron } from '../lib/cron'
@@ -30,7 +29,6 @@ interface SidebarProps {
   getSessionEvents: (session: string) => ToolEvent[]
   sessionNeedsAttention: (session: string) => boolean
   isSessionInActiveTurn: (session: string) => boolean
-  getSessionActivity: (session: string) => ActivitySnapshot | undefined
   glance?: { parked: number; working: number; waiting: number }
   onToggleCollapse?: () => void
   onSessionKilled?: (key: string) => void
@@ -85,7 +83,6 @@ export function Sidebar({
   getSessionEvents,
   sessionNeedsAttention,
   isSessionInActiveTurn,
-  getSessionActivity,
   glance,
   onToggleCollapse,
   onSessionKilled,
@@ -209,8 +206,8 @@ export function Sidebar({
 
   // Signal per session, computed once and reused for both ordering and badges.
   const signalOf = useCallback(
-    (session: SessionView) => sessionViewSignal(session, getSessionEvents(session.key), getSessionActivity(session.key), isSessionInActiveTurn(session.key)),
-    [getSessionEvents, getSessionActivity, isSessionInActiveTurn],
+    (session: SessionView) => sessionViewSignal(session, getSessionEvents(session.key), isSessionInActiveTurn(session.key)),
+    [getSessionEvents, isSessionInActiveTurn],
   )
 
   // Deterministic order: needs-attention first, then working, idle, offline;

@@ -28,21 +28,13 @@ func Run(ctx context.Context, opts *Options) error {
 	return serveAndWait(ctx, opts, logger, r)
 }
 func setupHub(opts *Options) *ws.Hub {
-	// The runtime always assembles a hub before BuildRouter runs; there is no
-	// legacy state source to build a fallback one from.
+	// The runtime always assembles a hub before BuildRouter runs.
+	// The hub broadcasts discrete tool events only; runtime snapshots are
+	// streamed via the canonical /ws/state path and peer transport.
 	hub := opts.Hub
 	if hub == nil {
 		hub = ws.NewHub(opts.Tracker)
 		opts.Hub = hub
-	}
-	var peerActivity ws.ActivitySource
-	localHostID := ""
-	if opts.PeerMgr != nil {
-		peerActivity = opts.PeerMgr
-		localHostID = opts.PeerMgr.LocalID()
-	}
-	if opts.ActivityTracker != nil || peerActivity != nil {
-		hub.SetActivityTracker(opts.ActivityTracker, peerActivity, localHostID, false)
 	}
 	return hub
 }

@@ -613,12 +613,20 @@ func (c *Catalog) removePendingRemoteLocked(doc *AppDocument, id CommandID) erro
 
 // SessionRuntime carries live, non-persisted enrichment for a session.
 type SessionRuntime struct {
-	CurrentPath    string
-	CurrentCommand string
-	DaemonPID      int
-	ShellPID       int
-	PromptPreview  string
-	LastActivity   time.Time
+	CurrentPath    string    `json:"current_path"`
+	CurrentCommand string    `json:"current_command"`
+	DaemonPID      int       `json:"daemon_pid"`
+	ShellPID       int       `json:"shell_pid"`
+	PromptPreview  string    `json:"prompt_preview"`
+	LastActivity   time.Time `json:"last_active,omitempty"`
+	IdleSeconds    float64   `json:"idle_seconds"`
+	TotalBytes     int64     `json:"total_bytes"`
+}
+
+// SessionRuntimeSnapshot pairs a session reference with its current runtime state.
+type SessionRuntimeSnapshot struct {
+	Ref     SessionRef      `json:"ref"`
+	Runtime SessionRuntime  `json:"runtime"`
 }
 
 // SessionView is a runtime-enriched, read-only view of one catalog record.
@@ -654,4 +662,10 @@ type HostSnapshot struct {
 	Online   bool           `json:"online"`
 	LastSeen time.Time      `json:"last_seen"`
 	Stats    map[string]any `json:"stats,omitempty"`
+}
+
+// OwnerRuntimeSnapshot holds runtime snapshots for one owner (local or remote).
+type OwnerRuntimeSnapshot struct {
+	Owner     OwnerID                   `json:"owner"`
+	Snapshots []SessionRuntimeSnapshot  `json:"snapshots"`
 }

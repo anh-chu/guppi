@@ -22,6 +22,11 @@ export interface ToolEvent {
   window: number
   pane?: string
   message?: string
+  cwd?: string
+  agent_session_id?: string
+  user_prompt?: string
+  agent_message?: string
+  files?: string[]
   timestamp: string
   auto_detected?: boolean
 }
@@ -37,6 +42,11 @@ export interface RawToolEvent {
   window: number
   pane?: string
   message?: string
+  cwd?: string
+  agent_session_id?: string
+  user_prompt?: string
+  agent_message?: string
+  files?: string[]
   timestamp: string
   auto_detected?: boolean
 }
@@ -95,6 +105,11 @@ export function normalizeToolEvent(raw: RawToolEvent, hostIndex?: HostIndex): To
     window: raw.window,
     pane: raw.pane,
     message: raw.message,
+    cwd: raw.cwd,
+    agent_session_id: raw.agent_session_id,
+    user_prompt: raw.user_prompt,
+    agent_message: raw.agent_message,
+    files: raw.files,
     timestamp: raw.timestamp,
     auto_detected: raw.auto_detected,
   }

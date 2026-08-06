@@ -15,7 +15,6 @@ import type { LocalSessionRecord, SessionRef } from './types'
 import { sessionRefToKey } from './paneTreeAdapter'
 import type { HostSnapshot } from './wireTypes'
 import type { ToolEvent } from '../../hooks/useToolEvents'
-import type { ActivitySnapshot } from '../../hooks/useActivity'
 
 export type SessionState = 'needs_you' | 'working' | 'idle' | 'offline'
 
@@ -152,7 +151,6 @@ const loudStatuses = new Set(['waiting', 'stuck', 'error'])
 export function sessionViewSignal(
   view: SessionView,
   events: ToolEvent[],
-  activity: ActivitySnapshot | undefined,
   inActiveTurn: boolean,
 ): SessionSignal {
   const loudEvent = events.find(e => loudStatuses.has(e.status))
@@ -164,8 +162,7 @@ export function sessionViewSignal(
   if (!view.hostOnline) {
     return { state: 'offline', loud: false, tool }
   }
-  const working = inActiveTurn || (activity != null && activity.idle_seconds <= 5)
-  if (working) {
+  if (inActiveTurn) {
     return { state: 'working', loud: false, tool }
   }
   return { state: 'idle', loud: false, tool }

@@ -40,6 +40,13 @@ type HostSnapshotSource interface {
 	SubscribeHostSnapshots(fn func([]state.HostSnapshot)) func()
 }
 
+// RuntimeSnapshotSource supplies runtime snapshots (volatile session state) for
+// a client's initial connect burst and notifies on every runtime update.
+type RuntimeSnapshotSource interface {
+	RuntimeSnapshots() []state.SessionRuntimeSnapshot
+	SubscribeRuntimeSnapshots(fn func([]state.SessionRuntimeSnapshot)) func()
+}
+
 var stateStreamUpgrader = websocket.Upgrader{
 	CheckOrigin:     CheckSameOrigin,
 	ReadBufferSize:  1024,
@@ -89,6 +96,7 @@ type stateStreamClient struct {
 	catalogSlots map[string]*encodedSnapshot
 	workspace    *encodedSnapshot
 	hostSnapshots *encodedSnapshot
+	runtimeSnapshots *encodedSnapshot
 
 	signal chan struct{}
 	// done is closed exactly once by close(). It is only ever closed, never
@@ -178,6 +186,17 @@ func (c *stateStreamClient) publishHostSnapshots(encoded []byte) {
 	c.wake()
 }
 
+func (c *stateStreamClient) publishRuntimeSnapshots(encoded []byte) {
+	if c.closed.Load() {
+		return
+	}
+	c.mu.Lock()
+	// Runtime snapshots don't use revision versioning; just replace with the latest.
+	c.runtimeSnapshots = &encodedSnapshot{bytes: encoded}
+	c.mu.Unlock()
+	c.wake()
+}
+
 func (c *stateStreamClient) enqueue(slot **encodedSnapshot, rev int64, encoded []byte) {
 	if c.closed.Load() {
 		return
@@ -232,6 +251,8 @@ func (c *stateStreamClient) writeLoop() {
 			c.workspace = nil
 			hostsSnap := c.hostSnapshots
 			c.hostSnapshots = nil
+			rtSnap := c.runtimeSnapshots
+			c.runtimeSnapshots = nil
 			c.mu.Unlock()
 
 			// Drain catalog slots in a deterministic (sorted-key) order so the
@@ -251,6 +272,9 @@ func (c *stateStreamClient) writeLoop() {
 				return
 			}
 			if hostsSnap != nil && !c.write(hostsSnap.bytes) {
+				return
+			}
+			if rtSnap != nil && !c.write(rtSnap.bytes) {
 				return
 			}
 		}
@@ -315,6 +339,12 @@ type hostSnapshotsMessage struct {
 	Hosts []state.HostSnapshot `json:"hosts"`
 }
 
+type runtimeSnapshotsMessage struct {
+	Type      string                         `json:"type"`
+	Owner     state.OwnerID                  `json:"owner"`
+	Snapshots []state.SessionRuntimeSnapshot `json:"snapshots"`
+}
+
 // StateStreamHub fans out complete catalog/workspace snapshots to durable
 // browser state connections at /ws/state. Every revision is encoded once
 // regardless of how many clients are connected; each client keeps only the
@@ -337,10 +367,14 @@ type StateStreamHub struct {
 	// no host connectivity to stream.
 	hostSource HostSnapshotSource
 
+	// runtimeSource supplies volatile session runtime snapshots (cwd, command, activity).
+	// Typically implemented by *runtimeEnricher in the command server.
+	runtimeSource RuntimeSnapshotSource
+
 	// mu guards clients AND, critically, is held across the entire
 	// "register client + capture and enqueue its initial snapshot" sequence
 	// in HandleState. Every live-publish fan-out (onCatalog/onRemoteCatalog/
-	// onHostSnapshots/onWorkspace) takes mu.RLock while iterating clients. Serializing
+	// onHostSnapshots/onWorkspace/onRuntimeSnapshots) takes mu.RLock while iterating clients. Serializing
 	// registration against those RLocks as one atomic write-locked operation
 	// is what prevents a live update from being published to a client
 	// between "client added to clients" and "initial snapshot enqueued",
@@ -353,6 +387,7 @@ type StateStreamHub struct {
 	unsubscribeWorkspace func()
 	unsubscribeRemote    func()
 	unsubscribeHosts     func()
+	unsubscribeRuntime   func()
 
 	Metrics StateStreamMetrics
 }
@@ -399,6 +434,29 @@ func (h *StateStreamHub) AttachHostSnapshotSource(source HostSnapshotSource) {
 	h.unsubscribeHosts = source.SubscribeHostSnapshots(h.onHostSnapshots)
 }
 
+// AttachRuntimeSnapshotSource wires source (typically a *runtimeEnricher) to
+// supply runtime snapshots to the state stream.
+func (h *StateStreamHub) AttachRuntimeSnapshotSource(source RuntimeSnapshotSource) {
+	if source == nil {
+		return
+	}
+	h.mu.Lock()
+	h.runtimeSource = source
+	h.mu.Unlock()
+	h.unsubscribeRuntime = source.SubscribeRuntimeSnapshots(h.onRuntimeSnapshots)
+}
+
+// GetRuntimeSnapshots returns the current local runtime snapshots if a source
+// is attached, or nil otherwise. Used by bootstrap to populate initial runtime state.
+func (h *StateStreamHub) GetRuntimeSnapshots() []state.SessionRuntimeSnapshot {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.runtimeSource == nil {
+		return nil
+	}
+	return h.runtimeSource.RuntimeSnapshots()
+}
+
 // Close unsubscribes from the catalog. Connected clients are left to
 // disconnect naturally when their underlying connection closes.
 func (h *StateStreamHub) Close() {
@@ -413,6 +471,9 @@ func (h *StateStreamHub) Close() {
 	}
 	if h.unsubscribeHosts != nil {
 		h.unsubscribeHosts()
+	}
+	if h.unsubscribeRuntime != nil {
+		h.unsubscribeRuntime()
 	}
 }
 
@@ -491,6 +552,24 @@ func (h *StateStreamHub) onHostSnapshots(snaps []state.HostSnapshot) {
 	}
 }
 
+// onRuntimeSnapshots publishes local runtime snapshots to all connected clients.
+func (h *StateStreamHub) onRuntimeSnapshots(snaps []state.SessionRuntimeSnapshot) {
+	ownerSnap := state.OwnerRuntimeSnapshot{
+		Owner:     h.catalog.Owner(),
+		Snapshots: snaps,
+	}
+	encoded, err := json.Marshal(runtimeSnapshotsMessage{Type: "runtime_snapshot", Owner: ownerSnap.Owner, Snapshots: snaps})
+	if err != nil {
+		logrus.WithError(err).Warn("state stream: failed to encode runtime snapshots")
+		return
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		c.publishRuntimeSnapshots(encoded)
+	}
+}
+
 // HandleState upgrades the connection and streams durable state. On
 // connect it enqueues the complete current catalog and (if any layout
 // exists) workspace snapshot before any incremental publication is applied,
@@ -538,6 +617,13 @@ func (h *StateStreamHub) HandleState(w http.ResponseWriter, r *http.Request) {
 		if hostSnaps := h.hostSource.HostSnapshots(); len(hostSnaps) > 0 {
 			if encoded, err := json.Marshal(hostSnapshotsMessage{Type: "hosts_snapshot", Hosts: hostSnaps}); err == nil {
 				c.publishHostSnapshots(encoded)
+			}
+		}
+	}
+	if h.runtimeSource != nil {
+		if rtSnaps := h.runtimeSource.RuntimeSnapshots(); len(rtSnaps) > 0 {
+			if encoded, err := json.Marshal(runtimeSnapshotsMessage{Type: "runtime_snapshot", Owner: h.catalog.Owner(), Snapshots: rtSnaps}); err == nil {
+				c.publishRuntimeSnapshots(encoded)
 			}
 		}
 	}

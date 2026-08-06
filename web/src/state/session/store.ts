@@ -25,7 +25,7 @@ import type {
   SessionRef,
   WorkspaceRecord,
 } from './types'
-import type { HostSnapshot } from './wireTypes'
+import type { HostSnapshot, SessionRuntimeSnapshot } from './wireTypes'
 
 // OwnerCatalogMeta tracks the acceptance bookkeeping (revision + connection
 // generation) for ONE owner's catalog stream -- the local node's own, or one
@@ -81,6 +81,7 @@ export type SessionStoreState = {
   catalog: NormalizedCatalog
   workspace: NormalizedWorkspace
   hosts: HostsState
+  runtimeByRef: Map<string, SessionRuntimeSnapshot>
   connectionGeneration: number
   connectionOnline: boolean
   catalogBootstrapped: boolean
@@ -118,6 +119,7 @@ export function initialSessionStoreState(): SessionStoreState {
     catalog: emptyCatalog(),
     workspace: emptyWorkspace(),
     hosts: emptyHosts(),
+    runtimeByRef: new Map(),
     connectionGeneration: 0,
     connectionOnline: false,
     catalogBootstrapped: false,
@@ -316,6 +318,27 @@ export function replaceHosts(state: SessionStoreState, snapshots: HostSnapshot[]
 }
 
 /**
+ * Updates runtime snapshots for one owner, replacing the previous set for that
+ * owner. Runtime snapshots use connection generation for staleness rejection (no
+ * durable revision comparison). Called on bootstrap and after each live
+ * runtime_snapshot message.
+ */
+export function updateRuntimeSnapshots(
+  state: SessionStoreState,
+  snapshots: SessionRuntimeSnapshot[],
+): SessionStoreState {
+  const next = new Map(state.runtimeByRef)
+  for (const snap of snapshots) {
+    const key = snap.ref.owner + '/' + snap.ref.session
+    next.set(key, snap)
+  }
+  return {
+    ...state,
+    runtimeByRef: next,
+  }
+}
+
+/**
  * Mutable store wrapper: holds one SessionStoreState, notifies subscribers on
  * change, and exposes the pure functions above as bound methods so callers
  * (e.g. a future stateStream consumer) don't need to thread state manually.
@@ -369,6 +392,10 @@ export class SessionStore {
 
   replaceHosts(snapshots: HostSnapshot[]) {
     this.setState(replaceHosts(this.state, snapshots))
+  }
+
+  updateRuntimeSnapshots(snapshots: SessionRuntimeSnapshot[]) {
+    this.setState(updateRuntimeSnapshots(this.state, snapshots))
   }
 }
 
