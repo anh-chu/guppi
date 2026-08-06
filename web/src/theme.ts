@@ -16,7 +16,7 @@ export const statusConfig: Record<string, { color: string; label: string; icon?:
 }
 
 
-import type { SessionState } from './lib/sessionState'
+import type { SessionState } from './state/session/viewModel'
 
 export interface SignalTreatment {
     dot: string

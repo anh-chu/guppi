@@ -12,8 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { sessionKey } from './lib/session'
-import { keyToSessionRef } from './state/session/paneTreeAdapter'
+import { keyToSessionRef, sessionRefToKey } from './state/session/paneTreeAdapter'
 import { encodeSessionRef } from './state/session/types'
 
 // Track that SessionApp mounted (calls useSessionState) -- kept from the old
@@ -342,12 +341,11 @@ describe('App: mode-splitting', () => {
 
       expect(mockSidebarProps).not.toBeNull()
       const [sess] = mockSidebarProps.sessions
-      // Memo shape: name is the immutable id; the mutable label lives in display_name.
+      // SessionView shape: id is immutable; the mutable label lives in displayName.
       expect(sess.id).toBe(sessionId)
-      expect(sess.name).toBe(sessionId)
-      expect(sess.display_name).toBe(label)
-      // sessionKey now yields the id-based key, matching sessionRefToKey(ref).
-      const key = sessionKey(sess)
+      expect(sess.displayName).toBe(label)
+      // sess.key is the id-based key, matching sessionRefToKey(ref).
+      const key = sess.key
       expect(key).toBe(sessionId)
       expect(keyToSessionRef(key)).toEqual({ owner: null, session: sessionId, window: 0, pane: 0 })
 
@@ -362,7 +360,7 @@ describe('App: mode-splitting', () => {
       // Quick-switcher / TopBar jump resolves the same row by the id-based key.
       expect(mockTopBarProps).not.toBeNull()
       workspaceCommand.mockClear()
-      mockTopBarProps.onJumpToSession(sessionKey(sess))
+      mockTopBarProps.onJumpToSession(sess.key)
       expect(workspaceCommand).toHaveBeenCalledWith('g1', {
         action: 'select',
         ref: { owner: null, session: sessionId, window: 0, pane: 0 },
@@ -370,7 +368,7 @@ describe('App: mode-splitting', () => {
 
       // Kill from the sidebar context menu routes the id-based key to a canonical ref.
       sessionCommand.mockClear()
-      mockSidebarProps.onSessionKilled(sessionKey(sess))
+      mockSidebarProps.onSessionKilled(sess.key)
       expect(sessionCommand).toHaveBeenCalledWith(
         { owner: null, session: sessionId, window: 0, pane: 0 },
         { action: 'kill' },
@@ -767,7 +765,7 @@ describe('App: mode-splitting', () => {
 
       const workspaceCommand = vi.fn().mockResolvedValue({})
       const sessionCommand = vi.fn().mockResolvedValue({})
-      const localKey = sessionKey({ host: localOwner, name: localSessionId } as any)
+      const localKey = sessionRefToKey(localRef)
       mockSessionState = {
         state: {
           catalog: {
@@ -803,7 +801,7 @@ describe('App: mode-splitting', () => {
       expect(mockSidebarProps).not.toBeNull()
       const remoteRow = mockSidebarProps.sessions.find((s: any) => s.id === remoteSessionId)
       expect(remoteRow).toBeTruthy()
-      const remoteKey = sessionKey(remoteRow)
+      const remoteKey = remoteRow.key
       expect(keyToSessionRef(remoteKey)).toEqual(remoteRef)
 
       // Select the remote session through the real Sidebar->handleSessionSelect
@@ -919,7 +917,7 @@ describe('App: mode-splitting', () => {
         [encodeSessionRef(localRef), localSession],
       ])
       const workspaceCommand = vi.fn().mockResolvedValue({})
-      const localKey = sessionKey({ host: localOwner, name: localSessionId } as any)
+      const localKey = sessionRefToKey(localRef)
       mockSessionState = {
         state: {
           catalog: { localOwner, ownerMeta: new Map(), sessionsByRef, layoutsById: new Map() },
@@ -951,7 +949,7 @@ describe('App: mode-splitting', () => {
 
       const remoteRow = mockSidebarProps.sessions.find((s: any) => s.id === remoteSessionId)
       const localRow = mockSidebarProps.sessions.find((s: any) => s.id === localSessionId)
-      const remoteKey = sessionKey(remoteRow)
+      const remoteKey = remoteRow.key
 
       act(() => { mockSidebarProps.onSessionSelect(remoteRow) })
       expect(mockTiledViewProps.tree).toEqual({ type: 'leaf', sessionKey: remoteKey })

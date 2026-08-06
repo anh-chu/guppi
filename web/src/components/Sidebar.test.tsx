@@ -2,26 +2,32 @@
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Sidebar } from './Sidebar'
-import type { Session } from '../lib/session'
-import type { SessionPresentationAttrs } from '../state/session/viewModel'
+import type { SessionView, SessionPresentationAttrs } from '../state/session/viewModel'
 
-function makeSession(name: string): Session {
+function makeSession(id: string): SessionView {
   return {
-    id: name,
-    name,
-    display_name: name,
+    key: id,
+    ref: { owner: null, session: id, window: 0, pane: 0 },
+    id,
+    ownerId: '',
+    displayName: id,
+    label: id,
+    createdAt: new Date().toISOString(),
+    generation: undefined,
+    hidden: false,
+    background: false,
+    scheduleId: undefined,
+    cwd: undefined,
+    shell: undefined,
+    agentType: undefined,
+    worktreeBranch: undefined,
+    isLocal: true,
     host: undefined,
-    windows: [],
-    created: new Date().toISOString(),
-    attached: false,
-    last_activity: new Date().toISOString(),
+    hostOnline: true,
   }
 }
 
 const session = makeSession('s1')
-const layoutGroups = [
-  { id: 'g1', leaves: ['s1'], isActive: true, activeKey: 's1' as string | null, name: undefined as string | undefined },
-]
 
 const sessionAttrs: SessionPresentationAttrs = {
   background: new Set(),
@@ -29,7 +35,7 @@ const sessionAttrs: SessionPresentationAttrs = {
   scheduleIDs: new Map(),
 }
 
-function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> & { forceAiName?: (groupId: string) => Promise<boolean>; namingGroupId?: string | null } = {}) {
+function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> = {}) {
   return render(
     <Sidebar
       sessions={[session]}
@@ -44,80 +50,13 @@ function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> & { 
       sessionNeedsAttention={() => false}
       isSessionInActiveTurn={() => false}
       getSessionActivity={() => undefined}
-      sessionOrderRanks={{}}
-      setSessionOrderRank={() => {}}
       sessionAttrs={sessionAttrs}
       setSessionAttr={() => {}}
       pruningSuspended={false}
-      layoutGroups={layoutGroups}
       {...props}
     />,
   )
 }
-
-describe('Sidebar group AI naming', () => {
-  beforeEach(() => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve('') }),
-    )
-    Object.defineProperty(window, 'matchMedia', {
-      writable: true,
-      value: vi.fn().mockImplementation((query: string) => ({
-        matches: false,
-        media: query,
-        onchange: null,
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      })),
-    })
-  })
-
-  afterEach(() => {
-    cleanup()
-    vi.unstubAllGlobals()
-    vi.restoreAllMocks()
-  })
-
-  it('calls forceAiName with the group id when the AI name button is clicked', async () => {
-    const forceAiName = vi.fn().mockResolvedValue(true)
-    renderSidebar({ forceAiName })
-
-    const button = screen.getByTitle('AI name this group')
-    fireEvent.click(button)
-
-    await waitFor(() => expect(forceAiName).toHaveBeenCalledWith('g1'))
-  })
-
-  it('shows a spinner and disables the button while namingGroupId matches the group', () => {
-    renderSidebar({ forceAiName: vi.fn().mockResolvedValue(true), namingGroupId: 'g1' })
-
-    const button = screen.getByTitle('AI name this group') as HTMLButtonElement
-    expect(button.disabled).toBe(true)
-    expect(button.querySelector('svg.animate-spin')).toBeTruthy()
-  })
-
-  it('dispatches an error toast when forceAiName rejects', async () => {
-    const forceAiName = vi.fn().mockRejectedValue(new Error('naming service down'))
-    const dispatchSpy = vi.spyOn(window, 'dispatchEvent')
-    renderSidebar({ forceAiName })
-
-    const button = screen.getByTitle('AI name this group')
-    fireEvent.click(button)
-
-    await waitFor(() =>
-      expect(dispatchSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'termyard:toast',
-          detail: expect.objectContaining({ severity: 'error', message: 'naming service down' }),
-        }),
-      ),
-    )
-  })
-})
 
 describe('Sidebar kill/rename routing', () => {
   beforeEach(() => {
@@ -178,10 +117,11 @@ describe('Sidebar kill/rename routing', () => {
     expect(fetchMock).not.toHaveBeenCalledWith('/api/session/display-name', expect.anything())
   })
 
-  it('hides AI rename but keeps Hide/Background controls (set_presentation is wired)', () => {
+  it('has no group controls (groups were deleted) and keeps Hide/Background wired', () => {
     renderSidebar({})
 
     openContextMenuForRow()
+    expect(screen.queryByTitle('AI name this group')).toBeNull()
     expect(screen.queryByText('AI rename')).toBeNull()
     expect(screen.queryByText('Hide')).not.toBeNull()
     expect(screen.queryByText('Background')).not.toBeNull()

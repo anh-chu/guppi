@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Terminal } from './Terminal'
-import { parseSessionKey } from '../lib/session'
+import { keyToSessionRef } from '../state/session/paneTreeAdapter'
 import { cn } from '../lib/utils'
 import { PaneTree, getLeaves } from '../lib/paneTree'
 
@@ -201,7 +201,9 @@ export function TiledView({
   // --------------- render pane ---------------
 
   const renderPane = (sessionKey: string, path: string) => {
-    const { host, name } = parseSessionKey(sessionKey)
+    const ref = keyToSessionRef(sessionKey)
+    const host = ref.owner ?? undefined
+    const name = ref.session
     const isActive = sessionKey === activeKey
     const isDropTarget = dropTarget?.key === sessionKey
 

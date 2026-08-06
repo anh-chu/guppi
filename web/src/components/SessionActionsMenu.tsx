@@ -6,11 +6,8 @@ import { useEffect, useRef, useState } from 'react'
 
 export type SessionMenuTarget = {
   key: string
-  id: string
-  name: string
   label: string
-  host?: string
-  isWorktree: boolean
+  worktreeBranch?: string
 }
 
 export function SessionActionsMenu({

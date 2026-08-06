@@ -9,13 +9,12 @@ import { ScheduleModal } from './components/ScheduleModal'
 import { TopBar } from './components/TopBar'
 import { TiledView } from './components/TiledView'
 import { WikiPanel } from './components/WikiPanel'
-import { PaneTree, getLeaves, findLeaf, splitLeaf, insertBesideLeaf, removeLeaf, replaceLeaf, updateRatio, popOut, swapLeaves, movePane } from './lib/paneTree'
+import { PaneTree, getLeaves } from './lib/paneTree'
 import { SettingsDrawer } from './components/SettingsDrawer'
 import { HelpModal } from './components/HelpModal'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
-import { Session, sessionKey, parseSessionKey, optimisticSession, sessionCwd } from './lib/session'
 import { useHosts } from './hooks/useHosts'
 import { useToolEvents } from './hooks/useToolEvents'
 import { useActivity } from './hooks/useActivity'
@@ -31,8 +30,6 @@ import { RecoveryPanel } from './components/RecoveryPanel'
 import { useCrashedSessions } from './hooks/useCrashedSessions'
 import { useSelfUpdate, type UpdateStatus } from './hooks/useSelfUpdate'
 import { applyTheme } from './theme'
-import { sessionSignal } from './lib/sessionState'
-import { generateKeyBetween } from 'fractional-indexing'
 import { terminalPool, keyFor as poolKeyFor } from './lib/terminalPool'
 import { keyToSessionRef, splitIdAtPath } from './state/session/paneTreeAdapter'
 import type { SessionRef } from './state/session/types'
@@ -42,14 +39,6 @@ import { useSessionState } from './hooks/useSessionState'
 import { toSessionView, toPresentationAttrs, sessionViewSignal, type SessionView } from './state/session/viewModel'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
-
-type LayoutGroup = {
-  id: string
-  leaves: string[]
-  isActive: boolean
-  activeKey: string | null
-  name: string | undefined
-}
 
 // SessionApp is the sole production UI: App.tsx renders it unconditionally
 // once authentication/setup has resolved.
@@ -244,10 +233,11 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     }
   }, [state.catalog])
 
-  // Friendly pane-header label: mirrors sessionLabel() (display_name -> name)
-  // instead of parsing the immutable canonical session id out of the key.
-  // Reads state.catalog directly (not the `sessions` memo, which is declared
-  // later in this component) so this resolver is safe to construct here.
+  // Friendly pane-header label: mirrors SessionView.label (displayName ->
+  // id fallback) instead of parsing the immutable canonical session id out
+  // of the key. Reads state.catalog directly (not the `sessionViews` memo,
+  // which is declared later in this component) so this resolver is safe to
+  // construct here.
   const getSessionLabel = useCallback((legacyKey: string) => {
     const ref = keyToSessionRef(legacyKey)
     const session = selectSessionByRef(state.catalog, ref)
@@ -332,18 +322,6 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   const localHostId = localHost?.id
   const localHostName = localHost?.name
 
-  // Single layout group (canonical state has no multiple-groups concept)
-  const layoutGroups = useMemo<LayoutGroup[]>(() => {
-    if (!layoutId) return []
-    return [{
-      id: layoutId,
-      leaves: paneTree ? getLeaves(paneTree) : [],
-      isActive: currentView === 'session',
-      activeKey: activeKey,
-      name: undefined,
-    }]
-  }, [layoutId, paneTree, activeKey, currentView])
-
   const refocusTerminal = useCallback(() => {
     requestAnimationFrame(() => {
       const textarea = terminalContainerRef.current?.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null
@@ -351,12 +329,11 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     })
   }, [])
 
-  const handleSessionSelect = (session: Session) => {
-    // Built directly from the session's own host/name -- not through the
-    // legacy sessionKey()/parseSessionKey() helpers (see viewModel.ts's
-    // header comment on why SessionApp avoids depending on hooks/useSessions.ts).
-    const ref: SessionRef = { owner: session.host || null, session: session.name, window: 0, pane: 0 }
-    const key = sessionRefToKey(ref)
+  const handleSessionSelect = (session: SessionView) => {
+    // Built directly from the session's own ref -- SessionView.ref is the
+    // canonical identity this view was derived from.
+    const ref: SessionRef = session.ref
+    const key = session.key
     const host = ref.owner ?? ''
     const name = ref.session
     const path = host
@@ -383,40 +360,12 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   }
 
   // Canonical session views, built straight from the catalog via
-  // state/session/viewModel.ts -- no legacy Session shim involved at this
-  // step. `sessions` below is a compatibility adapter derived from these,
-  // built only because Sidebar/Overview/QuickSwitcher/NewSessionModal are
-  // still typed against the legacy `Session` shape; see the task-15
-  // frontend-prep notes for why those components aren't migrated to
-  // SessionView wholesale yet.
+  // state/session/viewModel.ts. Every product component (Sidebar, Overview,
+  // QuickSwitcher, NewSessionModal, SessionActionsMenu) now consumes these
+  // directly -- there is no synthetic Session[] shim any more.
   const sessionViews = useMemo<SessionView[]>(
     () => Array.from(state.catalog.sessionsByRef.values()).map(record => toSessionView(record, hostIndex, state.catalog.localOwner)),
     [state.catalog.sessionsByRef, hostIndex, state.catalog.localOwner],
-  )
-
-  // Real session list backing Sidebar/Overview/QuickSwitcher/NewSessionModal
-  // and getBackend below. Previously these components were passed sessions={[]}
-  // unconditionally, which made them appear to work while showing nothing.
-  //
-  // name MUST be the immutable canonical session id (s.id): SessionView.key
-  // is `owner/id` (or bare id), matching sessionRefToKey(ref) = `owner/ref.session`,
-  // where ref.session is that same canonical id. If name held the MUTABLE
-  // display label instead (set by the label/rename command), the key encoding
-  // would diverge from the pane tree / workspace path keys after any rename.
-  // The friendly label therefore goes into display_name, which sessionLabel()
-  // (used by Sidebar/Overview) shows.
-  const sessions = useMemo<Session[]>(
-    () => sessionViews.map(v => ({
-      id: v.id,
-      name: v.id,
-      display_name: v.displayName,
-      host: v.ownerId,
-      windows: [],
-      created: v.createdAt,
-      attached: true,
-      last_activity: new Date().toISOString(),
-    } as Session)),
-    [sessionViews],
   )
 
   // Real hidden/background presentation state (see the block comment above
@@ -428,10 +377,10 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       .catch(err => console.error('set_presentation command failed:', err))
   }, [sessionState])
 
-  const handleJumpToSession = useCallback((sessionName: string, _windowIndex?: number, _pane?: string) => {
-    const found = sessions.find(s => sessionRefToKey({ owner: s.host || null, session: s.name, window: 0, pane: 0 }) === sessionName || s.name === sessionName)
+  const handleJumpToSession = useCallback((sessionKeyOrId: string, _windowIndex?: number, _pane?: string) => {
+    const found = sessionViews.find(view => view.key === sessionKeyOrId)
     if (found) handleSessionSelect(found)
-  }, [sessions, layoutId, activeKey])
+  }, [sessionViews, layoutId, activeKey])
 
   const handleKillSession = useCallback((key: string) => {
     const ref = keyToSessionRef(key)
@@ -532,7 +481,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       {schedulesOpen && <ScheduleModal onClose={() => setSchedulesOpen(false)} />}
       {quickSwitcherOpen && (
         <QuickSwitcher
-          sessions={sessions}
+          sessions={sessionViews}
           waitingEvents={allToolEvents}
           onSelect={(sessionName, windowIndex) => {
             handleJumpToSession(sessionName, windowIndex)
@@ -552,7 +501,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       {newSessionModalOpen && (
         <NewSessionModal
           hosts={hosts}
-          sessions={sessions}
+          sessions={sessionViews}
           onCreateSession={handleCreateSession}
           onClose={() => setNewSessionModalOpen(false)}
         />
@@ -591,7 +540,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       <div className="flex-1 flex overflow-hidden">
         {!terminalFullscreen && (
           <Sidebar
-            sessions={sessions}
+            sessions={sessionViews}
             selectedSession={remotePaneKey ?? activeKey}
             collapsed={sidebarCollapsed}
             selfUpdateAvailable={selfUpdate.status?.update_available ?? false}
@@ -606,18 +555,8 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
             sessionNeedsAttention={sessionNeedsAttention}
             isSessionInActiveTurn={isSessionInActiveTurn}
             getSessionActivity={getSessionActivity}
-            agentCount={0}
             glance={glance}
             onToggleCollapse={() => setSidebarCollapsed(c => !c)}
-            layoutGroups={layoutGroups}
-            sessionOrderRanks={{}}
-            setSessionOrderRank={() => {}}
-            onSwitchGroup={() => {}}
-            onRenameGroup={() => {}}
-            forceAiName={async () => false}
-            namingGroupId={null}
-            onPairSessions={() => {}}
-            onRemoveFromSplit={() => {}}
             onSessionKilled={handleKillSession}
             sessionAttrs={sessionAttrs}
             setSessionAttr={setSessionAttr}
@@ -708,7 +647,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
             />
           ) : (
             <Overview
-              sessions={sessions}
+              sessions={sessionViews}
               onOpenFile={wiki.openFile}
               hosts={hosts}
               hiddenSet={sessionAttrs.hidden}
@@ -722,7 +661,6 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
               onDismissAlert={dismissEvent}
               setSessionAttr={setSessionAttr}
               onSessionKilled={handleKillSession}
-              layoutGroups={layoutGroups}
               onRenameSession={handleRenameSession}
             />
           )}

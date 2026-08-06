@@ -1,25 +1,26 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type DOMAttributes } from 'react'
-import { Session, sessionKey, sessionScheduleID, sessionCwd } from '../lib/session'
+import type { SessionView, SessionState } from '../state/session/viewModel'
+import { sessionViewSignal } from '../state/session/viewModel'
 import { Host } from '../hooks/useHosts'
 import { ToolEvent } from '../hooks/useToolEvents'
 import { ActivitySnapshot } from '../hooks/useActivity'
 import { toolColors, statusConfig, signalTreatment } from '../theme'
-import { stateRank, sessionSignal, isSessionActive, isToolSession, SessionState } from '../lib/sessionState'
 import { formatSessionUptime, formatSystemUptime } from '../lib/time'
-import { sessionLabel } from '../lib/session'
 import { SessionActionsMenu, SessionMenuTarget } from './SessionActionsMenu'
 import { Terminal } from './Terminal'
 import { useGlance, GlanceTarget } from './GlancePopover'
 import { pathLeaf } from '../lib/path'
 import { useSchedules } from '../hooks/useSchedules'
 
+const stateRank: Record<SessionState, number> = { needs_you: 0, working: 1, idle: 2, offline: 3 }
+
 interface OverviewProps {
-  sessions: Session[]
+  sessions: SessionView[]
   hosts: Host[]
   hiddenSet: Set<string>
   backgroundSet: Set<string>
   scheduleIDs: Map<string, string>
-  onSessionSelect: (session: Session) => void
+  onSessionSelect: (session: SessionView) => void
   getSessionEvents: (session: string) => ToolEvent[]
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
   isSessionInActiveTurn: (key: string) => boolean
@@ -28,9 +29,6 @@ interface OverviewProps {
   setSessionAttr: (key: string, next: { background?: boolean; hidden?: boolean }) => void
   onSessionKilled?: (key: string) => void
   onOpenFile?: (path: string, cwd?: string, hostId?: string, sessionName?: string) => boolean
-  // Tiled layout groups (sessionKeys per group). Used to fold non-agent
-  // "tool" panes (build/dev terminals) into the agent card they were tiled with.
-  layoutGroups?: { leaves: string[]; activeKey: string | null }[]
   onRenameSession?: (key: string, label: string) => void
 }
 
@@ -124,9 +122,9 @@ function HostStatsSection({ host, totalPanes }: { host: Host; totalPanes: number
 }
 
 type CardItem = {
-  session: Session
+  session: SessionView
   key: string
-  signal: ReturnType<typeof sessionSignal>
+  signal: ReturnType<typeof sessionViewSignal>
   event: ToolEvent | undefined
   events: ToolEvent[]
   activity: ActivitySnapshot | undefined
@@ -151,32 +149,28 @@ function SessionCard({
   onContextMenu,
   selected,
   glanceTrigger,
-  mates,
 }: {
   item: CardItem
   hasMultipleHosts: boolean
   getSessionEvents: (session: string) => ToolEvent[]
-  onOpen: (session: Session) => void
+  onOpen: (session: SessionView) => void
   onJumpToSession: (session: string, windowIndex?: number, pane?: string) => void
   onDismissAlert: (evt: ToolEvent) => void
   onContextMenu: (e: ReactMouseEvent, item: CardItem) => void
   selected: boolean
   glanceTrigger: (t: GlanceTarget) => DOMAttributes<HTMLElement>
-  mates?: CardItem[]
 }) {
-  const { session, key, signal, event, events, activity, scheduleRunCount } = item
+  const { session, key, signal, event, events, activity } = item
   const isWaiting = signal.state === 'needs_you'
   const loudEvent = event || getSessionEvents(key).find(e => e.status === 'waiting' || e.status === 'stuck' || e.status === 'error')
-  // Mirror the sidebar: the user prompt is the task (the "what"), the live
-  // activity label / last agent message is the status shown beneath it.
-  const userPrompt = session.user_prompt?.trim() || ''
-  const activityText = (events.find(e => e.status === 'active' && !e.auto_detected)?.message || session.last_agent_message?.trim() || session.prompt_preview?.trim() || '')
-  const taskPrimary = userPrompt || activityText
-  const taskSecondary = userPrompt && activityText && activityText !== userPrompt ? activityText : ''
+  // The event message is the only task/status text available now -- there
+  // is no user_prompt/last_agent_message/prompt_preview on a canonical record.
+  const activityText = events.find(e => e.status === 'active' && !e.auto_detected)?.message || ''
+  const taskPrimary = activityText
   return (
     <button
       key={key}
-      {...glanceTrigger({ name: session.name, host: session.host, display_name: session.display_name, host_name: session.host_name })}
+      {...glanceTrigger({ name: session.id, host: session.ownerId, display_name: session.displayName, host_name: session.host?.name })}
       onClick={() => {
         if (signal.state === 'needs_you' && loudEvent) onJumpToSession(loudEvent.host ? `${loudEvent.host}/${loudEvent.session}` : loudEvent.session, loudEvent.window, loudEvent.pane)
         else onOpen(session)
@@ -191,13 +185,12 @@ function SessionCard({
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-2">
-            <span className={`font-display text-[13px] font-bold truncate ${signal.state === 'idle' ? 'text-mute' : 'text-ink'}`}>{session.display_name || session.name}</span>
-            {scheduleRunCount && scheduleRunCount > 1 && <span className="text-[10px] font-bold text-mute/50 shrink-0" title={`${scheduleRunCount} runs`}>×{scheduleRunCount}</span>}
+            <span className={`font-display text-[13px] font-bold truncate ${signal.state === 'idle' ? 'text-mute' : 'text-ink'}`}>{session.label}</span>
           </div>
           <div className="text-[10px] text-mute/60">
-            {hasMultipleHosts && <span className="text-mute/50">{session.host_name || 'Local'} · </span>}
-            {session.project_path && <span className="text-mute/70" title={session.project_path}>{pathLeaf(session.project_path)} · </span>}
-            {formatSessionUptime(session.created)}
+            {hasMultipleHosts && <span className="text-mute/50">{session.host?.name || 'Local'} · </span>}
+            {session.cwd && <span className="text-mute/70" title={session.cwd}>{pathLeaf(session.cwd)} · </span>}
+            {formatSessionUptime(session.createdAt)}
           </div>
         </div>
         {signal.state === 'needs_you' && loudEvent && (
@@ -212,10 +205,8 @@ function SessionCard({
       </div>
 
       <div className="flex items-center gap-3 text-xs font-bold text-mute/70">
-        <span className="flex items-center gap-1.5"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>{session.windows?.length || 0}</span>
-        {signal.agentCount > 0 && <span className="flex items-center gap-1.5" style={{ color: toolColors.claude }}><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /></svg>{signal.agentCount}</span>}
+        {session.agentType && <span className="flex items-center gap-1.5" style={{ color: toolColors[session.agentType] || toolColors.claude }}><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /></svg>{session.agentType}</span>}
         {signal.state === 'working' ? <span className="text-success">working</span> : signal.state === 'idle' ? <span className="text-mute/40">idle</span> : signal.state === 'offline' ? <span className="text-mute/40">offline</span> : signal.state === 'needs_you' ? <span className="text-warning font-bold">needs you</span> : null}
-        {mates && mates.length > 0 && <span className="flex items-center gap-1 text-mute/50" title={`${mates.length + 1} tiled panes`}>⧉{mates.length + 1}</span>}
       </div>
 
       {signal.state === 'needs_you' && loudEvent ? (
@@ -229,37 +220,20 @@ function SessionCard({
           {taskPrimary && (
             <div className="flex flex-col gap-0.5">
               <div className="text-[12px] text-ink/85 leading-snug line-clamp-2">{taskPrimary}</div>
-              {taskSecondary && <div className="text-[11px] text-mute/60 leading-snug line-clamp-2">{taskSecondary}</div>}
             </div>
           )}
-          {!taskPrimary && <div className="mt-auto text-[12px] text-mute/60">{isSessionActive(session) ? 'active' : 'calm'}</div>}
+          {!taskPrimary && <div className="mt-auto text-[12px] text-mute/60">{signal.state === 'working' ? 'active' : 'calm'}</div>}
         </>
-      )}
-      {mates && mates.length > 0 && (
-        <div className="pt-2 mt-1 border-t border-hairline/40 flex flex-col gap-1">
-          {mates.map(m => (
-            <div
-              key={m.key}
-              {...glanceTrigger({ name: m.session.name, host: m.session.host, display_name: m.session.display_name, host_name: m.session.host_name })}
-              onClick={(e) => { e.stopPropagation(); onOpen(m.session) }}
-              className="flex items-center gap-1.5 text-[11px] text-mute/60 hover:text-ink cursor-pointer truncate"
-              title={`Open ${m.session.display_name || m.session.name}`}
-            >
-              <span className="text-mute/30">↳</span>
-              <span className="truncate font-mono">{m.session.display_name || m.session.name}</span>
-            </div>
-          ))}
-        </div>
       )}
     </button>
   )
 }
 
-export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, onOpenFile, layoutGroups, onRenameSession }: OverviewProps) {
+export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, onOpenFile, onRenameSession }: OverviewProps) {
   const { schedules } = useSchedules()
   const scheduleById = useMemo(() => new Map(schedules.map(s => [s.id, s])), [schedules])
-  const scheduleIdFor = useCallback((session: Session) => (
-    scheduleIDs.get(sessionKey(session)) || scheduleIDs.get(session.name) || sessionScheduleID(session)
+  const scheduleIdFor = useCallback((session: SessionView) => (
+    scheduleIDs.get(session.key) || session.scheduleId || ''
   ), [scheduleIDs])
   const [stats, setStats] = useState<Stats | null>(null)
   const [menu, setMenu] = useState<{ target: SessionMenuTarget; x: number; y: number } | null>(null)
@@ -267,7 +241,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
     e.preventDefault()
     const s = item.session
     setMenu({
-      target: { key: item.key, id: s.id, name: s.name, label: sessionLabel(s), host: s.host, isWorktree: s.is_worktree ?? false },
+      target: { key: item.key, label: s.label, worktreeBranch: s.worktreeBranch },
       x: e.clientX,
       y: e.clientY,
     })
@@ -277,7 +251,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
   const glance = useGlance(hasMultipleHosts)
   // Docked live-terminal split. Engages only on wide, fine-pointer viewports;
   // otherwise a card click falls back to full-view nav.
-  const [selected, setSelected] = useState<Session | null>(null)
+  const [selected, setSelected] = useState<SessionView | null>(null)
   const [canDock, setCanDock] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 900px) and (pointer: fine)').matches)
   useEffect(() => {
     const mq = window.matchMedia('(min-width: 900px) and (pointer: fine)')
@@ -285,16 +259,16 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
     mq.addEventListener('change', sync)
     return () => mq.removeEventListener('change', sync)
   }, [])
-  const handleCardOpen = useCallback((session: Session) => {
+  const handleCardOpen = useCallback((session: SessionView) => {
     if (canDock) setSelected(session)
     else onSessionSelect(session)
   }, [canDock, onSessionSelect])
   // Drop the dock if its session disappears (e.g. killed).
   useEffect(() => {
-    if (selected && !sessions.some(s => sessionKey(s) === sessionKey(selected))) setSelected(null)
+    if (selected && !sessions.some(s => s.key === selected.key)) setSelected(null)
   }, [sessions, selected])
   const split = !!selected
-  const selectedKey = selected ? sessionKey(selected) : null
+  const selectedKey = selected ? selected.key : null
   const [splitWidth, setSplitWidth] = useState(() => {
     const v = parseInt(localStorage.getItem('overview_split_width') || '', 10)
     return Number.isFinite(v) && v >= 360 ? Math.min(v, 1200) : 520
@@ -332,12 +306,12 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
   const scheduledSet = useMemo(() => {
     const set = new Set<string>()
     for (const s of sessions) {
-      if (scheduleIdFor(s)) set.add(sessionKey(s))
+      if (scheduleIdFor(s)) set.add(s.key)
     }
     return set
   }, [sessions, scheduleIdFor])
 
-  const foregroundSessions = useMemo(() => sessions.filter(s => !hiddenSet.has(sessionKey(s)) && !backgroundSet.has(sessionKey(s)) && !scheduledSet.has(sessionKey(s))), [sessions, hiddenSet, backgroundSet, scheduledSet])
+  const foregroundSessions = useMemo(() => sessions.filter(s => !hiddenSet.has(s.key) && !backgroundSet.has(s.key) && !scheduledSet.has(s.key)), [sessions, hiddenSet, backgroundSet, scheduledSet])
   const hiddenCount = sessions.length - foregroundSessions.length - scheduledSet.size
 
   useEffect(() => {
@@ -352,43 +326,23 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
     return () => clearInterval(interval)
   }, [])
 
-  const buildItem = useCallback((session: Session): CardItem => {
-    const key = sessionKey(session)
+  const buildItem = useCallback((session: SessionView): CardItem => {
+    const key = session.key
     const events = getSessionEvents(key)
     const activity = getSessionActivity(key)
-    const signal = sessionSignal(session, events, activity, isSessionInActiveTurn(key))
+    const signal = sessionViewSignal(session, events, activity, isSessionInActiveTurn(key))
     const event = events.find(e => e.status === 'waiting' || e.status === 'stuck' || e.status === 'error')
     return { session, key, signal, event, events, activity }
   }, [getSessionEvents, getSessionActivity, isSessionInActiveTurn])
 
   const items = useMemo<CardItem[]>(() => foregroundSessions.map(buildItem), [foregroundSessions, buildItem])
-
-  // Fold tiled "tool" panes (no agent) into the agent card they were tiled with.
-  // Per tile group: agent sessions keep their own card; non-agent sessions become
-  // mate rows under the group's primary agent card and drop out of the board columns.
-  const { matesByCard, hiddenMateKeys } = useMemo(() => {
-    const itemByKey = new Map(items.map(it => [it.key, it]))
-    const matesByCard = new Map<string, CardItem[]>()
-    const hiddenMateKeys = new Set<string>()
-    for (const g of layoutGroups ?? []) {
-      if (g.leaves.length < 2) continue
-      const leaf = g.leaves.map(k => itemByKey.get(k)).filter((x): x is CardItem => !!x)
-      const tools = leaf.filter(i => isToolSession(i.session, i.events))
-      const agents = leaf.filter(i => !tools.includes(i))
-      if (agents.length === 0 || tools.length === 0) continue
-      const primary = agents.find(i => i.key === g.activeKey) ?? agents[0]
-      matesByCard.set(primary.key, [...(matesByCard.get(primary.key) ?? []), ...tools])
-      for (const t of tools) hiddenMateKeys.add(t.key)
-    }
-    return { matesByCard, hiddenMateKeys }
-  }, [items, layoutGroups])
-  const hiddenItems = useMemo<CardItem[]>(() => sessions.filter(s => hiddenSet.has(sessionKey(s)) && !scheduledSet.has(sessionKey(s))).map(buildItem), [sessions, hiddenSet, scheduledSet, buildItem])
-  const bgItems = useMemo<CardItem[]>(() => sessions.filter(s => !hiddenSet.has(sessionKey(s)) && backgroundSet.has(sessionKey(s)) && !scheduledSet.has(sessionKey(s))).map(buildItem), [sessions, hiddenSet, backgroundSet, scheduledSet, buildItem])
+  const hiddenItems = useMemo<CardItem[]>(() => sessions.filter(s => hiddenSet.has(s.key) && !scheduledSet.has(s.key)).map(buildItem), [sessions, hiddenSet, scheduledSet, buildItem])
+  const bgItems = useMemo<CardItem[]>(() => sessions.filter(s => !hiddenSet.has(s.key) && backgroundSet.has(s.key) && !scheduledSet.has(s.key)).map(buildItem), [sessions, hiddenSet, backgroundSet, scheduledSet, buildItem])
 
   // Collapse every run of a schedule down to its newest session, with a badge
   // for the total run count, so repeated fires don't multiply cards in the rail.
   const scheduledItems = useMemo<CardItem[]>(() => {
-    const groups = new Map<string, Session[]>()
+    const groups = new Map<string, SessionView[]>()
     for (const s of sessions) {
       const sid = scheduleIdFor(s)
       if (!sid) continue
@@ -396,8 +350,8 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
       groups.get(sid)!.push(s)
     }
     const out: CardItem[] = []
-    for (const [sid, group] of groups) {
-      const newest = group.slice().sort((a, b) => (b.created || '').localeCompare(a.created || ''))[0]
+    for (const [, group] of groups) {
+      const newest = group.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0]
       if (!newest) continue
       const item = buildItem(newest)
       out.push({ ...item, scheduleRunCount: group.length })
@@ -408,7 +362,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
   const grouped = useMemo(() => {
     const groups = new Map<string, CardItem[]>()
     for (const item of items) {
-      const groupLabel = hasMultipleHosts ? (item.session.host_name || 'Local') : 'Sessions'
+      const groupLabel = hasMultipleHosts ? (item.session.host?.name || 'Local') : 'Sessions'
       if (!groups.has(groupLabel)) groups.set(groupLabel, [])
       groups.get(groupLabel)!.push(item)
     }
@@ -416,24 +370,24 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
       .sort(([a], [b]) => (a === 'Local' || a === 'Sessions' ? -1 : b === 'Local' || b === 'Sessions' ? 1 : a.localeCompare(b)))
       .map(([groupLabel, groupItems]) => ({
         groupLabel,
-        items: groupItems.sort((a, b) => stateRank[a.signal.state] - stateRank[b.signal.state] || a.session.name.localeCompare(b.session.name)),
+        items: groupItems.sort((a, b) => stateRank[a.signal.state] - stateRank[b.signal.state] || a.session.label.localeCompare(b.session.label)),
       }))
   }, [items, hasMultipleHosts])
 
   const byState = useMemo(() => COLUMN_ORDER.map(state => ({
     state,
     items: items
-      .filter(i => i.signal.state === state && !hiddenMateKeys.has(i.key))
+      .filter(i => i.signal.state === state)
       .sort((a, b) => {
         // needs_you: longest-blocked first (oldest loud event); else group by host, then name
         if (state === 'needs_you') return (a.event?.timestamp || '').localeCompare(b.event?.timestamp || '')
-        const aLocal = !a.session.host || a.session.host === localHostId
-        const bLocal = !b.session.host || b.session.host === localHostId
-        const ah = a.session.host_name || ''
-        const bh = b.session.host_name || ''
-        return (aLocal && !bLocal ? -1 : bLocal && !aLocal ? 1 : ah.localeCompare(bh)) || a.session.name.localeCompare(b.session.name)
+        const aLocal = a.session.isLocal
+        const bLocal = b.session.isLocal
+        const ah = a.session.host?.name || ''
+        const bh = b.session.host?.name || ''
+        return (aLocal && !bLocal ? -1 : bLocal && !aLocal ? 1 : ah.localeCompare(bh)) || a.session.label.localeCompare(b.session.label)
       }),
-  })), [items, hiddenMateKeys, localHostId])
+  })), [items, localHostId])
 
   const activeHostSections = hosts.filter(h => h.stats)
 
@@ -503,7 +457,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
               </h3>
               <div className={split ? 'grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 items-start' : 'grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2 items-start'}>
                 {colItems.map(item => (
-                  <SessionCard key={item.key} item={item} hasMultipleHosts={hasMultipleHosts} getSessionEvents={getSessionEvents} onOpen={handleCardOpen} onJumpToSession={onJumpToSession} onDismissAlert={onDismissAlert} onContextMenu={openMenu} selected={selectedKey === item.key} glanceTrigger={glance.trigger} mates={matesByCard.get(item.key)} />
+                  <SessionCard key={item.key} item={item} hasMultipleHosts={hasMultipleHosts} getSessionEvents={getSessionEvents} onOpen={handleCardOpen} onJumpToSession={onJumpToSession} onDismissAlert={onDismissAlert} onContextMenu={openMenu} selected={selectedKey === item.key} glanceTrigger={glance.trigger} />
                 ))}
               </div>
             </div>
@@ -517,7 +471,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
           <div key={groupLabel} className="mb-10">
             <h3 className="font-display text-[13px] font-bold text-ink mb-4 flex items-center gap-2">
               {groupLabel}
-              {hasMultipleHosts && <span className={`text-[10px] font-medium ${groupItems[0]?.session.host_online !== false ? 'text-success' : 'text-mute/50'}`}>{groupItems[0]?.session.host_online !== false ? 'online' : 'offline'}</span>}
+              {hasMultipleHosts && <span className={`text-[10px] font-medium ${groupItems[0]?.session.hostOnline !== false ? 'text-success' : 'text-mute/50'}`}>{groupItems[0]?.session.hostOnline !== false ? 'online' : 'offline'}</span>}
               <span className="text-mute/40 font-bold text-xs ml-1">({groupItems.length})</span>
             </h3>
             <div className={split ? 'grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2' : 'grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2'}>
@@ -568,7 +522,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
       <div onPointerDown={startResize} title="Drag to resize" className="shrink-0 w-1.5 cursor-col-resize bg-hairline/40 hover:bg-primary/50 transition-colors" />
       <div className="shrink-0 border-l border-hairline flex flex-col" style={{ width: splitWidth }}>
         <div className="shrink-0 h-9 flex items-center gap-2 px-3 border-b border-hairline bg-surface-elevated/40">
-          <span className="font-display text-[13px] font-bold text-ink truncate min-w-0 flex-1">{selected.display_name || selected.name}</span>
+          <span className="font-display text-[13px] font-bold text-ink truncate min-w-0 flex-1">{selected.label}</span>
           <button title="Open full view" onClick={() => onSessionSelect(selected)} className="p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
@@ -580,7 +534,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
             </svg>
           </button>
         </div>
-        <div className="min-h-0 flex-1 flex flex-col overflow-hidden"><Terminal sessionName={selected.name} hostId={selected.host} backend={selected.backend} onOpenFile={(path) => onOpenFile?.(path, sessionCwd(selected), selected.host, selected.name) ?? false} /></div>
+        <div className="min-h-0 flex-1 flex flex-col overflow-hidden"><Terminal sessionName={selected.id} hostId={selected.ownerId} backend="daemon" sessionId={selected.id} ownerId={selected.ownerId} generation={selected.generation} onOpenFile={(path) => onOpenFile?.(path, selected.cwd, selected.ownerId, selected.id) ?? false} /></div>
       </div>
       </>
     )}

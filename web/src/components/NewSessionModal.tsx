@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Host } from '../hooks/useHosts'
-import { Session } from '../lib/session'
+import type { SessionView } from '../state/session/viewModel'
 import { usePreferences } from '../hooks/usePreferences'
 import { cn } from '../lib/utils'
 import { AgentMark } from './AgentMark'
@@ -22,7 +22,7 @@ export interface NewSessionInput {
 
 interface NewSessionModalProps {
   hosts: Host[]
-  sessions: Session[]
+  sessions: SessionView[]
   // Resolves (void) on success, rejects (Error) on failure -- never a string
   // that carries dual success/error meaning. Callers must not swallow the
   // rejection; NewSessionModal catches it itself and renders the message.
@@ -59,7 +59,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   const [error, setError] = useState<string | null>(null)
   const onlineHosts = hosts.filter(h => h.online)
   const localHost = onlineHosts.find(h => h.local)
-  // HostSelect option values are canonical OwnerIDs, matching Session.host's
+  // HostSelect option values are canonical OwnerIDs, matching SessionView.ownerId's
   // encoding directly -- a host with no owner_id has no v2 identity and
   // cannot be a create target (see Host.owner_id's doc in useHosts.ts).
   const selectableHosts = useMemo(() => onlineHosts.filter(h => h.owner_id), [onlineHosts])
@@ -104,13 +104,13 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
     )
     const seen = new Set<string>()
     const sorted = [...sessions]
-      .filter(s => s.project_path && s.project_path.trim())
-      .sort((a, b) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime())
+      .filter(s => s.cwd && s.cwd.trim())
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     const unique: RecentLocation[] = []
     for (const s of sorted) {
-      const p = s.project_path!
-      const local = !s.host || (!!localOwnerId && s.host === localOwnerId)
-      const ownerId = local ? localOwnerId : s.host!
+      const p = s.cwd!
+      const local = s.isLocal || (!!localOwnerId && s.ownerId === localOwnerId)
+      const ownerId = local ? localOwnerId : s.ownerId
       // Skip locations whose host is offline/unknown (cannot create there)
       if (!onlineOwnerIds.has(ownerId)) continue
       const key = `${ownerId}::${p}`
@@ -120,8 +120,8 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
         path: p,
         ownerId,
         hostName: local
-          ? (localHost?.name || s.host_name || 'Local')
-          : (hostNameByOwnerId.get(ownerId) || s.host_name || ownerId),
+          ? (localHost?.name || s.host?.name || 'Local')
+          : (hostNameByOwnerId.get(ownerId) || s.host?.name || ownerId),
         local,
       })
       if (unique.length >= 10) break

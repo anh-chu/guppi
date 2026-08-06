@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 //
 // Round-9 Finding, Gap 2: SessionApp's session keys are always
-// `${ownerId}/${stableSessionId}` (Session.host is the canonical OwnerID, never the
-// peer transport fingerprint), but the server's PTY activity snapshot is
-// keyed `${peerFingerprint}/${SessionID}`. Before the fix, useActivity had no
+// `${ownerId}/${stableSessionId}` (SessionView.ownerId is the canonical OwnerID,
+// never the peer transport fingerprint), but the server's PTY activity snapshot
+// is keyed `${peerFingerprint}/${SessionID}`. Before the fix, useActivity had no
 // host-normalization logic (unlike its sibling useToolEvents), so a v2
 // session with live PTY output but no current tool-hook event was
 // misclassified as inactive because the lookup key never matched.
@@ -12,18 +12,40 @@
 // its actual public surface (handleActivityEvent, the same function App.tsx
 // wires to the WebSocket's "activity" message; getSessionActivity, the same
 // function Sidebar/Overview call), and asserts the actual UI-facing derived
-// status via sessionSignal -- the exact function App.tsx's badges are
-// computed from -- not just an internal map having an entry. Mirrors
-// useToolEvents.appv2.test.ts's exact style.
+// status via sessionViewSignal -- the exact function App.tsx's badges are
+// computed from -- not just an internal map having an entry.
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useActivity } from './useActivity'
 import type { Host } from './useHosts'
-import type { Session } from '../lib/session'
-import { sessionSignal } from '../lib/sessionState'
+import type { SessionView } from '../state/session/viewModel'
+import { sessionViewSignal } from '../state/session/viewModel'
 
 const emptyJsonResponse = () =>
   Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as Response)
+
+function makeView(ownerId: string, stableSessionId: string): SessionView {
+  return {
+    key: `${ownerId}/${stableSessionId}`,
+    ref: { owner: ownerId, session: stableSessionId, window: 0, pane: 0 },
+    id: stableSessionId,
+    ownerId,
+    displayName: undefined,
+    label: stableSessionId,
+    createdAt: new Date().toISOString(),
+    generation: undefined,
+    hidden: false,
+    background: false,
+    scheduleId: undefined,
+    cwd: undefined,
+    shell: undefined,
+    agentType: undefined,
+    worktreeBranch: undefined,
+    isLocal: false,
+    host: undefined,
+    hostOnline: true,
+  }
+}
 
 describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () => {
   beforeEach(() => {
@@ -73,18 +95,10 @@ describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () =>
     // isn't accidentally passing via some other fallback).
     expect(result.current.getSessionActivity(`${fingerprint}/${stableSessionId}`)).toBeUndefined()
 
-    // Actual UI-facing derived status -- the same sessionSignal() App.tsx's
+    // Actual UI-facing derived status -- the same sessionViewSignal() App.tsx's
     // badges are computed from.
-    const session: Session = {
-      id: stableSessionId,
-      name: stableSessionId,
-      host: ownerId,
-      windows: [],
-      created: new Date().toISOString(),
-      attached: true,
-      last_activity: new Date().toISOString(),
-    }
-    const signal = sessionSignal(session, [], looked, false)
+    const view = makeView(ownerId, stableSessionId)
+    const signal = sessionViewSignal(view, [], looked, false)
     expect(signal.state).toBe('working')
   })
 
@@ -117,16 +131,8 @@ describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () =>
     const looked = result.current.getSessionActivity(v2SessionKey)
     expect(looked).toBeDefined()
 
-    const session: Session = {
-      id: stableSessionId,
-      name: stableSessionId,
-      host: ownerId,
-      windows: [],
-      created: new Date().toISOString(),
-      attached: true,
-      last_activity: new Date().toISOString(),
-    }
-    const signal = sessionSignal(session, [], looked, false)
+    const view = makeView(ownerId, stableSessionId)
+    const signal = sessionViewSignal(view, [], looked, false)
     expect(signal.state).toBe('working')
   })
 })

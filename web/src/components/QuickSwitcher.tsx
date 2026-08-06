@@ -1,23 +1,23 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { Session, sessionKey, sessionLabel } from '../lib/session'
+import type { SessionView } from '../state/session/viewModel'
 import { ToolEvent } from '../hooks/useToolEvents'
 import { toolColors } from '../theme'
 import { cn } from '../lib/utils'
 
 interface QuickSwitcherProps {
-  sessions: Session[]
+  sessions: SessionView[]
   waitingEvents: ToolEvent[]
-  onSelect: (sessionName: string, windowIndex?: number) => void
+  onSelect: (sessionKey: string, windowIndex?: number) => void
   onOverview: () => void
   onCreateSession: () => void
   onClose: () => void
 }
 
 interface SwitcherItem {
-  type: 'waiting' | 'session' | 'window' | 'nav' | 'action'
+  type: 'waiting' | 'session' | 'nav' | 'action'
   label: string
   detail?: string
-  sessionName: string
+  sessionKey: string
   windowIndex?: number
   statusColor?: string
   action?: string
@@ -52,7 +52,7 @@ export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, o
         type: 'waiting',
         label: `${evt.session}`,
         detail: `${evt.tool} — ${evt.message || 'waiting for input'}`,
-        sessionName: evtKey,
+        sessionKey: evtKey,
         windowIndex: evt.window,
         statusColor: toolColors[evt.tool] || 'var(--warning)',
       })
@@ -62,7 +62,7 @@ export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, o
       type: 'nav',
       label: 'Overview',
       detail: 'Dashboard',
-      sessionName: '',
+      sessionKey: '',
     })
 
     // New session action
@@ -70,33 +70,20 @@ export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, o
       type: 'action',
       label: 'New Session',
       detail: 'Create & switch',
-      sessionName: '',
+      sessionKey: '',
       action: 'create',
     })
 
-    const hasMultipleHosts = sessions.some(s => s.host)
+    const hasMultipleHosts = sessions.some(s => !s.isLocal)
     for (const session of sessions) {
-      const sk = sessionKey(session)
-      // sk stays id-based (session.name is the immutable canonical id); the
-      // row SHOWS the friendly label via sessionLabel() (name -> display_name).
-      const label = hasMultipleHosts && session.host_name ? `${session.host_name}: ${sessionLabel(session)}` : sessionLabel(session)
+      const label = hasMultipleHosts && session.host?.name ? `${session.host.name}: ${session.label}` : session.label
+      const cwdLeaf = session.cwd ? session.cwd.split('/').filter(Boolean).pop() : undefined
       items.push({
         type: 'session',
         label,
-        detail: `${session.windows.length} window${session.windows.length !== 1 ? 's' : ''}`,
-        sessionName: sk,
+        detail: cwdLeaf ? `${cwdLeaf} · ${session.hostOnline ? 'online' : 'offline'}` : (session.hostOnline ? 'online' : 'offline'),
+        sessionKey: session.key,
       })
-      if (session.windows.length > 1) {
-        for (const win of session.windows) {
-          items.push({
-            type: 'window',
-            label: `${label}/${win.name}`,
-            detail: `window ${win.index}`,
-            sessionName: sk,
-            windowIndex: win.index,
-          })
-        }
-      }
     }
     return items
   }, [sessions, waitingEvents])
@@ -137,7 +124,7 @@ export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, o
     } else if (item.type === 'action' && item.action === 'create') {
       onCreateSession()
     } else {
-      onSelect(item.sessionName, item.windowIndex)
+      onSelect(item.sessionKey, item.windowIndex)
     }
   }
 
@@ -183,7 +170,7 @@ export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, o
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={waitingEvents.length > 0 ? 'Action required — press Enter...' : 'Search for a session, window, or action...'}
+            placeholder={waitingEvents.length > 0 ? 'Action required — press Enter...' : 'Search for a session or action...'}
             className="w-full text-[17px] text-ink bg-transparent border-none outline-none font-sans font-medium placeholder:text-mute/40"
           />
         </div>
@@ -221,7 +208,7 @@ export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, o
                           <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
                         </svg>
                       )}
-                      {(item.type === 'session' || item.type === 'window') && (
+                      {item.type === 'session' && (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-mute/60">
                           <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
                         </svg>
@@ -229,7 +216,6 @@ export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, o
                     </div>
                     <span className={cn(
                       'text-[13px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-medium',
-                      item.type === 'window' && 'pl-2 text-mute/80 font-normal',
                     )}>
                       {item.label}
                     </span>

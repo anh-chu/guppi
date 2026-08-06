@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 //
 // Regression proof for round-8 Finding C: SessionApp's session keys are always
-// `${ownerId}/${stableSessionId}` (Session.host is the canonical OwnerID, never the
-// peer transport fingerprint -- see App.tsx's `sessions` memo and
-// sessionKey() in lib/session.ts), but tool/activity events arrive keyed by
+// `${ownerId}/${stableSessionId}` (SessionView.ownerId is the canonical OwnerID, never the
+// peer transport fingerprint), but tool/activity events arrive keyed by
 // `{host: peer-fingerprint, session: mutable-display-label}` with a SEPARATE
 // stable `session_id` field the frontend previously never read (see
 // pkg/toolevents.Event / pkg/ws/hub.go's WS wrapping). Before the fix, these
@@ -15,18 +14,41 @@
 // surface (handleEvent, the same function App.tsx wires to the WebSocket;
 // sessionNeedsAttention/getSessionEvents/isSessionInActiveTurn, the same
 // functions Sidebar/Overview call), and asserts the actual UI-facing
-// derived status via sessionSignal -- the exact function App.tsx's `glance`
+// derived status via sessionViewSignal -- the exact function App.tsx's `glance`
 // summary and session badges are computed from -- not just an internal map
 // having an entry.
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useToolEvents } from './useToolEvents'
 import type { Host } from './useHosts'
-import type { Session } from '../lib/session'
-import { sessionSignal } from '../lib/sessionState'
+import type { SessionView } from '../state/session/viewModel'
+import { sessionViewSignal } from '../state/session/viewModel'
 
 const emptyJsonResponse = () =>
   Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as Response)
+
+function makeView(ownerId: string, stableSessionId: string): SessionView {
+  return {
+    key: `${ownerId}/${stableSessionId}`,
+    ref: { owner: ownerId, session: stableSessionId, window: 0, pane: 0 },
+    id: stableSessionId,
+    ownerId,
+    displayName: undefined,
+    label: stableSessionId,
+    createdAt: new Date().toISOString(),
+    generation: undefined,
+    hidden: false,
+    background: false,
+    scheduleId: undefined,
+    cwd: undefined,
+    shell: undefined,
+    agentType: undefined,
+    worktreeBranch: undefined,
+    isLocal: false,
+    host: undefined,
+    hostOnline: true,
+  }
+}
 
 describe('useToolEvents SessionApp identity normalization (Finding C)', () => {
   beforeEach(() => {
@@ -75,9 +97,8 @@ describe('useToolEvents SessionApp identity normalization (Finding C)', () => {
       })
     })
 
-    // The exact key App.tsx's `sessions` memo / sessionKey() produce for a
-    // v2 session: Session.host is always the OwnerID, Session.name the
-    // stable SessionID.
+    // The exact key SessionView.key / sessionRefToKey produce for a v2
+    // session: ownerId is always the OwnerID, id the stable SessionID.
     const v2SessionKey = `${ownerId}/${stableSessionId}`
 
     // The hook must resolve the event under the OwnerID/stable-id key, not
@@ -85,19 +106,11 @@ describe('useToolEvents SessionApp identity normalization (Finding C)', () => {
     expect(result.current.sessionNeedsAttention(v2SessionKey)).toBe(true)
     expect(result.current.getSessionEvents(v2SessionKey)).toHaveLength(1)
 
-    // Actual UI-facing derived status -- the same sessionSignal() App.tsx's
+    // Actual UI-facing derived status -- the same sessionViewSignal() App.tsx's
     // glance summary and Sidebar/Overview badges are computed from.
-    const session: Session = {
-      id: stableSessionId,
-      name: stableSessionId,
-      host: ownerId,
-      windows: [],
-      created: new Date().toISOString(),
-      attached: true,
-      last_activity: new Date().toISOString(),
-    }
-    const signal = sessionSignal(
-      session,
+    const view = makeView(ownerId, stableSessionId)
+    const signal = sessionViewSignal(
+      view,
       result.current.getSessionEvents(v2SessionKey),
       undefined,
       result.current.isSessionInActiveTurn(v2SessionKey),
@@ -144,16 +157,8 @@ describe('useToolEvents SessionApp identity normalization (Finding C)', () => {
     const v2SessionKey = `${ownerId}/${stableSessionId}`
     expect(result.current.isSessionInActiveTurn(v2SessionKey)).toBe(true)
 
-    const session: Session = {
-      id: stableSessionId,
-      name: stableSessionId,
-      host: ownerId,
-      windows: [],
-      created: new Date().toISOString(),
-      attached: true,
-      last_activity: new Date().toISOString(),
-    }
-    const signal = sessionSignal(session, [], undefined, result.current.isSessionInActiveTurn(v2SessionKey))
+    const view = makeView(ownerId, stableSessionId)
+    const signal = sessionViewSignal(view, [], undefined, result.current.isSessionInActiveTurn(v2SessionKey))
     expect(signal.state).toBe('working')
   })
 })

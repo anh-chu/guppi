@@ -2,7 +2,22 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useHosts } from '../hooks/useHosts'
 import { usePreferences } from '../hooks/usePreferences'
 import { Schedule, ScheduleForm, useSchedules } from '../hooks/useSchedules'
-import { Session, sessionKey, sessionScheduleID } from '../lib/session'
+// Minimal local shape for the legacy /api/sessions + /api/session-attrs REST
+// endpoints this delete-flow still calls directly -- these predate the
+// canonical catalog and are unrelated to state/session/viewModel.ts.
+interface LegacyScheduleSession {
+  id: string
+  name: string
+  host?: string
+  scheduleID?: string
+  schedule_id?: string
+}
+function legacySessionKey(s: LegacyScheduleSession): string {
+  return s.host ? `${s.host}/${s.name}` : s.name
+}
+function legacyScheduleID(s: LegacyScheduleSession): string {
+  return s.scheduleID || s.schedule_id || ''
+}
 import { AgentMark } from './AgentMark'
 import { HostSelect } from './HostSelect'
 import { cn } from '../lib/utils'
@@ -229,17 +244,17 @@ export function ScheduleModal({ onClose }: Props) {
 
     // Find the sessions this schedule spawned (attrs map is authoritative; the
     // session field is the fallback). Offer to kill them along with the schedule.
-    let scheduleSessions: Session[] = []
+    let scheduleSessions: LegacyScheduleSession[] = []
     try {
       const [sessRes, attrsRes] = await Promise.all([
         fetch('/api/sessions'),
         fetch('/api/session-attrs'),
       ])
-      const sessions: Session[] = sessRes.ok ? (await sessRes.json()) || [] : []
+      const sessions: LegacyScheduleSession[] = sessRes.ok ? (await sessRes.json()) || [] : []
       const attrs = attrsRes.ok ? await attrsRes.json().catch(() => null) : null
       const scheduleIDs: Record<string, string> = attrs?.schedule_ids || {}
       scheduleSessions = sessions.filter(s => {
-        const sid = scheduleIDs[sessionKey(s)] || scheduleIDs[s.name] || sessionScheduleID(s)
+        const sid = scheduleIDs[legacySessionKey(s)] || scheduleIDs[s.name] || legacyScheduleID(s)
         return sid === schedule.id
       })
     } catch {
