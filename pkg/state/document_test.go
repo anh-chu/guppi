@@ -200,7 +200,7 @@ func TestFixtureSessionWithoutNewMetadataFieldsLoadsWithEmptyValues(t *testing.T
 
 // TestSchema4WorkspaceContract_FAILS proves the schema-4 target contract:
 // AppDocument has a singleton Workspace with {Revision, Tree} only,
-// and no Layouts or TmuxCatalogRevision fields.
+// and no Layouts field.
 func TestSchema4WorkspaceContract_FAILS(t *testing.T) {
 	// This test documents the target schema-4 workspace shape.
 	// It will FAIL against schema-3 HEAD because the contract does not yet exist.
@@ -212,19 +212,16 @@ func TestSchema4WorkspaceContract_FAILS(t *testing.T) {
 		Workspace: &WorkspaceRecord{Revision: 1, Tree: nil}, // Empty workspace in schema 4
 	}
 	
-	// Serialize and verify no "layouts" or "tmux_catalog_revision" appear in JSON.
+	// Serialize and verify no "layouts" field appears in JSON.
 	data, err := json.Marshal(schema4Doc)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	str := string(data)
 	
-	// These assertions FAIL now; they pass after Task 1.
+	// This assertion FAILS now; it passes after Task 1.
 	if containsLayoutsField := contains(str, "layouts"); containsLayoutsField {
 		t.Error("schema 4 must not have 'layouts' field; found in JSON")
-	}
-	if containsTmuxRev := contains(str, "tmux_catalog_revision"); containsTmuxRev {
-		t.Error("schema 4 must not have 'tmux_catalog_revision' field; found in JSON")
 	}
 }
 

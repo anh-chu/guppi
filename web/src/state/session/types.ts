@@ -90,16 +90,6 @@ export type LayoutRecord = {
   tree: PaneNode
 }
 
-export type BrowserSession = {
-  ref: SessionRef
-  phase: SessionPhase
-  revision: number
-  display_name?: string
-  project_path?: string
-  prompt_preview?: string
-  agent_type?: string
-}
-
 export type AppDocument = {
   schema: number
   owner: OwnerID
@@ -107,7 +97,6 @@ export type AppDocument = {
   sessions: LocalSessionRecord[]
   layouts?: LayoutRecord[]
   commands?: CommandReceipt[]
-  tmux_catalog_revision?: number
 }
 
 export type OwnerCatalogSnapshot = {
@@ -122,15 +111,6 @@ export type PendingCreateRecord = {
   ref: SessionRef
   inserted_at: string
   schedule_id?: string
-}
-
-export type BrowserWorkspaceSnapshot = {
-  transport_generation: number
-  revision: number
-  owner: OwnerID
-  sessions: BrowserSession[]
-  workspace?: WorkspaceRecord
-  pending?: PendingCreateRecord[]
 }
 
 export type CommandReceipt = {

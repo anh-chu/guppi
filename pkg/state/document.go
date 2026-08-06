@@ -277,32 +277,6 @@ type OwnerCatalogSnapshot struct {
 	Workspace *WorkspaceRecord     `json:"workspace,omitempty"`
 }
 
-// BrowserWorkspaceSnapshot is the aggregate state exposed to one browser
-// connection. Its revision is connection-local and includes command sequence
-// numbers, but the underlying owner revisions are authoritative.
-type BrowserWorkspaceSnapshot struct {
-	Generation int                   `json:"transport_generation"`
-	Revision   int64                 `json:"revision"`
-	Owner      OwnerID               `json:"owner"`
-	Sessions   []BrowserSession      `json:"sessions"`
-	Workspace  *WorkspaceRecord      `json:"workspace,omitempty"`
-	Pending    []PendingCreateRecord `json:"pending,omitempty"`
-}
-
-// BrowserSession is the read-only session projection shown to the browser.
-type BrowserSession struct {
-	Ref      SessionRef   `json:"ref"`
-	Phase    SessionPhase `json:"phase"`
-	Revision int64        `json:"revision"`
-
-	// DisplayName/ProjectPath/PromptPreview/AgentType are mutable display
-	// fields shown to the browser.
-	DisplayName   string `json:"display_name,omitempty"`
-	ProjectPath   string `json:"project_path,omitempty"`
-	PromptPreview string `json:"prompt_preview,omitempty"`
-	AgentType     string `json:"agent_type,omitempty"`
-}
-
 // CommandReceiptError is the durable, stable representation of a command
 // that was rejected in a way that is safe to replay unchanged: the error is
 // fully determined by the command's own input and does not depend on

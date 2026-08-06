@@ -135,7 +135,7 @@ func OpenStore(path, nodeID string, opts StoreOptions) (*Store, error) {
 		"backup_recovered": recovered,
 		"migration_needed": false,
 		"authority":        opts.Authority,
-	}).Info("opened v2 state store")
+	}).Info("opened state store")
 
 	return s, nil
 }

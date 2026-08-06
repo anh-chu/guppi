@@ -56,8 +56,7 @@ runtime behavior remains behind existing code paths.
 - `AppDocument.Revision` is the persisted owner-scope catalog revision.
 - `WorkspaceRecord.Revision` and `LayoutRecord.Revision` are owner-scope
   persisted revisions for layout state.
-- `BrowserWorkspaceSnapshot.Revision` is a connection-local aggregate revision
-  maintained by the browser. It is reset on transport generation change.
+
 - The first snapshot on a new transport generation is accepted unconditionally.
   Subsequent snapshots are accepted only when their transport generation
   matches the current one.
