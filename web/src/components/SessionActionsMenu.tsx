@@ -20,6 +20,12 @@ export function SessionActionsMenu({
   onSessionKilled,
   onClose,
   onRenameSession,
+  moveToTop,
+  moveUp,
+  moveDown,
+  resetOrder,
+  isFirst,
+  isLast,
 }: {
   target: SessionMenuTarget
   x: number
@@ -30,6 +36,12 @@ export function SessionActionsMenu({
   onSessionKilled?: (key: string) => void
   onClose: () => void
   onRenameSession?: (key: string, label: string) => void
+  moveToTop?: (key: string) => void
+  moveUp?: (key: string) => void
+  moveDown?: (key: string) => void
+  resetOrder?: () => void
+  isFirst?: boolean
+  isLast?: boolean
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -100,6 +112,54 @@ export function SessionActionsMenu({
       <div className={item} onClick={() => { setSessionAttr(target.key, { background: !backgroundSet.has(target.key) }); onClose() }}>
         {backgroundSet.has(target.key) ? 'Foreground' : 'Background'}
       </div>
+      {/* Order actions: browser-local session reordering. */}
+      {moveToTop && (
+        <>
+          <div className="my-1 border-t border-hairline" />
+          <div
+            className={`${item} ${!isFirst ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}
+            onClick={() => {
+              if (!isFirst && moveToTop) {
+                moveToTop(target.key)
+                onClose()
+              }
+            }}
+          >
+            Move to top
+          </div>
+          <div
+            className={`${item} ${!isFirst ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}
+            onClick={() => {
+              if (!isFirst && moveUp) {
+                moveUp(target.key)
+                onClose()
+              }
+            }}
+          >
+            Move up
+          </div>
+          <div
+            className={`${item} ${!isLast ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}
+            onClick={() => {
+              if (!isLast && moveDown) {
+                moveDown(target.key)
+                onClose()
+              }
+            }}
+          >
+            Move down
+          </div>
+          <div
+            className={`${item} cursor-pointer`}
+            onClick={() => {
+              resetOrder?.()
+              onClose()
+            }}
+          >
+            Reset order
+          </div>
+        </>
+      )}
       <div className="my-1 border-t border-hairline" />
       <div
         className="px-3 py-1.5 text-sm cursor-pointer text-red-400 hover:bg-red-500/10"

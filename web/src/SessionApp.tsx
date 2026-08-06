@@ -35,6 +35,7 @@ import type { SessionRef } from './state/session/types'
 import { sessionRefToKey } from './state/session/paneTreeAdapter'
 import { selectSessionByRef } from './state/session/projections'
 import { useSessionState } from './hooks/useSessionState'
+import { useSessionOrder } from './hooks/useSessionOrder'
 import { toSessionView, toPresentationAttrs, sessionViewSignal, type SessionView } from './state/session/viewModel'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
@@ -384,6 +385,15 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     [state.catalog.sessionsByRef, state.runtimeByRef, hostIndex, state.catalog.localOwner, getSessionEvents],
   )
 
+  // Apply browser-local session ordering for Sidebar and QuickSwitcher.
+  // Overview and other components use sessionViews directly (no reordering).
+  const { ordered: orderedSessionViews, order: sessionOrder } = useSessionOrder(
+    sessionViews,
+    sessionState.bootstrapped,
+    getSessionEvents,
+    isSessionInActiveTurn,
+  )
+
   // Real hidden/background presentation state (see the block comment above
   // SessionApp for the set_presentation wiring this reads/writes).
   const sessionAttrs = useMemo(() => toPresentationAttrs(sessionViews), [sessionViews])
@@ -521,7 +531,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       )}
       {quickSwitcherOpen && (
         <QuickSwitcher
-          sessions={sessionViews}
+          sessions={orderedSessionViews}
           waitingEvents={allToolEvents}
           onSelect={(sessionName, windowIndex) => {
             handleJumpToSession(sessionName, windowIndex)
@@ -580,7 +590,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       <div className="flex-1 flex overflow-hidden">
         {!terminalFullscreen && (
           <Sidebar
-            sessions={sessionViews}
+            sessions={orderedSessionViews}
             selectedSession={remotePaneKey ?? activeKey}
             collapsed={sidebarCollapsed}
             selfUpdateAvailable={selfUpdate.status?.update_available ?? false}
@@ -604,6 +614,8 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
             crashedCount={crashedHook.crashedSessions.length}
             onCrashedClick={() => crashedHook.refresh()}
             onRenameSession={handleRenameSession}
+            bootstrapped={sessionState.bootstrapped}
+            sessionOrder={sessionOrder}
           />
         )}
         <div className="flex-1 flex flex-col overflow-hidden relative">

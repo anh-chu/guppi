@@ -5,6 +5,7 @@ import type { HostSnapshot } from '../state/session/wireTypes'
 type Host = HostSnapshot
 import { ToolEvent } from '../hooks/useToolEvents'
 import { useSchedules } from '../hooks/useSchedules'
+import type { SessionOrder } from '../hooks/useSessionOrder'
 import { cn } from '../lib/utils'
 import { describeCron } from '../lib/cron'
 import { formatRelativeTime, formatUptime } from '../lib/time'
@@ -44,6 +45,10 @@ interface SidebarProps {
   onQuickShell?: () => void
   crashedCount?: number
   onCrashedClick?: () => void
+  // Catalog bootstrap completion: gates session order pruning
+  bootstrapped?: boolean
+  // Session ordering functions (managed by SessionApp via useSessionOrder)
+  sessionOrder?: SessionOrder
 }
 
 const STATE_BADGE: Record<SessionState, { label: string; color: string; bg: string; pulse: boolean }> = {
@@ -95,6 +100,8 @@ export function Sidebar({
   onQuickShell,
   crashedCount = 0,
   onCrashedClick,
+  bootstrapped = false,
+  sessionOrder,
 }: SidebarProps) {
   const glancePreview = useGlance(!!hasMultipleHosts)
   const { schedules } = useSchedules()
@@ -212,19 +219,8 @@ export function Sidebar({
     [getSessionEvents, isSessionInActiveTurn],
   )
 
-  // Deterministic order: needs-attention first, then working, idle, offline;
-  // within each bucket, newest first, then by key.
-  const orderedSessions = useMemo(() => {
-    return [...sessions].sort((a, b) => {
-      const aState = signalOf(a).state
-      const bState = signalOf(b).state
-      if (aState !== bState) return stateRank[aState] - stateRank[bState]
-      const at = a.createdAt || ''
-      const bt = b.createdAt || ''
-      if (at !== bt) return bt.localeCompare(at)
-      return a.key.localeCompare(b.key)
-    })
-  }, [sessions, signalOf])
+  // Sessions are already ordered by SessionApp via useSessionOrder
+  const orderedSessions = sessions
 
   const visibleSessions = useMemo(() => {
     const filtered = orderedSessions.filter(session => !hiddenSet.has(session.key) && !backgroundSet.has(session.key))
@@ -827,19 +823,35 @@ export function Sidebar({
         </button>
       )}
 
-      {menu && (
-        <SessionActionsMenu
-          target={menu.target}
-          x={menu.x}
-          y={menu.y}
-          hiddenSet={hiddenSet}
-          backgroundSet={backgroundSet}
-          setSessionAttr={setSessionAttr}
-          onSessionKilled={onSessionKilled}
-          onClose={() => setMenu(null)}
-          onRenameSession={onRenameSession}
-        />
-      )}
+      {menu && (() => {
+        let menuProps: any = {
+          target: menu.target,
+          x: menu.x,
+          y: menu.y,
+          hiddenSet,
+          backgroundSet,
+          setSessionAttr,
+          onSessionKilled,
+          onClose: () => setMenu(null),
+          onRenameSession,
+        }
+        // Add order actions only if sessionOrder is provided
+        if (sessionOrder) {
+          const targetIndex = orderedSessions.findIndex(s => s.key === menu.target.key)
+          const isFirst = targetIndex <= 0
+          const isLast = targetIndex >= orderedSessions.length - 1 || orderedSessions.length <= 1
+          menuProps = {
+            ...menuProps,
+            moveToTop: sessionOrder.moveToTop,
+            moveUp: sessionOrder.moveUp,
+            moveDown: sessionOrder.moveDown,
+            resetOrder: sessionOrder.reset,
+            isFirst,
+            isLast,
+          }
+        }
+        return <SessionActionsMenu {...menuProps} />
+      })()}
     </aside>
   )
 }
