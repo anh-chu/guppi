@@ -20,7 +20,13 @@ import { paneNodeToPaneTree, sessionRefToKey } from '../state/session/paneTreeAd
 import { decodeBootstrapResponse } from '../state/session/wireCodec'
 import type { SessionRef, LayoutID, SplitDirection } from '../state/session/types'
 import type { CommandResult, BootstrapResponse } from '../state/session/wireTypes'
+import type { HostSnapshot } from '../state/session/wireTypes'
 import type { PaneTree } from '../lib/paneTree'
+import {
+  selectHostByOwner,
+  selectHostByPeer,
+  selectLocalHost,
+} from '../state/session/store'
 
 export type UseSessionStateResult = {
   state: SessionStoreState
@@ -32,6 +38,11 @@ export type UseSessionStateResult = {
   paneTree: PaneTree | null
   activeKey: string | null
   layoutId: LayoutID | null
+  // Convenience accessors for host snapshots
+  hosts: HostSnapshot[]
+  selectHostByOwner: (owner: string) => HostSnapshot | undefined
+  selectHostByPeer: (peer_id: string) => HostSnapshot | undefined
+  selectLocalHost: () => HostSnapshot | undefined
   createSession: (params: {
     name?: string
     shell?: string
@@ -99,6 +110,10 @@ export function useSessionState(): UseSessionStateResult {
           if (disposed) return
           store.replaceWorkspace(snapshot, gen)
         },
+        onHosts: (snapshots) => {
+          if (disposed) return
+          store.replaceHosts(snapshots)
+        },
         onConnectionChange: (online) => {
           if (disposed) return
           store.setConnectionOnline(online)
@@ -118,6 +133,9 @@ export function useSessionState(): UseSessionStateResult {
           }
           if (body.workspace) {
             store.replaceWorkspace(body.workspace, generation)
+          }
+          if (body.hosts) {
+            store.replaceHosts(body.hosts)
           }
         }
       } catch {
@@ -199,6 +217,9 @@ export function useSessionState(): UseSessionStateResult {
   )
   const layoutId = state.workspace.layoutId
 
+  const hosts = state.hosts.hosts
+  const hostsState = state.hosts
+
   return {
     state,
     bootstrapped: state.catalogBootstrapped,
@@ -206,6 +227,10 @@ export function useSessionState(): UseSessionStateResult {
     paneTree,
     activeKey,
     layoutId,
+    hosts,
+    selectHostByOwner: (owner: string) => selectHostByOwner(hostsState, owner),
+    selectHostByPeer: (peer_id: string) => selectHostByPeer(hostsState, peer_id),
+    selectLocalHost: () => selectLocalHost(hostsState),
     createSession,
     sessionCommand,
     workspaceCommand,

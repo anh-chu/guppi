@@ -40,7 +40,7 @@ describe('StateStreamClient', () => {
     const onWorkspace = vi.fn()
     const client = new StateStreamClient({
       url: 'ws://x',
-      callbacks: { onCatalog, onCatalogRemoved: vi.fn(), onWorkspace },
+      callbacks: { onCatalog, onCatalogRemoved: vi.fn(), onWorkspace, onHosts: vi.fn() },
       createSocket: () => {
         const s = new FakeSocket()
         sockets.push(s)
@@ -67,7 +67,7 @@ describe('StateStreamClient', () => {
     const onCatalogRemoved = vi.fn()
     const client = new StateStreamClient({
       url: 'ws://x',
-      callbacks: { onCatalog, onCatalogRemoved, onWorkspace: vi.fn() },
+      callbacks: { onCatalog, onCatalogRemoved, onWorkspace: vi.fn(), onHosts: vi.fn() },
       createSocket: () => {
         const s = new FakeSocket()
         sockets.push(s)
@@ -96,7 +96,7 @@ describe('StateStreamClient', () => {
     const onCatalog = vi.fn()
     const client = new StateStreamClient({
       url: 'ws://x',
-      callbacks: { onCatalog, onCatalogRemoved: vi.fn(), onWorkspace: vi.fn() },
+      callbacks: { onCatalog, onCatalogRemoved: vi.fn(), onWorkspace: vi.fn(), onHosts: vi.fn() },
       createSocket: () => {
         const s = new FakeSocket()
         sockets.push(s)
@@ -134,7 +134,7 @@ describe('StateStreamClient', () => {
     const onConnectionChange = vi.fn()
     const client = new StateStreamClient({
       url: 'ws://x',
-      callbacks: { onCatalog: vi.fn(), onCatalogRemoved: vi.fn(), onWorkspace: vi.fn(), onConnectionChange },
+      callbacks: { onCatalog: vi.fn(), onCatalogRemoved: vi.fn(), onWorkspace: vi.fn(), onHosts: vi.fn(), onConnectionChange },
       createSocket: () => {
         const s = new FakeSocket()
         sockets.push(s)
@@ -161,7 +161,7 @@ describe('StateStreamClient', () => {
     let hidden = false
     const client = new StateStreamClient({
       url: 'ws://x',
-      callbacks: { onCatalog: vi.fn(), onCatalogRemoved: vi.fn(), onWorkspace: vi.fn() },
+      callbacks: { onCatalog: vi.fn(), onCatalogRemoved: vi.fn(), onWorkspace: vi.fn(), onHosts: vi.fn() },
       createSocket: () => {
         const s = new FakeSocket()
         sockets.push(s)

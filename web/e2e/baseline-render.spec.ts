@@ -85,9 +85,6 @@ async function installBackendStubs(page: Page, sessions: ReturnType<typeof makeS
     if (path === '/api/preferences') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(DEFAULT_PREFS) })
     }
-    if (path === '/api/hosts') {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([LOCAL_HOST]) })
-    }
     if (path === '/api/state/bootstrap') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(bootstrap) })
     }

@@ -85,6 +85,8 @@ const defaultSessionState = {
   createSession: vi.fn(),
   sessionCommand: vi.fn(),
   workspaceCommand: vi.fn(),
+  hosts: [] as any[],
+  hostIndex: { hosts: [] as any[], local: undefined, byPeerId: new Map(), byOwnerId: new Map() },
 }
 vi.mock('./hooks/useSessionState', () => ({
   useSessionState: () => {

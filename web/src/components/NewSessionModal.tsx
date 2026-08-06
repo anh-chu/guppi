@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { Host } from '../hooks/useHosts'
+import type { HostSnapshot } from '../state/session/wireTypes'
 import type { SessionView } from '../state/session/viewModel'
+type Host = HostSnapshot
 import { usePreferences } from '../hooks/usePreferences'
 import { cn } from '../lib/utils'
 import { AgentMark } from './AgentMark'
@@ -61,7 +62,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   const localHost = onlineHosts.find(h => h.local)
   // HostSelect option values are canonical OwnerIDs, matching SessionView.ownerId's
   // encoding directly -- a host with no owner_id has no v2 identity and
-  // cannot be a create target (see Host.owner_id's doc in useHosts.ts).
+  // cannot be a create target (no canonical OwnerID).
   const selectableHosts = useMemo(() => onlineHosts.filter(h => h.owner_id), [onlineHosts])
   const showHostSelect = selectableHosts.length > 1
   const [selectedHost, setSelectedHost] = useState<string>(localHost?.owner_id || '')

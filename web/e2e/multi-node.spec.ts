@@ -258,7 +258,7 @@ for (const run of [1, 2] as const) {
       // A must retain the last-confirmed session list (marked offline via
       // host.online=false) rather than discarding it.
       const hostsAfterStop = await a.hosts()
-      const bHostAfterStop = hostsAfterStop.find((h: any) => h.id === b.fingerprint)
+      const bHostAfterStop = hostsAfterStop.find((h: any) => h.peer_id === b.fingerprint)
       expect(bHostAfterStop, 'A dropped B from its host list entirely instead of marking it offline').toBeTruthy()
       const bootWhileDown = await a.bootstrap()
       const remoteSnapWhileDown = (bootWhileDown.remote || []).find((snap: any) => snap.owner === b.ownerId)
@@ -673,9 +673,6 @@ async function installBaseStubs(page: Page) {
     if (p === '/api/preferences') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(DEFAULT_PREFS) })
     }
-    if (p === '/api/hosts') {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([LOCAL_HOST]) })
-    }
     if (p.startsWith('/api/')) {
       return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
     }
@@ -809,16 +806,6 @@ test('clicking a remote waiting-on-agent alert navigates to and renders that rem
   const sessionId = 'sess-remote-alert'
 
   await installBaseStubs(page)
-  await page.route('**/api/hosts', async (route) => {
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify([
-        { id: 'fp-local', name: 'Local Machine', local: true, online: true, owner_id: OWNER, sessions: [], last_seen: new Date().toISOString() },
-        { id: REMOTE_FINGERPRINT, name: 'Remote Box', local: false, online: true, owner_id: REMOTE_OWNER, sessions: [], last_seen: new Date().toISOString() },
-      ]),
-    })
-  })
   await page.route('**/api/tool-events', async (route) => {
     return route.fulfill({
       status: 200,

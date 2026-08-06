@@ -88,7 +88,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"GET /api/auth/check",
 		"GET /api/auth/status",
 		"GET /api/crashed-sessions",
-		"GET /api/hosts",
 		"GET /api/pane-capture",
 		"GET /api/peers",
 		"GET /api/portforwards",

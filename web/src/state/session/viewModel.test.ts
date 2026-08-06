@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { toSessionView, toPresentationAttrs, sessionViewSignal, stateRank, type HostIndex } from './viewModel'
 import type { LocalSessionRecord } from './types'
-import type { Host } from '../../hooks/useHosts'
+import type { HostSnapshot } from './wireTypes'
 import type { ToolEvent } from '../../hooks/useToolEvents'
 import type { ActivitySnapshot } from '../../hooks/useActivity'
+type Host = HostSnapshot
 
 function mkRecord(over: Partial<LocalSessionRecord> = {}): LocalSessionRecord {
   return {
@@ -20,12 +21,11 @@ function mkRecord(over: Partial<LocalSessionRecord> = {}): LocalSessionRecord {
 
 function mkHost(over: Partial<Host> = {}): Host {
   return {
-    id: 'peer-1',
-    owner_id: undefined,
+    peer_id: 'peer-1',
+    owner_id: 'owner-id' as any,
     name: 'host',
     local: false,
     online: true,
-    sessions: [],
     last_seen: '2025-01-01T00:00:00Z',
     ...over,
   }
@@ -36,7 +36,7 @@ function mkHostIndex(hosts: Host[] = []): HostIndex {
   const byOwnerId = new Map<string, Host>()
   let local: Host | undefined
   for (const h of hosts) {
-    byPeerId.set(h.id, h)
+    byPeerId.set(h.peer_id, h)
     if (h.owner_id) byOwnerId.set(h.owner_id, h)
     if (h.local) local = h
   }
@@ -110,14 +110,14 @@ describe('toSessionView', () => {
   })
 
   it('is local and online when record.owner matches localOwner and a local host exists', () => {
-    const hosts = mkHostIndex([mkHost({ id: 'peer-1', owner_id: 'owner1', local: true, online: true })])
+    const hosts = mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner1', local: true, online: true })])
     const view = toSessionView(mkRecord({ owner: 'owner1', ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 } }), hosts, 'owner1')
     expect(view.isLocal).toBe(true)
     expect(view.hostOnline).toBe(true)
   })
 
   it('is local and online even if the local host record reports online=false (local presence is enough)', () => {
-    const hosts = mkHostIndex([mkHost({ id: 'peer-1', owner_id: 'owner1', local: true, online: false })])
+    const hosts = mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner1', local: true, online: false })])
     const view = toSessionView(mkRecord({ owner: 'owner1', ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 } }), hosts, 'owner1')
     expect(view.isLocal).toBe(true)
     expect(view.hostOnline).toBe(true)
@@ -125,17 +125,17 @@ describe('toSessionView', () => {
 
   it('resolves a remote owner online only from its own host record', () => {
     const hosts = mkHostIndex([
-      mkHost({ id: 'peer-1', owner_id: 'owner-local', local: true, online: true }),
-      mkHost({ id: 'peer-2', owner_id: 'owner-remote', local: false, online: true }),
+      mkHost({ peer_id: 'peer-1', owner_id: 'owner-local', local: true, online: true }),
+      mkHost({ peer_id: 'peer-2', owner_id: 'owner-remote', local: false, online: true }),
     ])
     const view = toSessionView(mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), hosts, 'owner-local')
     expect(view.isLocal).toBe(false)
     expect(view.hostOnline).toBe(true)
-    expect(view.host?.id).toBe('peer-2')
+    expect(view.host?.peer_id).toBe('peer-2')
   })
 
   it('reports offline (not optimistically online) for an unknown remote owner with no host record', () => {
-    const hosts = mkHostIndex([mkHost({ id: 'peer-1', owner_id: 'owner-local', local: true, online: true })])
+    const hosts = mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner-local', local: true, online: true })])
     const view = toSessionView(mkRecord({ owner: 'owner-unknown', ref: { owner: 'owner-unknown', session: 'sess-1', window: 0, pane: 0 } }), hosts, 'owner-local')
     expect(view.isLocal).toBe(false)
     expect(view.hostOnline).toBe(false)
@@ -144,8 +144,8 @@ describe('toSessionView', () => {
 
   it('reports offline for a remote owner whose host record itself says online=false', () => {
     const hosts = mkHostIndex([
-      mkHost({ id: 'peer-1', owner_id: 'owner-local', local: true, online: true }),
-      mkHost({ id: 'peer-2', owner_id: 'owner-remote', local: false, online: false }),
+      mkHost({ peer_id: 'peer-1', owner_id: 'owner-local', local: true, online: true }),
+      mkHost({ peer_id: 'peer-2', owner_id: 'owner-remote', local: false, online: false }),
     ])
     const view = toSessionView(mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), hosts, 'owner-local')
     expect(view.hostOnline).toBe(false)
@@ -182,8 +182,8 @@ describe('toPresentationAttrs', () => {
 })
 
 describe('sessionViewSignal', () => {
-  const onlineView = toSessionView(mkRecord({ owner: 'owner1', ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 } }), mkHostIndex([mkHost({ id: 'peer-1', owner_id: 'owner1', local: true, online: true })]), 'owner1')
-  const offlineView = toSessionView(mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), mkHostIndex([mkHost({ id: 'peer-1', owner_id: 'owner-local', local: true, online: true })]), 'owner-local')
+  const onlineView = toSessionView(mkRecord({ owner: 'owner1', ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 } }), mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner1', local: true, online: true })]), 'owner1')
+  const offlineView = toSessionView(mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner-local', local: true, online: true })]), 'owner-local')
 
   it('reports needs_you for a loud (waiting/stuck/error) event, regardless of activity or connectivity', () => {
     const signal = sessionViewSignal(offlineView, [mkEvent({ status: 'waiting' })], activity(0), true)

@@ -2,19 +2,19 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { NewSessionModal, type NewSessionInput } from './NewSessionModal'
-import type { Host } from '../hooks/useHosts'
+import type { HostSnapshot } from '../state/session/wireTypes'
+type Host = HostSnapshot
 
 afterEach(() => {
   cleanup()
 })
 
 const localHost: Host = {
-  id: 'local-fingerprint',
+  peer_id: 'local-fingerprint',
   owner_id: 'local-owner-id',
   name: 'local',
   local: true,
   online: true,
-  sessions: [],
   last_seen: '',
 }
 
@@ -97,11 +97,10 @@ describe('NewSessionModal', () => {
 
   it('passes the selected HostSelect option value straight through as targetOwner (already a canonical OwnerID)', async () => {
     const remoteHost: Host = {
-      id: 'remote-fingerprint',
+      peer_id: 'remote-fingerprint',
       owner_id: 'remote-owner-id',
       name: 'remote',
       online: true,
-      sessions: [],
       last_seen: '',
     }
     const onCreateSession = vi.fn().mockResolvedValue(undefined)

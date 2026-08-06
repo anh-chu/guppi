@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useHosts } from '../hooks/useHosts'
 import { usePreferences } from '../hooks/usePreferences'
+import type { HostSnapshot } from '../state/session/wireTypes'
 import { Schedule, ScheduleForm, useSchedules } from '../hooks/useSchedules'
 import type { SessionView } from '../state/session/viewModel'
 import type { SessionRef } from '../state/session/types'
@@ -17,6 +17,7 @@ interface Props {
   // GET /api/sessions and POST /api/session/kill REST routes this
   // delete-flow used to call directly were deleted server-side (Task 7).
   sessions: SessionView[]
+  hosts: HostSnapshot[]
   killSession: (ref: SessionRef) => Promise<void>
 }
 
@@ -53,9 +54,8 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (nex
   )
 }
 
-export function ScheduleModal({ onClose, sessions, killSession }: Props) {
+export function ScheduleModal({ onClose, sessions, hosts, killSession }: Props) {
   const { schedules, create, update, remove, runNow, refresh } = useSchedules()
-  const { hosts } = useHosts()
   const { prefs } = usePreferences()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [name, setName] = useState('')
@@ -77,19 +77,16 @@ export function ScheduleModal({ onClose, sessions, killSession }: Props) {
 
   const onlineHosts = useMemo(() => hosts.filter(host => host.online), [hosts])
   const localHost = useMemo(() => onlineHosts.find(host => host.local), [onlineHosts])
-  const preferredHostId = localHost ? '' : (onlineHosts[0]?.id || '')
-  const hostLabelById = useMemo(() => new Map(onlineHosts.map(host => [host.id, host.name])), [onlineHosts])
+  const preferredHostId = localHost ? '' : (onlineHosts[0]?.peer_id || '')
+  const hostLabelById = useMemo(() => new Map(onlineHosts.map(host => [host.peer_id, host.name])), [onlineHosts])
   // The wire (Schedule.host / ScheduleForm.host, sent as target_owner --
   // see useSchedules.ts's toWire/normalizeSchedule) carries a canonical catalog
-  // OwnerID when the target host has one, falling back to its raw peer
-  // fingerprint on a legacy-only node (state.OwnerID and the transport
-  // fingerprint are different, non-invertible identifier spaces -- see
-  // Host.owner_id's doc). hostId (component state, and every HostSelect
-  // option value) is always the fingerprint (`host.id`), so these maps
-  // translate between the two identity spaces at the wire boundary only.
-  const ownerIdByHostId = useMemo(() => new Map(onlineHosts.map(host => [host.id, host.owner_id || host.id])), [onlineHosts])
-  const hostIdByOwnerId = useMemo(() => new Map(onlineHosts.map(host => [host.owner_id || host.id, host.id])), [onlineHosts])
-  const hostLabelByOwnerId = useMemo(() => new Map(onlineHosts.map(host => [host.owner_id || host.id, host.name])), [onlineHosts])
+  // OwnerID. hostId (component state, and every HostSelect option value) is
+  // always the peer_id (transport fingerprint), so these maps translate
+  // between the two identity spaces at the wire boundary only.
+  const ownerIdByHostId = useMemo(() => new Map(onlineHosts.map(host => [host.peer_id, host.owner_id])), [onlineHosts])
+  const hostIdByOwnerId = useMemo(() => new Map(onlineHosts.map(host => [host.owner_id, host.peer_id])), [onlineHosts])
+  const hostLabelByOwnerId = useMemo(() => new Map(onlineHosts.map(host => [host.owner_id, host.name])), [onlineHosts])
 
   const defaultCommand = useMemo(() => {
     return agentPresets.find(option => option.id === (prefs.default_agent || 'claude'))?.command || prefs.default_agent || 'claude'
@@ -516,7 +513,7 @@ export function ScheduleModal({ onClose, sessions, killSession }: Props) {
                   <HostSelect
                     value={hostId}
                     onChange={setHostId}
-                    options={[{ value: '', label: 'Local' }, ...onlineHosts.filter(host => !host.local).map(host => ({ value: host.id, label: host.name }))]}
+                    options={[{ value: '', label: 'Local' }, ...onlineHosts.filter(host => !host.local).map(host => ({ value: host.peer_id, label: host.name }))]}
                     className="w-full text-[13px] font-bold text-ink bg-surface-elevated border border-hairline rounded-sm px-3 py-2 outline-none focus:border-primary/60 transition-colors cursor-pointer"
                   />
                 ) : (

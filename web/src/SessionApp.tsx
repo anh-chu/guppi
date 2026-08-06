@@ -15,7 +15,7 @@ import { HelpModal } from './components/HelpModal'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
-import { useHosts } from './hooks/useHosts'
+// Hosts now come from sessionState instead of useHosts polling
 import { useToolEvents } from './hooks/useToolEvents'
 import { useActivity } from './hooks/useActivity'
 import { useNotifications } from './hooks/useNotifications'
@@ -100,13 +100,21 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   // Shared non-session hooks
   const { prefs } = usePreferences()
   const wikiEnabled = !prefs.wiki_disabled
-  const { hosts, refresh: refreshHosts, hostIndex } = useHosts()
   // SessionApp's session keys (SessionView.key / sessionRefToKey) are always
-  // "ownerId/sessionId", never the raw peer transport fingerprint --
-  // passing `hostIndex` lets useToolEvents normalize incoming tool events
-  // (keyed by fingerprint + mutable display label) to the same
-  // OwnerID/stable-session-id encoding, once, at ingestion (normalizeToolEvent),
-  // before matching.
+  // "ownerId/sessionId", never the raw peer transport fingerprint.
+  // Build a hostIndex from canonical hosts for tool event normalization.
+  const hostIndex = useMemo(() => {
+    const byPeerId = new Map<string, any>()
+    const byOwnerId = new Map<string, any>()
+    let local: any | undefined
+    const hosts = sessionState.hosts ?? []
+    for (const h of hosts) {
+      byPeerId.set(h.peer_id, h)
+      byOwnerId.set(h.owner_id, h)
+      if (h.local) local = h
+    }
+    return { hosts, local, byPeerId, byOwnerId }
+  }, [sessionState.hosts])
   const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents(hostIndex)
   // Same OwnerID normalization rationale as useToolEvents(hostIndex) above --
   // the server's activity snapshot is keyed by peer fingerprint, but SessionApp
@@ -297,7 +305,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     } else if (evt.type === 'recovery-started' || evt.type === 'recovery-finished' || evt.type === 'session-order-updated' || evt.type === 'groups-updated') {
       // Canonical state doesn't use these, but listen silently
     } else if (['peer-connected', 'peer-disconnected'].includes(evt.type)) {
-      refreshHosts()
+      // Host state now comes through the canonical state stream, no refresh needed
     } else if (evt.type === 'update-status') {
       // ignore
     } else if (evt.type === 'session-attrs-updated') {
@@ -306,7 +314,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     } else if (evt.type === 'sessions-crashed') {
       crashedHook.refresh()
     }
-  }, [handleToolEvent, processToolEvent, handleActivityEvent, refreshHosts, crashedHook.refresh])
+  }, [handleToolEvent, processToolEvent, handleActivityEvent, crashedHook.refresh])
 
   const { connected } = useWebSocket('/ws/events', onEvent)
 
@@ -319,9 +327,9 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     if (currentView !== 'session') setTerminalFullscreen(false)
   }, [currentView])
 
-  const hasMultipleHosts = hosts.length > 1
-  const localHost = hosts.find(h => h.local)
-  const localHostId = localHost?.id
+  const hasMultipleHosts = (sessionState.hosts ?? []).length > 1
+  const localHost = sessionState.selectLocalHost ? sessionState.selectLocalHost() : hostIndex.local
+  const localHostId = localHost?.peer_id
   const localHostName = localHost?.name
 
   const refocusTerminal = useCallback(() => {
@@ -484,6 +492,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
         <ScheduleModal
           onClose={() => setSchedulesOpen(false)}
           sessions={sessionViews}
+          hosts={sessionState.hosts}
           killSession={(ref) => sessionState.sessionCommand(ref, { action: 'kill' }).then(() => undefined)}
         />
       )}
@@ -508,7 +517,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       )}
       {newSessionModalOpen && (
         <NewSessionModal
-          hosts={hosts}
+          hosts={sessionState.hosts}
           sessions={sessionViews}
           onCreateSession={handleCreateSession}
           onClose={() => setNewSessionModalOpen(false)}
@@ -557,7 +566,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
             onWidthChange={handleSidebarWidth}
             hasMultipleHosts={hasMultipleHosts}
             localHostId={localHostId}
-            hosts={hosts}
+            hosts={sessionState.hosts}
             onSessionSelect={handleSessionSelect}
             getSessionEvents={getSessionEvents}
             sessionNeedsAttention={sessionNeedsAttention}
@@ -657,7 +666,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
             <Overview
               sessions={sessionViews}
               onOpenFile={wiki.openFile}
-              hosts={hosts}
+              hosts={sessionState.hosts}
               hiddenSet={sessionAttrs.hidden}
               backgroundSet={sessionAttrs.background}
               scheduleIDs={sessionAttrs.scheduleIDs}

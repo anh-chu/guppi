@@ -238,6 +238,13 @@ type Manager struct {
 	remoteCatalogSubMu  sync.RWMutex
 	remoteCatalogSubs   []remoteCatalogSubscription
 	nextRemoteCatalogID int
+
+	// hostSnapSubs notifies observers whenever host connectivity changes
+	// (connect, disconnect, name, version, or stats changes). Guarded by its
+	// own mutex so a slow subscriber never blocks catalogMu or host mutations.
+	hostSnapSubMu  sync.RWMutex
+	hostSnapSubs   []hostSnapSubscription
+	nextHostSnapID int
 }
 
 // StateEvent represents a peer connect/disconnect/rename notification
@@ -258,6 +265,12 @@ type StateEvent struct {
 type remoteCatalogSubscription struct {
 	id int
 	fn func(owner state.OwnerID, snap state.OwnerCatalogSnapshot, removed bool)
+}
+
+// hostSnapSubscription is one registered observer of host snapshot changes.
+type hostSnapSubscription struct {
+	id int
+	fn func([]state.HostSnapshot)
 }
 
 // remoteCatalogCache is an immutable, owner-keyed view received from a peer.
@@ -469,6 +482,67 @@ func (m *Manager) GetHostsForPeer(remotePeerID string) []HostInfo {
 	}}
 }
 
+// HostSnapshots returns a deterministically ordered slice of all known hosts
+// as state.HostSnapshot values (suitable for state streaming and bootstrap).
+func (m *Manager) HostSnapshots() []state.HostSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	snapshots := make([]state.HostSnapshot, 0, len(m.hosts))
+	for _, h := range m.hosts {
+		owner, _ := m.ownerIDForPeerLocked(h.ID)
+		snapshots = append(snapshots, state.HostSnapshot{
+			PeerID:   h.ID,
+			OwnerID:  owner,
+			Name:     h.Name,
+			Version:  h.Version,
+			Local:    h.ID == m.localID,
+			Online:   h.Connected,
+			LastSeen: h.LastSeen,
+			Stats:    h.Stats,
+		})
+	}
+	// Sort by PeerID for deterministic ordering.
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].PeerID < snapshots[j].PeerID
+	})
+	return snapshots
+}
+
+// SubscribeHostSnapshots registers a callback that receives complete host
+// snapshot lists after any connectivity, name, version, or stats changes.
+// The returned function unsubscribes.
+func (m *Manager) SubscribeHostSnapshots(fn func([]state.HostSnapshot)) func() {
+	m.hostSnapSubMu.Lock()
+	defer m.hostSnapSubMu.Unlock()
+	m.nextHostSnapID++
+	sub := hostSnapSubscription{id: m.nextHostSnapID, fn: fn}
+	m.hostSnapSubs = append(m.hostSnapSubs, sub)
+	return func() {
+		m.hostSnapSubMu.Lock()
+		defer m.hostSnapSubMu.Unlock()
+		filtered := m.hostSnapSubs[:0]
+		for _, s := range m.hostSnapSubs {
+			if s.id != sub.id {
+				filtered = append(filtered, s)
+			}
+		}
+		m.hostSnapSubs = filtered
+	}
+}
+
+// publishHostSnapshots emits the current host snapshot list to all subscribers.
+func (m *Manager) publishHostSnapshots() {
+	snapshots := m.HostSnapshots()
+	m.hostSnapSubMu.RLock()
+	subs := make([]hostSnapSubscription, len(m.hostSnapSubs))
+	copy(subs, m.hostSnapSubs)
+	m.hostSnapSubMu.RUnlock()
+	for _, s := range subs {
+		s.fn(snapshots)
+	}
+}
+
 // ownerIDForPeerLocked returns the catalog OwnerID for a peer fingerprint.
 // Caller must hold m.mu for reading (or writing).
 //
@@ -618,6 +692,8 @@ func (m *Manager) RegisterPeerWithAddress(id, name, publicKey, address string, c
 		HostName: name,
 	})
 
+	m.publishHostSnapshots()
+
 	logrus.WithFields(logrus.Fields{
 		"peer": name,
 		"id":   id,
@@ -651,6 +727,8 @@ func (m *Manager) TryRegisterPeer(id, name, publicKey, address string, conn *Pee
 		Host:     id,
 		HostName: name,
 	})
+
+	m.publishHostSnapshots()
 
 	logrus.WithFields(logrus.Fields{
 		"peer": name,
@@ -693,6 +771,8 @@ func (m *Manager) UnregisterPeerConn(id string, conn *PeerConnection) {
 			HostName: h.Name,
 		})
 
+		m.publishHostSnapshots()
+
 		logrus.WithFields(logrus.Fields{
 			"peer": h.Name,
 			"id":   id,
@@ -720,6 +800,7 @@ func (m *Manager) RemoveHost(id string) {
 			Host:     id,
 			HostName: h.Name,
 		})
+		m.publishHostSnapshots()
 		logrus.WithFields(logrus.Fields{
 			"peer": h.Name,
 			"id":   id,
@@ -1348,10 +1429,11 @@ func cloneOwnerCatalogSnapshot(s state.OwnerCatalogSnapshot) state.OwnerCatalogS
 // UpdatePeerVersion updates a peer's reported version
 func (m *Manager) UpdatePeerVersion(id, version string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if h, ok := m.hosts[id]; ok {
 		h.Version = version
 	}
+	m.mu.Unlock()
+	m.publishHostSnapshots()
 }
 
 // UpdatePeerActivity updates a peer's activity snapshots
@@ -1372,6 +1454,7 @@ func (m *Manager) UpdatePeerStats(id string, stats map[string]interface{}) {
 		h.LastSeen = time.Now()
 	}
 	m.mu.Unlock()
+	m.publishHostSnapshots()
 }
 
 // HasLiveConnection reports whether a connected peer connection exists for id.

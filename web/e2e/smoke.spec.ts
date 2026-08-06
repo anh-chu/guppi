@@ -254,9 +254,6 @@ async function installBackendStubs(
     if (p === '/api/preferences') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(DEFAULT_PREFS) })
     }
-    if (p === '/api/hosts') {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state.hosts) })
-    }
     if (p === '/api/state/bootstrap') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state.bootstrapRaw()) })
     }

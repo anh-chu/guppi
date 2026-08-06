@@ -32,6 +32,14 @@ type RemoteCatalogNotifier interface {
 	SubscribeRemoteCatalogs(fn func(owner state.OwnerID, snap state.OwnerCatalogSnapshot, removed bool)) func()
 }
 
+// HostSnapshotSource is implemented by pkg/peer.Manager. It supplies the
+// current host snapshots for a client's initial connect burst and notifies
+// on every connectivity, name, version, or stats change.
+type HostSnapshotSource interface {
+	HostSnapshots() []state.HostSnapshot
+	SubscribeHostSnapshots(fn func([]state.HostSnapshot)) func()
+}
+
 var stateStreamUpgrader = websocket.Upgrader{
 	CheckOrigin:     CheckSameOrigin,
 	ReadBufferSize:  1024,
@@ -67,22 +75,20 @@ type encodedSnapshot struct {
 }
 
 // stateStreamClient holds at most one pending snapshot per catalog slot
-// (the local owner plus one slot per remote owner it has seen) and one
-// pending workspace snapshot, each coalesced independently, and drains them
-// from a single writer goroutine. A slot's coalescing/staleness comparison
-// is keyed on the OWNER'S OWN authoritative catalog revision (see
-// publishCatalogKeyed), never on publish order or a hub-assigned sequence
-// number: an earlier-captured-but-later-enqueued snapshot (e.g. an initial
-// connect snapshot read before a concurrent live update, but enqueued after
-// it) must not be allowed to overwrite a slot that already holds a newer
-// revision. This is what keeps a slow client from accumulating backlog
-// without ever discarding genuinely newer state in favor of stale state.
+// (the local owner plus one slot per remote owner it has seen), one pending
+// workspace snapshot, and one pending host snapshot, each coalesced
+// independently, and drains them from a single writer goroutine. Catalog/
+// workspace coalescing is keyed on the OWNER'S OWN authoritative revision
+// (see publishCatalogKeyed), never on publish order or a hub-assigned sequence
+// number. Host snapshot coalescing is simpler: just keep the latest one,
+// since there's no versioning (only the current complete snapshot list matters).
 type stateStreamClient struct {
 	conn *websocket.Conn
 
 	mu           sync.Mutex
 	catalogSlots map[string]*encodedSnapshot
 	workspace    *encodedSnapshot
+	hostSnapshots *encodedSnapshot
 
 	signal chan struct{}
 	// done is closed exactly once by close(). It is only ever closed, never
@@ -161,6 +167,17 @@ func (c *stateStreamClient) publishWorkspace(rev int64, encoded []byte) {
 	c.enqueue(&c.workspace, rev, encoded)
 }
 
+func (c *stateStreamClient) publishHostSnapshots(encoded []byte) {
+	if c.closed.Load() {
+		return
+	}
+	c.mu.Lock()
+	// Host snapshots don't use revision versioning; just replace with the latest.
+	c.hostSnapshots = &encodedSnapshot{bytes: encoded}
+	c.mu.Unlock()
+	c.wake()
+}
+
 func (c *stateStreamClient) enqueue(slot **encodedSnapshot, rev int64, encoded []byte) {
 	if c.closed.Load() {
 		return
@@ -213,6 +230,8 @@ func (c *stateStreamClient) writeLoop() {
 			c.catalogSlots = make(map[string]*encodedSnapshot, len(pending))
 			wsSnap := c.workspace
 			c.workspace = nil
+			hostsSnap := c.hostSnapshots
+			c.hostSnapshots = nil
 			c.mu.Unlock()
 
 			// Drain catalog slots in a deterministic (sorted-key) order so the
@@ -229,6 +248,9 @@ func (c *stateStreamClient) writeLoop() {
 				}
 			}
 			if wsSnap != nil && !c.write(wsSnap.bytes) {
+				return
+			}
+			if hostsSnap != nil && !c.write(hostsSnap.bytes) {
 				return
 			}
 		}
@@ -288,6 +310,11 @@ type workspaceSnapshotMessage struct {
 	Workspace state.WorkspaceRecord `json:"workspace"`
 }
 
+type hostSnapshotsMessage struct {
+	Type  string                `json:"type"`
+	Hosts []state.HostSnapshot `json:"hosts"`
+}
+
 // StateStreamHub fans out complete catalog/workspace snapshots to durable
 // browser state connections at /ws/state. Every revision is encoded once
 // regardless of how many clients are connected; each client keeps only the
@@ -305,10 +332,15 @@ type StateStreamHub struct {
 	// unchanged from pre-multi-node behavior.
 	remoteSource RemoteCatalogNotifier
 
+	// hostSource supplies host connectivity snapshots, if this node has a
+	// peer manager wired up (see AttachHostSnapshotSource). Nil when there's
+	// no host connectivity to stream.
+	hostSource HostSnapshotSource
+
 	// mu guards clients AND, critically, is held across the entire
 	// "register client + capture and enqueue its initial snapshot" sequence
 	// in HandleState. Every live-publish fan-out (onCatalog/onRemoteCatalog/
-	// onWorkspace) takes mu.RLock while iterating clients. Serializing
+	// onHostSnapshots/onWorkspace) takes mu.RLock while iterating clients. Serializing
 	// registration against those RLocks as one atomic write-locked operation
 	// is what prevents a live update from being published to a client
 	// between "client added to clients" and "initial snapshot enqueued",
@@ -320,6 +352,7 @@ type StateStreamHub struct {
 	unsubscribeCatalog   func()
 	unsubscribeWorkspace func()
 	unsubscribeRemote    func()
+	unsubscribeHosts     func()
 
 	Metrics StateStreamMetrics
 }
@@ -353,6 +386,19 @@ func (h *StateStreamHub) AttachRemoteCatalogSource(source RemoteCatalogNotifier)
 	h.unsubscribeRemote = source.SubscribeRemoteCatalogs(h.onRemoteCatalog)
 }
 
+// AttachHostSnapshotSource wires source (typically a *peer.Manager) so every
+// connected and future client receives host snapshots on connectivity changes.
+// Safe to call at most once; a nil source is a no-op.
+func (h *StateStreamHub) AttachHostSnapshotSource(source HostSnapshotSource) {
+	if source == nil {
+		return
+	}
+	h.mu.Lock()
+	h.hostSource = source
+	h.mu.Unlock()
+	h.unsubscribeHosts = source.SubscribeHostSnapshots(h.onHostSnapshots)
+}
+
 // Close unsubscribes from the catalog. Connected clients are left to
 // disconnect naturally when their underlying connection closes.
 func (h *StateStreamHub) Close() {
@@ -364,6 +410,9 @@ func (h *StateStreamHub) Close() {
 	}
 	if h.unsubscribeRemote != nil {
 		h.unsubscribeRemote()
+	}
+	if h.unsubscribeHosts != nil {
+		h.unsubscribeHosts()
 	}
 }
 
@@ -429,6 +478,19 @@ func (h *StateStreamHub) onWorkspace(rec state.WorkspaceRecord) {
 	}
 }
 
+func (h *StateStreamHub) onHostSnapshots(snaps []state.HostSnapshot) {
+	encoded, err := json.Marshal(hostSnapshotsMessage{Type: "hosts_snapshot", Hosts: snaps})
+	if err != nil {
+		logrus.WithError(err).Warn("state stream: failed to encode host snapshots")
+		return
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		c.publishHostSnapshots(encoded)
+	}
+}
+
 // HandleState upgrades the connection and streams durable state. On
 // connect it enqueues the complete current catalog and (if any layout
 // exists) workspace snapshot before any incremental publication is applied,
@@ -470,6 +532,13 @@ func (h *StateStreamHub) HandleState(w http.ResponseWriter, r *http.Request) {
 	if wsRes, err := h.catalog.WorkspaceSnapshot(); err == nil {
 		if encoded, err := json.Marshal(workspaceSnapshotMessage{Type: "workspace_snapshot", Workspace: wsRes.Record}); err == nil {
 			c.publishWorkspace(wsRes.Record.Revision, encoded)
+		}
+	}
+	if h.hostSource != nil {
+		if hostSnaps := h.hostSource.HostSnapshots(); len(hostSnaps) > 0 {
+			if encoded, err := json.Marshal(hostSnapshotsMessage{Type: "hosts_snapshot", Hosts: hostSnaps}); err == nil {
+				c.publishHostSnapshots(encoded)
+			}
 		}
 	}
 	h.mu.Unlock()

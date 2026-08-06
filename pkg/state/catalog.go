@@ -642,3 +642,16 @@ func NewSessionView(rec LocalSessionRecord, enricher RuntimeEnricher) SessionVie
 	}
 	return SessionView{LocalSessionRecord: rec, Runtime: rt}
 }
+
+// HostSnapshot is a neutral state-layer wire type for host connectivity.
+// It does not include sessions or activity; those have independent canonical sources.
+type HostSnapshot struct {
+	PeerID   string         `json:"peer_id"`
+	OwnerID  OwnerID        `json:"owner_id"`
+	Name     string         `json:"name"`
+	Version  string         `json:"version,omitempty"`
+	Local    bool           `json:"local,omitempty"`
+	Online   bool           `json:"online"`
+	LastSeen time.Time      `json:"last_seen"`
+	Stats    map[string]any `json:"stats,omitempty"`
+}

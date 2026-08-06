@@ -42,7 +42,7 @@ type bootstrapResponse struct {
 	Revision      int64                             `json:"revision"`
 	Local         state.OwnerCatalogSnapshot        `json:"local"`
 	Remote        []state.OwnerCatalogSnapshot      `json:"remote,omitempty"`
-	Hosts         interface{}                       `json:"hosts"`
+	Hosts         []state.HostSnapshot              `json:"hosts"`
 	Workspace     *state.WorkspaceRecord            `json:"workspace,omitempty"`
 	Pending       []state.PendingCreateRecord       `json:"pending"`
 	PendingRemote []state.PendingRemoteCreateRecord `json:"pending_remote,omitempty"`
@@ -93,9 +93,16 @@ func handleBootstrap(w http.ResponseWriter, r *http.Request, opts *Options) {
 		PendingRemote: opts.Catalog.PendingRemoteCreates(),
 	}
 	if opts.PeerMgr != nil {
-		resp.Hosts = opts.PeerMgr.GetHosts()
+		resp.Hosts = opts.PeerMgr.HostSnapshots()
 	} else {
-		resp.Hosts = []interface{}{}
+		// Provide one online local host when there's no remote manager data.
+		resp.Hosts = []state.HostSnapshot{{
+			OwnerID:  agg.Local.Owner,
+			Name:     "local",
+			Online:   true,
+			Local:    true,
+			LastSeen: time.Now(),
+		}}
 	}
 	resp.Workspace = agg.Local.Workspace
 

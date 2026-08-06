@@ -43,6 +43,7 @@ import type {
   PendingRemoteCreateRecord,
   BootstrapResponse,
   WorkspaceSnapshotMessage,
+  HostsSnapshotMessage,
 } from './wireTypes'
 
 // ---------------------------------------------------------------------------
@@ -140,6 +141,10 @@ export function decodeCatalogOwnerRemovedMessage(raw: any): CatalogOwnerRemovedM
 
 export function decodeWorkspaceSnapshotMessage(raw: any): WorkspaceSnapshotMessage {
   return { type: 'workspace_snapshot', workspace: decodeWorkspaceRecord(raw.workspace) }
+}
+
+export function decodeHostsSnapshotMessage(raw: any): HostsSnapshotMessage {
+  return { type: 'hosts_snapshot', hosts: raw.hosts ?? [] }
 }
 
 // decodeCommandResult decodes a raw POST /api/state/session-commands response

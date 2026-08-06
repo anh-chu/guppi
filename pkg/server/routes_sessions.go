@@ -46,15 +46,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 		handleUpdateCheck(w, r, opts)
 	})
 
-	r.Get("/hosts", func(w http.ResponseWriter, r *http.Request) {
-		if opts.PeerMgr != nil {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(opts.PeerMgr.GetHosts())
-		} else {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]interface{}{})
-		}
-	})
+	// /api/hosts was deleted -- hosts are now streamed via canonical bootstrap/state stream
 
 	// Read-only snapshot of a session's primary pane visible buffer.
 	// Works for local and remote (peer) sessions; no PTY attach.

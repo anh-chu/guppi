@@ -3,7 +3,8 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Overview } from './Overview'
 import type { SessionView } from '../state/session/viewModel'
-import type { Host } from '../hooks/useHosts'
+import type { HostSnapshot } from '../state/session/wireTypes'
+type Host = HostSnapshot
 import type { ToolEvent } from '../hooks/useToolEvents'
 import type { ActivitySnapshot } from '../hooks/useActivity'
 
@@ -31,14 +32,13 @@ function makeSession(id: string, overrides: Partial<SessionView> = {}): SessionV
   }
 }
 
-function makeHost(id: string = 'local', overrides: Partial<Host> = {}): Host {
+function makeHost(peer_id: string = 'local', overrides: Partial<Host> = {}): Host {
   return {
-    id,
-    owner_id: undefined,
+    peer_id,
+    owner_id: 'owner-test-local',
     name: 'Local Machine',
     local: true,
     online: true,
-    sessions: [],
     last_seen: new Date().toISOString(),
     ...overrides,
   }
@@ -134,7 +134,7 @@ describe('Overview', () => {
     ]
     const hosts: Host[] = [
       makeHost('remote-host', {
-        id: 'remote-host',
+        peer_id: 'remote-host',
         local: false,
         online: false,
       }),

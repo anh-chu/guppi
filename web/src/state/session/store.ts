@@ -25,6 +25,7 @@ import type {
   SessionRef,
   WorkspaceRecord,
 } from './types'
+import type { HostSnapshot } from './wireTypes'
 
 // OwnerCatalogMeta tracks the acceptance bookkeeping (revision + connection
 // generation) for ONE owner's catalog stream -- the local node's own, or one
@@ -59,6 +60,14 @@ export type NormalizedWorkspace = {
   record: WorkspaceRecord | null
 }
 
+// HostsState holds the complete current host snapshot list and indices for
+// fast lookup by owner or peer ID.
+export type HostsState = {
+  hosts: HostSnapshot[]
+  hostsByOwner: Map<OwnerID, HostSnapshot>
+  hostsByPeer: Map<string, HostSnapshot>
+}
+
 export type CatalogDiff = {
   // Session refs (canonical encoding) present in the previous catalog but
   // absent from the new one -- an authoritative removal, not a merge gap.
@@ -71,6 +80,7 @@ export type CatalogDiff = {
 export type SessionStoreState = {
   catalog: NormalizedCatalog
   workspace: NormalizedWorkspace
+  hosts: HostsState
   connectionGeneration: number
   connectionOnline: boolean
   catalogBootstrapped: boolean
@@ -95,10 +105,19 @@ export function emptyWorkspace(): NormalizedWorkspace {
   }
 }
 
+export function emptyHosts(): HostsState {
+  return {
+    hosts: [],
+    hostsByOwner: new Map(),
+    hostsByPeer: new Map(),
+  }
+}
+
 export function initialSessionStoreState(): SessionStoreState {
   return {
     catalog: emptyCatalog(),
     workspace: emptyWorkspace(),
+    hosts: emptyHosts(),
     connectionGeneration: 0,
     connectionOnline: false,
     catalogBootstrapped: false,
@@ -276,6 +295,27 @@ export function bumpConnectionGeneration(state: SessionStoreState): { state: Ses
 }
 
 /**
+ * Replaces the complete host snapshot list with a new one, rebuilding the
+ * index maps (hostsByOwner, hostsByPeer) from scratch.
+ */
+export function replaceHosts(state: SessionStoreState, snapshots: HostSnapshot[]): SessionStoreState {
+  const hostsByOwner = new Map<OwnerID, HostSnapshot>()
+  const hostsByPeer = new Map<string, HostSnapshot>()
+  for (const snap of snapshots) {
+    hostsByOwner.set(snap.owner_id, snap)
+    hostsByPeer.set(snap.peer_id, snap)
+  }
+  return {
+    ...state,
+    hosts: {
+      hosts: snapshots,
+      hostsByOwner,
+      hostsByPeer,
+    },
+  }
+}
+
+/**
  * Mutable store wrapper: holds one SessionStoreState, notifies subscribers on
  * change, and exposes the pure functions above as bound methods so callers
  * (e.g. a future stateStream consumer) don't need to thread state manually.
@@ -325,6 +365,10 @@ export class SessionStore {
     const { state, generation } = bumpConnectionGeneration(this.state)
     this.setState(state)
     return generation
+  }
+
+  replaceHosts(snapshots: HostSnapshot[]) {
+    this.setState(replaceHosts(this.state, snapshots))
   }
 }
 
@@ -380,6 +424,22 @@ export function selectRemoteOwners(catalog: NormalizedCatalog): OwnerID[] {
 // sessions by "local" vs a specific remote host.
 export function selectIsLocalOwner(catalog: NormalizedCatalog, owner: OwnerID): boolean {
   return catalog.localOwner === owner
+}
+
+// Host selectors
+export function selectHostByOwner(hosts: HostsState, owner: OwnerID): HostSnapshot | undefined {
+  return hosts.hostsByOwner.get(owner)
+}
+
+export function selectHostByPeer(hosts: HostsState, peer_id: string): HostSnapshot | undefined {
+  return hosts.hostsByPeer.get(peer_id)
+}
+
+export function selectLocalHost(hosts: HostsState): HostSnapshot | undefined {
+  for (const h of hosts.hosts) {
+    if (h.local) return h
+  }
+  return undefined
 }
 
 

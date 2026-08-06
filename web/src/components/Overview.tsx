@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type DOMAttributes } from 'react'
 import type { SessionView, SessionState } from '../state/session/viewModel'
 import { sessionViewSignal } from '../state/session/viewModel'
-import { Host } from '../hooks/useHosts'
+import type { HostSnapshot } from '../state/session/wireTypes'
+type Host = HostSnapshot
 import { ToolEvent } from '../hooks/useToolEvents'
 import { ActivitySnapshot } from '../hooks/useActivity'
 import { toolColors, statusConfig, signalTreatment } from '../theme'
@@ -247,7 +248,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
     })
   }, [])
   const hasMultipleHosts = hosts.length > 1
-  const localHostId = useMemo(() => hosts.find(h => h.local)?.id, [hosts])
+  const localHostId = useMemo(() => hosts.find(h => h.local)?.peer_id, [hosts])
   const glance = useGlance(hasMultipleHosts)
   // Docked live-terminal split. Engages only on wide, fine-pointer viewports;
   // otherwise a card click falls back to full-view nav.
@@ -491,8 +492,8 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
         <div className="px-4 pb-4 pt-1">
           {hasMultipleHosts ? (
             activeHostSections.map(host => {
-              const paneCount = (host.sessions || []).reduce((n, s: any) => n + (s.windows || []).reduce((wn: number, w: any) => wn + (w.panes || []).length, 0), 0)
-              return <HostStatsSection key={host.id} host={host} totalPanes={paneCount} />
+              // HostSnapshot does not include session/pane details; totalPanes for multi-host host stats is 0.
+              return <HostStatsSection key={host.peer_id} host={host} totalPanes={0} />
             })
           ) : (
             <div className="grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-4">

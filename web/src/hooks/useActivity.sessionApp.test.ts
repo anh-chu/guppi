@@ -23,19 +23,19 @@
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useActivity, normalizeActivitySnapshot } from './useActivity'
-import type { Host } from './useHosts'
+import type { HostSnapshot } from '../state/session/wireTypes'
 import type { HostIndex, SessionView } from '../state/session/viewModel'
 import { sessionViewSignal } from '../state/session/viewModel'
 
 const emptyJsonResponse = () =>
   Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as Response)
 
-function makeHostIndex(hosts: Host[]): HostIndex {
-  const byPeerId = new Map<string, Host>()
-  const byOwnerId = new Map<string, Host>()
-  let local: Host | undefined
+function makeHostIndex(hosts: HostSnapshot[]): HostIndex {
+  const byPeerId = new Map<string, HostSnapshot>()
+  const byOwnerId = new Map<string, HostSnapshot>()
+  let local: HostSnapshot | undefined
   for (const h of hosts) {
-    byPeerId.set(h.id, h)
+    byPeerId.set(h.peer_id, h)
     if (h.owner_id) byOwnerId.set(h.owner_id, h)
     if (h.local) local = h
   }
@@ -79,13 +79,12 @@ describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () =>
     const ownerId = 'owner-xyz789' // canonical OwnerID -- a DIFFERENT string encoding than the fingerprint
     const stableSessionId = 'session-stable-001'
 
-    const hosts: Host[] = [
+    const hosts: HostSnapshot[] = [
       {
-        id: fingerprint,
+        peer_id: fingerprint,
         owner_id: ownerId,
         name: 'remote-box',
         online: true,
-        sessions: [],
         last_seen: new Date().toISOString(),
       },
     ]
@@ -126,14 +125,13 @@ describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () =>
     const ownerId = 'owner-local-001'
     const stableSessionId = 'session-stable-local-1'
 
-    const hosts: Host[] = [
+    const hosts: HostSnapshot[] = [
       {
-        id: 'local-fingerprint',
+        peer_id: 'local-fingerprint',
         owner_id: ownerId,
         name: 'this machine',
         local: true,
         online: true,
-        sessions: [],
         last_seen: new Date().toISOString(),
       },
     ]
@@ -161,7 +159,7 @@ describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () =>
 describe('normalizeActivitySnapshot', () => {
   it('produces the same key format as SessionView.key / ToolEvent.key ("owner/sessionId")', () => {
     const hostIndex = makeHostIndex([
-      { id: 'fp-1', owner_id: 'owner-1', name: 'box', online: true, sessions: [], last_seen: new Date().toISOString() },
+      { peer_id: 'fp-1', owner_id: 'owner-1', name: 'box', online: true, last_seen: new Date().toISOString() },
     ])
     const snap = normalizeActivitySnapshot({ host: 'fp-1', session: 'stable-id-1', idle_seconds: 0, total_bytes: 0 }, hostIndex)
     expect(snap.key).toBe('owner-1/stable-id-1')

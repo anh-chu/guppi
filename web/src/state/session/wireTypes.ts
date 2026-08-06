@@ -35,23 +35,32 @@ export type PendingRemoteCreateRecord = {
   worktree_branch?: string
 }
 
-// v2BootstrapResponse mirrors server.v2BootstrapResponse. hosts is left
-// unopinionated (interface{} server-side); callers should treat it as
-// opaque unless/until a typed host contract is frozen.
-//
+export type HostSnapshot = {
+  peer_id: string
+  owner_id: OwnerID
+  name: string
+  version?: string
+  local?: boolean
+  online: boolean
+  last_seen: string
+  stats?: Record<string, unknown>
+}
+
+// BootstrapResponse mirrors pkg/server/routes_state.go's bootstrapResponse.
 // Local carries this node's own owner-authoritative catalog; Remote carries
 // the latest cached catalog for every peer this node currently has a
 // snapshot for (may be empty/absent). Each entry's revision is independent
 // -- never conflated across owners. A remote owner absent from Remote on a
 // fresh bootstrap read simply is not currently known (offline, or never
 // connected); the LIVE stream (see CatalogOwnerRemovedMessage below) is what
-// carries an explicit removal signal distinct from silence.
+// carries an explicit removal signal distinct from silence. Hosts is the
+// complete current host snapshot list, streamed live via HostsSnapshotMessage.
 export type BootstrapResponse = {
   owner: OwnerID
   revision: number
   local: OwnerCatalogSnapshot
   remote?: OwnerCatalogSnapshot[]
-  hosts: unknown
+  hosts: HostSnapshot[]
   workspace?: WorkspaceRecord
   pending: PendingCreateRecord[]
   pending_remote?: PendingRemoteCreateRecord[]
@@ -80,15 +89,21 @@ export type WorkspaceSnapshotMessage = {
   workspace: WorkspaceRecord
 }
 
+export type HostsSnapshotMessage = {
+  type: 'hosts_snapshot'
+  hosts: HostSnapshot[]
+}
+
 export type StateStreamMessage =
   | CatalogSnapshotMessage
   | CatalogOwnerRemovedMessage
   | WorkspaceSnapshotMessage
+  | HostsSnapshotMessage
 
 export function isStateStreamMessage(v: unknown): v is StateStreamMessage {
   if (typeof v !== 'object' || v === null) return false
   const t = (v as { type?: unknown }).type
-  return t === 'catalog_snapshot' || t === 'catalog_owner_removed' || t === 'workspace_snapshot'
+  return t === 'catalog_snapshot' || t === 'catalog_owner_removed' || t === 'workspace_snapshot' || t === 'hosts_snapshot'
 }
 
 export type ErrorResponse = {

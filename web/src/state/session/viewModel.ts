@@ -13,7 +13,7 @@
 
 import type { LocalSessionRecord, SessionRef } from './types'
 import { sessionRefToKey } from './paneTreeAdapter'
-import type { Host } from '../../hooks/useHosts'
+import type { HostSnapshot } from './wireTypes'
 import type { ToolEvent } from '../../hooks/useToolEvents'
 import type { ActivitySnapshot } from '../../hooks/useActivity'
 
@@ -34,15 +34,15 @@ export const stateRank: Record<SessionState, number> = {
 }
 
 /**
- * Host lookup table SessionApp builds once per hosts refresh (see
- * hooks/useHosts.ts) and threads into toSessionView so per-session host
- * resolution never re-scans the host list.
+ * Host lookup table SessionApp builds from canonical host snapshots
+ * and threads into toSessionView so per-session host resolution
+ * never re-scans the host list.
  */
 export interface HostIndex {
-  hosts: Host[]
-  local?: Host
-  byPeerId: Map<string, Host>
-  byOwnerId: Map<string, Host>
+  hosts: HostSnapshot[]
+  local?: HostSnapshot
+  byPeerId: Map<string, HostSnapshot>
+  byOwnerId: Map<string, HostSnapshot>
 }
 
 /** Canonical UI-facing session shape for SessionApp. No tmux-shaped fields. */
@@ -71,7 +71,7 @@ export interface SessionView {
   /** true when this session's owner is the local node's own catalog owner. */
   isLocal: boolean
   /** Resolved host record for this session's owner, if known. */
-  host: Host | undefined
+  host: HostSnapshot | undefined
   /**
    * Connectivity for this session's owner. Local host is online whenever a
    * local host record exists; a remote owner is online only when its own

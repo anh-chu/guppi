@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import type { SessionView, SessionState } from '../state/session/viewModel'
 import { sessionViewSignal, stateRank, type SessionPresentationAttrs } from '../state/session/viewModel'
-import { Host } from '../hooks/useHosts'
+import type { HostSnapshot } from '../state/session/wireTypes'
+type Host = HostSnapshot
 import { ToolEvent } from '../hooks/useToolEvents'
 import { ActivitySnapshot } from '../hooks/useActivity'
 import { useSchedules } from '../hooks/useSchedules'
@@ -287,7 +288,7 @@ export function Sidebar({
     const hostNameFor = (hostId: string, fallback?: string) => (
       hostId === localBucketId
         ? 'This machine'
-        : hosts?.find(host => host.id === hostId || host.owner_id === hostId)?.name ?? fallback ?? hostId
+        : hosts?.find(host => host.peer_id === hostId || host.owner_id === hostId)?.name ?? fallback ?? hostId
     )
 
     for (const session of mainSessions) {
@@ -301,8 +302,8 @@ export function Sidebar({
     // confirms a machine is linked rather than hiding idle peers. Offline
     // idle peers stay hidden to avoid clutter.
     for (const host of hosts ?? []) {
-      if (host.local || host.id === localBucketId || !host.online) continue
-      ensureBucket(host.id, hostNameFor(host.id, host.name)).online = true
+      if (host.local || host.peer_id === localBucketId || !host.online) continue
+      ensureBucket(host.peer_id, hostNameFor(host.peer_id, host.name)).online = true
     }
 
     const localBucket = buckets.get(localBucketId)
@@ -484,7 +485,7 @@ export function Sidebar({
     const known = !!schedule
     const enabled = schedule?.enabled ?? true
     const host = schedule?.host || sessionHost
-    const hostOnline = !host || hosts?.some(item => item.id === host && item.online)
+    const hostOnline = !host || hosts?.some(item => item.peer_id === host && item.online)
     const stateLabel = known ? (!enabled ? 'paused' : !hostOnline ? 'peer offline' : 'active') : (!hostOnline ? 'peer offline' : 'scheduled')
     const neutralColor = 'text-mute/70 border-hairline bg-surface-elevated/70'
     const stateColor = !known ? neutralColor : !enabled ? 'text-amber-400 border-amber-400/30 bg-amber-400/10' : !hostOnline ? neutralColor : 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10'

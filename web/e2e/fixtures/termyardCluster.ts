@@ -308,9 +308,10 @@ export class ClusterNode {
     return data
   }
 
-  /** Real GET /api/hosts. */
+  /** Returns hosts from the bootstrap response (the hosts snapshot list). */
   async hosts(): Promise<Array<Record<string, any>>> {
-    return this.apiJSON('/api/hosts')
+    const bootstrap = await this.bootstrap()
+    return bootstrap.hosts || []
   }
 
   /** Real GET /api/peers (peer-link status view, not the bootstrap catalog). */
@@ -632,9 +633,9 @@ export async function waitForHostOnline(
   let last: any = null
   while (Date.now() < deadline) {
     const hosts = await node.hosts()
-    const h = hosts.find((x) => x.id === fingerprint || x.ID === fingerprint)
+    const h = hosts.find((x) => x.peer_id === fingerprint)
     last = h
-    const online = h ? h.online ?? h.Online : undefined
+    const online = h ? h.online : undefined
     if (h && online === wantOnline) return h
     await sleep(250)
   }

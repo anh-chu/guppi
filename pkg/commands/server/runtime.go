@@ -215,6 +215,8 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	// already-validated remoteCatalogs cache) to the browser alongside this
 	// node's own local catalog.
 	rt.stateStream.AttachRemoteCatalogSource(rt.peerMgr)
+	// Stream host snapshots (peer identity + connectivity) to browser.
+	rt.stateStream.AttachHostSnapshotSource(rt.peerMgr)
 	rt.detector.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.silenceMonitor.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.reconciler.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
