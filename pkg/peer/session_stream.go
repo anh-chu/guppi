@@ -114,9 +114,9 @@ func handleOpenTerminal(p OpenTerminalPayload, pc *PeerConnection, deps SessionD
 	}
 
 	// Resolve the daemon socket key. The immutable SessionID wins when the
-	// viewer supplied a stable identity; legacy name-only payloads (pre-v2
-	// peers or browsers that only know the display name) fall back to the
-	// session name, which is the daemon key for non-v2 sessions.
+	// viewer supplied a stable identity; name-only payloads (peers or
+	// browsers that only know the display name) fall back to the session
+	// name as the daemon key.
 	daemonKey := p.SessionID
 	if daemonKey == "" {
 		daemonKey = p.Session

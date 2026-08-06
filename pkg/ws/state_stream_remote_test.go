@@ -13,7 +13,7 @@ import (
 // pkg/ws cannot import pkg/peer (pkg/peer already imports pkg/ws), so this
 // stands in for peer.Manager at the hub-logic unit-test level; the real
 // peer.Manager -> StateStreamHub wiring is proven end-to-end by
-// pkg/server's TestV2BootstrapIncludesRemoteOwnerCatalog and by
+// pkg/server's TestBootstrapIncludesRemoteOwnerCatalog and by
 // pkg/peer's own AllRemoteCatalogSnapshots/SubscribeRemoteCatalogs tests.
 type fakeRemoteCatalogNotifier struct {
 	mu        sync.Mutex

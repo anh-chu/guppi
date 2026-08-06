@@ -222,8 +222,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	// Remote launcher: routes through RemoteCreateCoordinator on the remote
 	// owner via the reliable command RPC (pkg/peer's
 	// Manager.SendRemoteCreate), which blocks for a genuine ack/nack instead
-	// of merely enqueuing a frame. This is the only remote-create path; there
-	// is no legacy fire-and-forget fallback.
+	// of merely enqueuing a frame. This is the only remote-create path.
 	remoteLauncher := func(ctx context.Context, req sessionlaunch.Request) (sessionlaunch.Result, error) {
 		cmdID := state.CommandID(req.CommandID)
 		if cmdID == "" {
@@ -249,10 +248,10 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	}
 
 	launchSvc := &sessionlaunch.Service{
-		DaemonReg: rt.daemonReg,
-		Identity:  nodeIdentity,
-		Refresh:   rt.refreshSessionsFunc,
-		V2Remote:  remoteLauncher,
+		DaemonReg:      rt.daemonReg,
+		Identity:       nodeIdentity,
+		Refresh:        rt.refreshSessionsFunc,
+		ReliableRemote: remoteLauncher,
 		Names: func(host string) []string {
 			if host != "" && rt.peerMgr != nil && !rt.peerMgr.IsLocal(host) {
 				snap, ok := rt.peerMgr.RemoteCatalogSnapshot(state.OwnerIDFromFingerprint(host))
@@ -284,7 +283,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 
 	deps := peer.SessionDeps{
 		Manager:                 rt.peerMgr,
-		Catalog:               rt.catalog,
+		Catalog:                 rt.catalog,
 		Identity:                nodeIdentity,
 		ActTracker:              rt.actTracker,
 		ToolTracker:             rt.tracker,
@@ -294,7 +293,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		StreamReg:               streamReg,
 		CaptureReg:              captureReg,
 		FileReadReg:             fileReadReg,
-		CommandSvc:            rt.commandSvc,
+		CommandSvc:              rt.commandSvc,
 		RemoteCreateCoordinator: rt.remoteCreate,
 	}
 
@@ -304,7 +303,8 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 
 	rt.wikiSup = wikilite.NewSupervisor()
 
-	// ws.Hub no longer takes a legacy state source: there is none to give it.
+	// ws.Hub has no separate state source to wire in: the canonical catalog
+	// is the only state authority.
 	rt.hub = ws.NewHub(rt.tracker)
 	rt.hub.SetActivityTracker(rt.actTracker, rt.peerMgr, rt.peerMgr.LocalID(), false)
 
@@ -364,7 +364,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		Hub:            rt.hub,
 	}
 	launchSvc.Hub = rt.hub
-	launchSvc.V2Commander = rt.commandSvc
+	launchSvc.Commander = rt.commandSvc
 
 	if schedulerStore != nil {
 		rt.schedulerRunner = scheduler.NewRunner(schedulerStore, rt.peerMgr, func(req scheduler.CreateSessionReq) error {
@@ -433,9 +433,7 @@ func (rt *Runtime) Start(parent context.Context) error {
 	go rt.reconciler.Run(rt.ctx)
 	go rt.detector.Run(rt.ctx)
 	go rt.silenceMonitor.Run(rt.ctx)
-	// AI session naming (runShellNameWatcher) only ever wrote to the legacy
-	// state.Manager, which no longer exists; naming now flows through
-	// SessionCommandService's create path instead.
+	// AI session naming flows through SessionCommandService's create path.
 
 	go rt.runDaemonRefresh(rt.ctx)
 
@@ -497,8 +495,7 @@ func (rt *Runtime) classifyAndCleanupCrashes() {
 // refreshDaemonState runs one classify-then-publish cycle. Crash detection
 // happens first so a crashed session is never broadcast as live in the same
 // cycle. Publishing itself is owned entirely by the canonical reconciler
-// (pkg/state.Reconciler), driven off the same daemon registry -- there is no
-// second, legacy publish path.
+// (pkg/state.Reconciler), driven off the same daemon registry.
 func (rt *Runtime) refreshDaemonState() {
 	rt.classifyAndCleanupCrashes()
 	rt.adapter.refresh()
@@ -667,7 +664,7 @@ func defaultSessionDir() string {
 	return fmt.Sprintf("/tmp/termyard-sessions-%s", uid)
 }
 
-// runtimeEnricher supplies live runtime fields for v2 catalog records
+// runtimeEnricher supplies live runtime fields for catalog records
 // without mutating persisted state.
 type runtimeEnricher struct {
 	adapter    *daemonAdapter
@@ -709,8 +706,8 @@ type previewCacheEntry struct {
 	inFlight    bool
 }
 
-// promptPreviewInterval throttles prompt-preview PTY captures during v2
-// catalog enrichment. Matches the legacy manager's promptPreviewInterval.
+// promptPreviewInterval throttles prompt-preview PTY captures during
+// catalog enrichment.
 const promptPreviewInterval = 30 * time.Second
 
 // previewFor returns the cached prompt preview for a session immediately,

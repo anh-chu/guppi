@@ -1016,7 +1016,7 @@ func registerWSRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 		r.With(authMw).Get("/ws/direct-session", ptyHandler.HandleDirectSession)
 		r.With(authMw).Get("/ws/daemon-session", daemonWS)
 		if opts.StateStream != nil {
-			r.With(authMw).Get("/ws/v2/state", opts.StateStream.HandleState)
+			r.With(authMw).Get("/ws/state", opts.StateStream.HandleState)
 		}
 	} else {
 		r.Get("/ws/events", hub.HandleEvents)
@@ -1024,7 +1024,7 @@ func registerWSRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 		r.Get("/ws/direct-session", ptyHandler.HandleDirectSession)
 		r.Get("/ws/daemon-session", daemonWS)
 		if opts.StateStream != nil {
-			r.Get("/ws/v2/state", opts.StateStream.HandleState)
+			r.Get("/ws/state", opts.StateStream.HandleState)
 		}
 	}
 }
@@ -1075,9 +1075,8 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 	defer browserWS.Close()
 	// Forward the stable identity (immutable SessionID + generation) when the
 	// browser supplied it. The receiving peer prefers the SessionID as its
-	// daemon socket key and only falls back to the legacy `name` when no
-	// SessionID was carried (a v2 session is routed stably; a pre-v2 peer/label
-	// keeps working over the name path).
+	// daemon socket key and only falls back to the plain `name` when no
+	// SessionID was carried.
 	sessionID := r.URL.Query().Get("sessionID")
 	generation := r.URL.Query().Get("generation")
 	ok := serveViewerPerStream(browserWS, peerConn, opts, hostID, sessionName, sessionID, generation, cols, rows)

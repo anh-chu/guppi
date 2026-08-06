@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-// SchemaVersion is the only supported canonical v2 document schema.
+// SchemaVersion is the only supported canonical document schema.
 //
-// Schema 3 finished the v2 transition: every field that used to live in a
-// `_compat`-nested Compat* struct (a holdover from the v1->v2 migration) is
-// now a direct, first-class field on its parent record. There is no
-// migrator from schema 2 (or earlier) to schema 3 -- an older document
-// fails closed (see ValidateDocument/ErrBadSchema) rather than being
-// transformed, partially read, or silently upgraded.
+// Schema 3 finished the migration to the canonical schema: every field that
+// used to live in a separate nested compatibility struct (a holdover from an
+// earlier schema) is now a direct, first-class field on its parent record.
+// There is no migrator from schema 2 (or earlier) to schema 3 -- an older
+// document fails closed (see ValidateDocument/ErrBadSchema) rather than
+// being transformed, partially read, or silently upgraded.
 const SchemaVersion = 3
 
 // SessionPhase is the observed runtime phase of a session.
@@ -39,7 +39,7 @@ const (
 
 // AppDocument is the persisted owner-scope state. It contains the session
 // catalog and workspace layouts for exactly one owner. Every field is
-// canonical and direct -- schema 3 removed the `_compat` transition layer.
+// canonical and direct -- schema 3 removed the old nested compatibility layer.
 type AppDocument struct {
 	Schema               int                         `json:"schema"`
 	Owner                OwnerID                     `json:"owner"`
@@ -83,8 +83,8 @@ type LocalSessionRecord struct {
 
 	// Hidden/Background are mutable presentation flags set via
 	// ActionSetPresentation (see session_commands.go). They carry the same
-	// semantics as the legacy sessionattrs.Attr fields of the same name, but
-	// live directly on the canonical record instead of a separate store.
+	// semantics as the equivalent fields of an older, separate per-session
+	// attribute store, but live directly on the canonical record instead.
 	Hidden     bool `json:"hidden,omitempty"`
 	Background bool `json:"background,omitempty"`
 

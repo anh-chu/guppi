@@ -32,7 +32,7 @@ func TestRemoteCatalogCacheReloadRestoresPeerFingerprint(t *testing.T) {
 	t.Setenv("HOME", dir)
 	_ = os.MkdirAll(filepath.Join(dir, ".config", "termyard"), 0o700)
 
-	storeDir := filepath.Join(dir, "v2store")
+	storeDir := filepath.Join(dir, "statestore")
 	if err := os.MkdirAll(storeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

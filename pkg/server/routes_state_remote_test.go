@@ -17,14 +17,14 @@ import (
 	"github.com/anh-chu/termyard/pkg/state"
 )
 
-// TestV2BootstrapIncludesRemoteOwnerCatalog is the closest cheaply-available
+// TestBootstrapIncludesRemoteOwnerCatalog is the closest cheaply-available
 // stand-in for a full two-node integration test: it exercises the exact
 // production wiring (peer.Manager.UpdateRemoteCatalog -> the same validated,
-// cached path a real remote peer's snapshot would take -> registerStateV2Routes'
-// handleV2Bootstrap -> state.AggregateCatalog) end to end through the real
+// cached path a real remote peer's snapshot would take -> registerStateRoutes'
+// handleBootstrap -> state.AggregateCatalog) end to end through the real
 // HTTP route handler, proving node A's bootstrap response surfaces node B's
 // session under B's own owner ID, distinguishable from A's own session.
-func TestV2BootstrapIncludesRemoteOwnerCatalog(t *testing.T) {
+func TestBootstrapIncludesRemoteOwnerCatalog(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	_ = os.MkdirAll(filepath.Join(tmpHome, ".config", "termyard"), 0o700)
@@ -39,9 +39,9 @@ func TestV2BootstrapIncludesRemoteOwnerCatalog(t *testing.T) {
 	}
 	peerMgr := peer.NewManager(localID, peerStore)
 
-	// Node A's own local catalog and session, exactly as handleV2Bootstrap
+	// Node A's own local catalog and session, exactly as handleBootstrap
 	// reads it today.
-	catalog, svc := newV2TestCatalog(t)
+	catalog, svc := newStateTestCatalog(t)
 	localOwner := catalog.Owner()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -55,7 +55,7 @@ func TestV2BootstrapIncludesRemoteOwnerCatalog(t *testing.T) {
 	}
 	// The create is durable-before-reply; the daemon start is committed
 	// asynchronously by a background worker. Wait for it, matching the
-	// pattern used by TestV2BootstrapIncludesPerSessionDaemonGeneration.
+	// pattern used by TestBootstrapIncludesPerSessionDaemonGeneration.
 	for start := time.Now(); time.Since(start) < 5*time.Second; {
 		if rec, ok := catalog.Session(res.Ref.Session); ok && rec.Phase == state.SessionPhaseActive {
 			break
@@ -65,12 +65,12 @@ func TestV2BootstrapIncludesRemoteOwnerCatalog(t *testing.T) {
 
 	// Node B's session, arriving over the peer link exactly as
 	// UpdateRemoteCatalog validates and caches it for a real remote peer --
-	// this is the same call peer/session_state.go makes when a v2 catalog
+	// this is the same call peer/session_state.go makes when a catalog
 	// frame arrives from a connected peer. UpdateRemoteCatalog enforces
-	// snap.Owner == state.OwnerIDFromFingerprint(peerID), so the owner must be a valid v2
+	// snap.Owner == state.OwnerIDFromFingerprint(peerID), so the owner must be a valid
 	// OwnerID (unlike a raw fingerprint's charset); the peer fingerprint
 	// itself only needs to be a stable string identifying the connection,
-	// matching the pattern used by pkg/peer's own v2 catalog tests.
+	// matching the pattern used by pkg/peer's own catalog tests.
 	remoteFingerprint := "nodebfingerprint"
 	remoteOwner := state.NewOwnerID()
 	remoteSessionID := state.NewSessionID()
@@ -97,16 +97,16 @@ func TestV2BootstrapIncludesRemoteOwnerCatalog(t *testing.T) {
 
 	opts := &Options{Catalog: catalog, CommandSvc: svc, PeerMgr: peerMgr}
 	r := chi.NewRouter()
-	registerStateV2Routes(r, opts)
+	registerStateRoutes(r, opts)
 
-	req := httptest.NewRequest(http.MethodGet, "/v2/bootstrap", nil)
+	req := httptest.NewRequest(http.MethodGet, "/state/bootstrap", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp v2BootstrapResponse
+	var resp bootstrapResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}

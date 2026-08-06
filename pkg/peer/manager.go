@@ -71,7 +71,7 @@ type PeerConnection struct {
 	done   chan struct{}
 	closed bool
 
-	// v2 coalescing snapshot slots and reliable command queue.
+	// Coalescing snapshot slots and reliable command queue.
 	catalogSlot   *snapshotSlot
 	workspaceSlot *snapshotSlot
 	cmdQueue      *reliableCommandQueue
@@ -91,7 +91,7 @@ func NewPeerConnection(hostID string, bufSize int) *PeerConnection {
 	}
 }
 
-// initSlotsLazy lazily initializes v2 slots/queue. It is safe to call multiple
+// initSlotsLazy lazily initializes the snapshot slots/queue. It is safe to call multiple
 // times because a real PeerConnection is created once per connection.
 func (pc *PeerConnection) initSlotsLazy() {
 	pc.mu.Lock()
@@ -181,15 +181,15 @@ type Manager struct {
 	localName string
 	identity  *identity.Identity
 	peerStore *identity.PeerStore
-	// v2Catalog is this node's own v2 catalog, wired explicitly via
+	// catalog is this node's own catalog, wired explicitly via
 	// SetCatalog.
-	v2Catalog *state.Catalog
+	catalog *state.Catalog
 
 	// Subscribers for peer connect/disconnect and rename notifications.
 	subMu       sync.RWMutex
 	subscribers []chan StateEvent
 
-	// v2 remote catalog caches, keyed by owner ID. They survive reconnects
+	// Remote catalog caches, keyed by owner ID. They survive reconnects
 	// until explicitly forgotten.
 	catalogMu      sync.RWMutex
 	remoteCatalogs map[state.OwnerID]remoteCatalogCache
@@ -208,12 +208,12 @@ type Manager struct {
 
 	// ownerBinding enforces one owner per peer and one peer per owner so a
 	// peer cannot publish state under another peer's established owner.
-	// Guarded by catalogMu. Owner is a v2 OwnerID (random base32), which is
+	// Guarded by catalogMu. Owner is an OwnerID (random base32), which is
 	// distinct from the peer fingerprint.
 	peerOwner map[string]state.OwnerID
 	ownerPeer map[state.OwnerID]string
 
-	// v2 reliable command waiters, keyed by (peer, connection, CommandID) --
+	// Reliable command waiters, keyed by (peer, connection, CommandID) --
 	// see commandWaiterKey. A CommandID alone is not unique across peers or
 	// across a reconnect (a superseded connection's in-flight waiter and a
 	// new connection's waiter can share the same CommandID during a retry),
@@ -226,9 +226,9 @@ type Manager struct {
 	// remoteStore persists remote catalog caches across restarts.
 	remoteStore *state.Store
 
-	// v2RemoteCreate runs local owner-side remote-create sagas and resumes
+	// remoteCreate runs local owner-side remote-create sagas and resumes
 	// pending creates after restart.
-	v2RemoteCreate *state.RemoteCreateCoordinator
+	remoteCreate *state.RemoteCreateCoordinator
 
 	// remoteCatalogSubs notifies observers (e.g. the browser state stream)
 	// whenever a remote-owner catalog cache is updated or forgotten. This is
@@ -272,7 +272,7 @@ type remoteCatalogCache struct {
 }
 
 // remoteRevisionState is the per-peer, per-connection revision baseline for
-// v2 snapshot streams. -1 means "no baseline yet" (fresh connection).
+// snapshot streams. -1 means "no baseline yet" (fresh connection).
 // Generation tags the connection that produced this state; a snapshot with a
 // mismatched generation is from a stale/superseded connection and is dropped.
 type remoteRevisionState struct {
@@ -309,15 +309,14 @@ func NewManager(id *identity.Identity, peerStore *identity.PeerStore) *Manager {
 	return m
 }
 
-// SetCatalog wires this node's own v2 catalog. It is decoupled from
-// localMgr: v2 mode never constructs a legacy state.Manager, so this is the
-// only way Manager learns whether v2 is active and what its local catalog is.
+// SetCatalog wires this node's own catalog. It is decoupled from
+// localMgr, so this is the only way Manager learns what its local catalog is.
 func (m *Manager) SetCatalog(cat *state.Catalog) {
-	m.v2Catalog = cat
+	m.catalog = cat
 }
 
 // updateLocalStats collects system stats for the local host. There is no
-// legacy per-node session source to derive process counts from (the v2
+// per-node session source to derive process counts from (the
 // catalog carries session data instead), so process counting is skipped.
 func (m *Manager) updateLocalStats() {
 	s := stats.SystemStats()
@@ -327,7 +326,7 @@ func (m *Manager) updateLocalStats() {
 // Run starts forwarding local state events to peer manager subscribers
 // and pruning offline peers. Blocks until ctx is cancelled.
 //
-// There is no legacy local event channel to subscribe to; the v2 catalog's
+// There is no local event channel to subscribe to; the catalog's
 // own subscription mechanism (SubscribeCatalog/SubscribeWorkspace) carries
 // real state instead.
 func (m *Manager) Run(ctx context.Context) {
@@ -470,14 +469,14 @@ func (m *Manager) GetHostsForPeer(remotePeerID string) []HostInfo {
 	}}
 }
 
-// ownerIDForPeerLocked returns the v2 catalog OwnerID for a peer fingerprint.
+// ownerIDForPeerLocked returns the catalog OwnerID for a peer fingerprint.
 // Caller must hold m.mu for reading (or writing).
 //
-// For the local peer, the OwnerID is this node's own v2 catalog owner (empty,
-// ok=false, if no v2 catalog is wired -- legacy/v1-only mode has no OwnerID).
+// For the local peer, the OwnerID is this node's own catalog owner (empty,
+// ok=false, if no catalog is wired).
 // For a remote peer, the OwnerID is the canonical deterministic conversion of
 // its authenticated fingerprint (state.OwnerIDFromFingerprint) -- the same
-// forward mapping validateCatalogOwnership already requires every remote v2
+// forward mapping validateCatalogOwnership already requires every remote
 // catalog snapshot's Owner field to equal. This is the forward direction
 // only (fingerprint -> OwnerID); the reverse direction (OwnerID -> peer
 // connection) must go through PeerIDForOwner's remoteCatalogs-backed lookup,
@@ -488,18 +487,18 @@ func (m *Manager) ownerIDForPeerLocked(peerID string) (state.OwnerID, bool) {
 		return "", false
 	}
 	if peerID == m.localID {
-		if m.v2Catalog == nil {
+		if m.catalog == nil {
 			return "", false
 		}
-		return m.v2Catalog.Owner(), true
+		return m.catalog.Owner(), true
 	}
 	return state.OwnerIDFromFingerprint(peerID), true
 }
 
-// OwnerIDForPeer returns the v2 catalog OwnerID for a peer's authenticated
+// OwnerIDForPeer returns the catalog OwnerID for a peer's authenticated
 // fingerprint (see ownerIDForPeerLocked). Exported for route handlers and
 // frontend-facing encoders that must translate a transport peer identity
-// into the OwnerID domain (e.g. before threading it into a v2 SessionRef or
+// into the OwnerID domain (e.g. before threading it into a SessionRef or
 // the target_owner wire field), instead of conflating the two identity
 // spaces by using the fingerprint directly.
 func (m *Manager) OwnerIDForPeer(peerID string) (state.OwnerID, bool) {
@@ -508,10 +507,10 @@ func (m *Manager) OwnerIDForPeer(peerID string) (state.OwnerID, bool) {
 	return m.ownerIDForPeerLocked(peerID)
 }
 
-// IsLocalOwner reports whether owner names this node's own v2 catalog. It is
+// IsLocalOwner reports whether owner names this node's own catalog. It is
 // the OwnerID-domain equivalent of IsLocal (which compares peer transport
 // fingerprints) and must be used wherever a caller's "is this host me"
-// value is a v2 OwnerID rather than a fingerprint -- e.g. a v2-routed
+// value is an OwnerID rather than a fingerprint -- e.g. a
 // terminal attach's `host` query parameter, which carries SessionRef.Owner,
 // not a peer ID.
 func (m *Manager) IsLocalOwner(owner state.OwnerID) bool {
@@ -519,7 +518,7 @@ func (m *Manager) IsLocalOwner(owner state.OwnerID) bool {
 		return false
 	}
 	m.mu.RLock()
-	cat := m.v2Catalog
+	cat := m.catalog
 	m.mu.RUnlock()
 	if cat == nil {
 		return false
@@ -527,19 +526,19 @@ func (m *Manager) IsLocalOwner(owner state.OwnerID) bool {
 	return owner == cat.Owner()
 }
 
-// ResolveHostParam resolves a `host` request parameter that may be either a
-// v2 OwnerID (what a v2-routed session's SessionRef.Owner / the frontend's
-// state/v2/paneTreeAdapter.ts sessionRefToKey actually carry) or a legacy
-// peer fingerprint (what pre-v2 model.Session.Host carries). Before this
+// ResolveHostParam resolves a `host` request parameter that may be either an
+// OwnerID (what a session's SessionRef.Owner / the frontend's
+// state/session/paneTreeAdapter.ts sessionRefToKey actually carry) or a
+// peer fingerprint (what model.Session.Host carries). Before this
 // method existed, callers compared the raw `host` value against fingerprints
 // via IsLocal/GetPeerConnection unconditionally, which silently misrouted
-// every v2-routed remote host (misclassified as local, or resolved against
-// no live connection) because a v2 OwnerID is a different string encoding
-// than its owner's fingerprint.
+// every OwnerID-routed remote host (misclassified as local, or resolved
+// against no live connection) because an OwnerID is a different string
+// encoding than its owner's fingerprint.
 //
-// It tries the v2 OwnerID interpretation first (the identity domain a
-// v2-enabled frontend actually sends); if host does not resolve as a known
-// owner, it falls back to treating host as a legacy fingerprint so pre-v2
+// It tries the OwnerID interpretation first (the identity domain the
+// frontend actually sends); if host does not resolve as a known owner, it
+// falls back to treating host as a peer fingerprint so other
 // callers/peers keep working unchanged. Returns isLocal=true (peerID="") if
 // host names this node itself under either interpretation; otherwise
 // returns the fingerprint of the live peer connection to use, or "" if host
@@ -740,7 +739,7 @@ func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bo
 				"owner":         string(snap.Owner),
 				"session_id":    string(sess.ID),
 				"session_owner": string(sess.Owner),
-			}).Warn("dropping v2 snapshot: embedded session owner mismatch")
+			}).Warn("dropping snapshot: embedded session owner mismatch")
 			return false
 		}
 		if sess.Ref.Owner != snap.Owner {
@@ -749,7 +748,7 @@ func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bo
 				"owner":      string(snap.Owner),
 				"session_id": string(sess.ID),
 				"ref_owner":  string(sess.Ref.Owner),
-			}).Warn("dropping v2 snapshot: embedded session ref owner mismatch")
+			}).Warn("dropping snapshot: embedded session ref owner mismatch")
 			return false
 		}
 	}
@@ -760,7 +759,7 @@ func validateCatalogOwnership(peerID string, snap state.OwnerCatalogSnapshot) bo
 				"owner":        string(snap.Owner),
 				"layout_id":    string(layout.ID),
 				"layout_owner": string(layout.Owner),
-			}).Warn("dropping v2 snapshot: embedded layout owner mismatch")
+			}).Warn("dropping snapshot: embedded layout owner mismatch")
 			return false
 		}
 	}
@@ -785,7 +784,7 @@ func validateCatalogInvariants(peerID string, snap state.OwnerCatalogSnapshot) b
 				"peer":           peerID,
 				"session_id":     string(sess.ID),
 				"ref_session_id": string(sess.Ref.Session),
-			}).Warn("dropping v2 snapshot: session Ref.Session does not match its own ID")
+			}).Warn("dropping snapshot: session Ref.Session does not match its own ID")
 			return false
 		}
 	}
@@ -802,13 +801,13 @@ func validateCatalogInvariants(peerID string, snap state.OwnerCatalogSnapshot) b
 					"code":      stateErr.Code,
 					"field":     stateErr.Field,
 					"detail":    stateErr.Detail,
-				}).Warn("dropping v2 snapshot: invalid pane tree structure")
+				}).Warn("dropping snapshot: invalid pane tree structure")
 			} else {
 				logrus.WithFields(logrus.Fields{
 					"peer":      peerID,
 					"layout_id": string(layout.ID),
 					"error":     err.Error(),
-				}).Warn("dropping v2 snapshot: invalid pane tree structure")
+				}).Warn("dropping snapshot: invalid pane tree structure")
 			}
 			return false
 		}
@@ -820,7 +819,7 @@ func validateCatalogInvariants(peerID string, snap state.OwnerCatalogSnapshot) b
 				"peer":      peerID,
 				"layout_id": string(layout.ID),
 				"error":     err.Error(),
-			}).Warn("dropping v2 snapshot: failed to collect leaf refs")
+			}).Warn("dropping snapshot: failed to collect leaf refs")
 			return false
 		}
 		for _, ref := range leaves {
@@ -831,7 +830,7 @@ func validateCatalogInvariants(peerID string, snap state.OwnerCatalogSnapshot) b
 					"layout_id": string(layout.ID),
 					"ref":       ref.String(),
 					"ref_owner": string(ref.Owner),
-				}).Warn("dropping v2 snapshot: layout leaf ref owner mismatch")
+				}).Warn("dropping snapshot: layout leaf ref owner mismatch")
 				return false
 			}
 			if _, exists := knownSessions[ref.Session]; !exists {
@@ -839,7 +838,7 @@ func validateCatalogInvariants(peerID string, snap state.OwnerCatalogSnapshot) b
 					"peer":      peerID,
 					"layout_id": string(layout.ID),
 					"ref":       ref.String(),
-				}).Warn("dropping v2 snapshot: layout leaf references unknown session")
+				}).Warn("dropping snapshot: layout leaf references unknown session")
 				return false
 			}
 		}
@@ -899,7 +898,7 @@ func validateWorkspaceTreeOwnership(peerID string, rec state.WorkspaceRecord) bo
 					"owner":     string(rec.Owner),
 					"layout_id": string(rec.ID),
 					"ref_owner": string(node.Ref.Owner),
-				}).Warn("dropping v2 snapshot: embedded leaf owner mismatch")
+				}).Warn("dropping snapshot: embedded leaf owner mismatch")
 				return false
 			}
 			return true
@@ -929,13 +928,13 @@ func validateWorkspaceInvariants(peerID string, rec state.WorkspaceRecord) bool 
 				"code":      stateErr.Code,
 				"field":     stateErr.Field,
 				"detail":    stateErr.Detail,
-			}).Warn("dropping v2 snapshot: invalid workspace pane tree structure")
+			}).Warn("dropping snapshot: invalid workspace pane tree structure")
 		} else {
 			logrus.WithFields(logrus.Fields{
 				"peer":      peerID,
 				"layout_id": string(rec.ID),
 				"error":     err.Error(),
-			}).Warn("dropping v2 snapshot: invalid workspace pane tree structure")
+			}).Warn("dropping snapshot: invalid workspace pane tree structure")
 		}
 		return false
 	}
@@ -962,7 +961,7 @@ func (m *Manager) isConnectionStill(peerID string, conn *PeerConnection) bool {
 // peer per owner. The first snapshot a peer publishes establishes its sole
 // owner; a later snapshot from the same peer under a different owner, or a
 // second peer claiming an already-bound owner, is a spoof and is dropped.
-// Caller must hold catalogMu. The v2 catalog Owner MUST equal the peer's
+// Caller must hold catalogMu. The catalog Owner MUST equal the peer's
 // authenticated fingerprint (peerID), so the binding is an authenticated fact,
 // not derived from the snapshot.
 func (m *Manager) bindRemoteOwner(peerID string, owner state.OwnerID) bool {
@@ -970,11 +969,11 @@ func (m *Manager) bindRemoteOwner(peerID string, owner state.OwnerID) bool {
 		return false
 	}
 	if p, ok := m.ownerPeer[owner]; ok && p != peerID {
-		logrus.WithFields(logrus.Fields{"peer": peerID, "owner": string(owner), "boundPeer": p}).Warn("dropping v2 snapshot: owner already bound to another peer")
+		logrus.WithFields(logrus.Fields{"peer": peerID, "owner": string(owner), "boundPeer": p}).Warn("dropping snapshot: owner already bound to another peer")
 		return false
 	}
 	if o, ok := m.peerOwner[peerID]; ok && o != owner {
-		logrus.WithFields(logrus.Fields{"peer": peerID, "owner": string(owner), "boundOwner": string(o)}).Warn("dropping v2 snapshot: peer switched owners")
+		logrus.WithFields(logrus.Fields{"peer": peerID, "owner": string(owner), "boundOwner": string(o)}).Warn("dropping snapshot: peer switched owners")
 		return false
 	}
 	m.peerOwner[peerID] = owner
@@ -1007,7 +1006,7 @@ func (m *Manager) UpdateRemoteCatalog(peerID string, conn *PeerConnection, snap 
 			"peer":           peerID,
 			"claimed_owner":  string(snap.Owner),
 			"expected_owner": string(expectedOwner),
-		}).Warn("dropping v2 catalog snapshot: owner does not match authenticated peer identity")
+		}).Warn("dropping catalog snapshot: owner does not match authenticated peer identity")
 		return
 	}
 	m.catalogMu.Lock()
@@ -1015,7 +1014,7 @@ func (m *Manager) UpdateRemoteCatalog(peerID string, conn *PeerConnection, snap 
 	rs := m.remoteRevs[peerID]
 	if rs == nil || conn == nil || !m.isConnectionStill(peerID, conn) {
 		m.catalogMu.Unlock()
-		logrus.WithFields(logrus.Fields{"peer": peerID}).Debug("dropping v2 catalog snapshot: connection generation mismatch or stale")
+		logrus.WithFields(logrus.Fields{"peer": peerID}).Debug("dropping catalog snapshot: connection generation mismatch or stale")
 		return
 	}
 	if !m.bindRemoteOwner(peerID, snap.Owner) {
@@ -1024,7 +1023,7 @@ func (m *Manager) UpdateRemoteCatalog(peerID string, conn *PeerConnection, snap 
 	}
 	if rs.catalog >= 0 && snap.Revision <= rs.catalog {
 		m.catalogMu.Unlock()
-		logrus.WithFields(logrus.Fields{"peer": peerID, "rev": snap.Revision, "last": rs.catalog}).Debug("dropping stale v2 catalog snapshot")
+		logrus.WithFields(logrus.Fields{"peer": peerID, "rev": snap.Revision, "last": rs.catalog}).Debug("dropping stale catalog snapshot")
 		return
 	}
 	rs.catalog = snap.Revision
@@ -1063,7 +1062,7 @@ func (m *Manager) UpdateRemoteWorkspace(peerID string, conn *PeerConnection, rec
 			"peer":           peerID,
 			"claimed_owner":  string(rec.Owner),
 			"expected_owner": string(expectedOwner),
-		}).Warn("dropping v2 workspace snapshot: owner does not match authenticated peer identity")
+		}).Warn("dropping workspace snapshot: owner does not match authenticated peer identity")
 		return
 	}
 	m.catalogMu.Lock()
@@ -1071,7 +1070,7 @@ func (m *Manager) UpdateRemoteWorkspace(peerID string, conn *PeerConnection, rec
 	rs := m.remoteRevs[peerID]
 	if rs == nil || conn == nil || !m.isConnectionStill(peerID, conn) {
 		m.catalogMu.Unlock()
-		logrus.WithFields(logrus.Fields{"peer": peerID}).Debug("dropping v2 workspace snapshot: connection generation mismatch or stale")
+		logrus.WithFields(logrus.Fields{"peer": peerID}).Debug("dropping workspace snapshot: connection generation mismatch or stale")
 		return
 	}
 	if !m.bindRemoteOwner(peerID, rec.Owner) {
@@ -1083,7 +1082,7 @@ func (m *Manager) UpdateRemoteWorkspace(peerID string, conn *PeerConnection, rec
 	}
 	if last, seen := rs.workspace[rec.ID]; seen && rec.Revision <= last {
 		m.catalogMu.Unlock()
-		logrus.WithFields(logrus.Fields{"peer": peerID, "layout": string(rec.ID), "rev": rec.Revision, "last": last}).Debug("dropping stale v2 workspace snapshot")
+		logrus.WithFields(logrus.Fields{"peer": peerID, "layout": string(rec.ID), "rev": rec.Revision, "last": last}).Debug("dropping stale workspace snapshot")
 		return
 	}
 	rs.workspace[rec.ID] = rec.Revision
@@ -1185,16 +1184,16 @@ func (m *Manager) ForgetRemoteCatalog(owner state.OwnerID) {
 	m.notifyRemoteCatalog(owner, state.OwnerCatalogSnapshot{}, true)
 }
 
-// SetRemoteCreateCoordinator wires the v2 owner-side remote create coordinator.
+// SetRemoteCreateCoordinator wires the owner-side remote create coordinator.
 func (m *Manager) SetRemoteCreateCoordinator(c *state.RemoteCreateCoordinator) {
-	m.v2RemoteCreate = c
+	m.remoteCreate = c
 }
 
 // WorkspaceAuthority returns the owning owner for layout and, when the owner is
 // remote, the peer ID that last advertised it. The empty peerID means this node
 // is the authority.
 func (m *Manager) WorkspaceAuthority(layout state.LayoutID) (state.OwnerID, string, error) {
-	if cat := m.v2Catalog; cat != nil {
+	if cat := m.catalog; cat != nil {
 		if rec, ok := cat.Layout(layout); ok {
 			return rec.Owner, "", nil
 		}
@@ -1214,7 +1213,7 @@ func (m *Manager) WorkspaceAuthority(layout state.LayoutID) (state.OwnerID, stri
 	return "", "", state.StateError{Code: state.ErrUnknownLayout, Field: "layout", Detail: fmt.Sprintf("workspace authority not found for layout %q", layout)}
 }
 
-// IsWorkspaceOwnerOnline reports whether owner is reachable for v2 commands.
+// IsWorkspaceOwnerOnline reports whether owner is reachable for state commands.
 func (m *Manager) IsWorkspaceOwnerOnline(owner state.OwnerID) bool {
 	if owner == state.OwnerIDFromFingerprint(m.localID) {
 		return true
@@ -1228,7 +1227,7 @@ func (m *Manager) IsWorkspaceOwnerOnline(owner state.OwnerID) bool {
 }
 
 // ProxyWorkspaceCommand routes a workspace command to the layout's owner.
-// Local authority applies directly; remote authority is sent over the v2
+// Local authority applies directly; remote authority is sent over the
 // command RPC. Legacy or offline owners return typed errors.
 func (m *Manager) ProxyWorkspaceCommand(ctx context.Context, cmd state.WorkspaceCommand) error {
 	owner, peerID, err := m.WorkspaceAuthority(cmd.Layout)
@@ -1236,9 +1235,9 @@ func (m *Manager) ProxyWorkspaceCommand(ctx context.Context, cmd state.Workspace
 		return err
 	}
 	if owner == state.OwnerIDFromFingerprint(m.localID) {
-		cat := m.v2Catalog
+		cat := m.catalog
 		if cat == nil {
-			return fmt.Errorf("v2 catalog not enabled")
+			return fmt.Errorf("catalog not enabled")
 		}
 		return cat.ApplyWorkspaceCommand(cmd)
 	}
@@ -1247,20 +1246,20 @@ func (m *Manager) ProxyWorkspaceCommand(ctx context.Context, cmd state.Workspace
 		return state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "owner", Detail: fmt.Sprintf("workspace owner %q is offline", owner)}
 	}
 	if !pc.HasCanonicalCaps() {
-		return state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %q does not support v2 workspace commands", peerID)}
+		return state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %q does not support workspace commands", peerID)}
 	}
 	return m.SendWorkspaceCommand(ctx, peerID, cmd)
 }
 
 // RequestRemoteCreate routes a remote create to the workspace owner. The local
 // owner path runs directly in the coordinator; remote owners are reached over
-// the v2 remote-create RPC.
+// the remote-create RPC.
 func (m *Manager) RequestRemoteCreate(ctx context.Context, owner state.OwnerID, req state.RemoteCreateRequest) (state.RemoteCreateResult, error) {
 	if owner == "" || owner == state.OwnerIDFromFingerprint(m.localID) {
-		if m.v2RemoteCreate == nil {
+		if m.remoteCreate == nil {
 			return state.RemoteCreateResult{}, fmt.Errorf("remote create coordinator not available")
 		}
-		return m.v2RemoteCreate.ExecuteRemoteCreate(ctx, req)
+		return m.remoteCreate.ExecuteRemoteCreate(ctx, req)
 	}
 	peerID := m.peerIDForOwner(owner)
 	if peerID == "" {
@@ -1271,7 +1270,7 @@ func (m *Manager) RequestRemoteCreate(ctx context.Context, owner state.OwnerID, 
 		return state.RemoteCreateResult{}, state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "owner", Detail: fmt.Sprintf("workspace owner %q is offline", owner)}
 	}
 	if !pc.HasCanonicalCaps() {
-		return state.RemoteCreateResult{}, state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %q does not support v2 remote creates", peerID)}
+		return state.RemoteCreateResult{}, state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %q does not support remote creates", peerID)}
 	}
 	return m.SendRemoteCreate(ctx, peerID, req)
 }
@@ -1288,7 +1287,7 @@ func (m *Manager) peerIDForOwner(owner state.OwnerID) string {
 // PeerIDForOwner is the exported form of peerIDForOwner, used by route
 // handlers outside this package (e.g. routes_sessions.go rename/kill handlers) to resolve
 // which live peer connection currently owns a given remote catalog owner,
-// so a v2 session command targeting that owner can be forwarded via
+// so a session command targeting that owner can be forwarded via
 // SendCommand instead of executed locally. Returns "" if no peer is
 // currently known to own that owner ID (e.g. never seen, or forgotten).
 func (m *Manager) PeerIDForOwner(owner state.OwnerID) string {
@@ -1539,7 +1538,7 @@ func (m *Manager) IsLocal(hostID string) bool {
 }
 
 // pruneOffline marks long-offline peers as offline. It deliberately does not
-// delete v2 remote catalog caches; those are retained through reconnects and
+// delete remote catalog caches; those are retained through reconnects and
 // only dropped on explicit forget.
 func (m *Manager) pruneOffline() {
 	m.mu.Lock()

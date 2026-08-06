@@ -27,8 +27,8 @@ import (
 // groups.
 //
 // There is exactly one state authority: Catalog/CommandSvc/StateStream. There
-// is no legacy state.Manager, session-attrs/order/group store, or runtime
-// mode switch -- the canonical graph is the only one that exists.
+// is no alternate session store or runtime mode switch -- the canonical
+// graph is the only one that exists.
 type Options struct {
 	// Network/transport
 	Port       int

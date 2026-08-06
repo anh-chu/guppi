@@ -251,22 +251,22 @@ func TestHandleCommandReply_WrongPeerRejected(t *testing.T) {
 // Capability advertisement is covered by TestLocalCapabilities_AlwaysAdvertisesCanonicalCaps
 // and TestPeerCapsSatisfyCanonical in capability_gate_test.go.
 
-// TestLegacyPeer_NoCatalogFrame proves a peer that never advertises v2
-// capabilities gets no v2 catalog slot frame.
+// TestLegacyPeer_NoCatalogFrame proves a peer that never advertises
+// canonical capabilities gets no catalog slot frame.
 func TestLegacyPeer_NoCatalogFrame(t *testing.T) {
 	mgr := makeTestManager(t)
 	peerID := "legacya"
 	pc := NewPeerConnection(peerID, 8)
-	pc.Caps = []string{CapPerStream, CapUpload} // no v2 caps
+	pc.Caps = []string{CapPerStream, CapUpload} // no canonical caps
 	mgr.RegisterPeer(peerID, "legacya", "", pc)
 
 	deps := SessionDeps{Manager: mgr}
 
-	// No v2 catalog slot frame should be produced for legacy peers.
+	// No catalog slot frame should be produced for legacy peers.
 	sendInitialCatalog(pc, deps)
 	select {
 	case <-pc.LoLane():
-		t.Fatal("unexpected v2 catalog frame for legacy peer")
+		t.Fatal("unexpected catalog frame for legacy peer")
 	case <-time.After(50 * time.Millisecond):
 	}
 }

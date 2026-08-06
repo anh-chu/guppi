@@ -153,7 +153,7 @@ func waitForSocketKey(t *testing.T, r *recordingDaemonReg, want string) {
 }
 
 // TestOpenTerminal_NameOnlyPayloadResolvesDaemonKey is a same-process peer
-// roundtrip: a name-only OpenTerminalPayload (no SessionID -- the pre-v2 /
+// roundtrip: a name-only OpenTerminalPayload (no SessionID -- the
 // display-name path) must still resolve a daemon socket key by falling back to
 // the session name instead of passing an empty SessionID to SocketPath.
 func TestOpenTerminal_NameOnlyPayloadResolvesDaemonKey(t *testing.T) {

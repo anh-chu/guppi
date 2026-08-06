@@ -166,10 +166,10 @@ func TestRefreshSessionsFunc_IsSafeNoOp(t *testing.T) {
 	rt.refreshSessionsFunc()
 }
 
-// TestV2RuntimeEnricherPreviewReturnsImmediately verifies that previewFor returns
+// TestRuntimeEnricherPreviewReturnsImmediately verifies that previewFor returns
 // cached values immediately without blocking on PTY captures. The enricher must
 // not delay catalog snapshot publication by waiting for capture operations.
-func TestV2RuntimeEnricherPreviewReturnsImmediately(t *testing.T) {
+func TestRuntimeEnricherPreviewReturnsImmediately(t *testing.T) {
 	denricher := &runtimeEnricher{
 		adapter:    &daemonAdapter{reg: &fakeRegistry{sessions: []pty.SessionInfo{{ID: "s1", Pid: 100, ShellPid: 101}}}},
 		actTracker: nil,
@@ -202,9 +202,9 @@ func TestV2RuntimeEnricherPreviewReturnsImmediately(t *testing.T) {
 	}
 }
 
-// TestV2RuntimeEnricherLastActivityFromTracker verifies that enricher only sets
+// TestRuntimeEnricherLastActivityFromTracker verifies that enricher only sets
 // LastActivity based on real activity evidence, never from wall-clock time.
-func TestV2RuntimeEnricherLastActivityFromTracker(t *testing.T) {
+func TestRuntimeEnricherLastActivityFromTracker(t *testing.T) {
 	tracker := activity.NewTracker()
 
 	ref := state.SessionRef{
@@ -251,9 +251,9 @@ func TestV2RuntimeEnricherLastActivityFromTracker(t *testing.T) {
 	}
 }
 
-// TestV2RuntimeEnricherLastActivityNotBumpedByReEnrichment verifies that a stale
+// TestRuntimeEnricherLastActivityNotBumpedByReEnrichment verifies that a stale
 // session's LastActivity doesn't get refreshed just by being enriched repeatedly.
-func TestV2RuntimeEnricherLastActivityNotBumpedByReEnrichment(t *testing.T) {
+func TestRuntimeEnricherLastActivityNotBumpedByReEnrichment(t *testing.T) {
 	tracker := activity.NewTracker()
 
 	ref := state.SessionRef{
@@ -452,11 +452,11 @@ func TestNewRuntimeStateInitFailureReturnsFatalError(t *testing.T) {
 	}
 }
 
-// TestV2RuntimeEnricherEnrichIsPureCacheLookup proves that Enrich performs
+// TestRuntimeEnricherEnrichIsPureCacheLookup proves that Enrich performs
 // zero /proc reads and zero daemon-adapter list/snapshot calls for N
 // sessions on the hot path: all process metadata comes from the
 // background-refreshed runtimeCache built by refreshRuntimeCache.
-func TestV2RuntimeEnricherEnrichIsPureCacheLookup(t *testing.T) {
+func TestRuntimeEnricherEnrichIsPureCacheLookup(t *testing.T) {
 	const n = 500
 	infos := make([]pty.SessionInfo, n)
 	for i := 0; i < n; i++ {
@@ -506,11 +506,11 @@ func TestV2RuntimeEnricherEnrichIsPureCacheLookup(t *testing.T) {
 	}
 }
 
-// TestV2RuntimeEnricherBackgroundRefreshUpdatesCache proves that
+// TestRuntimeEnricherBackgroundRefreshUpdatesCache proves that
 // refreshRuntimeCache actually replaces the cached value over successive
 // cycles, simulating the underlying process's cwd changing between two
 // background refreshes.
-func TestV2RuntimeEnricherBackgroundRefreshUpdatesCache(t *testing.T) {
+func TestRuntimeEnricherBackgroundRefreshUpdatesCache(t *testing.T) {
 	reg := &fakeRegistry{sessions: []pty.SessionInfo{{ID: "s1", Pid: 100, ShellPid: 101, Shell: "bash"}}}
 	adapter := &daemonAdapter{reg: reg}
 	adapter.refresh()

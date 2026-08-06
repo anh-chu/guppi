@@ -40,7 +40,7 @@ type Request struct {
 	ScheduleID     string
 	LocalHost      string // the current node ID, used both for target classification (local vs remote) and for local schedule-metadata key construction
 	Fallback       string // used only for local requests when a name cannot be derived
-	CommandID      string // stable command id for v2 state commands (optional)
+	CommandID      string // stable command id for state commands (optional)
 
 	Cols uint16
 	Rows uint16
@@ -106,31 +106,31 @@ type ExistingNames func(host string) []string
 // nil skips the refresh.
 type RefreshFunc func()
 
-// V2Commander executes state commands against the v2 catalog.
-type V2Commander interface {
+// Commander executes state commands against the canonical catalog.
+type Commander interface {
 	ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error)
 }
 
 // Service is the sole owner of session launch semantics.
 type Service struct {
-	DaemonReg   DaemonRegistry
-	Attrs       ScheduleAttrStore
-	Hub         BrowserHub
-	Identity    Identity
-	Remote      RemoteLauncher
-	Fanout      PeerFanout
-	Names       ExistingNames
-	Refresh     RefreshFunc
-	V2Commander V2Commander // nil keeps legacy path
+	DaemonReg DaemonRegistry
+	Attrs     ScheduleAttrStore
+	Hub       BrowserHub
+	Identity  Identity
+	Remote    RemoteLauncher
+	Fanout    PeerFanout
+	Names     ExistingNames
+	Refresh   RefreshFunc
+	Commander Commander // nil falls back to the direct daemon-create path
 
-	// V2Remote dispatches a remote-host create through the reliable v2
+	// ReliableRemote dispatches a remote-host create through the
 	// remote-create coordinator + command RPC (pkg/state.RemoteCreateCoordinator,
-	// pkg/peer's Manager.SendRemoteCreate), instead of the legacy fire-and-forget
-	// Remote path. When V2Commander and V2Remote are both non-nil, createRemote
-	// prefers V2Remote unconditionally: this node is v2-only, so the legacy
-	// Remote path (if even constructed) must not be used. nil keeps the legacy
-	// path for any remote target.
-	V2Remote RemoteLauncher
+	// pkg/peer's Manager.SendRemoteCreate), instead of the fire-and-forget
+	// Remote path. When Commander and ReliableRemote are both non-nil, createRemote
+	// prefers ReliableRemote unconditionally, since Remote's fire-and-forget
+	// delivery cannot confirm the remote session was actually created. nil
+	// falls back to the fire-and-forget Remote path for any remote target.
+	ReliableRemote RemoteLauncher
 }
 
 // Create validates, resolves, and launches one session.
@@ -177,13 +177,13 @@ func (s *Service) validate(req Request) error {
 func (s *Service) createRemote(ctx context.Context, req Request) (Result, error) {
 	req.Name = s.resolveName(req)
 
-	// v2-only nodes must never fall back to the legacy fire-and-forget
-	// RemoteLauncher: it reports success once the frame is merely enqueued on
-	// the peer connection, not once the remote session genuinely exists. When
-	// this node runs v2 state (V2Commander != nil) and a v2 remote-create path
-	// is wired (V2Remote != nil), always prefer it for any non-local target.
-	if s.V2Commander != nil && s.V2Remote != nil {
-		res, err := s.V2Remote(ctx, req)
+	// The fire-and-forget RemoteLauncher (Remote) reports success once the
+	// frame is merely enqueued on the peer connection, not once the remote
+	// session genuinely exists. When a reliable remote-create path is wired
+	// (Commander != nil and ReliableRemote != nil), always prefer it for any
+	// non-local target.
+	if s.Commander != nil && s.ReliableRemote != nil {
+		res, err := s.ReliableRemote(ctx, req)
 		if err != nil {
 			return Result{}, err
 		}
@@ -206,8 +206,8 @@ func (s *Service) createRemote(ctx context.Context, req Request) (Result, error)
 }
 
 // applyRemoteScheduleAttr records and fans out schedule ownership for a
-// remotely-created session. Shared by both the legacy and v2 remote-create
-// paths.
+// remotely-created session. Shared by both the fire-and-forget and reliable
+// remote-create paths.
 func (s *Service) applyRemoteScheduleAttr(req Request, res Result) {
 	if s.Attrs == nil || req.ScheduleID == "" {
 		return
@@ -229,8 +229,8 @@ func (s *Service) applyRemoteScheduleAttr(req Request, res Result) {
 func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) {
 	req.Name = s.resolveName(req)
 
-	if s.V2Commander != nil {
-		return s.createLocalV2(ctx, req)
+	if s.Commander != nil {
+		return s.createLocalViaCommander(ctx, req)
 	}
 
 	cwd, err := s.prepareLocalPath(req)
@@ -267,7 +267,7 @@ func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) 
 	return Result{Name: req.Name, Host: req.Host, Path: cwd}, nil
 }
 
-func (s *Service) createLocalV2(ctx context.Context, req Request) (Result, error) {
+func (s *Service) createLocalViaCommander(ctx context.Context, req Request) (Result, error) {
 	cmdID := state.CommandID(req.CommandID)
 	if cmdID == "" {
 		cmdID = state.NewCommandID()
@@ -282,7 +282,7 @@ func (s *Service) createLocalV2(ctx context.Context, req Request) (Result, error
 		AgentType:      req.AgentType,
 		ScheduleID:     req.ScheduleID,
 	})
-	res, err := s.V2Commander.ExecuteSessionCommand(ctx, state.SessionCommand{
+	res, err := s.Commander.ExecuteSessionCommand(ctx, state.SessionCommand{
 		ID:     cmdID,
 		Ref:    state.SessionRef{},
 		Action: state.ActionCreate,

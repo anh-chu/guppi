@@ -156,7 +156,7 @@ func TestReplayRemoteCreateIntentIDReturnsOwnSessionNotAnother(t *testing.T) {
 // common case) serialized an invalid zero-value SessionRef (roughly
 // `":0.0"` per SessionRef.MarshalJSON's canonical string form), which
 // SessionRef.UnmarshalJSON correctly rejects as malformed on the receiving
-// side. This caused pkg/peer/session_state.go's handleV2RemoteCreateRequest
+// side. This caused pkg/peer/session_state.go's handleRemoteCreateRequest
 // to fail every cross-node remote create with "malformed remote create
 // request", even when the request never intended a split. This test
 // exercises the exact same json.Marshal/json.Unmarshal round trip that

@@ -55,7 +55,7 @@ func buildTermyardBinary(t *testing.T) string {
 	return binPath
 }
 
-// TestSessionDaemonSpawn_AcceptsV2IdentityFlags is a regression test for the
+// TestSessionDaemonSpawn_AcceptsStableIdentityFlags is a regression test for the
 // production defect where pkg/pty/registry_stable.go's Start() passes
 // --daemon-key/--owner/--session-id/--generation/--command-id to the
 // "session-daemon" subcommand, but pkg/commands/sessiondaemon/sessiondaemon.go
@@ -65,7 +65,7 @@ func buildTermyardBinary(t *testing.T) string {
 // the REAL compiled binary with the REAL flag set Start() uses (mirroring
 // pkg/pty/registry_stable.go's args construction) and captures stdio
 // directly (unlike production) so a regression is loud, not silent.
-func TestSessionDaemonSpawn_AcceptsV2IdentityFlags(t *testing.T) {
+func TestSessionDaemonSpawn_AcceptsStableIdentityFlags(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not available")
 	}
@@ -136,7 +136,7 @@ func TestSessionDaemonSpawn_AcceptsV2IdentityFlags(t *testing.T) {
 	mu.Unlock()
 
 	if strings.Contains(combined, "flag provided but not defined") {
-		t.Fatalf("session-daemon rejected v2 identity flags as undefined: %s", combined)
+		t.Fatalf("session-daemon rejected stable identity flags as undefined: %s", combined)
 	}
 	if lastErr != nil {
 		t.Fatalf("session-daemon socket never became ready (last dial error: %v); output:\n%s", lastErr, combined)

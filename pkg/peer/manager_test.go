@@ -24,8 +24,8 @@ func testManager(t *testing.T) (*Manager, *identity.Identity) {
 
 // TestUnregisterPeer_Stale documents the current behavior when UnregisterPeer
 // is called repeatedly or for a host that is already disconnected. Today it
-// re-broadcasts and updates LastSeen each time; a v2 redesign should make it
-// idempotent.
+// re-broadcasts and updates LastSeen each time; a future redesign should
+// make it idempotent.
 func TestUnregisterPeer_Stale(t *testing.T) {
 	mgr, _ := testManager(t)
 

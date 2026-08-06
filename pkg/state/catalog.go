@@ -105,10 +105,10 @@ func (c *Catalog) Sessions() []LocalSessionRecord {
 
 // SessionsByScheduleID returns every session record tagged with scheduleID
 // (LocalSessionRecord.ScheduleID), ordered oldest-Created-first. It is the
-// canonical, SessionRef-keyed replacement for the legacy display-name-keyed
-// sessionattrs lookup: callers enforcing a schedule's MaxConcurrency use this
-// to find the oldest excess sessions and kill them by stable SessionRef,
-// never by display name.
+// canonical, SessionRef-keyed replacement for an older display-name-keyed
+// lookup: callers enforcing a schedule's MaxConcurrency use this to find the
+// oldest excess sessions and kill them by stable SessionRef, never by
+// display name.
 func (c *Catalog) SessionsByScheduleID(scheduleID string) []LocalSessionRecord {
 	if scheduleID == "" {
 		return nil

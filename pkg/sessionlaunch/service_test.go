@@ -178,31 +178,31 @@ func TestCreateRemoteSuccess(t *testing.T) {
 	}
 }
 
-// fakeV2Commander is a minimal V2Commander stub used only to make
-// s.V2Commander non-nil in routing tests; createRemote's routing decision
-// only checks V2Commander != nil, it never calls it directly (session
-// creation via V2Commander is exercised by createLocal's own tests).
-type fakeV2Commander struct{}
+// fakeCommander is a minimal Commander stub used only to make
+// s.Commander non-nil in routing tests; createRemote's routing decision
+// only checks Commander != nil, it never calls it directly (session
+// creation via Commander is exercised by createLocal's own tests).
+type fakeCommander struct{}
 
-func (fakeV2Commander) ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error) {
+func (fakeCommander) ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error) {
 	return state.CommandResult{}, nil
 }
 
-// TestCreateRemoteV2ModePrefersV2RemoteOverLegacy proves the Finding-3 fix:
-// once this node is v2-only (V2Commander set) and a v2 remote-create path is
-// wired (V2Remote set), createRemote must always route through V2Remote and
-// must never fall back to the legacy fire-and-forget Remote launcher, even
+// TestCreateRemotePrefersReliableRemoteOverFireAndForget proves the Finding-3 fix:
+// once Commander is set and a reliable remote-create path is wired
+// (ReliableRemote set), createRemote must always route through ReliableRemote
+// and must never fall back to the fire-and-forget Remote launcher, even
 // though both are configured on the Service.
-func TestCreateRemoteV2ModePrefersV2RemoteOverLegacy(t *testing.T) {
+func TestCreateRemotePrefersReliableRemoteOverFireAndForget(t *testing.T) {
 	s, _, a, h := newService()
-	s.V2Commander = fakeV2Commander{}
+	s.Commander = fakeCommander{}
 	s.Fanout = (&fanoutSpy{}).Fanout
 
-	legacyRemote := &fakeRemote{result: Result{Name: "should-not-be-used"}}
-	s.Remote = legacyRemote.Launch
+	fireAndForgetRemote := &fakeRemote{result: Result{Name: "should-not-be-used"}}
+	s.Remote = fireAndForgetRemote.Launch
 
-	v2Remote := &fakeRemote{result: Result{Name: "foo", Host: "peer-1"}}
-	s.V2Remote = v2Remote.Launch
+	reliableRemote := &fakeRemote{result: Result{Name: "foo", Host: "peer-1"}}
+	s.ReliableRemote = reliableRemote.Launch
 
 	res, err := s.Create(context.Background(), Request{Host: "peer-1", LocalHost: "local-fingerprint", Name: "foo", ScheduleID: "sched-1"})
 	if err != nil {
@@ -211,13 +211,13 @@ func TestCreateRemoteV2ModePrefersV2RemoteOverLegacy(t *testing.T) {
 	if !res.Remote {
 		t.Fatalf("expected remote result")
 	}
-	if len(legacyRemote.called) != 0 {
-		t.Fatalf("legacy Remote launcher must not be called when V2Remote is configured, got %d calls", len(legacyRemote.called))
+	if len(fireAndForgetRemote.called) != 0 {
+		t.Fatalf("fire-and-forget Remote launcher must not be called when ReliableRemote is configured, got %d calls", len(fireAndForgetRemote.called))
 	}
-	if len(v2Remote.called) != 1 {
-		t.Fatalf("expected exactly one V2Remote call, got %d", len(v2Remote.called))
+	if len(reliableRemote.called) != 1 {
+		t.Fatalf("expected exactly one ReliableRemote call, got %d", len(reliableRemote.called))
 	}
-	// Schedule-metadata fanout must still work through the v2 remote path.
+	// Schedule-metadata fanout must still work through the reliable remote path.
 	if len(a.calls) != 1 || a.calls[0].key != "peer-1/foo" || a.calls[0].scheduleID != "sched-1" {
 		t.Fatalf("unexpected attr calls: %+v", a.calls)
 	}
@@ -226,18 +226,18 @@ func TestCreateRemoteV2ModePrefersV2RemoteOverLegacy(t *testing.T) {
 	}
 }
 
-// TestCreateRemoteLegacyModeUnaffected proves legacy-mode remote creation
-// (V2Commander nil) is completely unchanged: it must still use the legacy
-// Remote launcher exactly as before, even if a V2Remote happens to be set.
-func TestCreateRemoteLegacyModeUnaffected(t *testing.T) {
+// TestCreateRemoteWithoutCommanderUsesFireAndForget proves remote creation
+// with Commander nil is unchanged: it must still use the fire-and-forget
+// Remote launcher exactly as before, even if a ReliableRemote happens to be set.
+func TestCreateRemoteWithoutCommanderUsesFireAndForget(t *testing.T) {
 	s, _, _, _ := newService()
-	// V2Commander intentionally left nil: this is a legacy-mode Service.
+	// Commander intentionally left nil: exercises the fire-and-forget path.
 
-	legacyRemote := &fakeRemote{result: Result{Name: "foo", Host: "peer-1"}}
-	s.Remote = legacyRemote.Launch
+	fireAndForgetRemote := &fakeRemote{result: Result{Name: "foo", Host: "peer-1"}}
+	s.Remote = fireAndForgetRemote.Launch
 
-	v2Remote := &fakeRemote{result: Result{Name: "should-not-be-used"}}
-	s.V2Remote = v2Remote.Launch
+	reliableRemote := &fakeRemote{result: Result{Name: "should-not-be-used"}}
+	s.ReliableRemote = reliableRemote.Launch
 
 	res, err := s.Create(context.Background(), Request{Host: "peer-1", LocalHost: "local-fingerprint", Name: "foo"})
 	if err != nil {
@@ -246,34 +246,33 @@ func TestCreateRemoteLegacyModeUnaffected(t *testing.T) {
 	if !res.Remote {
 		t.Fatalf("expected remote result")
 	}
-	if len(v2Remote.called) != 0 {
-		t.Fatalf("V2Remote must not be called in legacy mode, got %d calls", len(v2Remote.called))
+	if len(reliableRemote.called) != 0 {
+		t.Fatalf("ReliableRemote must not be called when Commander is nil, got %d calls", len(reliableRemote.called))
 	}
-	if len(legacyRemote.called) != 1 {
-		t.Fatalf("expected exactly one legacy Remote call, got %d", len(legacyRemote.called))
+	if len(fireAndForgetRemote.called) != 1 {
+		t.Fatalf("expected exactly one fire-and-forget Remote call, got %d", len(fireAndForgetRemote.called))
 	}
 }
 
-// fakeV2CommanderWithDisplayName is a V2Commander stub that echoes back a
-// DisplayName so createLocalV2's post-create AgentType branch can be
+// fakeCommanderWithDisplayName is a Commander stub that echoes back a
+// DisplayName so createLocalViaCommander's post-create AgentType branch can be
 // exercised deterministically.
-type fakeV2CommanderWithDisplayName struct {
+type fakeCommanderWithDisplayName struct {
 	displayName string
 	calls       []state.SessionCommand
 }
 
-func (f *fakeV2CommanderWithDisplayName) ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error) {
+func (f *fakeCommanderWithDisplayName) ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error) {
 	f.calls = append(f.calls, cmd)
 	return state.CommandResult{DisplayName: f.displayName}, nil
 }
 
-// TestCreateLocalV2CarriesAgentType proves AgentType flows into the v2
-// CreateParams command payload; there is no legacy state manager to shadow-
-// write it into.
-func TestCreateLocalV2CarriesAgentType(t *testing.T) {
+// TestCreateLocalCarriesAgentType proves AgentType flows into the
+// CreateParams command payload.
+func TestCreateLocalCarriesAgentType(t *testing.T) {
 	s, _, _, _ := newService()
-	v2 := &fakeV2CommanderWithDisplayName{displayName: "foo"}
-	s.V2Commander = v2
+	commander := &fakeCommanderWithDisplayName{displayName: "foo"}
+	s.Commander = commander
 
 	res, err := s.Create(context.Background(), Request{Name: "foo", AgentType: "claude"})
 	if err != nil {
@@ -282,15 +281,15 @@ func TestCreateLocalV2CarriesAgentType(t *testing.T) {
 	if res.Name != "foo" {
 		t.Fatalf("unexpected result: %+v", res)
 	}
-	if len(v2.calls) != 1 {
-		t.Fatalf("expected exactly one v2 create command, got %d", len(v2.calls))
+	if len(commander.calls) != 1 {
+		t.Fatalf("expected exactly one create command, got %d", len(commander.calls))
 	}
 	var params state.CreateParams
-	if err := json.Unmarshal(v2.calls[0].Params, &params); err != nil {
+	if err := json.Unmarshal(commander.calls[0].Params, &params); err != nil {
 		t.Fatalf("unmarshal params: %v", err)
 	}
 	if params.AgentType != "claude" {
-		t.Fatalf("expected AgentType to be carried in v2 CreateParams, got %+v", params)
+		t.Fatalf("expected AgentType to be carried in CreateParams, got %+v", params)
 	}
 }
 

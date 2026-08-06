@@ -38,7 +38,7 @@ var stateStreamUpgrader = websocket.Upgrader{
 	WriteBufferSize: 1024 * 16,
 }
 
-// StateStreamMetrics accumulates process-wide counters for the v2 durable
+// StateStreamMetrics accumulates process-wide counters for the durable
 // state stream. All fields are updated atomically and safe for concurrent
 // reads.
 type StateStreamMetrics struct {
@@ -288,8 +288,8 @@ type workspaceSnapshotMessage struct {
 	Workspace state.WorkspaceRecord `json:"workspace"`
 }
 
-// StateStreamHub fans out complete catalog/workspace snapshots to durable v2
-// browser state connections at /ws/v2/state. Every revision is encoded once
+// StateStreamHub fans out complete catalog/workspace snapshots to durable
+// browser state connections at /ws/state. Every revision is encoded once
 // regardless of how many clients are connected; each client keeps only the
 // latest catalog and latest workspace snapshot pending, so one slow browser
 // cannot block the publisher (the PTY path) or any other client.
@@ -386,7 +386,7 @@ func (h *StateStreamHub) setTestWaitBeforeDrain(gate chan struct{}) {
 func (h *StateStreamHub) onCatalog(snap state.OwnerCatalogSnapshot) {
 	encoded, err := json.Marshal(catalogSnapshotMessage{Type: "catalog_snapshot", Snapshot: snap, IsLocal: true})
 	if err != nil {
-		logrus.WithError(err).Warn("v2 state stream: failed to encode catalog snapshot")
+		logrus.WithError(err).Warn("state stream: failed to encode catalog snapshot")
 		return
 	}
 	h.mu.RLock()
@@ -409,7 +409,7 @@ func (h *StateStreamHub) onRemoteCatalog(owner state.OwnerID, snap state.OwnerCa
 		encoded, err = json.Marshal(catalogSnapshotMessage{Type: "catalog_snapshot", Snapshot: snap, IsLocal: false})
 	}
 	if err != nil {
-		logrus.WithError(err).Warn("v2 state stream: failed to encode remote catalog message")
+		logrus.WithError(err).Warn("state stream: failed to encode remote catalog message")
 		return
 	}
 	key := remoteCatalogSlotKey(owner)
@@ -426,7 +426,7 @@ func (h *StateStreamHub) onWorkspace(layout state.LayoutID, rec state.WorkspaceR
 	}
 	encoded, err := json.Marshal(workspaceSnapshotMessage{Type: "workspace_snapshot", Workspace: rec})
 	if err != nil {
-		logrus.WithError(err).Warn("v2 state stream: failed to encode workspace snapshot")
+		logrus.WithError(err).Warn("state stream: failed to encode workspace snapshot")
 		return
 	}
 	h.mu.RLock()
@@ -449,7 +449,7 @@ func (h *StateStreamHub) currentLayout() state.LayoutID {
 	return layouts[0].ID
 }
 
-// HandleState upgrades the connection and streams durable v2 state. On
+// HandleState upgrades the connection and streams durable state. On
 // connect it enqueues the complete current catalog and (if any layout
 // exists) workspace snapshot before any incremental publication is applied,
 // so a client never observes a partial view. Disconnecting a client never
@@ -459,7 +459,7 @@ func (h *StateStreamHub) currentLayout() state.LayoutID {
 func (h *StateStreamHub) HandleState(w http.ResponseWriter, r *http.Request) {
 	conn, err := stateStreamUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		logrus.WithError(err).Warn("v2 state ws upgrade failed")
+		logrus.WithError(err).Warn("state ws upgrade failed")
 		return
 	}
 
@@ -497,7 +497,7 @@ func (h *StateStreamHub) HandleState(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 	atomic.AddInt64(&h.Metrics.ConnectedClients, 1)
 
-	logrus.Debug("v2 state stream client connected")
+	logrus.Debug("state stream client connected")
 
 	// Keep the connection alive by reading (and discarding) client frames;
 	// this stream is server-to-browser only.
@@ -513,5 +513,5 @@ func (h *StateStreamHub) HandleState(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt64(&h.Metrics.ConnectedClients, -1)
 	c.close()
 	conn.Close()
-	logrus.Debug("v2 state stream client disconnected")
+	logrus.Debug("state stream client disconnected")
 }

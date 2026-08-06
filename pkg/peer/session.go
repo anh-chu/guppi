@@ -111,7 +111,7 @@ func runSession(
 
 	// Subscribe to complete workspace snapshots after each accepted command
 	// so remote peers see the whole layout, never intermediate steps.
-	if cat := deps.Manager.v2Catalog; cat != nil {
+	if cat := deps.Manager.catalog; cat != nil {
 		unsubWorkspace = cat.SubscribeWorkspace(func(layout state.LayoutID, rec state.WorkspaceRecord) {
 			payload := WorkspaceSnapshotPayload{Owner: rec.Owner, Revision: rec.Revision, Workspace: rec}
 			msg, err := NewMessage(MsgWorkspaceSnapshot, payload)
@@ -151,7 +151,7 @@ func runSession(
 	//   4. close pc — ends writer loop
 	//   5. wait for writer to drain
 	writerDone := make(chan struct{})
-	v2WritersDone := make(chan struct{})
+	commandWritersDone := make(chan struct{})
 	defer func() {
 		if unsubWorkspace != nil {
 			unsubWorkspace()
@@ -172,7 +172,7 @@ func runSession(
 		if pc.cmdQueue != nil {
 			pc.cmdQueue.close()
 		}
-		<-v2WritersDone
+		<-commandWritersDone
 		<-writerDone
 	}()
 
@@ -253,7 +253,7 @@ func runSession(
 	sendInitialWorkspace(pc, deps)
 
 	go func() {
-		defer close(v2WritersDone)
+		defer close(commandWritersDone)
 		runCommandWriters(sessionCtx, pc, log)
 	}()
 

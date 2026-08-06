@@ -160,7 +160,7 @@ func TestSendCommand_LostReplyRetryReturnsSameReceipt(t *testing.T) {
 // TestSendCommand_RemoteStateErrorSurvivesRPCRoundTrip is the real-boundary
 // proof for Finding 4 (typed state.StateError flattened to a plain string
 // over peer RPC, breaking HTTP status mapping downstream in
-// pkg/server/routes_state_v2.go's writeV2CommandError/mapV2ErrorCode). It
+// pkg/server/routes_state.go's writeCommandError/mapErrorCode). It
 // exercises the exact wire path a real remote peer failure takes: a
 // CommandReplyPayload built the way handleSessionCommandRequest's fixed
 // setReplyError now builds it (structured ErrorCode/ErrorField/ErrorDetail,
@@ -220,7 +220,7 @@ func TestSendCommand_RemoteStateErrorSurvivesRPCRoundTrip(t *testing.T) {
 	var se state.StateError
 	if !errors.As(gotErr, &se) {
 		t.Fatalf("STATE-ERROR LOST OVER RPC: SendCommand returned %v (%T), which does not unwrap to a "+
-			"state.StateError -- the HTTP layer's writeV2CommandError/mapV2ErrorCode can only map a real "+
+			"state.StateError -- the HTTP layer's writeCommandError/mapErrorCode can only map a real "+
 			"state.StateError to its correct status code; anything else falls back to a generic error", gotErr, gotErr)
 	}
 	if se.Code != state.ErrGenerationMismatch {
@@ -404,10 +404,10 @@ func TestSendCommand_SameCommandIDDifferentPeersNoCrossTalk(t *testing.T) {
 }
 
 // TestPeerIDForOwner_RoutesSendCommandToLiveOwnerBoundPeer proves the exact
-// integration handleV2SessionCommand (pkg/server/routes_state_v2.go) relies
+// integration handleSessionCommand (pkg/server/routes_state.go) relies
 // on: once a peer's catalog snapshot has bound it to an owner (via
 // UpdateRemoteCatalog, the same call the real peer-link layer makes for every
-// inbound v2 catalog frame), PeerIDForOwner resolves that owner back to the
+// inbound catalog frame), PeerIDForOwner resolves that owner back to the
 // live peer connection, and SendCommand using that resolved peerID actually
 // reaches the connection's command queue and returns the delivered reply.
 // Before Finding 8's remote-command-forwarding fix, no code path ever called
@@ -415,7 +415,7 @@ func TestSendCommand_SameCommandIDDifferentPeersNoCrossTalk(t *testing.T) {
 // against the LOCAL catalog regardless of Ref.Owner. This test pins the two
 // primitives (PeerIDForOwner + SendCommand) working together so a regression
 // in either one is caught here, independent of the HTTP route wiring (covered
-// separately in pkg/server's TestV2SessionCommand_RemoteRefRouting).
+// separately in pkg/server's TestSessionCommand_RemoteRefRouting).
 func TestPeerIDForOwner_RoutesSendCommandToLiveOwnerBoundPeer(t *testing.T) {
 	mgr := makeTestManager(t)
 	peerID := "remote-node-b"
@@ -432,7 +432,7 @@ func TestPeerIDForOwner_RoutesSendCommandToLiveOwnerBoundPeer(t *testing.T) {
 		},
 	})
 
-	// This is the exact lookup handleV2SessionCommand performs before
+	// This is the exact lookup handleSessionCommand performs before
 	// forwarding: given a ref's owner, resolve which live peer connection
 	// owns it.
 	resolvedPeerID := mgr.PeerIDForOwner(owner)

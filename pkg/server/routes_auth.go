@@ -145,7 +145,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 			registerSessionsRoutes(r, opts, hub)
 			registerSchedulerRoutes(r, opts)
 			registerPeerRoutes(r, opts)
-			registerStateV2Routes(r, opts)
+			registerStateRoutes(r, opts)
 		})
 		// Port forward registry (local single-host).
 		r.Group(func(r chi.Router) {

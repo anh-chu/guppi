@@ -8,10 +8,10 @@ import (
 
 // TestResolveHostParam_LocalOwnerID is the real-boundary proof for Finding 1
 // (OwnerID vs peer-fingerprint identity confusion): a `host` request
-// parameter carrying THIS node's own v2 OwnerID (what a v2-routed terminal
-// attach actually sends -- see state/v2/paneTreeAdapter.ts sessionRefToKey
-// and TiledView.tsx's hostId prop) must resolve as local, exactly like the
-// legacy fingerprint value did before v2 existed. Before ResolveHostParam,
+// parameter carrying THIS node's own OwnerID (what a terminal
+// attach actually sends -- see state/session/paneTreeAdapter.ts sessionRefToKey
+// and TiledView.tsx's hostId prop) must resolve as local, exactly like a
+// legacy fingerprint value does. Before ResolveHostParam,
 // every such call site compared the raw host value against fingerprints via
 // IsLocal() unconditionally, so a real OwnerID (a different string encoding
 // than its owner's fingerprint, see state.OwnerIDFromFingerprint) was never
@@ -33,10 +33,10 @@ func TestResolveHostParam_LocalOwnerID(t *testing.T) {
 }
 
 // TestResolveHostParam_RemoteOwnerResolvesToLivePeerConnection is the
-// real-boundary proof that a `host` parameter carrying a REMOTE peer's v2
+// real-boundary proof that a `host` parameter carrying a REMOTE peer's
 // OwnerID resolves to that peer's actual live connection fingerprint via the
-// same PeerIDForOwner lookup handleV2SessionCommand uses (pkg/server/
-// routes_state_v2.go), established the same way a real inbound catalog
+// same PeerIDForOwner lookup handleSessionCommand uses (pkg/server/
+// routes_state.go), established the same way a real inbound catalog
 // snapshot would (UpdateRemoteCatalog), not a preconstructed/short-circuited
 // OwnerID that skips the boundary. Before this fix, terminal attach and file
 // routes compared the OwnerID directly against fingerprints via IsLocal /
@@ -65,8 +65,8 @@ func TestResolveHostParam_RemoteOwnerResolvesToLivePeerConnection(t *testing.T) 
 	}
 }
 
-// TestResolveHostParam_LegacyFingerprintFallback proves pre-v2 callers (whose
-// `host` value is a legacy peer fingerprint, e.g. pre-v2 model.Session.Host)
+// TestResolveHostParam_LegacyFingerprintFallback proves callers (whose
+// `host` value is a legacy peer fingerprint, e.g. model.Session.Host)
 // keep working unchanged: when host does not resolve as any known OwnerID,
 // ResolveHostParam falls back to the legacy fingerprint interpretation.
 func TestResolveHostParam_LegacyFingerprintFallback(t *testing.T) {
@@ -86,7 +86,7 @@ func TestResolveHostParam_LegacyFingerprintFallback(t *testing.T) {
 
 // TestOwnerIDForPeer_ForwardMapping proves the forward (peer fingerprint ->
 // OwnerID) mapping GetHosts threads into HostInfo.OwnerID: the local peer's
-// OwnerID is the node's own v2 catalog owner, and a remote peer's OwnerID is
+// OwnerID is the node's own catalog owner, and a remote peer's OwnerID is
 // the canonical deterministic conversion of its fingerprint.
 func TestOwnerIDForPeer_ForwardMapping(t *testing.T) {
 	mgr := makeTestManager(t)
@@ -110,7 +110,7 @@ func TestOwnerIDForPeer_ForwardMapping(t *testing.T) {
 
 // TestGetHosts_IncludesOwnerID proves the HostInfo returned by GetHosts
 // (serialized to the browser at GET /api/hosts) carries OwnerID alongside
-// the legacy fingerprint ID, so a v2-enabled frontend can select the correct
+// the legacy fingerprint ID, so the frontend can select the correct
 // identity domain for target_owner / terminal-attach host params instead of
 // conflating the two.
 func TestGetHosts_IncludesOwnerID(t *testing.T) {

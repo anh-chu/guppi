@@ -13,7 +13,7 @@ import (
 
 // setIsolatedHome points HOME (and clears XDG_DATA_HOME so DataDir/Dir both
 // derive from HOME) at a fresh temp directory, so each constructed runtime
-// gets its own identity file and v2 state store.
+// gets its own identity file and state store.
 func setIsolatedHome(t *testing.T, dir string) {
 	t.Helper()
 	t.Setenv("HOME", dir)
@@ -27,11 +27,11 @@ func setIsolatedHome(t *testing.T, dir string) {
 	}
 }
 
-// newV2TestRuntime constructs one real, fully-wired Runtime (via the actual
+// newTestRuntime constructs one real, fully-wired Runtime (via the actual
 // production newRuntime path -- not a hand-built fake) with an isolated
 // HOME, so its identity, store, and catalog are all real, independent
 // instances.
-func newV2TestRuntime(t *testing.T, homeDir string) *Runtime {
+func newTestRuntime(t *testing.T, homeDir string) *Runtime {
 	t.Helper()
 	setIsolatedHome(t, homeDir)
 	rt, err := newRuntime(&cli.Command{})
@@ -61,7 +61,7 @@ func newV2TestRuntime(t *testing.T, homeDir string) *Runtime {
 // now that both sides use the single canonical
 // state.OwnerIDFromFingerprint conversion.
 func TestTwoRuntimes_RemoteSnapshotAcceptedUnderRealFingerprintConversion(t *testing.T) {
-	rtA := newV2TestRuntime(t, t.TempDir())
+	rtA := newTestRuntime(t, t.TempDir())
 	fpA := rtA.identity.Fingerprint()
 	ownerA := rtA.catalog.Owner()
 
@@ -85,7 +85,7 @@ func TestTwoRuntimes_RemoteSnapshotAcceptedUnderRealFingerprintConversion(t *tes
 		t.Fatalf("snapshot owner %q != catalog owner %q", snapshotFromA.Owner, ownerA)
 	}
 
-	rtB := newV2TestRuntime(t, t.TempDir())
+	rtB := newTestRuntime(t, t.TempDir())
 
 	// Register A as a connected peer of B using A's real, authenticated
 	// fingerprint as the peer ID -- exactly what the real peer-link layer
@@ -94,15 +94,15 @@ func TestTwoRuntimes_RemoteSnapshotAcceptedUnderRealFingerprintConversion(t *tes
 	conn := peer.NewPeerConnection(fpA, 64)
 	rtB.peerMgr.RegisterPeer(fpA, "node-a", "", conn)
 
-	// This is the exact call the real peer-link layer makes when a v2
+	// This is the exact call the real peer-link layer makes when a
 	// catalog frame arrives from a connected peer (pkg/peer/session_state.go
-	// -> handleV2Message -> UpdateRemoteCatalog), with peerID sourced from
+	// -> handleStateMessage -> UpdateRemoteCatalog), with peerID sourced from
 	// the authenticated connection identity.
 	rtB.peerMgr.UpdateRemoteCatalog(fpA, conn, snapshotFromA)
 
 	got, ok := rtB.peerMgr.RemoteCatalogSnapshot(ownerA)
 	if !ok {
-		t.Fatal("node B rejected node A's real catalog snapshot as an owner mismatch -- fresh v2 nodes cannot authenticate each other (Finding 1 regression)")
+		t.Fatal("node B rejected node A's real catalog snapshot as an owner mismatch -- fresh nodes cannot authenticate each other (Finding 1 regression)")
 	}
 	if got.Revision != snapshotFromA.Revision {
 		t.Fatalf("accepted snapshot revision %d != published revision %d", got.Revision, snapshotFromA.Revision)
@@ -117,7 +117,7 @@ func TestTwoRuntimes_RemoteSnapshotAcceptedUnderRealFingerprintConversion(t *tes
 // entirely, not merely left nil-and-gated). The canonical peer/hub graph
 // must still be fully wired from the real catalog.
 func TestNoLegacyStateManagerField(t *testing.T) {
-	rt := newV2TestRuntime(t, t.TempDir())
+	rt := newTestRuntime(t, t.TempDir())
 	if rt.peerMgr == nil {
 		t.Fatal("expected peerMgr to be constructed")
 	}

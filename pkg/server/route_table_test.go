@@ -37,7 +37,7 @@ func TestRouteTableSnapshot(t *testing.T) {
 	}
 	sm := auth.NewSessionManager(time.Hour)
 	tracker := toolevents.NewTracker()
-	catalog, svc := newV2TestCatalog(t)
+	catalog, svc := newStateTestCatalog(t)
 
 	opts := &Options{
 		AuthEnabled:      true,
@@ -99,7 +99,7 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"GET /api/stats",
 		"GET /api/tool-events",
 		"GET /api/update",
-		"GET /api/v2/bootstrap",
+		"GET /api/state/bootstrap",
 		"GET /api/version",
 		"GET /api/wiki/status",
 		"GET /debug/*",
@@ -110,7 +110,7 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"GET /ws/direct-session",
 		"GET /ws/events",
 		"GET /ws/session",
-		"GET /ws/v2/state",
+		"GET /ws/state",
 		"PATCH /api/peers/{fp}",
 		"PATCH /proxy/{port}",
 		"PATCH /proxy/{port}/*",
@@ -136,8 +136,8 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"POST /api/update/apply",
 		"POST /api/update/check",
 		"POST /api/upload",
-		"POST /api/v2/session-commands",
-		"POST /api/v2/workspace-commands",
+		"POST /api/state/session-commands",
+		"POST /api/state/workspace-commands",
 		"POST /api/wiki/install",
 		"POST /file/grant",
 		"POST /proxy/{port}",
@@ -300,7 +300,7 @@ func TestLegacyStoreRoutesNeverExist(t *testing.T) {
 
 	tracker := toolevents.NewTracker()
 	hub := ws.NewHub(tracker)
-	catalog, svc := newV2TestCatalog(t)
+	catalog, svc := newStateTestCatalog(t)
 
 	opts := &Options{
 		Port:             7654,

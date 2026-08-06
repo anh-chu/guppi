@@ -56,7 +56,7 @@ type commandResult struct {
 	err     error
 }
 
-// reliableCommandQueue carries outbound v2 command requests with bounded
+// reliableCommandQueue carries outbound command requests with bounded
 // backpressure. It is separate from the lo lane so command RPCs can be
 // rejected explicitly instead of silently dropped.
 type reliableCommandQueue struct {
@@ -96,14 +96,14 @@ func (q *reliableCommandQueue) close() {
 	close(q.ch)
 }
 
-// CommandSender is the subset of PeerConnection needed to send v2 commands.
+// CommandSender is the subset of PeerConnection needed to send commands.
 // mailto:it exists so tests can stub the transport.
 type CommandSender interface {
 	HostID() string
 	enqueueCommand(req *CommandRequestPayload) bool
 }
 
-// PeerConnection v2 extensions.
+// PeerConnection command/catalog extensions.
 
 func (pc *PeerConnection) initSlots() {
 	pc.catalogSlot = newSnapshotSlot()
@@ -133,7 +133,7 @@ func (pc *PeerConnection) EnqueueWorkspaceSnapshot(msg *Message) bool {
 	return pc.workspaceSlot.swap(msg)
 }
 
-// HasCanonicalCaps reports whether the peer advertised v2 catalog/command capabilities.
+// HasCanonicalCaps reports whether the peer advertised catalog/command capabilities.
 func (pc *PeerConnection) HasCanonicalCaps() bool {
 	return pc.HasCapability(CapCatalogV1) && pc.HasCapability(CapCommandV1)
 }
@@ -186,7 +186,7 @@ func runCommandSender(ctx context.Context, pc *PeerConnection, log *logrus.Entry
 			}
 			msg, err := NewMessage(MsgCommandRequest, req)
 			if err != nil {
-				log.WithError(err).Debug("failed to marshal v2 command request")
+				log.WithError(err).Debug("failed to marshal command request")
 				continue
 			}
 			data, err := json.Marshal(msg)
@@ -196,13 +196,13 @@ func runCommandSender(ctx context.Context, pc *PeerConnection, log *logrus.Entry
 			if !pc.enqueue(pc.lo, wireFrame{data: data}) {
 				// Queue full or closed; the caller will time out waiting for a
 				// reply. Log and drop the request so we don't block forever.
-				log.Debug("v2 command request dropped: peer queue full or closed")
+				log.Debug("command request dropped: peer queue full or closed")
 			}
 		}
 	}
 }
 
-// SendCommand executes a reliable v2 command RPC to peerID. It registers the
+// SendCommand executes a reliable command RPC to peerID. It registers the
 // waiter before enqueueing the request, so a reply that races ahead of the
 // send is still delivered. If the command queue is full, it returns
 // ErrCommandQueueFull immediately.
@@ -220,7 +220,7 @@ func (m *Manager) SendCommand(ctx context.Context, peerID string, cmd state.Sess
 		return result, fmt.Errorf("peer %s: %w", peerID, errors.New("no live connection"))
 	}
 	if !pc.HasCanonicalCaps() {
-		return result, fmt.Errorf("peer %s: %w", peerID, errors.New("v2 command not supported"))
+		return result, fmt.Errorf("peer %s: %w", peerID, errors.New("command not supported"))
 	}
 
 	// Register waiter first to avoid lost-reply races. Only the leader for
@@ -317,7 +317,7 @@ func (m *Manager) SendWorkspaceCommand(ctx context.Context, peerID string, cmd s
 		return state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "peer_id", Detail: fmt.Sprintf("peer %s is offline", peerID)}
 	}
 	if !pc.HasCanonicalCaps() {
-		return state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %s does not support v2 workspace commands", peerID)}
+		return state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %s does not support workspace commands", peerID)}
 	}
 
 	done := make(chan commandResult, 1)
@@ -375,7 +375,7 @@ func (m *Manager) SendRemoteCreate(ctx context.Context, peerID string, req state
 		return result, state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "peer_id", Detail: fmt.Sprintf("peer %s is offline", peerID)}
 	}
 	if !pc.HasCanonicalCaps() {
-		return result, state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %s does not support v2 remote creates", peerID)}
+		return result, state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %s does not support remote creates", peerID)}
 	}
 
 	done := make(chan commandResult, 1)
@@ -477,7 +477,7 @@ func (m *Manager) unregisterCommandWaiter(id, peerID string, conn *PeerConnectio
 	}
 }
 
-// deliverCommandReply routes a v2 command reply to every subscriber of its
+// deliverCommandReply routes a command reply to every subscriber of its
 // waiter. peerID and conn identify the authenticated connection the reply
 // arrived on and form part of the lookup key (along with reply.ID), so a
 // different (or reconnected) peer cannot satisfy another peer's in-flight
@@ -494,7 +494,7 @@ func (m *Manager) deliverCommandReply(peerID string, conn *PeerConnection, reply
 		logrus.WithFields(logrus.Fields{
 			"command_id": reply.ID,
 			"peer":       peerID,
-		}).Debug("dropping v2 command reply: no matching waiter for this peer/connection/command id")
+		}).Debug("dropping command reply: no matching waiter for this peer/connection/command id")
 		return false
 	}
 	delivered := false

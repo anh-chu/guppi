@@ -67,7 +67,7 @@ func sendInitialCatalog(pc *PeerConnection, deps SessionDeps) {
 	if deps.Manager == nil {
 		return
 	}
-	catalog := deps.Manager.v2Catalog
+	catalog := deps.Manager.catalog
 	if catalog == nil {
 		return
 	}
@@ -89,7 +89,7 @@ func sendInitialWorkspace(pc *PeerConnection, deps SessionDeps) {
 	if deps.Manager == nil {
 		return
 	}
-	catalog := deps.Manager.v2Catalog
+	catalog := deps.Manager.catalog
 	if catalog == nil {
 		return
 	}
@@ -115,13 +115,13 @@ func sendInitialWorkspace(pc *PeerConnection, deps SessionDeps) {
 	pc.EnqueueWorkspaceSnapshot(msg)
 }
 
-// handleCommandMessage routes v2 catalog, workspace, and command messages.
+// handleCommandMessage routes catalog, workspace, and command messages.
 func handleCommandMessage(peerID string, msg *Message, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
 	switch msg.Type {
 	case MsgCatalogSnapshot:
 		var p CatalogSnapshotPayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			log.WithError(err).Debug("invalid v2 catalog snapshot")
+			log.WithError(err).Debug("invalid catalog snapshot")
 			return
 		}
 		deps.Manager.UpdateRemoteCatalog(peerID, pc, state.OwnerCatalogSnapshot{
@@ -134,7 +134,7 @@ func handleCommandMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 	case MsgWorkspaceSnapshot:
 		var p WorkspaceSnapshotPayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			log.WithError(err).Debug("invalid v2 workspace snapshot")
+			log.WithError(err).Debug("invalid workspace snapshot")
 			return
 		}
 		deps.Manager.UpdateRemoteWorkspace(peerID, pc, p.Workspace)
@@ -142,7 +142,7 @@ func handleCommandMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 	case MsgCommandRequest:
 		var p CommandRequestPayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			log.WithError(err).Debug("invalid v2 command request")
+			log.WithError(err).Debug("invalid command request")
 			return
 		}
 		handleCommandRequest(peerID, p, pc, deps, log)
@@ -150,7 +150,7 @@ func handleCommandMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 	case MsgCommandReply:
 		var p CommandReplyPayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			log.WithError(err).Debug("invalid v2 command reply")
+			log.WithError(err).Debug("invalid command reply")
 			return
 		}
 		deps.Manager.deliverCommandReply(peerID, pc, p)
@@ -179,7 +179,7 @@ func handleCommandRequest(peerID string, req CommandRequestPayload, pc *PeerConn
 // mutation; a forged/mismatched owner is rejected, never silently ignored.
 func handleSessionCommandRequest(peerID string, req CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *CommandReplyPayload) {
 	if deps.CommandSvc == nil {
-		reply.Error = "v2 command service unavailable"
+		reply.Error = "command service unavailable"
 		return
 	}
 	var cmd state.SessionCommand
@@ -209,7 +209,7 @@ func handleSessionCommandRequest(peerID string, req CommandRequestPayload, pc *P
 func handleWorkspaceCommandRequest(peerID string, req CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *CommandReplyPayload) {
 	cat := deps.Catalog
 	if cat == nil {
-		reply.Error = "v2 catalog not enabled"
+		reply.Error = "catalog not enabled"
 		return
 	}
 	var cmd state.WorkspaceCommand
