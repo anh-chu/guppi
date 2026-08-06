@@ -675,6 +675,21 @@ type runtimeEnricher struct {
 
 	runtimeMu    sync.RWMutex
 	runtimeCache map[string]runtimeCacheEntry
+
+	// readCwd, when set, overrides the package-level readProcCwd for this
+	// enricher instance. Tests use this instead of monkeypatching the
+	// shared package var, which avoided a data race with leaked background
+	// goroutines from unrelated tests.
+	readCwd func(pid int) (string, error)
+}
+
+// procCwd resolves the live working directory of pid, preferring the
+// instance-level override (used by tests) over the package-level default.
+func (e *runtimeEnricher) procCwd(pid int) (string, error) {
+	if e.readCwd != nil {
+		return e.readCwd(pid)
+	}
+	return readProcCwd(pid)
 }
 
 // runtimeCacheEntry holds the process-derived fields for one session
@@ -790,7 +805,7 @@ func (e *runtimeEnricher) refreshRuntimeCache() {
 			pid = d.Pid
 		}
 		if pid > 0 {
-			if liveCwd, err := readProcCwd(pid); err == nil && liveCwd != "" {
+			if liveCwd, err := e.procCwd(pid); err == nil && liveCwd != "" {
 				entry.currentPath = liveCwd
 			}
 		}

@@ -467,14 +467,12 @@ func TestRuntimeEnricherEnrichIsPureCacheLookup(t *testing.T) {
 	adapter.refresh()
 
 	readlinkCalls := 0
-	origReadProcCwd := readProcCwd
-	readProcCwd = func(pid int) (string, error) {
+	readCwd := func(pid int) (string, error) {
 		readlinkCalls++
 		return fmt.Sprintf("/cwd/%d", pid), nil
 	}
-	defer func() { readProcCwd = origReadProcCwd }()
 
-	enricher := &runtimeEnricher{adapter: adapter}
+	enricher := &runtimeEnricher{adapter: adapter, readCwd: readCwd}
 
 	// The one and only place readlink/list may run: the background refresh.
 	enricher.refreshRuntimeCache()
@@ -516,11 +514,9 @@ func TestRuntimeEnricherBackgroundRefreshUpdatesCache(t *testing.T) {
 	adapter.refresh()
 
 	cwd := "/first"
-	origReadProcCwd := readProcCwd
-	readProcCwd = func(pid int) (string, error) { return cwd, nil }
-	defer func() { readProcCwd = origReadProcCwd }()
+	readCwd := func(pid int) (string, error) { return cwd, nil }
 
-	enricher := &runtimeEnricher{adapter: adapter}
+	enricher := &runtimeEnricher{adapter: adapter, readCwd: readCwd}
 	ref := state.SessionRef{Owner: state.OwnerID("o"), Session: state.SessionID("s1")}
 	rec := state.LocalSessionRecord{ID: ref.Session, Owner: ref.Owner, Ref: ref}
 
