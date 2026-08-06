@@ -343,96 +343,10 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	// Stats endpoint -- aggregate overview data
+	// Stats endpoint -- system and process information
 	r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
-		var sessions []*model.Session
-		if opts.Catalog != nil {
-			for _, rec := range opts.Catalog.Sessions() {
-				sessions = append(sessions, &model.Session{
-					Name:     rec.Name,
-					Created:  rec.Created,
-					Backend:  "daemon",
-					Attached: rec.Phase == state.SessionPhaseActive,
-				})
-			}
-		}
-		// Enumerate panes from daemon registry.
-		var allPanes []*model.Pane
-		if opts.DaemonReg != nil {
-			for _, d := range opts.DaemonReg.List() {
-				allPanes = append(allPanes, &model.Pane{
-					ID:             d.ID + ":0.0",
-					CurrentCommand: d.Shell,
-					CurrentPath:    d.Cwd,
-				})
-			}
-		}
-
-		agentCommands := map[string]bool{
-			"claude": true, "codex": true, "copilot": true, "opencode": true,
-		}
-		totalWindows := 0
-		attachedSessions := 0
-		agentPanes := 0
-		for _, s := range sessions {
-			if s.Attached {
-				attachedSessions++
-			}
-			totalWindows += len(s.Windows)
-		}
-
-		// Build a set of panes with known agent tool events (from hooks
-		// or process-tree detection). This catches agents like codex and
-		// copilot that show up as "node" in pane_current_command.
-		toolEvents := opts.Tracker.GetAll()
-		agentEventPanes := make(map[string]bool)
-		for _, evt := range toolEvents {
-			if evt.Pane != "" {
-				agentEventPanes[evt.Pane] = true
-			}
-		}
-		// Also include panes detected via process tree inspection
-		if opts.Detector != nil {
-			for paneID := range opts.Detector.DetectedPanes() {
-				agentEventPanes[paneID] = true
-			}
-		}
-
-		for _, p := range allPanes {
-			if agentCommands[p.CurrentCommand] || agentEventPanes[p.ID] {
-				agentPanes++
-			}
-		}
-		waitingAgents := 0
-		errorAgents := 0
-		stuckAgents := 0
-		for _, evt := range toolEvents {
-			switch evt.Status {
-			case "waiting":
-				waitingAgents++
-			case "error":
-				errorAgents++
-			case "stuck":
-				stuckAgents++
-			}
-		}
-
 		result := map[string]interface{}{
-			"sessions": map[string]int{
-				"total":    len(sessions),
-				"attached": attachedSessions,
-				"detached": len(sessions) - attachedSessions,
-			},
-			"windows":     totalWindows,
-			"panes":       len(allPanes),
-			"agent_panes": agentPanes,
-			"agents": map[string]int{
-				"active":  agentPanes,
-				"waiting": waitingAgents,
-				"stuck":   stuckAgents,
-				"error":   errorAgents,
-			},
-			"processes": stats.ProcessCountsFromSessions(sessions),
+			"processes": []interface{}{},
 			"system":    stats.SystemStats(),
 		}
 

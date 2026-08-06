@@ -25,7 +25,7 @@ interface TopBarProps {
   onJumpToSession: (session: string, windowIndex?: number, pane?: string) => void
   onDismiss: (evt: ToolEvent) => void
   onDismissAll: () => void
-  panesCount?: number
+  workspaceLeafCount?: number
   onSplitPane?: (direction: 'h' | 'v') => void
   glance: { needsYou: number; working: number; starting: number; idle: number; offline: number; crashed: number }
 }
@@ -38,7 +38,6 @@ function formatPane(pane?: string): string {
 interface StatsData {
   cpu_percent?: number
   memory?: { total_mb: number; used_mb: number; percent: number }
-  agent_panes?: number
 }
 
 function MicroDial({ percent, color }: { percent: number; color: string }) {
@@ -64,7 +63,7 @@ function SystemDials({ connected }: { connected: boolean | null }) {
         .then(r => r.json())
         .then(data => {
           if (!active) return
-          setStats({ cpu_percent: data.system?.cpu_percent, memory: data.system?.memory, agent_panes: data.agent_panes })
+          setStats({ cpu_percent: data.system?.cpu_percent, memory: data.system?.memory })
         })
         .catch(() => {})
     }
@@ -102,7 +101,6 @@ function SystemDials({ connected }: { connected: boolean | null }) {
         <div className="flex justify-between gap-6"><span>CPU</span><span className="tabular-nums text-ink">{cpu !== undefined ? `${Math.round(cpu)}%` : '—'}</span></div>
         <div className="mt-1 flex justify-between gap-6"><span>Memory</span><span className="tabular-nums text-ink">{mem !== undefined ? `${Math.round(mem)}%` : '—'}</span></div>
         {stats.memory && <div className="text-right tabular-nums text-mute/60">{gb(stats.memory.used_mb)} / {gb(stats.memory.total_mb)} GB</div>}
-        {stats.agent_panes !== undefined && <div className="mt-1 flex justify-between gap-6"><span>Agents</span><span className="tabular-nums text-ink">{stats.agent_panes}</span></div>}
       </div>
     </div>
   )
@@ -124,7 +122,7 @@ export function TopBar({
   onJumpToSession,
   onDismiss,
   onDismissAll,
-  panesCount,
+  workspaceLeafCount,
   onSplitPane,
   glance,
   updateVersion,
@@ -199,7 +197,7 @@ export function TopBar({
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M12 8v8M8 12h8" /></svg>
             </button>
           )}
-          {currentView === 'session' && panesCount !== undefined && panesCount < 4 && onSplitPane && (
+          {currentView === 'session' && workspaceLeafCount !== undefined && workspaceLeafCount < 4 && onSplitPane && (
             <>
               <button
                 type="button"

@@ -567,7 +567,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
           onJumpToSession={handleJumpToSession}
           onDismiss={dismissEvent}
           onDismissAll={dismissAllEvents}
-          panesCount={paneTree ? getLeaves(paneTree).length : 0}
+          workspaceLeafCount={paneTree ? getLeaves(paneTree).length : 0}
           onSplitPane={(direction) => {
             if (activeKey !== null) {
               splitTargetRef.current = { key: activeKey, direction }

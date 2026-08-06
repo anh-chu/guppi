@@ -45,28 +45,20 @@ interface SystemStats {
 }
 
 interface Stats {
-  sessions: { total: number; attached: number; detached: number }
-  windows: number
-  panes: number
-  agent_panes: number
-  agents: { active: number; waiting: number; stuck: number; error: number }
   processes: { name: string; count: number }[]
   system?: SystemStats
 }
 
-const agentCommands = new Set(['claude', 'codex', 'copilot', 'opencode'])
 
-
-function ProcessBar({ processes, totalPanes }: { processes: { name: string; count: number }[]; totalPanes: number }) {
+function ProcessBar({ processes }: { processes: { name: string; count: number }[] }) {
   if (processes.length === 0) return null
   const max = processes[0]?.count || 1
   return (
     <div className="flex flex-col gap-2">
       {processes.slice(0, 10).map(p => {
-        const isAgent = agentCommands.has(p.name)
         return (
           <div key={p.name} className="flex items-center gap-3">
-            <span className="w-[92px] text-xs font-semibold text-right overflow-hidden text-ellipsis whitespace-nowrap shrink-0" style={{ color: isAgent ? 'var(--ink)' : 'var(--mute)' }}>
+            <span className="w-[92px] text-xs font-semibold text-right overflow-hidden text-ellipsis whitespace-nowrap shrink-0 text-mute">
               {p.name}
             </span>
             <div className="flex-1 h-1.5 bg-surface-elevated rounded-full overflow-hidden">
@@ -74,7 +66,7 @@ function ProcessBar({ processes, totalPanes }: { processes: { name: string; coun
                 className="h-full rounded-full min-w-[2px]"
                 style={{
                   width: `${(p.count / max) * 100}%`,
-                  background: isAgent ? (toolColors[p.name] || 'var(--chart-secondary)') : 'var(--border)',
+                  background: 'var(--chart-secondary)',
                 }}
               />
             </div>
@@ -82,7 +74,6 @@ function ProcessBar({ processes, totalPanes }: { processes: { name: string; coun
           </div>
         )
       })}
-      <div className="text-[10px] text-mute/50">{totalPanes} panes total</div>
     </div>
   )
 }
@@ -102,7 +93,7 @@ function SystemStatsCard({ system }: { system: SystemStats }) {
   )
 }
 
-function HostStatsSection({ host, totalPanes }: { host: Host; totalPanes: number }) {
+function HostStatsSection({ host }: { host: Host }) {
   const hostStats = host.stats as SystemStats | undefined
   if (!hostStats) return null
   const processes = hostStats.processes || []
@@ -113,7 +104,7 @@ function HostStatsSection({ host, totalPanes }: { host: Host; totalPanes: number
         {host.name}
       </h3>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-4">
-        {processes.length > 0 && <div><div className="text-xs font-bold text-mute/50 mb-2.5 ml-1">Processes</div><div className="bg-surface border border-hairline rounded-lg p-5"><ProcessBar processes={processes} totalPanes={totalPanes} /></div></div>}
+        {processes.length > 0 && <div><div className="text-xs font-bold text-mute/50 mb-2.5 ml-1">Processes</div><div className="bg-surface border border-hairline rounded-lg p-5"><ProcessBar processes={processes} /></div></div>}
         <div><div className="text-xs font-bold text-mute/50 mb-2.5 ml-1">System</div><SystemStatsCard system={hostStats} /></div>
       </div>
     </div>
@@ -490,12 +481,11 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
         <div className="px-4 pb-4 pt-1">
           {hasMultipleHosts ? (
             activeHostSections.map(host => {
-              // HostSnapshot does not include session/pane details; totalPanes for multi-host host stats is 0.
-              return <HostStatsSection key={host.peer_id} host={host} totalPanes={0} />
+              return <HostStatsSection key={host.peer_id} host={host} />
             })
           ) : (
             <div className="grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-4">
-              {stats?.processes && stats.processes.length > 0 && <div><h3 className="font-display text-[13px] font-bold text-ink mb-4 ml-1">Processes</h3><div className="bg-surface border border-hairline rounded-lg p-5"><ProcessBar processes={stats.processes} totalPanes={stats.panes} /></div></div>}
+              {stats?.processes && stats.processes.length > 0 && <div><h3 className="font-display text-[13px] font-bold text-ink mb-4 ml-1">Processes</h3><div className="bg-surface border border-hairline rounded-lg p-5"><ProcessBar processes={stats.processes} /></div></div>}
               {stats?.system && <div><h3 className="font-display text-[13px] font-bold text-ink mb-4 ml-1">System</h3><SystemStatsCard system={stats.system} /></div>}
             </div>
           )}
