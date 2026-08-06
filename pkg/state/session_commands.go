@@ -48,9 +48,9 @@ const (
 
 // CreateParams carries a local create request. Target/Direction/NewFirst are
 // optional and mirror RemoteCreateRequest's identical fields (see
-// remote_create.go): when Target names an existing leaf in LayoutID, the new
-// session is placed by splitting that leaf in Direction (NewFirst controls
-// which side of the split the new leaf lands on), in the SAME atomic
+// remote_create.go): when Target names an existing leaf in the workspace tree,
+// the new session is placed by splitting that leaf in Direction (NewFirst
+// controls which side of the split the new leaf lands on), in the SAME atomic
 // transaction that commits the create -- not as a separate, later workspace
 // command. This is what lets a caller request "create and split next to X"
 // as one indivisible placement instead of create-then-split, which could
@@ -71,7 +71,6 @@ type CreateParams struct {
 	WorktreeBranch string         `json:"worktree_branch,omitempty"`
 	Cols           uint16         `json:"cols,omitempty"`
 	Rows           uint16         `json:"rows,omitempty"`
-	LayoutID       LayoutID       `json:"layout_id,omitempty"`
 	AgentType      string         `json:"agent_type,omitempty"`
 	Target         *SessionRef    `json:"target,omitempty"`
 	Direction      SplitDirection `json:"direction,omitempty"`
@@ -403,7 +402,7 @@ func (s *SessionCommandService) executeCreate(ctx context.Context, cmd SessionCo
 		if params.Target != nil {
 			target = *params.Target
 		}
-		if err := placeSessionInWorkspace(doc, params.LayoutID, ref, target, params.Direction, params.NewFirst); err != nil {
+		if err := placeRefInWorkspace(doc, ref, target, params.Direction, params.NewFirst); err != nil {
 			return err
 		}
 
@@ -1064,68 +1063,62 @@ func (s *SessionCommandService) hook(p CrashPoint) {
 	}
 }
 
-// placeSessionInWorkspace adds ref to the requested layout, creating a default
-// layout when none exists. When target names an existing leaf in layoutID,
-// ref is placed by splitting that leaf in direction (mirroring
-// RemoteCreateCoordinator.placeRemoteRefLocked in remote_create.go) instead
-// of using the default "first free leaf" heuristic -- this is what makes
-// "create a session as a split next to X" one atomic placement instead of a
-// separate create-then-split that could race with, or duplicate, the
-// create's own default placement.
-func placeSessionInWorkspace(doc *AppDocument, layoutID LayoutID, ref SessionRef, target SessionRef, direction SplitDirection, newFirst bool) error {
-	if layoutID != "" {
-		for i := range doc.Layouts {
-			if doc.Layouts[i].ID == layoutID {
-				if target.Session != "" {
-					if !findLeaf(doc.Layouts[i].Tree, target) {
-						return StateError{Code: ErrMissingTarget, Field: "target", Detail: fmt.Sprintf("target leaf %q not in layout", target.MapKey())}
-					}
-					if key := ref.MapKey(); findLeaf(doc.Layouts[i].Tree, ref) {
-						return StateError{Code: ErrDuplicateLeaf, Field: "target", Detail: fmt.Sprintf("duplicate leaf %q", key)}
-					}
-					tree, err := splitTree(doc.Layouts[i].Tree, target, direction, ref, newFirst)
-					if err != nil {
-						return err
-					}
-					doc.Layouts[i].Tree = tree
-					doc.Layouts[i].Revision = doc.Revision + 1
-					return nil
-				}
-				return addLeafToLayout(doc, &doc.Layouts[i], ref)
-			}
-		}
-		return StateError{Code: ErrUnknownLayout, Field: "layout_id", Detail: fmt.Sprintf("layout %q not found", layoutID)}
-	}
-
-	if len(doc.Layouts) == 0 {
-		doc.Layouts = append(doc.Layouts, LayoutRecord{
-			ID:       NewLayoutID(),
+// placeRefInWorkspace places ref into the singleton workspace tree. When target
+// is non-empty, ref is placed by splitting the target leaf in the given direction.
+// Otherwise, ref is added as a new leaf using the default "first free leaf"
+// heuristic -- this is what makes "create a session as a split next to X" one
+// atomic placement instead of a separate create-then-split that could race with
+// or duplicate the create's own default placement.
+func placeRefInWorkspace(doc *AppDocument, ref SessionRef, target SessionRef, direction SplitDirection, newFirst bool) error {
+	if doc.Workspace == nil {
+		doc.Workspace = &WorkspaceRecord{
 			Owner:    doc.Owner,
 			Revision: doc.Revision + 1,
-			Tree:     Leaf(ref),
-		})
+			Tree:     &PaneNode{Type: "leaf", Ref: &ref},
+		}
 		return nil
 	}
 
-	return addLeafToLayout(doc, &doc.Layouts[0], ref)
-}
+	if target.Session != "" {
+		// Split the target leaf
+		if doc.Workspace.Tree == nil {
+			return StateError{Code: ErrMissingTarget, Field: "target", Detail: "workspace tree is empty"}
+		}
+		if !findLeaf(*doc.Workspace.Tree, target) {
+			return StateError{Code: ErrMissingTarget, Field: "target", Detail: fmt.Sprintf("target leaf %q not in workspace", target.MapKey())}
+		}
+		if findLeaf(*doc.Workspace.Tree, ref) {
+			return StateError{Code: ErrDuplicateLeaf, Field: "new", Detail: fmt.Sprintf("session %q already in workspace", ref.MapKey())}
+		}
+		tree, err := splitTree(*doc.Workspace.Tree, target, direction, ref, newFirst)
+		if err != nil {
+			return err
+		}
+		doc.Workspace.Tree = &tree
+		doc.Workspace.Revision = doc.Revision + 1
+		return nil
+	}
 
-func addLeafToLayout(doc *AppDocument, rec *LayoutRecord, ref SessionRef) error {
-	if findLeaf(rec.Tree, ref) {
-		return nil
+	// Add as a new leaf to the workspace tree
+	if doc.Workspace.Tree == nil {
+		doc.Workspace.Tree = &PaneNode{Type: "leaf", Ref: &ref}
+	} else {
+		// Add as a sibling split of an existing leaf
+		if findLeaf(*doc.Workspace.Tree, ref) {
+			return nil // Already present, no-op
+		}
+		targetLeaf := findAnyLeaf(*doc.Workspace.Tree)
+		if targetLeaf == nil {
+			doc.Workspace.Tree = &PaneNode{Type: "leaf", Ref: &ref}
+		} else {
+			tree, err := splitTree(*doc.Workspace.Tree, *targetLeaf, DirectionHorizontal, ref, false)
+			if err != nil {
+				return err
+			}
+			doc.Workspace.Tree = &tree
+		}
 	}
-	target := findAnyLeaf(rec.Tree)
-	if target == nil {
-		rec.Tree = Leaf(ref)
-		rec.Revision = doc.Revision + 1
-		return nil
-	}
-	tree, err := splitTree(rec.Tree, *target, DirectionHorizontal, ref, false)
-	if err != nil {
-		return err
-	}
-	rec.Tree = tree
-	rec.Revision = doc.Revision + 1
+	doc.Workspace.Revision = doc.Revision + 1
 	return nil
 }
 

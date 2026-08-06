@@ -124,21 +124,8 @@ func ValidateDocument(doc *AppDocument) error {
 		seenSessions[doc.PendingRemoteCreates[i].Ref.Session] = struct{}{}
 	}
 
-	if len(doc.Layouts) > 1 {
-		return StateError{Code: ErrMultipleLayouts, Field: "layouts", Detail: fmt.Sprintf("document carries %d layouts, at most 1 is allowed", len(doc.Layouts))}
-	}
-
-	seenLayouts := make(map[LayoutID]struct{}, len(doc.Layouts))
-	for i := range doc.Layouts {
-		l := &doc.Layouts[i]
-		if err := ValidateLayout(l, doc.Owner); err != nil {
-			return StateError{Code: err.(StateError).Code, Field: fmt.Sprintf("layouts[%d].%s", i, err.(StateError).Field), Detail: err.Error()}
-		}
-		if _, exists := seenLayouts[l.ID]; exists {
-			return StateError{Code: ErrDuplicateIdentity, Field: fmt.Sprintf("layouts[%d].id", i), Detail: fmt.Sprintf("duplicate layout id %q", l.ID)}
-		}
-		seenLayouts[l.ID] = struct{}{}
-		if err := validateSessionRefIntegrity(l.Tree, doc.Owner, seenSessions, fmt.Sprintf("layouts[%d].tree", i)); err != nil {
+	if doc.Workspace.Tree != nil {
+		if err := validateSessionRefIntegrity(*doc.Workspace.Tree, doc.Owner, seenSessions, "workspace.tree"); err != nil {
 			return err
 		}
 	}
@@ -214,22 +201,7 @@ func ValidateLocalSession(s *LocalSessionRecord, owner OwnerID) error {
 	return nil
 }
 
-// ValidateLayout checks a saved layout and its pane tree.
-func ValidateLayout(l *LayoutRecord, owner OwnerID) error {
-	if err := l.ID.Validate(); err != nil {
-		return StateError{Code: ErrInvalidIdentity, Field: "id", Detail: err.Error()}
-	}
-	if l.Owner != owner {
-		return StateError{Code: ErrInvalidIdentity, Field: "owner", Detail: fmt.Sprintf("layout owner %q does not match document owner %q", l.Owner, owner)}
-	}
-	if l.Revision < 0 {
-		return StateError{Code: ErrBadSchema, Field: "revision", Detail: "revision must be non-negative"}
-	}
-	if err := ValidatePaneTree(l.Tree); err != nil {
-		return err
-	}
-	return nil
-}
+
 
 // ValidatePaneTree checks structural invariants of a pane tree: split ratios,
 // finite numbers, and unique leaf references.
@@ -313,29 +285,7 @@ func validateSingleSessionRefIntegrity(ref SessionRef, owner OwnerID, sessions m
 	return nil
 }
 
-// CheckSessionMembershipAcrossLayouts returns an error if any session appears
-// in more than one layout within the same document. This is a document-level
-// invariant, not a per-tree invariant. With the one-layout invariant
-// (ErrMultipleLayouts in ValidateDocument) this is unreachable for a
-// document that already validated, but it remains as defense in depth for
-// callers that invoke it directly.
-func CheckSessionMembershipAcrossLayouts(doc *AppDocument) error {
-	membership := make(map[string]LayoutID)
-	for _, l := range doc.Layouts {
-		leaves, err := collectLeaves(l.Tree)
-		if err != nil {
-			return err
-		}
-		for _, ref := range leaves {
-			key := ref.MapKey()
-			if prev, exists := membership[key]; exists {
-				return StateError{Code: ErrSessionInMultipleLayouts, Field: "layouts", Detail: fmt.Sprintf("session %q appears in layouts %q and %q", key, prev, l.ID)}
-			}
-			membership[key] = l.ID
-		}
-	}
-	return nil
-}
+
 
 // ValidateCommandReceipt checks age and count bounds for command receipts.
 func ValidateCommandReceipt(receipt CommandReceipt, now time.Time, count int) error {

@@ -21,7 +21,7 @@ type Catalog struct {
 	owner              OwnerID
 	revision           int64
 	sessions           map[SessionID]LocalSessionRecord
-	layouts            map[LayoutID]LayoutRecord
+	workspace          *WorkspaceRecord
 	pending            map[CommandID]PendingCreateRecord
 	remotePending      map[CommandID]PendingRemoteCreateRecord
 	workspaceSubs      []workspaceSubscription
@@ -30,9 +30,9 @@ type Catalog struct {
 	nextCatalogSubID   int
 	store              *Store
 
-	// activeKey stores the selected leaf ref per layout. It is purely
-	// in-memory and intentionally not persisted.
-	activeKeys map[LayoutID]*SessionRef
+	// activeKey stores the selected leaf ref in the singleton workspace.
+	// It is purely in-memory and intentionally not persisted.
+	activeKey *SessionRef
 
 	// commands mirrors the last known receipts so in-memory catalogs can
 	// participate in the bounded receipt mechanism.
@@ -48,7 +48,6 @@ func NewCatalog(owner OwnerID, store *Store) *Catalog {
 	return &Catalog{
 		owner:         owner,
 		sessions:      make(map[SessionID]LocalSessionRecord),
-		layouts:       make(map[LayoutID]LayoutRecord),
 		pending:       make(map[CommandID]PendingCreateRecord),
 		remotePending: make(map[CommandID]PendingRemoteCreateRecord),
 		store:         store,
@@ -127,19 +126,9 @@ func (c *Catalog) SessionsByScheduleID(scheduleID string) []LocalSessionRecord {
 }
 
 // Layout returns a copy of one layout record.
-func (c *Catalog) Layout(id LayoutID) (LayoutRecord, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	l, ok := c.layouts[id]
-	return l, ok
-}
 
-// Layouts returns a sorted copy of all layout records.
-func (c *Catalog) Layouts() []LayoutRecord {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.sortedLayoutsLocked()
-}
+
+
 
 // PendingCreates returns a copy of unresolved create intents.
 func (c *Catalog) PendingCreates() []PendingCreateRecord {
@@ -203,24 +192,7 @@ func (c *Catalog) RemoveSession(id SessionID) error {
 }
 
 // PutLayout stores or replaces a layout record.
-func (c *Catalog) PutLayout(rec LayoutRecord) error {
-	if err := rec.ID.Validate(); err != nil {
-		return err
-	}
-	if rec.Owner != c.Owner() {
-		return fmt.Errorf("layout owner %q does not match catalog owner %q", rec.Owner, c.Owner())
-	}
-	return c.apply("put-layout", func(doc *AppDocument) error {
-		return c.upsertLayoutLocked(doc, rec)
-	})
-}
 
-// RemoveLayout deletes a layout record.
-func (c *Catalog) RemoveLayout(id LayoutID) error {
-	return c.apply("remove-layout", func(doc *AppDocument) error {
-		return c.removeLayoutLocked(doc, id)
-	})
-}
 
 // PutPendingCreate stores an unresolved create intent.
 func (c *Catalog) PutPendingCreate(rec PendingCreateRecord) error {
@@ -276,11 +248,20 @@ func (c *Catalog) LocalCatalogSnapshot() OwnerCatalogSnapshot {
 }
 
 func (c *Catalog) localCatalogSnapshotLocked() OwnerCatalogSnapshot {
+	var workspace *WorkspaceRecord
+	if c.workspace != nil {
+		cp := *c.workspace
+		if cp.Tree != nil {
+			treecp := *cp.Tree
+			cp.Tree = &treecp
+		}
+		workspace = &cp
+	}
 	return OwnerCatalogSnapshot{
-		Owner:    c.owner,
-		Revision: c.revision,
-		Sessions: c.sortedSessionsLocked(),
-		Layouts:  c.sortedLayoutsLocked(),
+		Owner:     c.owner,
+		Revision:  c.revision,
+		Sessions:  c.sortedSessionsLocked(),
+		Workspace: workspace,
 	}
 }
 
@@ -431,10 +412,6 @@ func (c *Catalog) apply(reason string, mutate func(*AppDocument) error) error {
 			c.mu.Unlock()
 			return fmt.Errorf("invalid document after %q: %w", reason, err)
 		}
-		if err := CheckSessionMembershipAcrossLayouts(&doc); err != nil {
-			c.mu.Unlock()
-			return fmt.Errorf("layout membership conflict after %q: %w", reason, err)
-		}
 		if !docsEqual(oldDoc, doc) {
 			doc.Revision = c.revision + 1
 		}
@@ -461,9 +438,14 @@ func (c *Catalog) resetLocked(doc AppDocument) error {
 	for _, s := range doc.Sessions {
 		c.sessions[s.ID] = s
 	}
-	c.layouts = make(map[LayoutID]LayoutRecord, len(doc.Layouts))
-	for _, l := range doc.Layouts {
-		c.layouts[l.ID] = l
+	c.workspace = nil
+	if doc.Workspace != nil {
+		cp := *doc.Workspace
+		if cp.Tree != nil {
+			treecp := *cp.Tree
+			cp.Tree = &treecp
+		}
+		c.workspace = &cp
 	}
 	c.pending = make(map[CommandID]PendingCreateRecord, len(doc.PendingCreates))
 	for _, p := range doc.PendingCreates {
@@ -473,9 +455,7 @@ func (c *Catalog) resetLocked(doc AppDocument) error {
 	for _, p := range doc.PendingRemoteCreates {
 		c.remotePending[p.IntentID] = p
 	}
-	if c.activeKeys == nil {
-		c.activeKeys = make(map[LayoutID]*SessionRef)
-	}
+	c.activeKey = nil
 	c.commands = make([]CommandReceipt, len(doc.Commands))
 	copy(c.commands, doc.Commands)
 	return nil
@@ -487,7 +467,6 @@ func (c *Catalog) emptyDoc() AppDocument {
 		Owner:    c.owner,
 		Revision: 0,
 		Sessions: []LocalSessionRecord{},
-		Layouts:  []LayoutRecord{},
 	}
 }
 
@@ -495,7 +474,14 @@ func (c *Catalog) docFromMapsLocked() AppDocument {
 	doc := c.emptyDoc()
 	doc.Revision = c.revision
 	doc.Sessions = c.sortedSessionsLocked()
-	doc.Layouts = c.sortedLayoutsLocked()
+	if c.workspace != nil {
+		cp := *c.workspace
+		if cp.Tree != nil {
+			treecp := *cp.Tree
+			cp.Tree = &treecp
+		}
+		doc.Workspace = &cp
+	}
 	doc.PendingCreates = c.sortedPendingLocked()
 	doc.PendingRemoteCreates = c.sortedPendingRemoteLocked()
 	doc.Commands = c.sortedCommandsLocked()
@@ -511,14 +497,6 @@ func (c *Catalog) sortedSessionsLocked() []LocalSessionRecord {
 	return out
 }
 
-func (c *Catalog) sortedLayoutsLocked() []LayoutRecord {
-	out := make([]LayoutRecord, 0, len(c.layouts))
-	for _, l := range c.layouts {
-		out = append(out, l)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
-}
 
 func (c *Catalog) sortedPendingLocked() []PendingCreateRecord {
 	out := make([]PendingCreateRecord, 0, len(c.pending))
@@ -571,31 +549,7 @@ func (c *Catalog) removeSessionLocked(doc *AppDocument, id SessionID) error {
 	return nil
 }
 
-func (c *Catalog) upsertLayoutLocked(doc *AppDocument, rec LayoutRecord) error {
-	found := false
-	for i := range doc.Layouts {
-		if doc.Layouts[i].ID == rec.ID {
-			doc.Layouts[i] = rec
-			found = true
-			break
-		}
-	}
-	if !found {
-		doc.Layouts = append(doc.Layouts, rec)
-	}
-	return nil
-}
 
-func (c *Catalog) removeLayoutLocked(doc *AppDocument, id LayoutID) error {
-	filtered := doc.Layouts[:0]
-	for _, l := range doc.Layouts {
-		if l.ID != id {
-			filtered = append(filtered, l)
-		}
-	}
-	doc.Layouts = filtered
-	return nil
-}
 
 func (c *Catalog) upsertPendingLocked(doc *AppDocument, rec PendingCreateRecord) error {
 	found := false

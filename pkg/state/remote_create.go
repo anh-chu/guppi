@@ -44,8 +44,8 @@ const (
 )
 
 // RemoteCreateRequest asks the workspace owner to allocate a stable ref, place
-// it in a layout, and start the daemon. It is the only distributed command
-// request type that mutates shared workspace state.
+// it in the singleton workspace, and start the daemon. It is the only distributed
+// command request type that mutates shared workspace state.
 type RemoteCreateRequest struct {
 	IntentID       CommandID      `json:"intent_id"`
 	Requester      OwnerID        `json:"requester"`
@@ -55,7 +55,6 @@ type RemoteCreateRequest struct {
 	WorktreeBranch string         `json:"worktree_branch,omitempty"`
 	Cols           uint16         `json:"cols,omitempty"`
 	Rows           uint16         `json:"rows,omitempty"`
-	LayoutID       LayoutID       `json:"layout_id,omitempty"`
 	Target         *SessionRef    `json:"target,omitempty"`
 	Direction      SplitDirection `json:"direction,omitempty"`
 	NewFirst       bool           `json:"new_first,omitempty"`
@@ -72,7 +71,6 @@ type RemoteCreateResult struct {
 	Ref         SessionRef `json:"ref"`
 	DisplayName string     `json:"display_name,omitempty"`
 	Path        string     `json:"path,omitempty"`
-	LayoutID    LayoutID   `json:"layout_id,omitempty"`
 	Degraded    bool       `json:"degraded,omitempty"`
 	Accepted    bool       `json:"accepted"`
 }
@@ -189,8 +187,8 @@ func (c *RemoteCreateCoordinator) ExecuteRemoteCreate(ctx context.Context, req R
 		ref := SessionRef{Owner: c.opts.Owner, Session: NewSessionID()}
 		displayName = c.uniqueDisplayNameLocked(doc, displayName)
 
-		layoutID, err := c.placeRemoteRefLocked(doc, ref, req)
-		if err != nil {
+		// Place ref in the singleton workspace tree
+		if err := c.placeRefInWorkspaceLocked(doc, ref, req); err != nil {
 			return err
 		}
 
@@ -205,7 +203,6 @@ func (c *RemoteCreateCoordinator) ExecuteRemoteCreate(ctx context.Context, req R
 			Cwd:            req.Cwd,
 			Cols:           req.Cols,
 			Rows:           req.Rows,
-			LayoutID:       layoutID,
 			Status:         string(RemoteCreateStatusPending),
 			Inserted:       now,
 			UpdatedAt:      now,
@@ -229,7 +226,7 @@ func (c *RemoteCreateCoordinator) ExecuteRemoteCreate(ctx context.Context, req R
 			AgentType:      req.AgentType,
 			WorktreeBranch: req.WorktreeBranch,
 		})
-		result = RemoteCreateResult{ID: req.IntentID, Ref: ref, DisplayName: displayName, Path: path, LayoutID: layoutID, Accepted: true}
+		result = RemoteCreateResult{ID: req.IntentID, Ref: ref, DisplayName: displayName, Path: path, Accepted: true}
 		receipt, err := newSuccessReceipt(req.IntentID, "remote-create:create", ref.MapKey(), nextCommandSeq(doc), now, result)
 		if err != nil {
 			return err
@@ -471,47 +468,60 @@ func (c *RemoteCreateCoordinator) hook(p RemoteCreateCrashPoint) {
 	}
 }
 
-func (c *RemoteCreateCoordinator) placeRemoteRefLocked(doc *AppDocument, ref SessionRef, req RemoteCreateRequest) (LayoutID, error) {
-	if req.LayoutID != "" {
-		for i := range doc.Layouts {
-			if doc.Layouts[i].ID == req.LayoutID {
-				if req.Target != nil && req.Target.Session != "" {
-					if !findLeaf(doc.Layouts[i].Tree, *req.Target) {
-						return "", StateError{Code: ErrMissingTarget, Field: "target", Detail: fmt.Sprintf("target leaf %q not in layout", req.Target.MapKey())}
-					}
-					tree, err := splitTree(doc.Layouts[i].Tree, *req.Target, req.Direction, ref, req.NewFirst)
-					if err != nil {
-						return "", err
-					}
-					doc.Layouts[i].Tree = tree
-				} else {
-					if err := addLeafToLayout(doc, &doc.Layouts[i], ref); err != nil {
-						return "", err
-					}
-				}
-				doc.Layouts[i].Revision = doc.Revision + 1
-				return doc.Layouts[i].ID, nil
-			}
-		}
-		return "", StateError{Code: ErrUnknownLayout, Field: "layout_id", Detail: fmt.Sprintf("layout %q not found", req.LayoutID)}
-	}
-
-	if len(doc.Layouts) == 0 {
-		lid := NewLayoutID()
-		doc.Layouts = append(doc.Layouts, LayoutRecord{
-			ID:       lid,
+// placeRefInWorkspaceLocked places ref into the singleton workspace tree.
+// If a target is specified, the ref is placed by splitting the target leaf.
+// Otherwise, it is placed as a new leaf in the tree or creates the tree if empty.
+func (c *RemoteCreateCoordinator) placeRefInWorkspaceLocked(doc *AppDocument, ref SessionRef, req RemoteCreateRequest) error {
+	if doc.Workspace == nil {
+		doc.Workspace = &WorkspaceRecord{
 			Owner:    doc.Owner,
 			Revision: doc.Revision + 1,
-			Tree:     Leaf(ref),
-		})
-		return lid, nil
+			Tree:     &PaneNode{Type: "leaf", Ref: &ref},
+		}
+		return nil
 	}
 
-	if err := addLeafToLayout(doc, &doc.Layouts[0], ref); err != nil {
-		return "", err
+	if req.Target != nil && req.Target.Session != "" {
+		// Split the target leaf
+		if doc.Workspace.Tree == nil {
+			return StateError{Code: ErrMissingTarget, Field: "target", Detail: "workspace tree is empty"}
+		}
+		if !findLeaf(*doc.Workspace.Tree, *req.Target) {
+			return StateError{Code: ErrMissingTarget, Field: "target", Detail: fmt.Sprintf("target leaf %q not in workspace", req.Target.MapKey())}
+		}
+		if findLeaf(*doc.Workspace.Tree, ref) {
+			return StateError{Code: ErrDuplicateLeaf, Field: "new", Detail: fmt.Sprintf("session %q already in workspace", ref.MapKey())}
+		}
+		tree, err := splitTree(*doc.Workspace.Tree, *req.Target, req.Direction, ref, req.NewFirst)
+		if err != nil {
+			return err
+		}
+		doc.Workspace.Tree = &tree
+		doc.Workspace.Revision = doc.Revision + 1
+		return nil
 	}
-	doc.Layouts[0].Revision = doc.Revision + 1
-	return doc.Layouts[0].ID, nil
+
+	// Add as a new leaf to the workspace tree
+	if doc.Workspace.Tree == nil {
+		doc.Workspace.Tree = &PaneNode{Type: "leaf", Ref: &ref}
+	} else {
+		// Add as a sibling split of an existing leaf
+		if findLeaf(*doc.Workspace.Tree, ref) {
+			return nil // Already present, no-op
+		}
+		targetLeaf := findAnyLeaf(*doc.Workspace.Tree)
+		if targetLeaf == nil {
+			doc.Workspace.Tree = &PaneNode{Type: "leaf", Ref: &ref}
+		} else {
+			tree, err := splitTree(*doc.Workspace.Tree, *targetLeaf, DirectionHorizontal, ref, false)
+			if err != nil {
+				return err
+			}
+			doc.Workspace.Tree = &tree
+		}
+	}
+	doc.Workspace.Revision = doc.Revision + 1
+	return nil
 }
 
 func (c *RemoteCreateCoordinator) uniqueDisplayNameLocked(doc *AppDocument, name string) string {

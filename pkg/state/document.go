@@ -8,13 +8,14 @@ import (
 
 // SchemaVersion is the only supported canonical document schema.
 //
-// Schema 3 finished the migration to the canonical schema: every field that
-// used to live in a separate nested compatibility struct (a holdover from an
-// earlier schema) is now a direct, first-class field on its parent record.
-// There is no migrator from schema 2 (or earlier) to schema 3 -- an older
-// document fails closed (see ValidateDocument/ErrBadSchema) rather than
-// being transformed, partially read, or silently upgraded.
-const SchemaVersion = 3
+// Schema 4 completes the workspace refactor to a singleton model:
+// - AppDocument has one Workspace (not plural Layouts)
+// - WorkspaceRecord has no ID field (it is the singular, implicit workspace)
+// - Tree is nullable (*PaneNode, can be nil for an empty workspace)
+// - TmuxCatalogRevision is removed
+// Schema 3 was the canonical schema with multiple layouts; schema 2 and earlier
+// are unsupported and fail closed.
+const SchemaVersion = 4
 
 // SessionPhase is the observed runtime phase of a session.
 type SessionPhase string
@@ -38,20 +39,17 @@ const (
 )
 
 // AppDocument is the persisted owner-scope state. It contains the session
-// catalog and workspace layouts for exactly one owner. Every field is
-// canonical and direct -- schema 3 removed the old nested compatibility layer.
+// catalog and a singleton workspace for exactly one owner. Every field is
+// canonical and direct -- schema 4 enforces a single workspace (no layouts array).
 type AppDocument struct {
 	Schema               int                         `json:"schema"`
 	Owner                OwnerID                     `json:"owner"`
 	Revision             int64                       `json:"revision"`
 	Sessions             []LocalSessionRecord        `json:"sessions"`
-	Layouts              []LayoutRecord              `json:"layouts,omitempty"`
+	Workspace            *WorkspaceRecord            `json:"workspace,omitempty"`
 	Commands             []CommandReceipt            `json:"commands,omitempty"`
 	PendingCreates       []PendingCreateRecord       `json:"pending_creates,omitempty"`
 	PendingRemoteCreates []PendingRemoteCreateRecord `json:"pending_remote_creates,omitempty"`
-	// TmuxCatalogRevision tracks the legacy tmux-backed catalog revision this
-	// document was last known to correspond to, for v1/v2 shadow diagnostics.
-	TmuxCatalogRevision int64 `json:"tmux_catalog_revision,omitempty"`
 }
 
 // LocalSessionRecord is the canonical per-session row known to an owner.
@@ -103,27 +101,19 @@ type LocalSessionRecord struct {
 	WorktreeBranch string `json:"worktree_branch,omitempty"`
 }
 
-// WorkspaceRecord is the active workspace layout for an owner.
+// WorkspaceRecord is the singleton workspace for an owner. There is exactly
+// one per document (or none if Workspace is nil). Tree is nullable and can be
+// nil to represent an empty workspace.
 type WorkspaceRecord struct {
-	ID        LayoutID    `json:"id"`
 	Owner     OwnerID     `json:"owner"`
 	Revision  int64       `json:"revision"`
-	Tree      PaneNode    `json:"tree"`
+	Tree      *PaneNode   `json:"tree,omitempty"`
 	ActiveKey *SessionRef `json:"active_key,omitempty"`
 	// Name is the mutable, human-selected workspace name.
 	Name string `json:"name,omitempty"`
 }
 
-// LayoutRecord is a persisted layout in the owner's catalog. A document has
-// at most one layout (see ErrMultipleLayouts in invariants.go); Order and
-// Name were removed with multi-layout support since there is nothing left
-// to order or distinguish by name.
-type LayoutRecord struct {
-	ID       LayoutID `json:"id"`
-	Owner    OwnerID  `json:"owner"`
-	Revision int64    `json:"revision"`
-	Tree     PaneNode `json:"tree"`
-}
+
 
 // PaneNode is a concrete tagged-union node in a workspace layout tree.
 // A node is either a leaf (Ref != nil) or a split (First != nil and
@@ -255,7 +245,8 @@ type PendingCreateRecord struct {
 
 // PendingRemoteCreateRecord is the only persisted distributed saga. It tracks
 // a remote create request from another node until the workspace owner has
-// allocated the ref, placed the leaf, and the daemon is running.
+// allocated the ref, placed the leaf in the singleton workspace, and the daemon
+// is running.
 type PendingRemoteCreateRecord struct {
 	IntentID       CommandID  `json:"intent_id"`
 	Owner          OwnerID    `json:"owner"`
@@ -266,7 +257,6 @@ type PendingRemoteCreateRecord struct {
 	Cwd            string     `json:"cwd,omitempty"`
 	Cols           uint16     `json:"cols,omitempty"`
 	Rows           uint16     `json:"rows,omitempty"`
-	LayoutID       LayoutID   `json:"layout_id,omitempty"`
 	Status         string     `json:"status"`
 	Inserted       time.Time  `json:"inserted_at"`
 	UpdatedAt      time.Time  `json:"updated_at,omitempty"`
@@ -284,10 +274,10 @@ type PendingRemoteCreateRecord struct {
 // OwnerCatalogSnapshot is sent from an owner to the browser or to peers. It
 // carries the canonical catalog state and the owner-scope persisted revision.
 type OwnerCatalogSnapshot struct {
-	Owner    OwnerID              `json:"owner"`
-	Revision int64                `json:"revision"`
-	Sessions []LocalSessionRecord `json:"sessions"`
-	Layouts  []LayoutRecord       `json:"layouts,omitempty"`
+	Owner     OwnerID              `json:"owner"`
+	Revision  int64                `json:"revision"`
+	Sessions  []LocalSessionRecord `json:"sessions"`
+	Workspace *WorkspaceRecord     `json:"workspace,omitempty"`
 }
 
 // BrowserWorkspaceSnapshot is the aggregate state exposed to one browser
@@ -340,8 +330,8 @@ type CommandReceiptError struct {
 //
 // Kind identifies the command family and action (e.g. "session:create",
 // "workspace:split"). Target is a normalized identifier for what the command
-// addressed (a SessionRef.MapKey(), a LayoutID, or similar), for
-// observability only -- replay never re-derives the result from Target.
+// addressed (a SessionRef.MapKey() or similar), for observability only --
+// replay never re-derives the result from Target.
 // Status is "ok" or "error". Result is the exact JSON-encoded success payload
 // (typically a CommandResult or RemoteCreateResult); Error, when Status is
 // "error", is a previously observed terminal, input-derived failure that is
@@ -416,10 +406,9 @@ type SessionCommand struct {
 	Params json.RawMessage `json:"params,omitempty"`
 }
 
-// WorkspaceCommand is an envelope for a command targeting a workspace layout.
+// WorkspaceCommand is an envelope for a command targeting the singleton workspace.
 type WorkspaceCommand struct {
 	ID     CommandID       `json:"id"`
-	Layout LayoutID        `json:"layout"`
 	Action string          `json:"action"`
 	Params json.RawMessage `json:"params,omitempty"`
 }

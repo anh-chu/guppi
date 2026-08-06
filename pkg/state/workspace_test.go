@@ -37,7 +37,7 @@ func leafs(tree PaneNode) []string {
 func mustPutLayout(t *testing.T, c *Catalog, owner OwnerID, id string, order int64, tree PaneNode) LayoutID {
 	t.Helper()
 	registerTreeSessions(t, c, tree)
-	lid := LayoutID(id)
+	lid := SessionID(id)
 	rec := LayoutRecord{ID: lid, Owner: owner, Tree: tree, Revision: 0}
 	if err := c.PutLayout(rec); err != nil {
 		t.Fatalf("put layout: %v", err)
@@ -746,7 +746,7 @@ func BenchmarkWorkspaceSplitOperations(b *testing.B) {
 	}
 	tree := buildBalanced(leaves)
 	registerTreeSessions(b, cat, tree)
-	lID := LayoutID("layout1234567890abcd")
+	lID := SessionID("layout1234567890abcd")
 	if err := cat.PutLayout(LayoutRecord{ID: lID, Owner: owner, Tree: tree, Revision: 0}); err != nil {
 		b.Fatal(err)
 	}

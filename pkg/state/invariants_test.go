@@ -17,9 +17,6 @@ func TestInvariantDuplicateSessionIDs(t *testing.T) {
 			mkSession(owner, "sessinv1234567890ab"),
 			mkSession(owner, "sessinv1234567890ab"),
 		},
-		Layouts: []LayoutRecord{
-			mkLayout(owner, "layoutinv1234567890"),
-		},
 	}
 	err := ValidateDocument(&doc)
 	if err == nil {
@@ -80,10 +77,6 @@ func TestInvariantDuplicateLayoutIDs(t *testing.T) {
 		Sessions: []LocalSessionRecord{
 			mkSession(owner, "sessdoc1234567890ab"),
 		},
-		Layouts: []LayoutRecord{
-			mkLayout(owner, "layoutinv1234567890"),
-			{ID: "layoutinv1234567890", Owner: owner, Tree: Leaf(SessionRef{Owner: owner, Session: "sessdoc1234567890ab"})},
-		},
 	}
 	err := ValidateDocument(&doc)
 	if err == nil {
@@ -109,10 +102,6 @@ func TestInvariantMultipleLayoutsRejected(t *testing.T) {
 		Sessions: []LocalSessionRecord{
 			mkSession(owner, "sessinv1234567890ab"),
 			mkSession(owner, "otherinv1234567890ab"),
-		},
-		Layouts: []LayoutRecord{
-			{ID: "layoutinv1234567890a", Owner: owner, Tree: Leaf(SessionRef{Owner: owner, Session: "sessinv1234567890ab"})},
-			{ID: "layoutinv1234567890b", Owner: owner, Tree: Leaf(SessionRef{Owner: owner, Session: "otherinv1234567890ab"})},
 		},
 	}
 	err := ValidateDocument(&doc)
@@ -207,10 +196,6 @@ func TestInvariantSessionInMultipleLayouts(t *testing.T) {
 		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
-		Layouts: []LayoutRecord{
-			{ID: "layoutinv1234567890a", Owner: owner, Tree: Leaf(ref)},
-			{ID: "layoutinv1234567890b", Owner: owner, Tree: Leaf(ref)},
-		},
 	}
 	err := CheckSessionMembershipAcrossLayouts(&doc)
 	if err == nil {
@@ -242,13 +227,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 		Sessions: []LocalSessionRecord{
 			mkSession(owner, "sessdoc1234567890ab"),
 		},
-		Layouts: []LayoutRecord{
-			{
-				ID:    "layoutinv1234567890a",
-				Owner: owner,
-				Tree:  Split(DirectionHorizontal, Ratio(0.5), Leaf(real), Leaf(orphan)),
-			},
-		},
+		Workspace: &WorkspaceRecord{Revision: 1, Tree: nil},
 	}
 
 	err := ValidateDocument(&doc)
@@ -269,9 +248,6 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 		Revision: 1,
 		Sessions: []LocalSessionRecord{
 			mkSession(owner, "sessdoc1234567890ab"),
-		},
-		Layouts: []LayoutRecord{
-			{ID: "layoutinv1234567890b", Owner: owner, Tree: Leaf(foreignOwnerLeaf)},
 		},
 	}
 	err2 := ValidateDocument(&doc2)
@@ -294,9 +270,6 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 		Revision: 1,
 		PendingCreates: []PendingCreateRecord{
 			{IntentID: NewCommandID(), Ref: pendingRef},
-		},
-		Layouts: []LayoutRecord{
-			{ID: "layoutinv1234567890c", Owner: owner, Tree: Leaf(pendingRef)},
 		},
 	}
 	if err := ValidateDocument(&doc3); err != nil {

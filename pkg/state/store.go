@@ -188,9 +188,6 @@ func (s *Store) Update(reason string, mutate func(*AppDocument) error) error {
 	if err := ValidateDocument(&proposed); err != nil {
 		return fmt.Errorf("invalid document after %q: %w", reason, err)
 	}
-	if err := CheckSessionMembershipAcrossLayouts(&proposed); err != nil {
-		return fmt.Errorf("layout membership conflict after %q: %w", reason, err)
-	}
 
 	if docsEqual(s.doc, proposed) {
 		return nil
@@ -365,8 +362,6 @@ func (s *Store) loadBestDocument() (AppDocument, bool, error) {
 	if curErr == nil {
 		if err := ValidateDocument(&curDoc); err != nil {
 			curErr = err
-		} else if err := CheckSessionMembershipAcrossLayouts(&curDoc); err != nil {
-			curErr = err
 		} else {
 			return curDoc, false, nil
 		}
@@ -375,8 +370,6 @@ func (s *Store) loadBestDocument() (AppDocument, bool, error) {
 	bakDoc, bakErr := s.readDocument(backup)
 	if bakErr == nil {
 		if err := ValidateDocument(&bakDoc); err != nil {
-			bakErr = err
-		} else if err := CheckSessionMembershipAcrossLayouts(&bakDoc); err != nil {
 			bakErr = err
 		} else {
 			if curErr == nil {
@@ -414,11 +407,11 @@ func (s *Store) newDocument() AppDocument {
 		owner = NewOwnerID()
 	}
 	return AppDocument{
-		Schema:   SchemaVersion,
-		Owner:    owner,
-		Revision: 0,
-		Sessions: []LocalSessionRecord{},
-		Layouts:  []LayoutRecord{},
+		Schema:    SchemaVersion,
+		Owner:     owner,
+		Revision:  0,
+		Sessions:  []LocalSessionRecord{},
+		Workspace: &WorkspaceRecord{Revision: 0, Tree: nil},
 	}
 }
 

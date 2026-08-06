@@ -79,10 +79,10 @@ func (c *Catalog) ApplyWorkspaceCommand(cmd WorkspaceCommand) error {
 	}
 
 	err := c.apply("workspace/"+cmd.Action, func(doc *AppDocument) error {
-		return applyLayoutTreeCommand(doc, c, cmd)
+		return applyWorkspaceCommand(doc, c, cmd)
 	})
 	if err == nil {
-		c.publishWorkspace(cmd.Layout)
+		c.publishWorkspace()
 	}
 	return err
 }
@@ -182,26 +182,20 @@ func (c *Catalog) validatePeerWorkspaceRefOwnership(cmd WorkspaceCommand) error 
 	}
 }
 
-// WorkspaceSnapshot returns the active workspace view for a layout. If the
-// document has no active WorkspaceRecord for that layout, the snapshot is
-// synthesized from the persisted LayoutRecord.
-func (c *Catalog) WorkspaceSnapshot(layout LayoutID) (WorkspaceSnapshotResult, error) {
+// WorkspaceSnapshot returns the active singleton workspace view.
+func (c *Catalog) WorkspaceSnapshot() (WorkspaceSnapshotResult, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	rec, ok := c.layouts[layout]
-	if !ok {
-		return WorkspaceSnapshotResult{}, StateError{Code: ErrUnknownLayout, Field: "layout", Detail: fmt.Sprintf("layout %q not found", layout)}
+	if c.workspace == nil {
+		return WorkspaceSnapshotResult{}, StateError{Code: ErrUnknownLayout, Field: "workspace", Detail: "workspace does not exist"}
 	}
 
 	ws := WorkspaceRecord{
-		ID:       layout,
-		Owner:    c.owner,
-		Revision: rec.Revision,
-		Tree:     clonePaneNode(rec.Tree),
-	}
-	if active, ok := c.activeKeys[layout]; ok {
-		ws.ActiveKey = active
+		Owner:     c.owner,
+		Revision:  c.workspace.Revision,
+		Tree:      cloneTreePtr(c.workspace.Tree),
+		ActiveKey: cloneRefPtr(c.activeKey),
 	}
 
 	return WorkspaceSnapshotResult{Record: ws}, nil
@@ -217,7 +211,7 @@ func (c *Catalog) RemoveSessionRef(ref SessionRef) error {
 }
 
 // applyLayoutTreeCommand handles commands that mutate one layout's pane tree.
-func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) error {
+func applyWorkspaceCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) error {
 	// Idempotent replay FIRST, before any lookup or mutation: a command ID
 	// that was already durably accepted is a no-op that returns success
 	// again, never a re-derived mutation. Without this check, retrying e.g.
@@ -228,22 +222,14 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		return nil
 	}
 
-	layout := cmd.Layout
-	idx := -1
-	for i := range doc.Layouts {
-		if doc.Layouts[i].ID == layout {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
-		return StateError{Code: ErrUnknownLayout, Field: "layout", Detail: fmt.Sprintf("layout %q not found", layout)}
+	// Ensure the workspace exists for any mutation
+	if doc.Workspace == nil {
+		return StateError{Code: ErrUnknownLayout, Field: "workspace", Detail: "workspace does not exist"}
 	}
 
-	rec := &doc.Layouts[idx]
+	rec := doc.Workspace
 
 	nextRev := doc.Revision + 1
-	membership := MembershipIndex(doc)
 
 	switch cmd.Action {
 	case WorkspaceActionSplit:
@@ -254,20 +240,20 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		if err := checkExpectedRevision(rec.Revision, p.ExpectedRevision); err != nil {
 			return err
 		}
-		if !findLeaf(rec.Tree, p.Target) {
-			return StateError{Code: ErrMissingTarget, Field: "target", Detail: fmt.Sprintf("target leaf %q not in layout", p.Target.MapKey())}
+		if rec.Tree == nil {
+			return StateError{Code: ErrMissingTarget, Field: "target", Detail: "workspace tree is empty"}
+		}
+		if !findLeaf(*rec.Tree, p.Target) {
+			return StateError{Code: ErrMissingTarget, Field: "target", Detail: fmt.Sprintf("target leaf %q not in workspace", p.Target.MapKey())}
 		}
 		if p.New.Session == "" {
 			return StateError{Code: ErrInvalidIdentity, Field: "new", Detail: "new session ref has empty session id"}
 		}
-		if key := p.New.MapKey(); conflictsMembership(membership, key, layout) {
-			return StateError{Code: ErrDuplicateMembership, Field: "new", Detail: fmt.Sprintf("session %q already belongs to another layout", key)}
-		}
-		tree, err := splitTree(rec.Tree, p.Target, p.Direction, p.New, p.NewFirst)
+		tree, err := splitTree(*rec.Tree, p.Target, p.Direction, p.New, p.NewFirst)
 		if err != nil {
 			return err
 		}
-		rec.Tree = tree
+		rec.Tree = &tree
 		rec.Revision = nextRev
 
 	case WorkspaceActionMove:
@@ -278,20 +264,23 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		if err := checkExpectedRevision(rec.Revision, p.ExpectedRevision); err != nil {
 			return err
 		}
-		if !findLeaf(rec.Tree, p.Source) {
-			return StateError{Code: ErrMissingTarget, Field: "source", Detail: fmt.Sprintf("source leaf %q not in layout", p.Source.MapKey())}
+		if rec.Tree == nil {
+			return StateError{Code: ErrMissingTarget, Field: "source", Detail: "workspace tree is empty"}
 		}
-		if !findLeaf(rec.Tree, p.Target) {
-			return StateError{Code: ErrMissingTarget, Field: "target", Detail: fmt.Sprintf("target leaf %q not in layout", p.Target.MapKey())}
+		if !findLeaf(*rec.Tree, p.Source) {
+			return StateError{Code: ErrMissingTarget, Field: "source", Detail: fmt.Sprintf("source leaf %q not in workspace", p.Source.MapKey())}
+		}
+		if !findLeaf(*rec.Tree, p.Target) {
+			return StateError{Code: ErrMissingTarget, Field: "target", Detail: fmt.Sprintf("target leaf %q not in workspace", p.Target.MapKey())}
 		}
 		if p.Source.MapKey() == p.Target.MapKey() {
 			return StateError{Code: ErrMalformedSplit, Field: "target", Detail: "source and target are the same leaf"}
 		}
-		tree, err := moveTree(rec.Tree, p.Source, p.Target, p.Edge)
+		tree, err := moveTree(*rec.Tree, p.Source, p.Target, p.Edge)
 		if err != nil {
 			return err
 		}
-		rec.Tree = tree
+		rec.Tree = &tree
 		rec.Revision = nextRev
 
 	case WorkspaceActionSwap:
@@ -302,13 +291,17 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		if err := checkExpectedRevision(rec.Revision, p.ExpectedRevision); err != nil {
 			return err
 		}
-		if !findLeaf(rec.Tree, p.A) {
-			return StateError{Code: ErrMissingTarget, Field: "a", Detail: fmt.Sprintf("leaf %q not in layout", p.A.MapKey())}
+		if rec.Tree == nil {
+			return StateError{Code: ErrMissingTarget, Field: "a", Detail: "workspace tree is empty"}
 		}
-		if !findLeaf(rec.Tree, p.B) {
-			return StateError{Code: ErrMissingTarget, Field: "b", Detail: fmt.Sprintf("leaf %q not in layout", p.B.MapKey())}
+		if !findLeaf(*rec.Tree, p.A) {
+			return StateError{Code: ErrMissingTarget, Field: "a", Detail: fmt.Sprintf("leaf %q not in workspace", p.A.MapKey())}
 		}
-		rec.Tree = swapTree(rec.Tree, p.A, p.B)
+		if !findLeaf(*rec.Tree, p.B) {
+			return StateError{Code: ErrMissingTarget, Field: "b", Detail: fmt.Sprintf("leaf %q not in workspace", p.B.MapKey())}
+		}
+		swapped := swapTree(*rec.Tree, p.A, p.B)
+		rec.Tree = &swapped
 		rec.Revision = nextRev
 
 	case WorkspaceActionPopOut:
@@ -319,10 +312,13 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		if err := checkExpectedRevision(rec.Revision, p.ExpectedRevision); err != nil {
 			return err
 		}
-		if !findLeaf(rec.Tree, p.Ref) {
-			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: fmt.Sprintf("leaf %q not in layout", p.Ref.MapKey())}
+		if rec.Tree == nil {
+			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: "workspace tree is empty"}
 		}
-		rec.Tree = Leaf(p.Ref)
+		if !findLeaf(*rec.Tree, p.Ref) {
+			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: fmt.Sprintf("leaf %q not in workspace", p.Ref.MapKey())}
+		}
+		rec.Tree = &PaneNode{Type: "leaf", Ref: &p.Ref}
 		rec.Revision = nextRev
 
 	case WorkspaceActionRemove:
@@ -333,20 +329,23 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		if err := checkExpectedRevision(rec.Revision, p.ExpectedRevision); err != nil {
 			return err
 		}
-		if !findLeaf(rec.Tree, p.Ref) {
-			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: fmt.Sprintf("leaf %q not in layout", p.Ref.MapKey())}
+		if rec.Tree == nil {
+			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: "workspace tree is empty"}
 		}
-		tree, _, err := removeTree(rec.Tree, p.Ref)
+		if !findLeaf(*rec.Tree, p.Ref) {
+			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: fmt.Sprintf("leaf %q not in workspace", p.Ref.MapKey())}
+		}
+		tree, _, err := removeTree(*rec.Tree, p.Ref)
 		if err != nil {
 			return err
 		}
 		if tree.Type == "" {
-			doc.Layouts = append(doc.Layouts[:idx], doc.Layouts[idx+1:]...)
+			doc.Workspace = nil
 			if c != nil {
-				c.deleteActiveKeyLocked(layout)
+				c.deleteActiveKeyLocked()
 			}
 		} else {
-			rec.Tree = tree
+			rec.Tree = &tree
 			rec.Revision = nextRev
 		}
 
@@ -361,11 +360,14 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		if err := Ratio(p.Ratio).Validate(); err != nil {
 			return StateError{Code: ErrInvalidRatio, Field: "ratio", Detail: err.Error()}
 		}
-		tree, ok := resizeTree(rec.Tree, p.SplitID, Ratio(p.Ratio))
+		if rec.Tree == nil {
+			return StateError{Code: ErrStaleSplitID, Field: "split_id", Detail: "workspace tree is empty"}
+		}
+		tree, ok := resizeTree(*rec.Tree, p.SplitID, Ratio(p.Ratio))
 		if !ok {
 			return StateError{Code: ErrStaleSplitID, Field: "split_id", Detail: fmt.Sprintf("split id %q not found", p.SplitID)}
 		}
-		rec.Tree = tree
+		rec.Tree = &tree
 		rec.Revision = nextRev
 
 	case WorkspaceActionSelect:
@@ -376,13 +378,16 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		if err := checkExpectedRevision(rec.Revision, p.ExpectedRevision); err != nil {
 			return err
 		}
-		if !findLeaf(rec.Tree, p.Ref) {
-			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: fmt.Sprintf("leaf %q not in layout", p.Ref.MapKey())}
+		if rec.Tree == nil {
+			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: "workspace tree is empty"}
+		}
+		if !findLeaf(*rec.Tree, p.Ref) {
+			return StateError{Code: ErrMissingTarget, Field: "ref", Detail: fmt.Sprintf("leaf %q not in workspace", p.Ref.MapKey())}
 		}
 		// Active key is stored on an in-memory workspace view so it does not
-		// require a persisted layout mutation.
+		// require a persisted workspace mutation.
 		if c != nil {
-			c.setActiveKeyLocked(layout, p.Ref)
+			c.setActiveKeyLocked(p.Ref)
 		}
 		rec.Revision = nextRev
 
@@ -390,35 +395,35 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		return StateError{Code: ErrMalformedSplit, Field: "action", Detail: fmt.Sprintf("unknown workspace action %q", cmd.Action)}
 	}
 
-	if err := appendCommandReceipt(doc, cmd.ID, doc.Revision+1, "workspace:"+cmd.Action, string(layout)); err != nil {
+	if err := appendCommandReceipt(doc, cmd.ID, doc.Revision+1, "workspace:"+cmd.Action, "workspace"); err != nil {
 		return err
 	}
 	return nil
 }
 
-// removeSessionFromWorkspacesLocked removes ref from the sole layout's pane
-// tree (a no-op if it is not present). The layout itself is dropped from the
-// document when removing the leaf leaves it empty.
+// removeSessionFromWorkspacesLocked removes ref from the singleton workspace's pane
+// tree (a no-op if it is not present). The workspace is set to nil when removing
+// the leaf leaves the tree empty.
 func removeSessionFromWorkspacesLocked(doc *AppDocument, ref SessionRef) error {
-	newLayouts := doc.Layouts[:0]
-	for i := range doc.Layouts {
-		if !findLeaf(doc.Layouts[i].Tree, ref) {
-			newLayouts = append(newLayouts, doc.Layouts[i])
-			continue
-		}
-		tree, _, err := removeTree(doc.Layouts[i].Tree, ref)
-		if err != nil {
-			return err
-		}
-		if tree.Type == "" {
-			continue
-		}
-		rec := doc.Layouts[i]
-		rec.Tree = tree
-		rec.Revision = doc.Revision + 1
-		newLayouts = append(newLayouts, rec)
+	if doc.Workspace == nil {
+		return nil // No workspace, nothing to remove
 	}
-	doc.Layouts = newLayouts
+	if doc.Workspace.Tree == nil {
+		return nil // Empty workspace tree
+	}
+	if !findLeaf(*doc.Workspace.Tree, ref) {
+		return nil // Ref not in workspace
+	}
+	tree, _, err := removeTree(*doc.Workspace.Tree, ref)
+	if err != nil {
+		return err
+	}
+	if tree.Type == "" {
+		doc.Workspace = nil
+	} else {
+		doc.Workspace.Tree = &tree
+		doc.Workspace.Revision = doc.Revision + 1
+	}
 	return nil
 }
 
@@ -432,15 +437,7 @@ func checkExpectedRevision(current int64, expected *int64) error {
 	return nil
 }
 
-func conflictsMembership(membership map[string]LayoutID, key string, layout LayoutID) bool {
-	owner, exists := membership[key]
-	// A leaf that already belongs to the target layout is a duplicate leaf,
-	// not a cross-layout membership conflict; it is caught by ValidatePaneTree.
-	if !exists {
-		return false
-	}
-	return owner != layout
-}
+
 
 func appendCommandReceipt(doc *AppDocument, id CommandID, seq int64, kind, target string) error {
 	if err := id.Validate(); err != nil {
@@ -465,24 +462,23 @@ func appendCommandReceipt(doc *AppDocument, id CommandID, seq int64, kind, targe
 	return nil
 }
 
-func (c *Catalog) setActiveKeyLocked(layout LayoutID, ref SessionRef) {
-	if c.activeKeys == nil {
-		c.activeKeys = make(map[LayoutID]*SessionRef)
+func (c *Catalog) setActiveKeyLocked(ref SessionRef) {
+	if c.activeKey == nil {
+		cp := ref
+		c.activeKey = &cp
+	} else {
+		cp := ref
+		c.activeKey = &cp
 	}
-	cp := ref
-	c.activeKeys[layout] = &cp
 }
 
-func (c *Catalog) deleteActiveKeyLocked(layout LayoutID) {
-	if c.activeKeys == nil {
-		return
-	}
-	delete(c.activeKeys, layout)
+func (c *Catalog) deleteActiveKeyLocked() {
+	c.activeKey = nil
 }
 
 type workspaceSubscription struct {
 	id int
-	fn func(layout LayoutID, rec WorkspaceRecord)
+	fn func(rec WorkspaceRecord)
 }
 
 // WorkspaceSubscriberCount returns the number of live workspace
@@ -495,10 +491,10 @@ func (c *Catalog) WorkspaceSubscriberCount() int {
 }
 
 // SubscribeWorkspace registers a callback that receives the complete
-// WorkspaceRecord for a layout after every accepted command. The returned
-// function unsubscribes. Subscriptions prevent stale remote caches by
-// emitting whole snapshots, not incremental steps.
-func (c *Catalog) SubscribeWorkspace(fn func(layout LayoutID, rec WorkspaceRecord)) func() {
+// WorkspaceRecord for the singleton workspace after every accepted command.
+// The returned function unsubscribes. Subscriptions prevent stale remote
+// caches by emitting whole snapshots, not incremental steps.
+func (c *Catalog) SubscribeWorkspace(fn func(rec WorkspaceRecord)) func() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.nextWorkspaceSubID++
@@ -517,11 +513,11 @@ func (c *Catalog) SubscribeWorkspace(fn func(layout LayoutID, rec WorkspaceRecor
 	}
 }
 
-// publishWorkspace emits the current workspace record for layout to all
-// subscribers. It drops the event silently when no such layout exists.
-func (c *Catalog) publishWorkspace(layout LayoutID) {
+// publishWorkspace emits the current workspace record to all subscribers.
+// It drops the event silently when no workspace exists.
+func (c *Catalog) publishWorkspace() {
 	c.mu.RLock()
-	rec, ok := c.workspaceRecordLocked(layout)
+	rec, ok := c.workspaceRecordLocked()
 	subs := make([]workspaceSubscription, len(c.workspaceSubs))
 	copy(subs, c.workspaceSubs)
 	c.mu.RUnlock()
@@ -529,26 +525,39 @@ func (c *Catalog) publishWorkspace(layout LayoutID) {
 		return
 	}
 	for _, s := range subs {
-		s.fn(layout, rec)
+		s.fn(rec)
 	}
 }
 
-func (c *Catalog) workspaceRecordLocked(layout LayoutID) (WorkspaceRecord, bool) {
-	rec, ok := c.layouts[layout]
-	if !ok {
+func (c *Catalog) workspaceRecordLocked() (WorkspaceRecord, bool) {
+	if c.workspace == nil {
 		return WorkspaceRecord{}, false
 	}
 	ws := WorkspaceRecord{
-		ID:       layout,
-		Owner:    c.owner,
-		Revision: rec.Revision,
-		Tree:     clonePaneNode(rec.Tree),
-	}
-	if active, ok := c.activeKeys[layout]; ok {
-		cp := *active
-		ws.ActiveKey = &cp
+		Owner:     c.owner,
+		Revision:  c.workspace.Revision,
+		Tree:      cloneTreePtr(c.workspace.Tree),
+		ActiveKey: cloneRefPtr(c.activeKey),
 	}
 	return ws, true
+}
+
+// cloneTreePtr returns a deep copy of a pane tree pointer (nil-safe).
+func cloneTreePtr(p *PaneNode) *PaneNode {
+	if p == nil {
+		return nil
+	}
+	cp := clonePaneNode(*p)
+	return &cp
+}
+
+// cloneRefPtr returns a deep copy of a session ref pointer (nil-safe).
+func cloneRefPtr(p *SessionRef) *SessionRef {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	return &cp
 }
 
 // clonePaneNode returns a deep copy of a pane tree.
@@ -784,17 +793,7 @@ func resizeTree(tree PaneNode, id SplitID, ratio Ratio) (PaneNode, bool) {
 	return tree, false
 }
 
-// MembershipIndex returns the derived membership map from session ref key to
-// owning layout ID.
-func MembershipIndex(doc *AppDocument) map[string]LayoutID {
-	m := make(map[string]LayoutID)
-	for _, l := range doc.Layouts {
-		forEachLeaf(l.Tree, func(ref SessionRef) {
-			m[ref.MapKey()] = l.ID
-		})
-	}
-	return m
-}
+
 
 func forEachLeaf(tree PaneNode, fn func(SessionRef)) {
 	if tree.IsLeaf() {

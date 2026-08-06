@@ -40,7 +40,6 @@ func TestGeneratedIDsAreValid(t *testing.T) {
 	for _, id := range []interface{ Validate() error }{
 		NewOwnerID(),
 		NewSessionID(),
-		NewLayoutID(),
 		NewSplitID(),
 		NewCommandID(),
 	} {

@@ -89,7 +89,7 @@ func TestAppDocumentSchemaValidation(t *testing.T) {
 		Owner:      owner,
 		Revision:   1,
 		Sessions: []LocalSessionRecord{mkSession(owner, "sessdoc1234567890ab")},
-		Layouts:  []LayoutRecord{mkLayout(owner, "layoutdoc1234567890a")},
+		Workspace: &WorkspaceRecord{Revision: 0, Tree: &Leaf(SessionRef{Owner: owner, Session: SessionID("s1")})},
 	}
 
 	if err := ValidateDocument(&base); err != nil {
@@ -136,14 +136,7 @@ func mkSession(owner OwnerID, id string) LocalSessionRecord {
 	}
 }
 
-func mkLayout(owner OwnerID, id string) LayoutRecord {
-	return LayoutRecord{
-		ID:       LayoutID(id),
-		Owner:    owner,
-		Tree:     Leaf(SessionRef{Owner: owner, Session: "sessdoc1234567890ab"}),
-		Revision: 1,
-	}
-}
+
 
 func TestCommandReceiptBounds(t *testing.T) {
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -211,12 +204,11 @@ func TestSchema4WorkspaceContract_FAILS(t *testing.T) {
 	// This test documents the target schema-4 workspace shape.
 	// It will FAIL against schema-3 HEAD because the contract does not yet exist.
 	schema4Doc := AppDocument{
-		Schema:   4, // Task 1 will bump this; currently is 3
+		Schema:   4,
 		Owner:    OwnerID("owner1234567890abcd"),
 		Revision: 1,
 		Sessions: []LocalSessionRecord{mkSession(OwnerID("owner1234567890abcd"), "sess1234567890abcdef")},
-		// Workspace: WorkspaceRecord{Revision: 1, Tree: &leaf}, // This field does not exist yet
-		// No Layouts, no TmuxCatalogRevision in schema 4
+		Workspace: &WorkspaceRecord{Revision: 1, Tree: nil}, // Empty workspace in schema 4
 	}
 	
 	// Serialize and verify no "layouts" or "tmux_catalog_revision" appear in JSON.
