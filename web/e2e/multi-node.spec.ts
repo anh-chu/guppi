@@ -17,7 +17,7 @@ import {
 } from './fixtures/termyardCluster'
 
 /**
- * Multi-node v2 E2E suite.
+ * Multi-node E2E suite for the canonical state protocol.
  *
  * REAL TWO-PROCESS HARNESS
  * -------------------------------------------------------------------------
@@ -25,8 +25,8 @@ import {
  * standalone case-6 test) drives genuine `termyard server` OS processes,
  * built from the exact checked-out source (see fixtures/termyardCluster.ts:
  * `npm run build` embeds the current frontend, then `go build .`), each
- * with its own HOME, XDG_* dirs, TERMYARD_SESSION_DIR, TERMYARD_PORT, TERMYARD_SOCKET,
- * and (for v2 nodes) TERMYARD_V2_STATE=1. Pairing goes through the real
+ * with its own HOME, XDG_* dirs, TERMYARD_SESSION_DIR, TERMYARD_PORT, TERMYARD_SOCKET.
+ * Pairing goes through the real
  * POST /api/auth/setup and POST /api/peers (-> POST /api/peers/bootstrap)
  * HTTP endpoints -- no internal Go state is ever injected directly. The one
  * browser page each test drives is authenticated by copying the session
@@ -142,10 +142,10 @@ for (const run of [1, 2] as const) {
     // remote-create request serializes a zero-value Target as the string
     // ":0.0" via SessionRef's own custom MarshalJSON -- which SessionRef's
     // own UnmarshalJSON then rejects ("missing session id in \":0.0\"") on
-    // the receiving peer, inside pkg/peer/session_state.go's
-    // handleV2RemoteCreateRequest. This breaks 100% of remote creates issued
-    // through the New Session modal's host selector (routes_state_v2.go's
-    // TargetOwner branch), not only split-into-existing-pane ones. It is
+    // the receiving peer, inside pkg/peer/session_state.go's remote-create
+    // request handler. This breaks 100% of remote creates issued through the
+    // New Session modal's host selector (the server's TargetOwner branch),
+    // not only split-into-existing-pane ones. It is
     // left FAILING here (never `.skip`/`.fixme`) as the demonstrated failing
     // invariant this task's review boundary calls for; cases 2-5 below seed
     // their sessions via a real *local* create on B
@@ -571,24 +571,24 @@ async function installBaseStubs(page: Page) {
   })
 }
 
-async function installV2Bootstrap(page: Page, bootstrapRaw: unknown) {
-  await page.route('**/api/v2/bootstrap', async (route) => {
+async function installBootstrap(page: Page, bootstrapRaw: unknown) {
+  await page.route('**/api/state/bootstrap', async (route) => {
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(bootstrapRaw) })
   })
 }
 
-type V2SocketHandle = {
+type StateSocketHandle = {
   connectionCount: () => number
   closeCurrent: () => Promise<void>
 }
 
-async function installV2StateSocket(
+async function installStateSocket(
   page: Page,
   onConnection: (ws: WebSocketRoute, connectionIndex: number) => void,
-): Promise<V2SocketHandle> {
+): Promise<StateSocketHandle> {
   let count = 0
   let current: WebSocketRoute | null = null
-  await page.routeWebSocket('**/ws/v2/state', (ws) => {
+  await page.routeWebSocket('**/ws/state', (ws) => {
     count += 1
     current = ws
     ws.onClose(() => {
@@ -628,10 +628,10 @@ test('browser command retry with same CommandID does not double-execute (determi
   const generation = 'gen-1'
 
   await installBaseStubs(page)
-  await installV2Bootstrap(page, makeBootstrapRaw(sessionId, generation))
+  await installBootstrap(page, makeBootstrapRaw(sessionId, generation))
 
   let latestWs: WebSocketRoute | null = null
-  await installV2StateSocket(page, (ws) => {
+  await installStateSocket(page, (ws) => {
     latestWs = ws
     ws.onClose(() => {
       if (latestWs === ws) latestWs = null
@@ -642,7 +642,7 @@ test('browser command retry with same CommandID does not double-execute (determi
 
   const seenBodies: Array<{ id: string; action: string }> = []
   const idAttempts = new Map<string, number>()
-  await page.route('**/api/v2/session-commands', async (route, request) => {
+  await page.route('**/api/state/session-commands', async (route, request) => {
     const body = JSON.parse(request.postData() || '{}')
     seenBodies.push({ id: body.id, action: body.action })
     const attempt = (idAttempts.get(body.id) ?? 0) + 1

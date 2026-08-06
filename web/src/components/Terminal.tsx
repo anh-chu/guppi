@@ -18,7 +18,7 @@ interface TerminalProps {
   sessionName: string
   hostId?: string
   backend?: string
-  // v2 stable identity (when available from v2 catalog)
+  // stable identity (when available from canonical catalog)
   sessionId?: string
   ownerId?: string
   generation?: string

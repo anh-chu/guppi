@@ -61,7 +61,7 @@ describe('SessionRef golden fixture (cross-language contract)', () => {
 })
 
 // Cross-language golden fixture for CommandResult, the response body of POST
-// /api/v2/session-commands (Finding 3: command responses use the wrong wire
+// /api/state/session-commands (Finding 3: command responses use the wrong wire
 // format). pkg/server/routes_state_v2_test.go's TestCommandResultWireMatchesFixture
 // posts fixture.request through the REAL route handler and asserts the
 // response body equals fixture.wire byte-for-byte (field by field); this test

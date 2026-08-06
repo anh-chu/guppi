@@ -58,7 +58,7 @@ function normalizeSchedule(raw: ScheduleWire): Schedule {
     path: text(raw.path ?? raw.Path),
     agentType: text(raw.agentType ?? raw.agent_type ?? raw.AgentType),
     // Wire key is target_owner (pkg/scheduler.Job.TargetOwner); it carries a
-    // v2 catalog OwnerID or, on a legacy-only node, a raw peer fingerprint.
+    // canonical catalog OwnerID or, on a legacy-only node, a raw peer fingerprint.
     // `host` is accepted too for backward compatibility with any
     // still-cached response shape, but the server no longer emits it.
     host: text(raw.target_owner ?? raw.TargetOwner ?? raw.host ?? raw.Host),

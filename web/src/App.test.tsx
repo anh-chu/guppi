@@ -6,17 +6,17 @@
  * Integration test for App/SessionApp.
  *
  * App.tsx unconditionally renders SessionApp (the sole production UI --
- * there is no legacy AppLegacy or v2Mode/feature-flag branch any more).
+ * there is no legacy app or mode/feature-flag branch any more).
  * Verifies SessionApp's getTerminalIdentity resolver, session-key/ref
- * plumbing, and v2 state wiring.
+ * plumbing, and canonical state wiring.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { sessionKey } from './lib/session'
-import { keyToSessionRef } from './state/v2/paneTreeAdapter'
-import { encodeSessionRef } from './state/v2/types'
+import { keyToSessionRef } from './state/session/paneTreeAdapter'
+import { encodeSessionRef } from './state/session/types'
 
-// Track that SessionApp mounted (calls useV2State) -- kept from the old
+// Track that SessionApp mounted (calls useSessionState) -- kept from the old
 // mode-splitting test as a basic "did it render" sanity signal.
 let codePathTaken: 'appv2' | 'none' = 'none'
 
@@ -61,15 +61,15 @@ vi.mock('./hooks/usePreferences', () => ({
   PreferencesContext: { Provider: ({ children }: any) => children },
 }))
 
-// Track if useV2State is called (only called in AppV2 path)
-// mockV2State lets tests inject a concrete v2 state (populated catalog/layout)
+// Track if useSessionState is called (only called in SessionApp path)
+// mockSessionState lets tests inject a concrete v2 state (populated catalog/layout)
 // while keeping the default (empty) shape for existing tests.
-let mockV2State: any = null
+let mockSessionState: any = null
 // mockHostsList lets tests inject a concrete useHosts() list (e.g. a host
-// with a v2 OwnerID) so handleCreateSession's fingerprint->OwnerID resolution
+// with a canonical OwnerID) so handleCreateSession's fingerprint->OwnerID resolution
 // has something real to resolve against. null means the default empty list.
 let mockHostsList: any[] | null = null
-const defaultV2State = {
+const defaultSessionState = {
   state: {
     catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
     workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
@@ -87,10 +87,10 @@ const defaultV2State = {
   sessionCommand: vi.fn(),
   workspaceCommand: vi.fn(),
 }
-vi.mock('./hooks/useV2State', () => ({
-  useV2State: () => {
+vi.mock('./hooks/useSessionState', () => ({
+  useSessionState: () => {
     codePathTaken = 'appv2'
-    return mockV2State ?? defaultV2State
+    return mockSessionState ?? defaultSessionState
   },
 }))
 
@@ -120,7 +120,7 @@ vi.mock('./hooks/useHosts', () => ({ useHosts: createMockHook('useHosts') }))
 vi.mock('./hooks/useToolEvents', () => ({ useToolEvents: createMockHook('useToolEvents') }))
 vi.mock('./hooks/useActivity', () => ({ useActivity: createMockHook('useActivity') }))
 vi.mock('./hooks/useNotifications', () => ({ useNotifications: createMockHook('useNotifications') }))
-// Captures the onEvent handler AppV2/AppLegacy register with useWebSocket so
+// Captures the onEvent handler SessionApp registers with useWebSocket so
 // tests can dispatch a synthetic server event straight into the real App
 // event-handling code path without needing a real socket.
 let capturedOnEvent: ((evt: any) => void) | null = null
@@ -135,7 +135,7 @@ vi.mock('./hooks/useCrashedSessions', () => ({ useCrashedSessions: createMockHoo
 vi.mock('./hooks/useSelfUpdate', () => ({ useSelfUpdate: createMockHook('useSelfUpdate') }))
 vi.mock('./hooks/useWikiController', () => ({ useWikiController: createMockHook('useWikiController') }))
 
-// Capture Sidebar/TopBar props so tests can drive the REAL AppV2 callbacks
+// Capture Sidebar/TopBar props so tests can drive the REAL SessionApp callbacks
 // (handleSessionSelect / handleJumpToSession / handleKillSession) that the ui
 // leaf components hook into, without needing full DOM interaction.
 let mockSidebarProps: any = null
@@ -173,8 +173,8 @@ describe('App: mode-splitting', () => {
     vi.resetModules()
   })
 
-  describe('AppV2 getTerminalIdentity integration', () => {
-    it('App always renders SessionApp (calls useV2State), unconditionally -- there is no mode switch any more', async () => {
+  describe('SessionApp getTerminalIdentity integration', () => {
+    it('App always renders SessionApp (calls useSessionState), unconditionally -- there is no mode switch any more', async () => {
       const { render } = await import('@testing-library/react')
       const App = (await import('./App')).default
 
@@ -183,7 +183,7 @@ describe('App: mode-splitting', () => {
       expect(codePathTaken).toBe('appv2')
     })
 
-    it('AppV2 provides getTerminalIdentity resolver to TiledView', async () => {
+    it('SessionApp provides getTerminalIdentity resolver to TiledView', async () => {
       // This test verifies the integration point is wired.
       // The resolver itself is tested via unit tests in projections/store.
       // Here we just prove the component is structured to pass it.
@@ -285,7 +285,7 @@ describe('App: mode-splitting', () => {
     beforeEach(() => {
       mockSidebarProps = null
       mockTopBarProps = null
-      mockV2State = null
+      mockSessionState = null
       mockHostsList = null
     })
 
@@ -305,7 +305,7 @@ describe('App: mode-splitting', () => {
         name: label,
       }
       const sessionsByRef = new Map([[encodeSessionRef(session.ref), session]])
-      mockV2State = {
+      mockSessionState = {
         state: {
           catalog: { owner: null, revision: 3, generation: 1, sessionsByRef, layoutsById: new Map() },
           workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
@@ -368,7 +368,7 @@ describe('App: mode-splitting', () => {
 
     it('session-attrs-updated is a documented no-op, and sessionAttrs always has a well-formed empty shape when nothing is hidden/backgrounded', async () => {
       const workspaceCommand = vi.fn().mockResolvedValue({})
-      mockV2State = {
+      mockSessionState = {
         state: {
           catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
           workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
@@ -438,7 +438,7 @@ describe('App: mode-splitting', () => {
         [encodeSessionRef(backgroundSession.ref), backgroundSession],
         [encodeSessionRef(plainSession.ref), plainSession],
       ])
-      mockV2State = {
+      mockSessionState = {
         state: {
           catalog: { owner: null, revision: 3, generation: 1, sessionsByRef, layoutsById: new Map() },
           workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
@@ -486,7 +486,7 @@ describe('App: mode-splitting', () => {
       )
     })
 
-    it('handleCreateSession resolves the selected host fingerprint to its v2 OwnerID before calling v2State.createSession', async () => {
+    it('handleCreateSession resolves the selected host fingerprint to its canonical OwnerID before calling v2State.createSession', async () => {
       // The New Session modal's hostId is a peer transport fingerprint
       // (HostInfo.ID from useHosts, matching /api/hosts). v2State.createSession's
       // hostId is sent on the wire as target_owner, typed state.OwnerID
@@ -499,7 +499,7 @@ describe('App: mode-splitting', () => {
         { id: 'remote-host-fingerprint', owner_id: 'remote-host-owner-id', name: 'remote', online: true, sessions: [], last_seen: '' },
       ]
       const createSession = vi.fn().mockResolvedValue({ Ref: { owner: null, session: 'new-sess', window: 0, pane: 0 } })
-      mockV2State = {
+      mockSessionState = {
         state: {
           catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
           workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
@@ -564,7 +564,7 @@ describe('App: mode-splitting', () => {
         [encodeSessionRef(readySession.ref), readySession],
         [encodeSessionRef(pendingSession.ref), pendingSession],
       ])
-      mockV2State = {
+      mockSessionState = {
         state: {
           catalog: { owner: null, revision: 2, generation: 1, sessionsByRef, layoutsById: new Map() },
           workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
@@ -633,7 +633,7 @@ describe('App: mode-splitting', () => {
         generation: 'gen-1',
       }
       const sessionsByRef = new Map([[encodeSessionRef(activeSession.ref), activeSession]])
-      mockV2State = {
+      mockSessionState = {
         state: {
           catalog: { owner: null, revision: 1, generation: 1, sessionsByRef, layoutsById: new Map() },
           workspace: { layoutId: 'layout-1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
@@ -682,7 +682,7 @@ describe('App: mode-splitting', () => {
     beforeEach(() => {
       mockSidebarProps = null
       mockTiledViewProps = null
-      mockV2State = null
+      mockSessionState = null
       mockHostsList = null
     })
 
@@ -725,7 +725,7 @@ describe('App: mode-splitting', () => {
       const workspaceCommand = vi.fn().mockResolvedValue({})
       const sessionCommand = vi.fn().mockResolvedValue({})
       const localKey = sessionKey({ host: localOwner, name: localSessionId } as any)
-      mockV2State = {
+      mockSessionState = {
         state: {
           catalog: {
             localOwner,
@@ -877,7 +877,7 @@ describe('App: mode-splitting', () => {
       ])
       const workspaceCommand = vi.fn().mockResolvedValue({})
       const localKey = sessionKey({ host: localOwner, name: localSessionId } as any)
-      mockV2State = {
+      mockSessionState = {
         state: {
           catalog: { localOwner, ownerMeta: new Map(), sessionsByRef, layoutsById: new Map() },
           workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },

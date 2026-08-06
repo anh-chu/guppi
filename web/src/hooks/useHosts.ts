@@ -3,12 +3,12 @@ import { useState, useEffect, useCallback } from 'react'
 export interface Host {
   id: string
   /**
-   * v2 catalog OwnerID for this host (pkg/peer.HostInfo.OwnerID on the wire).
+   * canonical catalog OwnerID for this host (pkg/peer.HostInfo.OwnerID on the wire).
    * A DIFFERENT string encoding than `id` (the peer transport fingerprint) --
    * see state.OwnerIDFromFingerprint. Use this, never `id`, wherever a value
    * is sent to the server as a v2 identity (e.g. target_owner on a v2 create,
    * or a v2-routed terminal attach's `host` param, which server-side now
-   * resolves via ResolveHostParam). Empty when the host has no v2 catalog
+   * resolves via ResolveHostParam). Empty when the host has no canonical catalog
    * (legacy-only mode).
    */
   owner_id?: string

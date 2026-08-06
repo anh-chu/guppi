@@ -1,5 +1,5 @@
 /**
- * Normalized v2 browser store.
+ * Normalized canonical browser store.
  *
  * Design rules (Task 11):
  *  - Snapshots REPLACE state completely. A session/layout/presentation
@@ -70,7 +70,7 @@ export type CatalogDiff = {
   generationChanged: boolean
 }
 
-export type V2StoreState = {
+export type SessionStoreState = {
   catalog: NormalizedCatalog
   workspace: NormalizedWorkspace
   connectionGeneration: number
@@ -98,7 +98,7 @@ export function emptyWorkspace(): NormalizedWorkspace {
   }
 }
 
-export function initialV2StoreState(): V2StoreState {
+export function initialSessionStoreState(): SessionStoreState {
   return {
     catalog: emptyCatalog(),
     workspace: emptyWorkspace(),
@@ -124,11 +124,11 @@ export function initialV2StoreState(): V2StoreState {
  * (stale) snapshots return the same state reference and an empty diff.
  */
 export function replaceCatalog(
-  state: V2StoreState,
+  state: SessionStoreState,
   snapshot: OwnerCatalogSnapshot,
   connectionGeneration: number,
   isLocal = true,
-): { state: V2StoreState; diff: CatalogDiff } {
+): { state: SessionStoreState; diff: CatalogDiff } {
   const prev = state.catalog
   const prevMeta = prev.ownerMeta.get(snapshot.owner)
   const isNewGeneration = !prevMeta || connectionGeneration !== prevMeta.generation
@@ -196,9 +196,9 @@ export function replaceCatalog(
  * currently known.
  */
 export function removeOwnerCatalog(
-  state: V2StoreState,
+  state: SessionStoreState,
   owner: OwnerID,
-): { state: V2StoreState; diff: CatalogDiff } {
+): { state: SessionStoreState; diff: CatalogDiff } {
   const prev = state.catalog
   if (!prev.ownerMeta.has(owner)) {
     return { state, diff: { removed: [], generationChanged: false } }
@@ -239,11 +239,11 @@ export function removeOwnerCatalog(
  * WorkspaceRecord on the wire) and always fully replace the prior set.
  */
 export function replaceWorkspace(
-  state: V2StoreState,
+  state: SessionStoreState,
   snapshot: WorkspaceRecord,
   connectionGeneration: number,
   presentations?: PresentationRecord[],
-): { state: V2StoreState; diff: CatalogDiff } {
+): { state: SessionStoreState; diff: CatalogDiff } {
   const prev = state.workspace
   const isNewGeneration = connectionGeneration !== prev.generation
   if (!isNewGeneration && snapshot.revision <= prev.revision) {
@@ -282,26 +282,26 @@ export function replaceWorkspace(
  * Marks the connection offline/online without ever touching catalog or
  * workspace projections. Disconnect must never clear durable state.
  */
-export function setConnectionOnline(state: V2StoreState, online: boolean): V2StoreState {
+export function setConnectionOnline(state: SessionStoreState, online: boolean): SessionStoreState {
   if (state.connectionOnline === online) return state
   return { ...state, connectionOnline: online }
 }
 
-export function bumpConnectionGeneration(state: V2StoreState): { state: V2StoreState; generation: number } {
+export function bumpConnectionGeneration(state: SessionStoreState): { state: SessionStoreState; generation: number } {
   const generation = state.connectionGeneration + 1
   return { state: { ...state, connectionGeneration: generation }, generation }
 }
 
 /**
- * Mutable store wrapper: holds one V2StoreState, notifies subscribers on
+ * Mutable store wrapper: holds one SessionStoreState, notifies subscribers on
  * change, and exposes the pure functions above as bound methods so callers
  * (e.g. a future stateStream consumer) don't need to thread state manually.
  */
-export class V2Store {
-  private state: V2StoreState = initialV2StoreState()
+export class SessionStore {
+  private state: SessionStoreState = initialSessionStoreState()
   private listeners = new Set<() => void>()
 
-  getState(): V2StoreState {
+  getState(): SessionStoreState {
     return this.state
   }
 
@@ -310,7 +310,7 @@ export class V2Store {
     return () => this.listeners.delete(listener)
   }
 
-  private setState(next: V2StoreState) {
+  private setState(next: SessionStoreState) {
     if (next === this.state) return
     this.state = next
     for (const l of this.listeners) l()

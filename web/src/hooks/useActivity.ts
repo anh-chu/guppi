@@ -8,22 +8,22 @@ export interface ActivitySnapshot {
   total_bytes: number
 }
 
-// useActivity optionally accepts the current host table (useHosts' Host[])
-// so callers whose session keys are built from the v2 OwnerID (AppV2's
+// useActivity accepts the current host table (useHosts' Host[]) so callers
+// whose session keys are built from the canonical OwnerID (SessionApp's
 // sessionKey(), which is always `${ownerId}/${sessionId}`, never the raw
 // peer transport fingerprint) can match against it. Activity snapshots
 // arrive keyed by `host` = peer fingerprint (empty = local) and `session`
-// = the durable session ID -- a DIFFERENT identity encoding than AppV2's
-// session keys. When `hosts` is omitted (AppLegacy, whose Session.host is
-// itself the raw fingerprint), behavior is unchanged from before this
-// normalization existed. Mirrors the identical pattern in useToolEvents.ts.
+// = the durable session ID -- a DIFFERENT identity encoding than SessionApp's
+// session keys. `hosts` is optional (omitted only in unit tests that don't
+// need OwnerID normalization); when omitted, every fingerprint maps to
+// itself instead of an OwnerID. Mirrors the identical pattern in
+// useToolEvents.ts.
 export function useActivity(hosts?: Host[]) {
   const [activity, setActivity] = useState<Map<string, ActivitySnapshot>>(new Map())
 
-  // fingerprint (snap.host; '' means local) -> v2 OwnerID, via the current
-  // host table. Only meaningful when `hosts` was supplied; otherwise every
-  // fingerprint maps to itself (identity), preserving pre-existing
-  // fingerprint-keyed behavior for AppLegacy.
+  // fingerprint (snap.host; '' means local) -> canonical OwnerID, via the
+  // current host table. Only meaningful when `hosts` was supplied; otherwise
+  // every fingerprint maps to itself (identity).
   const ownerIdFor = useCallback((fingerprint: string): string => {
     if (!hosts) return fingerprint
     if (fingerprint === '') return hosts.find(h => h.local)?.owner_id || ''
@@ -32,10 +32,9 @@ export function useActivity(hosts?: Host[]) {
 
   // Key for activity map. When `hosts` is supplied, the host component is
   // normalized to the OwnerID and the key is ALWAYS "owner/session" (never
-  // bare), matching AppV2's sessionKey() -- which always includes the
-  // OwnerID, even for local sessions. Without `hosts`, the original
-  // AppLegacy-compatible "host ? host/session : session" shape is preserved
-  // exactly.
+  // bare), matching SessionApp's sessionKey() -- which always includes the
+  // OwnerID, even for local sessions. Without `hosts`, the plain
+  // "host ? host/session : session" shape is preserved exactly.
   const activityKey = useCallback((snap: ActivitySnapshot): string => {
     const h = snap.host || ''
     if (hosts) {

@@ -1,5 +1,5 @@
 /**
- * Lean v2 canonical state types.
+ * Lean canonical state types.
  *
  * These types mirror pkg/state/ids.go and pkg/state/document.go. They are a
  * design-freeze artifact; runtime code still uses the legacy types in

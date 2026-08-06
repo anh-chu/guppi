@@ -52,11 +52,11 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
   dropdownOpenRef.current = dropdownOpen
   const resolvedCommand = command.trim()
   // selectedHost is a Host.id (peer transport fingerprint, from HostSelect's
-  // options). AppLegacy's Session.host also carries the fingerprint (or is
-  // falsy for local), so a raw string comparison works there. AppV2's
-  // Session.host instead always carries the v2 OwnerID (a DIFFERENT string
+  // options). A Session.host that carries the fingerprint (or is falsy for
+  // local) would allow a raw string comparison, but SessionApp's Session.host
+  // instead always carries the canonical OwnerID (a DIFFERENT string
   // encoding -- see state.OwnerIDFromFingerprint) -- even for local
-  // sessions, which are never falsy under v2. Resolving the selected host's
+  // sessions, which are never falsy. Resolving the selected host's
   // OwnerID once here and matching against either encoding keeps duplicate-
   // name detection correct for both.
   const selectedHostOwnerId = useMemo(
@@ -109,11 +109,11 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
     const localOwnerId = localHost?.owner_id
     const onlineIds = new Set(onlineHosts.map(h => h.id))
     const hostNameById = new Map(onlineHosts.map(h => [h.id, h.name]))
-    // AppV2's Session.host is always the v2 OwnerID (never falsy, even for
+    // SessionApp's Session.host is always the canonical OwnerID (never falsy, even for
     // local sessions), a DIFFERENT string encoding than Host.id (the peer
     // transport fingerprint) that onlineIds/hostNameById are keyed by --
     // see state.OwnerIDFromFingerprint. Without this reverse lookup, every
-    // v2 session's location was silently dropped below (onlineIds never
+    // session's location was silently dropped below (onlineIds never
     // contains an OwnerID) instead of being resolved to its host's real
     // fingerprint id.
     const hostIdByOwnerId = new Map(

@@ -2,8 +2,8 @@
 // its shared display components (Sidebar, Overview, TiledView,
 // NewSessionModal, QuickSwitcher, ScheduleModal). These are display-shape
 // helpers only -- there is no fetch/polling authority here any more (that
-// was hooks/useSessions.ts's useSessions() hook, deleted along with
-// AppLegacy/useWorkspace, the only callers of it).
+// was hooks/useSessions.ts's useSessions() hook, deleted along with the
+// legacy app/useWorkspace, the only callers of it).
 
 export interface Pane {
   id: string

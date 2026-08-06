@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { V2CommandClient, V2CommandError, V2CommandNetworkError } from './commands'
+import { CommandClient, CommandError, CommandNetworkError } from './commands'
 
 const ref = { owner: 'o', session: 's', window: 0, pane: 0 }
 const other = { owner: 'o', session: 't', window: 0, pane: 0 }
 
-describe('V2CommandClient', () => {
+describe('CommandClient', () => {
   it('reuses the same command id across retries after an ambiguous network failure', async () => {
     const ids: unknown[] = []
     const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
@@ -14,20 +14,20 @@ describe('V2CommandClient', () => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 })
     }) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl, maxRetries: 3, retryDelayMs: 0 })
+    const client = new CommandClient({ fetchImpl, maxRetries: 3, retryDelayMs: 0 })
     await client.sessionCommand(ref, { action: 'kill' })
 
     expect(ids.length).toBe(3)
     expect(new Set(ids).size).toBe(1) // same id on every attempt
   })
 
-  it('throws V2CommandNetworkError after exhausting retries', async () => {
+  it('throws CommandNetworkError after exhausting retries', async () => {
     const fetchImpl = vi.fn(async () => {
       throw new TypeError('network error')
     }) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl, maxRetries: 1, retryDelayMs: 0 })
-    await expect(client.sessionCommand(ref, { action: 'kill' })).rejects.toBeInstanceOf(V2CommandNetworkError)
+    const client = new CommandClient({ fetchImpl, maxRetries: 1, retryDelayMs: 0 })
+    await expect(client.sessionCommand(ref, { action: 'kill' })).rejects.toBeInstanceOf(CommandNetworkError)
   })
 
   it('does not retry a definitive (well-formed) error response', async () => {
@@ -35,12 +35,12 @@ describe('V2CommandClient', () => {
       new Response(JSON.stringify({ code: 'not_found', message: 'no such session' }), { status: 404 }),
     ) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl, maxRetries: 3, retryDelayMs: 0 })
-    await expect(client.sessionCommand(ref, { action: 'kill' })).rejects.toBeInstanceOf(V2CommandError)
+    const client = new CommandClient({ fetchImpl, maxRetries: 3, retryDelayMs: 0 })
+    await expect(client.sessionCommand(ref, { action: 'kill' })).rejects.toBeInstanceOf(CommandError)
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
-  it('workspaceCommand posts to /api/v2/workspace-commands with layout + action + nested params', async () => {
+  it('workspaceCommand posts to /api/state/workspace-commands with layout + action + nested params', async () => {
     let capturedUrl = ''
     let capturedBody: any = null
     const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
@@ -49,10 +49,10 @@ describe('V2CommandClient', () => {
       return new Response(JSON.stringify({ ref }), { status: 200 })
     }) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl, genId: () => 'fixed-id' })
+    const client = new CommandClient({ fetchImpl, genId: () => 'fixed-id' })
     const result = await client.workspaceCommand('L1', { action: 'resize', split_id: 'sp1', ratio: 0.6 })
 
-    expect(capturedUrl).toBe('/api/v2/workspace-commands')
+    expect(capturedUrl).toBe('/api/state/workspace-commands')
     expect(capturedBody).toEqual({
       id: 'fixed-id',
       layout: 'L1',
@@ -69,7 +69,7 @@ describe('V2CommandClient', () => {
       return new Response('{}', { status: 200 })
     }) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl, genId: () => 'fixed-id' })
+    const client = new CommandClient({ fetchImpl, genId: () => 'fixed-id' })
     await client.sessionCommand(ref, { action: 'label', label: 'a' })
     expect(capturedBody).toEqual({ id: 'fixed-id', ref: 'o/s:0.0', action: 'label', params: { label: 'a' } })
   })
@@ -81,7 +81,7 @@ describe('V2CommandClient', () => {
       return new Response('{}', { status: 200 })
     }) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl, genId: () => 'fixed-id' })
+    const client = new CommandClient({ fetchImpl, genId: () => 'fixed-id' })
     await client.sessionCommand(ref, { action: 'kill', remove_worktree: true })
     expect(capturedBody).toEqual({ id: 'fixed-id', ref: 'o/s:0.0', action: 'kill', params: { remove_worktree: true } })
   })
@@ -93,7 +93,7 @@ describe('V2CommandClient', () => {
       return new Response('{}', { status: 200 })
     }) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl, genId: () => 'fixed-id' })
+    const client = new CommandClient({ fetchImpl, genId: () => 'fixed-id' })
     await client.sessionCommand(ref, { action: 'set_presentation', hidden: true })
     expect(capturedBody).toEqual({ id: 'fixed-id', ref: 'o/s:0.0', action: 'set_presentation', params: { hidden: true } })
   })
@@ -107,10 +107,10 @@ describe('V2CommandClient', () => {
       return new Response('{}', { status: 200 })
     }) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl, genId: () => 'builtin-id' })
+    const client = new CommandClient({ fetchImpl, genId: () => 'builtin-id' })
     await client.createSession({ action: 'create', name: 'alpha', cwd: '/tmp' })
 
-    expect(capturedUrl).toBe('/api/v2/session-commands')
+    expect(capturedUrl).toBe('/api/state/session-commands')
     // The `ref` member must be absent entirely -- the server assigns the
     // SessionID. Sending any ref-shaped placeholder gets rejected server-side
     // with "missing session id" once wire-encoded.
@@ -127,12 +127,12 @@ describe('V2CommandClient', () => {
 
     // target_owner is typed state.OwnerID server-side and looked up in an
     // OwnerID-keyed catalog map (peer.Manager.PeerIDForOwner) -- it must be a
-    // real v2 OwnerID (see state.OwnerIDFromFingerprint), a DIFFERENT string
+    // real canonical OwnerID (see state.OwnerIDFromFingerprint), a DIFFERENT string
     // encoding than a peer's transport fingerprint. This client performs no
     // conversion; the value here models what a correct caller (one that
-    // already resolved the target host's OwnerID, see App.tsx's AppV2
+    // already resolved the target host's OwnerID, see App.tsx's SessionApp
     // handleCreateSession) sends -- never a raw fingerprint.
-    const client = new V2CommandClient({ fetchImpl, genId: () => 'builtin-id' })
+    const client = new CommandClient({ fetchImpl, genId: () => 'builtin-id' })
     await client.createSession({ action: 'create', name: 'alpha', cwd: '/tmp', target_owner: 'remotehostownerid123' })
 
     // target_owner must be a sibling of action/params (matching
@@ -154,7 +154,7 @@ describe('V2CommandClient', () => {
       return new Response('{}', { status: 200 })
     }) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl, genId: () => 'builtin-id' })
+    const client = new CommandClient({ fetchImpl, genId: () => 'builtin-id' })
     await client.createSession({ action: 'create', name: 'alpha' })
 
     expect('target_owner' in capturedBody).toBe(false)
@@ -175,7 +175,7 @@ describe('V2CommandClient', () => {
       return new Response('{}', { status: 200 })
     }) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl })
+    const client = new CommandClient({ fetchImpl })
     await client.sessionCommand(ref, { action: 'kill' })
 
     expect(ids).toHaveLength(1)
@@ -192,7 +192,7 @@ describe('V2CommandClient', () => {
       return new Response('{}', { status: 200 })
     }) as unknown as typeof fetch
 
-    const client = new V2CommandClient({ fetchImpl })
+    const client = new CommandClient({ fetchImpl })
     await client.sessionCommand(ref, { action: 'kill' })
     await client.sessionCommand(other, { action: 'kill' })
     expect(new Set(ids).size).toBe(2)

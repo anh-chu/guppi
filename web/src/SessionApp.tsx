@@ -34,11 +34,11 @@ import { applyTheme } from './theme'
 import { sessionSignal } from './lib/sessionState'
 import { generateKeyBetween } from 'fractional-indexing'
 import { terminalPool, keyFor as poolKeyFor } from './lib/terminalPool'
-import { keyToSessionRef, splitIdAtPath } from './state/v2/paneTreeAdapter'
-import type { SessionRef } from './state/v2/types'
-import { sessionRefToKey } from './state/v2/paneTreeAdapter'
-import { selectSessionByRef } from './state/v2/projections'
-import { useV2State } from './hooks/useV2State'
+import { keyToSessionRef, splitIdAtPath } from './state/session/paneTreeAdapter'
+import type { SessionRef } from './state/session/types'
+import { sessionRefToKey } from './state/session/paneTreeAdapter'
+import { selectSessionByRef } from './state/session/projections'
+import { useSessionState } from './hooks/useSessionState'
 import { toSessionView, toPresentationAttrs, sessionViewSignal, type SessionView } from './state/session/viewModel'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
@@ -54,13 +54,12 @@ type LayoutGroup = {
 // SessionApp is the sole production UI: App.tsx renders it unconditionally
 // once authentication/setup has resolved.
 function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
-  // V2 mode: normalized catalog + workspace state via useV2State.
-  // Simpler than AppLegacy: only one layout (no groups/singleView).
-  const v2State = useV2State()
-  const { state, paneTree, activeKey, layoutId } = v2State
+  // Normalized catalog + workspace state via useSessionState. Only one
+  // layout exists (no groups/singleView).
+  const sessionState = useSessionState()
+  const { state, paneTree, activeKey, layoutId } = sessionState
 
-  // Local navigation state. Unlike AppLegacy (whose currentView comes from
-  // useWorkspace's reducer), v2 has no reducer of its own, so the view mode
+  // Local navigation state. There is no workspace reducer, so the view mode
   // is tracked locally and kept in sync with the URL. It must NOT be derived
   // purely from paneTree existence: once any session/layout has ever been
   // created, paneTree is permanently non-null, which would make "Overview"
@@ -85,7 +84,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   // otherwise.
   // remotePaneKey: a browser-only "standalone remote pane" projection.
   //
-  // v2's workspace model is local-authority only -- ApplyWorkspaceCommand's
+  // The workspace model is local-authority only -- ApplyWorkspaceCommand's
   // `select` (and every other workspace mutation) can only ever target a
   // leaf of THIS node's own layout tree. A remote-owned session (visible in
   // the sidebar via the aggregate catalog, see AggregateCatalog/
@@ -101,40 +100,40 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   // getTerminalIdentity resolves the session from the catalog by ref (owner may
   // be remote) and terminalPool's buildUrl already forwards `host=<owner>` to
   // the existing /ws/daemon-session -> handleRemoteSession -> peer per-stream
-  // relay path (pkg/server/routes_sessions.go), which predates v2 and is not
-  // gated on local-vs-remote in any v2-specific way.
+  // relay path (pkg/server/routes_sessions.go), used regardless of
+  // local-vs-remote.
   const [remotePaneKey, setRemotePaneKey] = useState<string | null>(null)
   const currentView: View = viewMode === 'session' && (paneTree || remotePaneKey) ? 'session' : 'overview'
   // Remembers which pane a "split" create should attach beside; set by
   // TiledView's onSplit, consumed and cleared by handleCreateSession.
   const splitTargetRef = useRef<{ key: string; direction: 'h' | 'v'; newFirst?: boolean } | null>(null)
 
-  // Shared non-session hooks (same as AppLegacy)
+  // Shared non-session hooks
   const { prefs } = usePreferences()
   const wikiEnabled = !prefs.wiki_disabled
   const { hosts, refresh: refreshHosts } = useHosts()
-  // AppV2's session keys (sessionKey()) are always "ownerId/sessionId", never
+  // SessionApp's session keys (sessionKey()) are always "ownerId/sessionId", never
   // the raw peer transport fingerprint -- passing `hosts` lets useToolEvents
   // normalize incoming tool events (keyed by fingerprint + mutable display
   // label) to the same OwnerID/stable-session-id encoding before matching.
   const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents(hosts)
   // Same OwnerID normalization rationale as useToolEvents(hosts) above --
-  // the server's activity snapshot is keyed by peer fingerprint, but AppV2
+  // the server's activity snapshot is keyed by peer fingerprint, but SessionApp
   // looks activity up by OwnerID/SessionID.
   const { getSessionActivity, handleActivityEvent } = useActivity(hosts)
   const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications()
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const { prefs: _ } = usePreferences() // already have prefs above
-  // AppV2 has no workspace reducer (unlike AppLegacy's useWorkspace), so
-  // useWikiController -- which requires a real { state, actions } object --
-  // gets its own small local wiki-state stub here instead. This mirrors
-  // workspaceReducer.ts's 'wiki/open'/'wiki/close' cases exactly (same
-  // WIKI_HISTORY_MAX-capped, dedupe-by-path history) so the panel behaves
-  // identically to the legacy path. Previously this was `undefined as any`,
-  // which crashed AppV2 on every render (`Cannot destructure property
-  // 'state' of 'workspace' as it is undefined`) -- found while building the
-  // v2 multi-node E2E suite; fixed here since it made the entire v2 UI path
-  // non-functional, not something in-scope to leave broken or skip around.
+  // SessionApp has no workspace reducer, so useWikiController -- which
+  // requires a real { state, actions } object -- gets its own small local
+  // wiki-state stub here instead. This mirrors workspaceReducer.ts's
+  // 'wiki/open'/'wiki/close' cases exactly (same WIKI_HISTORY_MAX-capped,
+  // dedupe-by-path history) so the panel behaves identically to the legacy
+  // path. Previously this was `undefined as any`, which crashed SessionApp
+  // on every render (`Cannot destructure property 'state' of 'workspace' as
+  // it is undefined`) -- found while building the multi-node E2E suite;
+  // fixed here since it made the entire UI path non-functional, not
+  // something in-scope to leave broken or skip around.
   const [wikiState, setWikiState] = useState<WikiState>({ target: null, history: [] })
   const wikiWorkspaceLike = useMemo(
     () => ({
@@ -209,21 +208,21 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     localStorage.setItem('termyard:sidebar-collapsed', String(sidebarCollapsed))
   }, [sidebarCollapsed])
 
-  // getTerminalIdentity: converts legacy sessionKey to v2 catalog lookup.
+  // getTerminalIdentity: converts a sessionKey to a catalog lookup.
   //
-  // Invariant: in v2 mode a terminal must NEVER silently fall back to legacy
+  // Invariant: a terminal must NEVER silently fall back to legacy
   // name-based routing. terminalPool.checkout() only rejects an identity when
   // ownerId or generation is present without sessionId; a fully-empty object
-  // would pass through undetected as "no v2 identity supplied" (the legacy
-  // caller's shape) even though this IS the v2 caller. So when a session
-  // cannot be resolved (unknown ref, or catalog not yet bootstrapped), we
-  // still surface the catalog's own owner id (always known once bootstrapped)
-  // with no sessionId, which trips that invariant deliberately instead of
-  // silently degrading to legacy routing.
+  // would pass through undetected as "no session identity supplied" (the
+  // legacy caller's shape) even though this IS the session-state caller. So
+  // when a session cannot be resolved (unknown ref, or catalog not yet
+  // bootstrapped), we still surface the catalog's own owner id (always known
+  // once bootstrapped) with no sessionId, which trips that invariant
+  // deliberately instead of silently degrading to legacy routing.
   const getTerminalIdentity = useCallback((legacyKey: string) => {
-    // v2 sessions are always daemon-backed; backend is a fixed constant here,
+    // Sessions are always daemon-backed; backend is a fixed constant here,
     // never resolved separately (TiledView must not fall back to legacy
-    // name-based routing for any v2 pane). ready=false gates TiledView into
+    // name-based routing for any pane). ready=false gates TiledView into
     // rendering a loading state instead of mounting Terminal with a partial
     // identity that terminalPool could misroute.
     if (!legacyKey) return { ready: false, backend: 'daemon' as const }
@@ -259,9 +258,9 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
 
   const handleRenameSession = useCallback((legacyKey: string, label: string) => {
     const ref = keyToSessionRef(legacyKey)
-    void v2State.sessionCommand(ref, { action: 'label', label })
-      .catch(err => console.error('v2 label command failed:', err))
-  }, [v2State])
+    void sessionState.sessionCommand(ref, { action: 'label', label })
+      .catch(err => console.error('label command failed:', err))
+  }, [sessionState])
 
   const [toasts, setToasts] = useState<Toast[]>([])
   const toastIdRef = useRef(0)
@@ -304,14 +303,14 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     } else if (evt.type === 'activity') {
       handleActivityEvent(evt.snapshots || [])
     } else if (evt.type === 'recovery-started' || evt.type === 'recovery-finished' || evt.type === 'session-order-updated' || evt.type === 'groups-updated') {
-      // v2 doesn't use these, but listen silently
+      // Canonical state doesn't use these, but listen silently
     } else if (['peer-connected', 'peer-disconnected'].includes(evt.type)) {
       refreshHosts()
     } else if (evt.type === 'update-status') {
       // ignore
     } else if (evt.type === 'session-attrs-updated') {
-      // v2 mode has no server-side session-attrs concept; the v2 backend
-      // never sends this event, and there is no local state to refresh.
+      // Canonical state has no server-side session-attrs concept; the
+      // backend never sends this event, and there is no local state to refresh.
     } else if (evt.type === 'sessions-crashed') {
       crashedHook.refresh()
     }
@@ -333,7 +332,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   const localHostId = localHost?.id
   const localHostName = localHost?.name
 
-  // Single layout group (v2 doesn't have multiple groups)
+  // Single layout group (canonical state has no multiple-groups concept)
   const layoutGroups = useMemo<LayoutGroup[]>(() => {
     if (!layoutId) return []
     return [{
@@ -355,7 +354,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   const handleSessionSelect = (session: Session) => {
     // Built directly from the session's own host/name -- not through the
     // legacy sessionKey()/parseSessionKey() helpers (see viewModel.ts's
-    // header comment on why AppV2 avoids depending on hooks/useSessions.ts).
+    // header comment on why SessionApp avoids depending on hooks/useSessions.ts).
     const ref: SessionRef = { owner: session.host || null, session: session.name, window: 0, pane: 0 }
     const key = sessionRefToKey(ref)
     const host = ref.owner ?? ''
@@ -376,20 +375,20 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     } else {
       setRemotePaneKey(null)
       if (layoutId && activeKey !== key) {
-        void v2State.workspaceCommand(layoutId, { action: 'select', ref })
-          .catch(err => console.error('v2 select command failed:', err))
+        void sessionState.workspaceCommand(layoutId, { action: 'select', ref })
+          .catch(err => console.error('select command failed:', err))
       }
     }
     setTimeout(refocusTerminal, 150)
   }
 
-  // Canonical session views, built straight from the v2 catalog via
+  // Canonical session views, built straight from the catalog via
   // state/session/viewModel.ts -- no legacy Session shim involved at this
   // step. `sessions` below is a compatibility adapter derived from these,
-  // built only because Sidebar/Overview/QuickSwitcher/NewSessionModal (shared
-  // with AppLegacy) are still typed against the legacy `Session` shape; see
-  // the task-15 frontend-prep notes for why those components aren't migrated
-  // to SessionView wholesale yet.
+  // built only because Sidebar/Overview/QuickSwitcher/NewSessionModal are
+  // still typed against the legacy `Session` shape; see the task-15
+  // frontend-prep notes for why those components aren't migrated to
+  // SessionView wholesale yet.
   const sessionViews = useMemo<SessionView[]>(
     () => Array.from(state.catalog.sessionsByRef.values()).map(toSessionView),
     [state.catalog.sessionsByRef],
@@ -421,13 +420,13 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   )
 
   // Real hidden/background presentation state (see the block comment above
-  // AppV2 for the set_presentation wiring this reads/writes).
+  // SessionApp for the set_presentation wiring this reads/writes).
   const sessionAttrs = useMemo(() => toPresentationAttrs(sessionViews), [sessionViews])
   const setSessionAttr = useCallback((key: string, next: { background?: boolean; hidden?: boolean }) => {
     const ref = keyToSessionRef(key)
-    void v2State.sessionCommand(ref, { action: 'set_presentation', ...next })
-      .catch(err => console.error('v2 set_presentation command failed:', err))
-  }, [v2State])
+    void sessionState.sessionCommand(ref, { action: 'set_presentation', ...next })
+      .catch(err => console.error('set_presentation command failed:', err))
+  }, [sessionState])
 
   const handleJumpToSession = useCallback((sessionName: string, _windowIndex?: number, _pane?: string) => {
     const found = sessions.find(s => sessionRefToKey({ owner: s.host || null, session: s.name, window: 0, pane: 0 }) === sessionName || s.name === sessionName)
@@ -436,19 +435,19 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
 
   const handleKillSession = useCallback((key: string) => {
     const ref = keyToSessionRef(key)
-    void v2State.sessionCommand(ref, { action: 'kill' })
-      .catch(err => console.error('v2 kill command failed:', err))
-  }, [v2State])
+    void sessionState.sessionCommand(ref, { action: 'kill' })
+      .catch(err => console.error('kill command failed:', err))
+  }, [sessionState])
 
   const handleQuickShell = useCallback(() => {
-    void v2State.createSession({}).then(result => {
+    void sessionState.createSession({}).then(result => {
       if (result.ref?.session) setTimeout(refocusTerminal, 150)
-    }).catch(err => console.error('v2 quick shell create failed:', err))
-  }, [v2State, refocusTerminal])
+    }).catch(err => console.error('quick shell create failed:', err))
+  }, [sessionState, refocusTerminal])
 
   const handleCreateSession = useCallback(async (name: string, path: string, command: string, hostId?: string, worktreeBranch?: string, _agentType?: string): Promise<string | null> => {
     // hostId is the fingerprint the New Session modal selected from useHosts'
-    // Host list (HostInfo.ID). v2State.createSession's hostId param is sent
+    // Host list (HostInfo.ID). sessionState.createSession's hostId param is sent
     // on the wire as target_owner, which the server types as state.OwnerID --
     // a DIFFERENT string encoding than the fingerprint (see
     // state.OwnerIDFromFingerprint). Sending the raw fingerprint there would
@@ -456,7 +455,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
     // looks the value up in its OwnerID-keyed catalog map, which would never
     // match). Resolve the selected host's real OwnerID from the same hosts
     // list (HostInfo.OwnerID, threaded through useHosts as owner_id) before
-    // handing it to v2State.createSession.
+    // handing it to sessionState.createSession.
     const targetOwnerId = hostId ? hosts.find(h => h.id === hostId)?.owner_id : undefined
     if (!worktreeBranch) setNewSessionModalOpen(false)
     const target = splitTargetRef.current
@@ -470,7 +469,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       // (whichever leaf create picked first) and the follow-up split was then
       // rejected as inserting a duplicate leaf for the ref create had just
       // placed.
-      const result = await v2State.createSession({
+      const result = await sessionState.createSession({
         name,
         shell: command || undefined,
         cwd: path,
@@ -492,7 +491,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       if (worktreeBranch) return err instanceof Error ? err.message : 'Failed to create worktree'
       return null
     }
-  }, [v2State, layoutId, refocusTerminal, hosts])
+  }, [sessionState, layoutId, refocusTerminal, hosts])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
@@ -650,8 +649,8 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
                 // remotePaneKey's synthetic tree has exactly one leaf, so this
                 // only fires for the local paneTree case.
                 if (!remotePaneKey && layoutId && activeKey !== key) {
-                  void v2State.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
-                    .catch(err => console.error('v2 select command failed:', err))
+                  void sessionState.workspaceCommand(layoutId, { action: 'select', ref: keyToSessionRef(key) })
+                    .catch(err => console.error('select command failed:', err))
                 }
                 refocusTerminal()
               }}
@@ -667,15 +666,15 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
                   return
                 }
                 if (layoutId) {
-                  void v2State.workspaceCommand(layoutId, { action: 'remove', ref: keyToSessionRef(key) })
-                    .catch(err => console.error('v2 remove command failed:', err))
+                  void sessionState.workspaceCommand(layoutId, { action: 'remove', ref: keyToSessionRef(key) })
+                    .catch(err => console.error('remove command failed:', err))
                 }
               }}
               onKill={handleKillSession}
               onPopOut={(key) => {
                 if (!remotePaneKey && layoutId) {
-                  void v2State.workspaceCommand(layoutId, { action: 'pop_out', ref: keyToSessionRef(key) })
-                    .catch(err => console.error('v2 pop_out command failed:', err))
+                  void sessionState.workspaceCommand(layoutId, { action: 'pop_out', ref: keyToSessionRef(key) })
+                    .catch(err => console.error('pop_out command failed:', err))
                 }
               }}
               onSplit={(key, direction) => {
@@ -691,8 +690,8 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
                   const record = state.workspace.record
                   const splitId = record ? splitIdAtPath(record.tree, path) : undefined
                   if (splitId) {
-                    void v2State.workspaceCommand(layoutId, { action: 'resize', split_id: splitId, ratio })
-                      .catch(err => console.error('v2 resize command failed:', err))
+                    void sessionState.workspaceCommand(layoutId, { action: 'resize', split_id: splitId, ratio })
+                      .catch(err => console.error('resize command failed:', err))
                   }
                 }
               }}
@@ -701,18 +700,18 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
               terminalContainerRef={terminalContainerRef}
               onSwapPanes={(a, b) => {
                 if (!remotePaneKey && layoutId) {
-                  void v2State.workspaceCommand(layoutId, { action: 'swap', a: keyToSessionRef(a), b: keyToSessionRef(b) })
-                    .catch(err => console.error('v2 swap command failed:', err))
+                  void sessionState.workspaceCommand(layoutId, { action: 'swap', a: keyToSessionRef(a), b: keyToSessionRef(b) })
+                    .catch(err => console.error('swap command failed:', err))
                 }
               }}
               onMovePanes={(sourceKey, targetKey, edge) => {
                 if (!remotePaneKey && layoutId) {
-                  void v2State.workspaceCommand(layoutId, {
+                  void sessionState.workspaceCommand(layoutId, {
                     action: 'move',
                     source: keyToSessionRef(sourceKey),
                     target: keyToSessionRef(targetKey),
                     edge,
-                  }).catch(err => console.error('v2 move command failed:', err))
+                  }).catch(err => console.error('move command failed:', err))
                 }
               }}
               getTerminalIdentity={getTerminalIdentity}

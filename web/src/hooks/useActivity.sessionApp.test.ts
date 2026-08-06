@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// Round-9 Finding, Gap 2: AppV2's session keys are always
-// `${ownerId}/${stableSessionId}` (Session.host is the v2 OwnerID, never the
+// Round-9 Finding, Gap 2: SessionApp's session keys are always
+// `${ownerId}/${stableSessionId}` (Session.host is the canonical OwnerID, never the
 // peer transport fingerprint), but the server's PTY activity snapshot is
 // keyed `${peerFingerprint}/${SessionID}`. Before the fix, useActivity had no
 // host-normalization logic (unlike its sibling useToolEvents), so a v2
@@ -25,7 +25,7 @@ import { sessionSignal } from '../lib/sessionState'
 const emptyJsonResponse = () =>
   Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as Response)
 
-describe('useActivity AppV2 identity normalization (Finding, Gap 2)', () => {
+describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(() => emptyJsonResponse()))
   })
@@ -34,9 +34,9 @@ describe('useActivity AppV2 identity normalization (Finding, Gap 2)', () => {
     vi.unstubAllGlobals()
   })
 
-  it('reports an AppV2 session (keyed by OwnerID/stableSessionId) as recently-active from a fingerprint-keyed activity snapshot', async () => {
+  it('reports an SessionApp session (keyed by OwnerID/stableSessionId) as recently-active from a fingerprint-keyed activity snapshot', async () => {
     const fingerprint = 'peer-fingerprint-abc123'
-    const ownerId = 'owner-xyz789' // v2 OwnerID -- a DIFFERENT string encoding than the fingerprint
+    const ownerId = 'owner-xyz789' // canonical OwnerID -- a DIFFERENT string encoding than the fingerprint
     const stableSessionId = 'session-stable-001'
 
     const hosts: Host[] = [
@@ -88,7 +88,7 @@ describe('useActivity AppV2 identity normalization (Finding, Gap 2)', () => {
     expect(signal.state).toBe('working')
   })
 
-  it('reports a local AppV2 session as recently-active from an activity snapshot whose host is empty (local)', async () => {
+  it('reports a local SessionApp session as recently-active from an activity snapshot whose host is empty (local)', async () => {
     const ownerId = 'owner-local-001'
     const stableSessionId = 'session-stable-local-1'
 

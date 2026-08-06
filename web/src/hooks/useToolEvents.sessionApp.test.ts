@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// Regression proof for round-8 Finding C: AppV2's session keys are always
-// `${ownerId}/${stableSessionId}` (Session.host is the v2 OwnerID, never the
+// Regression proof for round-8 Finding C: SessionApp's session keys are always
+// `${ownerId}/${stableSessionId}` (Session.host is the canonical OwnerID, never the
 // peer transport fingerprint -- see App.tsx's `sessions` memo and
 // sessionKey() in lib/session.ts), but tool/activity events arrive keyed by
 // `{host: peer-fingerprint, session: mutable-display-label}` with a SEPARATE
@@ -28,7 +28,7 @@ import { sessionSignal } from '../lib/sessionState'
 const emptyJsonResponse = () =>
   Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as Response)
 
-describe('useToolEvents AppV2 identity normalization (Finding C)', () => {
+describe('useToolEvents SessionApp identity normalization (Finding C)', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(() => emptyJsonResponse()))
   })
@@ -37,9 +37,9 @@ describe('useToolEvents AppV2 identity normalization (Finding C)', () => {
     vi.unstubAllGlobals()
   })
 
-  it('marks an AppV2 session (keyed by OwnerID/stableSessionId) as needing attention from a fingerprint/display-label "waiting" event carrying session_id', async () => {
+  it('marks an SessionApp session (keyed by OwnerID/stableSessionId) as needing attention from a fingerprint/display-label "waiting" event carrying session_id', async () => {
     const fingerprint = 'peer-fingerprint-abc123'
-    const ownerId = 'owner-xyz789' // v2 OwnerID -- a DIFFERENT string encoding than the fingerprint
+    const ownerId = 'owner-xyz789' // canonical OwnerID -- a DIFFERENT string encoding than the fingerprint
     const stableSessionId = 'session-stable-001'
 
     const hosts: Host[] = [
@@ -109,7 +109,7 @@ describe('useToolEvents AppV2 identity normalization (Finding C)', () => {
     expect(result.current.sessionNeedsAttention(`${fingerprint}/my-renamed-display-label`)).toBe(false)
   })
 
-  it('marks a local AppV2 session as working from a hook "active" event whose host is empty (local)', async () => {
+  it('marks a local SessionApp session as working from a hook "active" event whose host is empty (local)', async () => {
     const ownerId = 'owner-local-001'
     const stableSessionId = 'session-stable-local-1'
 

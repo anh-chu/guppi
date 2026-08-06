@@ -1,10 +1,10 @@
 /**
- * Adapter between the frozen v2 workspace tree model (PaneNode / SessionRef,
+ * Adapter between the frozen canonical workspace tree model (PaneNode / SessionRef,
  * pkg/state/workspace.go + wireTypes.ts) and the legacy renderer's PaneTree
  * (lib/paneTree.ts, sessionKey strings). Only the single active layout the
  * state stream tracks is represented -- no groups, no singleView, no
  * multi-layout selection. Those legacy-only concepts are intentionally not
- * ported into the v2 path.
+ * ported into the canonical path.
  */
 
 import type { PaneNode, SessionRef } from './types'

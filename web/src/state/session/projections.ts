@@ -1,5 +1,5 @@
 /**
- * Browser projection selectors over the normalized v2 store.
+ * Browser projection selectors over the normalized canonical store.
  *
  * Selection logic itself lives next to the normalized maps in store.ts (so
  * NormalizedCatalog/NormalizedWorkspace and their selectors can't drift

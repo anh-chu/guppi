@@ -480,7 +480,7 @@ export class TerminalPool {
       this.entries.set(key, entry)
     } else {
       // Warm checkout: reconcile generation change if present.
-      // If the caller provided a new generation (v2 recovery/restart), reconnect the socket.
+      // If the caller provided a new generation (recovery/restart), reconnect the socket.
       if (identity.generation && entry.identity.generation !== identity.generation) {
         this.updateGeneration(key, identity.generation)
       }
@@ -1063,8 +1063,8 @@ export class TerminalPool {
     if (backend === 'daemon') {
       // The legacy `name` param (display label) is required by the remote/
       // peer routing path (handleRemoteSession) and doubles as the daemon key
-      // for pre-v2 sessions. The immutable SessionID is emitted only when it
-      // is actually known (a real v2 stable id) so legacy display names that
+      // for legacy sessions. The immutable SessionID is emitted only when it
+      // is actually known (a real stable id) so legacy display names that
       // are not valid SessionIDs keep routing by name.
       const idParam = target.identity.sessionId
         ? `&sessionID=${encodeURIComponent(target.identity.sessionId)}`

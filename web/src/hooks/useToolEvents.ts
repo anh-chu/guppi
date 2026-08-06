@@ -21,29 +21,29 @@ export interface ToolEvent {
   auto_detected?: boolean
 }
 
-// useToolEvents optionally accepts the current host table (useHosts' Host[])
-// so callers whose session keys are built from the v2 OwnerID (AppV2's
-// sessionKey(), which is always `${ownerId}/${sessionId}`, never the raw
-// peer transport fingerprint) can match against it. Tool events arrive
-// keyed by `host` = peer fingerprint (empty = local) and `session`/
-// `session_id` = display label/stable id (see pkg/toolevents.Event) -- a
-// DIFFERENT identity encoding than AppV2's session keys. When `hosts` is
-// omitted (AppLegacy, whose Session.host is itself the raw fingerprint),
-// behavior is unchanged from before this normalization existed.
+// useToolEvents accepts the current host table (useHosts' Host[]) so
+// callers whose session keys are built from the canonical OwnerID
+// (SessionApp's sessionKey(), which is always `${ownerId}/${sessionId}`,
+// never the raw peer transport fingerprint) can match against it. Tool
+// events arrive keyed by `host` = peer fingerprint (empty = local) and
+// `session`/`session_id` = display label/stable id (see
+// pkg/toolevents.Event) -- a DIFFERENT identity encoding than SessionApp's
+// session keys. `hosts` is optional (omitted only in unit tests that don't
+// need OwnerID normalization); when omitted, every fingerprint maps to
+// itself instead of an OwnerID.
 export function useToolEvents(hosts?: Host[]) {
   const [events, setEvents] = useState<ToolEvent[]>([])
   // Tracks sessions with an in-progress hook-based agent turn.
-  // Keyed the same as sessionKey() in useSessions: "session" or "host/session"
-  // (AppLegacy), or "ownerId/sessionId" (AppV2, via buildKey below).
-  // Set on hook-based active events; cleared on completed.
+  // Keyed the same as sessionKey() in useSessions: "session" or
+  // "host/session" (bare key form), or "ownerId/sessionId" (SessionApp, via
+  // buildKey below). Set on hook-based active events; cleared on completed.
   // Outlives individual pane events so the badge doesn't flicker "idle"
   // during the brief gaps between tool calls within a single turn.
   const [activeSessions, setActiveSessions] = useState<Set<string>>(new Set())
 
-  // fingerprint (event.host; '' means local) -> v2 OwnerID, via the current
-  // host table. Only meaningful when `hosts` was supplied; otherwise every
-  // fingerprint maps to itself (identity), preserving pre-existing
-  // fingerprint-keyed behavior for AppLegacy.
+  // fingerprint (event.host; '' means local) -> canonical OwnerID, via the
+  // current host table. Only meaningful when `hosts` was supplied; otherwise
+  // every fingerprint maps to itself (identity).
   const ownerIdFor = useCallback((fingerprint: string): string => {
     if (!hosts) return fingerprint
     if (fingerprint === '') return hosts.find(h => h.local)?.owner_id || ''
@@ -55,8 +55,8 @@ export function useToolEvents(hosts?: Host[]) {
   // display label that changes on rename) avoids losing correlation across
   // a rename. When `hosts` is supplied, the host component is normalized to
   // the OwnerID and the key is ALWAYS "owner/session" (never bare), matching
-  // AppV2's sessionKey() -- which always includes the OwnerID, even for
-  // local sessions. Without `hosts`, the original AppLegacy-compatible
+  // SessionApp's sessionKey() -- which always includes the OwnerID, even for
+  // local sessions. Without `hosts`, the plain
   // "host ? host/session : session" shape is preserved exactly.
   const buildKey = useCallback((host: string | undefined, sessionIdentity: string): string => {
     const h = host || ''
@@ -156,11 +156,11 @@ export function useToolEvents(hosts?: Host[]) {
     })
   }, [eventKey])
 
-  // Get events for a specific session. Accepts either the AppLegacy
+  // Get events for a specific session. Accepts either the plain
   // composite key ("host/name" or bare "name") or, when `hosts` was
-  // supplied, AppV2's "ownerId/sessionId" key -- eventKey normalizes each
+  // supplied, SessionApp's "ownerId/sessionId" key -- eventKey normalizes each
   // tracked event the same way, via `session_id` (stable) over `session`
-  // (mutable display label) and, for AppV2, the fingerprint->OwnerID host
+  // (mutable display label) and, for SessionApp, the fingerprint->OwnerID host
   // mapping, so both sides of the comparison use an identical encoding.
   const getSessionEvents = useCallback((key: string) => {
     return events.filter(e => eventKey(e) === key)

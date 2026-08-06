@@ -73,7 +73,7 @@ export function ScheduleModal({ onClose }: Props) {
   const preferredHostId = localHost ? '' : (onlineHosts[0]?.id || '')
   const hostLabelById = useMemo(() => new Map(onlineHosts.map(host => [host.id, host.name])), [onlineHosts])
   // The wire (Schedule.host / ScheduleForm.host, sent as target_owner --
-  // see useSchedules.ts's toWire/normalizeSchedule) carries a v2 catalog
+  // see useSchedules.ts's toWire/normalizeSchedule) carries a canonical catalog
   // OwnerID when the target host has one, falling back to its raw peer
   // fingerprint on a legacy-only node (state.OwnerID and the transport
   // fingerprint are different, non-invertible identifier spaces -- see

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  V2Store,
-  initialV2StoreState,
+  SessionStore,
+  initialSessionStoreState,
   removeOwnerCatalog,
   replaceCatalog,
   replaceWorkspace,
@@ -53,7 +53,7 @@ function workspaceRecord(id: string, revision: number): WorkspaceRecord {
 
 describe('replaceCatalog', () => {
   it('replaces missing sessions rather than merging them', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(1, [session('a'), session('b')]), 1)
     expect(s1.catalog.sessionsByRef.size).toBe(2)
 
@@ -64,7 +64,7 @@ describe('replaceCatalog', () => {
   })
 
   it('replaces missing layouts rather than merging them', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(1, [], [layout('L1'), layout('L2')]), 1)
     expect(selectAllLayouts(s1.catalog)).toHaveLength(2)
     const { state: s2 } = replaceCatalog(s1, catalogSnapshot(2, [], [layout('L1')]), 1)
@@ -72,7 +72,7 @@ describe('replaceCatalog', () => {
   })
 
   it('rejects a stale revision within the same connection generation', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(5, [session('a')]), 1)
     const { state: s2, diff } = replaceCatalog(s1, catalogSnapshot(3, [session('a'), session('b')]), 1)
     expect(s2).toBe(s1) // unchanged
@@ -82,7 +82,7 @@ describe('replaceCatalog', () => {
   })
 
   it('accepts a lower revision on a new connection generation', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(50, [session('a')]), 1)
     const { state: s2, diff } = replaceCatalog(s1, catalogSnapshot(1, [session('b')]), 2)
     expect(s2.catalog.ownerMeta.get(owner)?.revision).toBe(1)
@@ -92,7 +92,7 @@ describe('replaceCatalog', () => {
   })
 
   it('empty snapshots are valid and authoritative', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(1, [session('a')]), 1)
     const { state: s2, diff } = replaceCatalog(s1, catalogSnapshot(2, []), 1)
     expect(s2.catalog.sessionsByRef.size).toBe(0)
@@ -100,7 +100,7 @@ describe('replaceCatalog', () => {
   })
 
   it('supports lifecycle selection', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceCatalog(
       s0,
       catalogSnapshot(1, [session('a', 'active'), session('b', 'crashed')]),
@@ -114,7 +114,7 @@ describe('replaceWorkspace', () => {
   const pres = (s: string, selected: boolean): PresentationRecord => ({ ref: ref(s), selected })
 
   it('replaces missing presentations rather than merging them', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceWorkspace(s0, workspaceRecord('L1', 1), 1, [pres('a', true), pres('b', false)])
     expect(s1.workspace.presentationsByRef.size).toBe(2)
     const { state: s2, diff } = replaceWorkspace(s1, workspaceRecord('L1', 2), 1, [pres('a', true)])
@@ -124,7 +124,7 @@ describe('replaceWorkspace', () => {
   })
 
   it('rejects stale revision in the same generation, accepts lower revision on new generation', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceWorkspace(s0, workspaceRecord('L1', 10), 1, [pres('a', true)])
     const { state: s2 } = replaceWorkspace(s1, workspaceRecord('L1', 3), 1, [pres('b', true)])
     expect(s2).toBe(s1)
@@ -153,7 +153,7 @@ describe('multi-owner catalog (local + remote peers)', () => {
   }
 
   it('keeps local and remote owners in separate, independently-revisioned slices of one flat session map', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(1, [session('a')]), 1, true)
     const { state: s2 } = replaceCatalog(
       s1,
@@ -185,7 +185,7 @@ describe('multi-owner catalog (local + remote peers)', () => {
   })
 
   it('removeOwnerCatalog is an explicit removal of one remote owner only, distinct from silence', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(1, [session('a')]), 1, true)
     const { state: s2 } = replaceCatalog(
       s1,
@@ -204,7 +204,7 @@ describe('multi-owner catalog (local + remote peers)', () => {
   })
 
   it('removeOwnerCatalog on an unknown owner is a no-op (same state reference)', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1, diff } = removeOwnerCatalog(s0, remoteOwner)
     expect(s1).toBe(s0)
     expect(diff.removed).toEqual([])
@@ -213,7 +213,7 @@ describe('multi-owner catalog (local + remote peers)', () => {
 
 describe('rename/layout stability (zero-remount acceptance check)', () => {
   it('renaming a session (display_name change only) keeps the same ref key and does not appear in removed', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(1, [session('a')]), 1)
     const renamed: LocalSessionRecord = { ...session('a', 'active', 2), name: 'renamed-a' }
     const { state: s2, diff } = replaceCatalog(s1, catalogSnapshot(2, [renamed]), 1)
@@ -225,7 +225,7 @@ describe('rename/layout stability (zero-remount acceptance check)', () => {
   })
 
   it('moving a session between layouts (workspace tree change) does not remove or replace its session-catalog identity', () => {
-    const s0 = initialV2StoreState()
+    const s0 = initialSessionStoreState()
     const { state: s1 } = replaceCatalog(s0, catalogSnapshot(1, [session('a')]), 1)
     // Workspace/layout revision bump (simulating a move/split/pop-out) is a
     // separate stream from the catalog; the catalog (session identity) must
@@ -237,9 +237,9 @@ describe('rename/layout stability (zero-remount acceptance check)', () => {
   })
 })
 
-describe('V2Store connection state', () => {
+describe('SessionStore connection state', () => {
   it('disconnect never clears durable projections, only marks offline', () => {
-    const store = new V2Store()
+    const store = new SessionStore()
     store.replaceCatalog(catalogSnapshot(1, [session('a')]), 1)
     store.setConnectionOnline(true)
     store.setConnectionOnline(false)
@@ -248,7 +248,7 @@ describe('V2Store connection state', () => {
   })
 
   it('bumping generation is monotonic and old callbacks cannot mutate a newer generation', () => {
-    const store = new V2Store()
+    const store = new SessionStore()
     const gen1 = store.bumpConnectionGeneration()
     store.replaceCatalog(catalogSnapshot(1, [session('a')]), gen1)
     const gen2 = store.bumpConnectionGeneration()
@@ -266,7 +266,7 @@ describe('V2Store connection state', () => {
   })
 
   it('notifies subscribers on change and not on rejected stale updates', () => {
-    const store = new V2Store()
+    const store = new SessionStore()
     let notifications = 0
     store.subscribe(() => {
       notifications++
@@ -278,9 +278,9 @@ describe('V2Store connection state', () => {
   })
 })
 
-describe('v2 session identity extraction for terminal pool', () => {
+describe('session identity extraction for terminal pool', () => {
   it('selectSessionByRef extracts sessionId and ownerId for terminal checkout', () => {
-    const store = new V2Store()
+    const store = new SessionStore()
     const sess = session('shell-1', 'active', 10)
     sess.generation = 'gen-recovery-5'
     store.replaceCatalog(catalogSnapshot(1, [sess]), 1)
@@ -293,14 +293,14 @@ describe('v2 session identity extraction for terminal pool', () => {
   })
 
   it('selectSessionByRef returns undefined for missing session', () => {
-    const store = new V2Store()
+    const store = new SessionStore()
     store.replaceCatalog(catalogSnapshot(1, [session('a')]), 1)
     const found = selectSessionByRef(store.getState().catalog, ref('nonexistent'))
     expect(found).toBeUndefined()
   })
 
   it('selectSessionByRef works after catalog update', () => {
-    const store = new V2Store()
+    const store = new SessionStore()
     store.replaceCatalog(catalogSnapshot(1, [session('old-name')]), 1)
     const oldRef = ref('old-name')
     const oldSession = selectSessionByRef(store.getState().catalog, oldRef)

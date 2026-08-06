@@ -13,7 +13,7 @@
  *     the raw JSON (where every SessionRef is a plain string) into the typed
  *     object shape from types.ts. Call these immediately after JSON.parse()/
  *     res.json(), before any data reaches the store (stateStream.ts's
- *     handleMessage, useV2State.ts's bootstrap fetch).
+ *     handleMessage, useSessionState.ts's bootstrap fetch).
  *   - OUTGOING (browser -> server): encode*() functions convert the typed
  *     object shape back into the canonical string before the command body is
  *     serialized (commands.ts).
@@ -42,7 +42,7 @@ import type {
   CommandResultWire,
   PendingRemoteCreateRecord,
   PresentationRecord,
-  V2BootstrapResponse,
+  BootstrapResponse,
   WorkspaceSnapshotMessage,
 } from './wireTypes'
 
@@ -118,7 +118,7 @@ export function decodeOwnerCatalogSnapshot(raw: any): OwnerCatalogSnapshot {
   }
 }
 
-export function decodeBootstrapResponse(raw: any): V2BootstrapResponse {
+export function decodeBootstrapResponse(raw: any): BootstrapResponse {
   return {
     owner: raw.owner,
     revision: raw.revision,
@@ -148,11 +148,11 @@ export function decodeWorkspaceSnapshotMessage(raw: any): WorkspaceSnapshotMessa
   return { type: 'workspace_snapshot', workspace: decodeWorkspaceRecord(raw.workspace) }
 }
 
-// decodeCommandResult decodes a raw POST /api/v2/session-commands response
+// decodeCommandResult decodes a raw POST /api/state/session-commands response
 // body (CommandResultWire) into the typed CommandResult object shape,
 // decoding `ref` (a wire string) into the SessionRef object the rest of the
 // browser expects. `ref` is optional on the wire (e.g. never present on a
-// well-formed-error response, though those are routed through V2CommandError
+// well-formed-error response, though those are routed through CommandError
 // before reaching this function -- see commands.ts's postWithRetry).
 export function decodeCommandResult(raw: CommandResultWire): CommandResult {
   return {

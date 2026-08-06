@@ -1,9 +1,9 @@
 /**
- * React binding for the v2 normalized state store (Task 12, first slice).
+ * React binding for the canonical normalized state store (Task 12, first slice).
  *
- * Owns one V2Store + one StateStreamClient + one V2CommandClient for the
+ * Owns one SessionStore + one StateStreamClient + one CommandClient for the
  * lifetime of the component tree it's mounted under. Bootstraps from
- * GET /api/v2/bootstrap, then subscribes to /ws/v2/state; every message
+ * GET /api/state/bootstrap, then subscribes to /ws/state; every message
  * (catalog or workspace snapshot) replaces the corresponding projection in
  * the store via the store's own generation/revision acceptance rule -- this
  * hook does no additional staleness bookkeeping of its own.
@@ -13,21 +13,21 @@
  */
 
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
-import { V2Store, type V2StoreState } from '../state/v2/store'
-import { StateStreamClient } from '../state/v2/stateStream'
-import { V2CommandClient, type SessionCommandAction, type WorkspaceCommandAction } from '../state/v2/commands'
-import { paneNodeToPaneTree, sessionRefToKey } from '../state/v2/paneTreeAdapter'
-import { decodeBootstrapResponse } from '../state/v2/wireCodec'
-import type { SessionRef, LayoutID, SplitDirection } from '../state/v2/types'
-import type { CommandResult, V2BootstrapResponse } from '../state/v2/wireTypes'
+import { SessionStore, type SessionStoreState } from '../state/session/store'
+import { StateStreamClient } from '../state/session/stateStream'
+import { CommandClient, type SessionCommandAction, type WorkspaceCommandAction } from '../state/session/commands'
+import { paneNodeToPaneTree, sessionRefToKey } from '../state/session/paneTreeAdapter'
+import { decodeBootstrapResponse } from '../state/session/wireCodec'
+import type { SessionRef, LayoutID, SplitDirection } from '../state/session/types'
+import type { CommandResult, BootstrapResponse } from '../state/session/wireTypes'
 import type { PaneTree } from '../lib/paneTree'
 
-export type UseV2StateResult = {
-  state: V2StoreState
+export type UseSessionStateResult = {
+  state: SessionStoreState
   bootstrapped: boolean
   connected: boolean
   // Derived from state.workspace.record via paneNodeToPaneTree -- the single
-  // active layout the stream tracks. No groups/singleView: the v2 path only
+  // active layout the stream tracks. No groups/singleView: this path only
   // ever has one layout in view (see StateStreamHub's primaryLayout note).
   paneTree: PaneTree | null
   activeKey: string | null
@@ -62,12 +62,12 @@ function wsURL(path: string): string {
   return `${protocol}//${window.location.host}${path}`
 }
 
-export function useV2State(): UseV2StateResult {
-  const storeRef = useRef<V2Store | null>(null)
-  if (storeRef.current === null) storeRef.current = new V2Store()
+export function useSessionState(): UseSessionStateResult {
+  const storeRef = useRef<SessionStore | null>(null)
+  if (storeRef.current === null) storeRef.current = new SessionStore()
   const store = storeRef.current
 
-  const commandClient = useMemo(() => new V2CommandClient(), [])
+  const commandClient = useMemo(() => new CommandClient(), [])
 
   const state = useSyncExternalStore(
     (listener) => store.subscribe(listener),
@@ -81,7 +81,7 @@ export function useV2State(): UseV2StateResult {
     const generation = store.bumpConnectionGeneration()
 
     const client = new StateStreamClient({
-      url: wsURL('/ws/v2/state'),
+      url: wsURL('/ws/state'),
       callbacks: {
         onCatalog: (snapshot, gen, isLocal) => {
           if (disposed) return
@@ -104,10 +104,10 @@ export function useV2State(): UseV2StateResult {
 
     async function bootstrapAndConnect() {
       try {
-        const res = await fetch('/api/v2/bootstrap')
+        const res = await fetch('/api/state/bootstrap')
         if (res.ok && !disposed) {
           const rawBody = await res.json()
-          const body: V2BootstrapResponse = decodeBootstrapResponse(rawBody)
+          const body: BootstrapResponse = decodeBootstrapResponse(rawBody)
           store.replaceCatalog(body.local, generation, true)
           for (const remoteSnapshot of body.remote ?? []) {
             store.replaceCatalog(remoteSnapshot, generation, false)
@@ -157,7 +157,7 @@ export function useV2State(): UseV2StateResult {
         // Note: a create carries NO SessionRef on the wire -- the server
         // assigns the SessionID (executeCreate synthesizes one when ref is
         // absent). Never send a placeholder ref here; see
-        // V2CommandClient.createSession in state/v2/commands.ts.
+        // CommandClient.createSession in state/session/commands.ts.
         return commandClient.createSession({
           action: 'create',
           name: params.name,

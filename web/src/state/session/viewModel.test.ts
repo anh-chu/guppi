@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { toSessionView, toPresentationAttrs, sessionViewSignal, stateRank } from './viewModel'
-import type { LocalSessionRecord } from '../v2/types'
+import type { LocalSessionRecord } from './types'
 import type { ToolEvent } from '../../hooks/useToolEvents'
 import type { ActivitySnapshot } from '../../hooks/useActivity'
 

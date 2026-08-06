@@ -1,5 +1,5 @@
 /**
- * v2 durable state stream client (/ws/v2/state).
+ * Durable state stream client (/ws/state).
  *
  * Generation-safe by construction: every connect() bumps an internal
  * generation counter; every callback captures the generation it was
@@ -8,7 +8,7 @@
  * message/close/error events to mutate state belonging to a newer
  * connection.
  *
- * The bootstrap fetch (GET /api/v2/bootstrap) is the caller's
+ * The bootstrap fetch (GET /api/state/bootstrap) is the caller's
  * responsibility -- this client only owns the streaming socket. Callers
  * should fetch bootstrap first, apply it, then create/connect this client;
  * the first catalog/workspace snapshot(s) received on the socket safely
@@ -16,7 +16,7 @@
  * any other snapshot).
  */
 
-import { isV2StateStreamMessage } from './wireTypes'
+import { isStateStreamMessage } from './wireTypes'
 import {
   decodeCatalogOwnerRemovedMessage,
   decodeCatalogSnapshotMessage,
@@ -178,7 +178,7 @@ export class StateStreamClient {
       this.opts.callbacks.onError?.(err)
       return
     }
-    if (!isV2StateStreamMessage(parsed)) return
+    if (!isStateStreamMessage(parsed)) return
     if (this.generation !== generation) return
     try {
       if (parsed.type === 'catalog_snapshot') {

@@ -551,15 +551,16 @@ export function Sidebar({
     items: UnifiedItem[]
   }
 
-  // localOwnerId is the local host's v2 OwnerID (Host.owner_id), a
+  // localOwnerId is the local host's canonical OwnerID (Host.owner_id), a
   // DIFFERENT string encoding than localHostId (the peer transport
-  // fingerprint) -- see state.OwnerIDFromFingerprint. AppLegacy's
-  // Session.host carries the raw fingerprint (matches localHostId
-  // directly); AppV2's Session.host always carries the OwnerID (never the
-  // fingerprint), so comparing it against localHostId alone always fails
-  // for local v2 sessions, misclassifying every local session as a
-  // distinct "remote" host bucket keyed by an OwnerID no `hosts` entry's
-  // `id` field matches. isLocalHostId accepts either encoding.
+  // fingerprint) -- see state.OwnerIDFromFingerprint. A raw fingerprint
+  // comparison (matching localHostId directly) would work for a Session.host
+  // that carries the fingerprint, but SessionApp's Session.host always
+  // carries the OwnerID (never the fingerprint), so comparing it against
+  // localHostId alone always fails for local sessions, misclassifying every
+  // local session as a distinct "remote" host bucket keyed by an OwnerID no
+  // `hosts` entry's `id` field matches. isLocalHostId accepts either
+  // encoding.
   const localOwnerId = useMemo(
     () => hosts?.find(h => h.id === localHostId)?.owner_id,
     [hosts, localHostId],
@@ -700,9 +701,9 @@ export function Sidebar({
     const act = getSessionActivity(sk)
     const isRenaming = renamingSession?.key === sk
     const isOffline = session.host && session.host_online === false
-    // isLocalHostId handles both the legacy fingerprint and v2 OwnerID
+    // isLocalHostId handles both the legacy fingerprint and canonical OwnerID
     // encodings of "this is the local host" (see the comment above
-    // localOwnerId), so a local v2 session never gets a spurious stripe.
+    // localOwnerId), so a local session never gets a spurious stripe.
     const stripeColor = hasMultipleHosts && !isLocalHostId(session.host) ? hostColor(session.host, localHostId) : null
     const hostLabel = stripeColor
       ? (hosts?.find(h => h.id === session.host)?.name ?? session.host_name ?? session.host ?? 'remote')

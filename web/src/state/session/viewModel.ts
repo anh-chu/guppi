@@ -1,11 +1,11 @@
 /**
- * Canonical UI-facing session view model for the v2 (AppV2) frontend.
+ * Canonical UI-facing session view model for the SessionApp frontend.
  *
- * SessionView is the display-oriented shape AppV2 derives directly from the
- * v2 catalog (state/v2/types.ts's LocalSessionRecord) and hands to
+ * SessionView is the display-oriented shape SessionApp derives directly from the
+ * canonical catalog (state/session/types.ts's LocalSessionRecord) and hands to
  * presentation logic. It intentionally has no `windows`/`panes` fields: v2
  * sessions are always single-pane daemon sessions, unlike the legacy
- * `Session` type (src/lib/session.ts) which AppV2 previously had to
+ * `Session` type (src/lib/session.ts) which SessionApp previously had to
  * fake a `windows: []` shape for just to satisfy shared components' prop
  * types.
  *
@@ -17,8 +17,8 @@
  * that does that today.
  */
 
-import type { LocalSessionRecord } from '../v2/types'
-import { sessionRefToKey } from '../v2/paneTreeAdapter'
+import type { LocalSessionRecord } from './types'
+import { sessionRefToKey } from './paneTreeAdapter'
 import type { ToolEvent } from '../../hooks/useToolEvents'
 import type { ActivitySnapshot } from '../../hooks/useActivity'
 
@@ -38,7 +38,7 @@ export const stateRank: Record<SessionState, number> = {
   offline: 3,
 }
 
-/** Canonical UI-facing session shape for AppV2. */
+/** Canonical UI-facing session shape for SessionApp. */
 export interface SessionView {
   /** sessionRefToKey(record.ref): "owner/id", or bare "id" for a null/local owner. */
   key: string
@@ -57,14 +57,14 @@ export interface SessionView {
   scheduleId: string | undefined
 }
 
-/** Canonical hidden/background/schedule attribute sets AppV2 hands to Sidebar/Overview/SessionActionsMenu. */
+/** Canonical hidden/background/schedule attribute sets SessionApp hands to Sidebar/Overview/SessionActionsMenu. */
 export interface SessionPresentationAttrs {
   hidden: Set<string>
   background: Set<string>
   scheduleIDs: Map<string, string>
 }
 
-/** Builds a SessionView straight from a v2 catalog record -- no legacy Session shim involved. */
+/** Builds a SessionView straight from a canonical catalog record -- no legacy Session shim involved. */
 export function toSessionView(record: LocalSessionRecord): SessionView {
   const label = record.name && record.name.trim() !== '' ? record.name : record.id
   return {
@@ -81,7 +81,7 @@ export function toSessionView(record: LocalSessionRecord): SessionView {
   }
 }
 
-/** Derives the SessionPresentationAttrs sets AppV2 hands to Sidebar/Overview/SessionActionsMenu from a list of SessionViews. */
+/** Derives the SessionPresentationAttrs sets SessionApp hands to Sidebar/Overview/SessionActionsMenu from a list of SessionViews. */
 export function toPresentationAttrs(views: SessionView[]): SessionPresentationAttrs {
   const hidden = new Set<string>()
   const background = new Set<string>()
@@ -97,18 +97,18 @@ export function toPresentationAttrs(views: SessionView[]): SessionPresentationAt
 const loudStatuses = new Set(['waiting', 'stuck', 'error'])
 
 /**
- * Pure display-state classifier for a v2 session -- the v2-native
+ * Pure display-state classifier for a v2 session -- the canonical
  * replacement for lib/sessionState.ts's sessionSignal(), which requires a
  * legacy `Session` (with a faked `windows: []`) to run. There is no
- * isSessionActive()/isToolSession() equivalent here: v2 sessions are always
+ * isSessionActive()/isToolSession() equivalent here: canonical sessions are always
  * single-pane daemon sessions, so "is a real process running in some pane"
  * cannot be derived from a windows/panes tree the way legacy sessions can.
  * `inActiveTurn`/`activity` are the only working signals available today --
- * this matches AppV2's actual prior behavior, since its faked `windows: []`
+ * this matches SessionApp's actual prior behavior, since its faked `windows: []`
  * made isSessionActive() always return false anyway.
  *
  * `hostOnline` is optional and defaults to unknown (never reports offline)
- * until v2 exposes per-owner connectivity to this layer; passing `false`
+ * until canonical state exposes per-owner connectivity to this layer; passing `false`
  * reports 'offline' the same way legacy's `session.host_online === false`
  * check did.
  */

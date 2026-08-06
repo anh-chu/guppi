@@ -1,8 +1,8 @@
 /**
- * Additive v2 wire types not carried in types.ts (the frozen design artifact).
+ * Additive wire types not carried in types.ts (the frozen design artifact).
  * These mirror the concrete JSON shapes emitted by:
- *   - GET  /api/v2/bootstrap        (pkg/server/routes_state_v2.go)
- *   - WS   /ws/v2/state              (pkg/ws/state_stream.go)
+ *   - GET  /api/state/bootstrap        (pkg/server/routes_state_v2.go)
+ *   - WS   /ws/state              (pkg/ws/state_stream.go)
  */
 
 import type {
@@ -52,7 +52,7 @@ export type PendingRemoteCreateRecord = {
 // fresh bootstrap read simply is not currently known (offline, or never
 // connected); the LIVE stream (see CatalogOwnerRemovedMessage below) is what
 // carries an explicit removal signal distinct from silence.
-export type V2BootstrapResponse = {
+export type BootstrapResponse = {
   owner: OwnerID
   revision: number
   local: OwnerCatalogSnapshot
@@ -87,18 +87,18 @@ export type WorkspaceSnapshotMessage = {
   workspace: WorkspaceRecord
 }
 
-export type V2StateStreamMessage =
+export type StateStreamMessage =
   | CatalogSnapshotMessage
   | CatalogOwnerRemovedMessage
   | WorkspaceSnapshotMessage
 
-export function isV2StateStreamMessage(v: unknown): v is V2StateStreamMessage {
+export function isStateStreamMessage(v: unknown): v is StateStreamMessage {
   if (typeof v !== 'object' || v === null) return false
   const t = (v as { type?: unknown }).type
   return t === 'catalog_snapshot' || t === 'catalog_owner_removed' || t === 'workspace_snapshot'
 }
 
-export type V2ErrorResponse = {
+export type ErrorResponse = {
   code: 'invalid_input' | 'not_found' | 'revision_conflict' | 'generation_mismatch'
   field?: string
   message: string
@@ -106,7 +106,7 @@ export type V2ErrorResponse = {
 
 // CommandResultWire mirrors pkg/state/session_commands.go's CommandResult
 // exactly as it appears on the wire (the response body of POST
-// /api/v2/session-commands): snake_case keys per its json tags, with `ref`
+// /api/state/session-commands): snake_case keys per its json tags, with `ref`
 // carried as SessionRef's canonical STRING form, never as an object -- see
 // wireCodec.ts's decodeCommandResult, which is the one place this gets
 // turned into the object shape the rest of the browser code expects.
@@ -120,7 +120,7 @@ export type CommandResultWire = {
 
 // CommandResult is the browser-side decoded shape of CommandResultWire: ref
 // is the typed SessionRef object (see types.ts), decoded exactly once at the
-// V2CommandClient boundary before the result reaches any caller.
+// CommandClient boundary before the result reaches any caller.
 export type CommandResult = {
   id: string
   ref?: SessionRef

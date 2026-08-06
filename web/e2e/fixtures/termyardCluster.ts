@@ -301,9 +301,9 @@ export class ClusterNode {
     return data.self
   }
 
-  /** Real GET /api/v2/bootstrap. Populates ownerId as a side effect. */
+  /** Real GET /api/state/bootstrap. Populates ownerId as a side effect. */
   async bootstrap(): Promise<any> {
-    const data = await this.apiJSON<any>('/api/v2/bootstrap')
+    const data = await this.apiJSON<any>('/api/state/bootstrap')
     if (data && data.owner) this.ownerId = data.owner
     return data
   }
@@ -319,7 +319,7 @@ export class ClusterNode {
   }
 
   /**
-   * Real POST /api/v2/session-commands {action:'create'} against THIS
+   * Real POST /api/state/session-commands {action:'create'} against THIS
    * node's own catalog (no target_owner) -- the local-create code path,
    * distinct from the cross-node remote-create RPC. Used to seed a real
    * session directly on a node when a test's precondition is "a session
@@ -330,7 +330,7 @@ export class ClusterNode {
     // The real PTY backend needs an existing working directory (unlike the
     // route-stubbed harness, which never actually spawns a process).
     fs.mkdirSync(cwd, { recursive: true })
-    return this.apiJSON('/api/v2/session-commands', {
+    return this.apiJSON('/api/state/session-commands', {
       method: 'POST',
       body: JSON.stringify({ action: 'create', params: { name, shell, cwd } }),
     })
@@ -684,10 +684,10 @@ export async function assertDistinctIdentities(a: ClusterNode, b: ClusterNode): 
 
   const [bootA, bootB] = await Promise.all([a.bootstrap(), b.bootstrap()])
   if (!bootA.owner || !bootB.owner) {
-    throw new Error(`one or both nodes did not return a v2 OwnerID from /api/v2/bootstrap (A=${bootA.owner}, B=${bootB.owner})`)
+    throw new Error(`one or both nodes did not return a canonical OwnerID from /api/state/bootstrap (A=${bootA.owner}, B=${bootB.owner})`)
   }
   if (bootA.owner === bootB.owner) {
-    throw new Error(`nodes A and B share one v2 OwnerID (${bootA.owner}) -- v2 catalog not isolated`)
+    throw new Error(`nodes A and B share one canonical OwnerID (${bootA.owner}) -- canonical catalog not isolated`)
   }
 
   if (path.resolve(a.sessionDir) === path.resolve(b.sessionDir)) {

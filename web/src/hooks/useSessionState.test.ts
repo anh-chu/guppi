@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useV2State } from './useV2State'
+import { useSessionState } from './useSessionState'
 
 class FakeSocket {
   static instances: FakeSocket[] = []
@@ -24,7 +24,7 @@ function okResponse(body: unknown): Response {
   return { ok: true, status: 200, json: () => Promise.resolve(body), text: () => Promise.resolve('') } as Response
 }
 
-describe('useV2State', () => {
+describe('useSessionState', () => {
   beforeEach(() => {
     FakeSocket.instances = []
     vi.stubGlobal('WebSocket', FakeSocket as unknown as typeof WebSocket)
@@ -47,7 +47,7 @@ describe('useV2State', () => {
   })
 
   it('does not mutate the normalized catalog/workspace when creating a session', async () => {
-    const { result } = renderHook(() => useV2State())
+    const { result } = renderHook(() => useSessionState())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
 
     const catalogBefore = result.current.state.catalog
@@ -69,7 +69,7 @@ describe('useV2State', () => {
   })
 
   it('replaces the catalog only when a catalog_snapshot arrives on the stream, preserving unrelated session identities', async () => {
-    const { result } = renderHook(() => useV2State())
+    const { result } = renderHook(() => useSessionState())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
     const socket = FakeSocket.instances[0]
 
@@ -103,11 +103,11 @@ describe('useV2State', () => {
     expect(sessionBefore).toBeDefined()
   })
 
-  it('threads hostId through to the top-level target_owner wire field on create, as a v2 OwnerID -- never a peer fingerprint', async () => {
-    const { result } = renderHook(() => useV2State())
+  it('threads hostId through to the top-level target_owner wire field on create, as a canonical OwnerID -- never a peer fingerprint', async () => {
+    const { result } = renderHook(() => useSessionState())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
 
-    // hostId must already be the target host's v2 OwnerID (HostInfo.OwnerID
+    // hostId must already be the target host's canonical OwnerID (HostInfo.OwnerID
     // on the wire, e.g. via useHosts' Host.owner_id) by the time it reaches
     // this hook -- NOT the host's peer transport fingerprint (HostInfo.ID).
     // OwnerID is a different string encoding of a peer's identity than its
@@ -115,7 +115,7 @@ describe('useV2State', () => {
     // target_owner as state.OwnerID and looks it up in an OwnerID-keyed
     // catalog map (peer.Manager.PeerIDForOwner), which never matches a raw
     // fingerprint. This hook itself does no conversion -- callers (see
-    // App.tsx's AppV2 handleCreateSession) are responsible for resolving the
+    // App.tsx's SessionApp handleCreateSession) are responsible for resolving the
     // selected host's fingerprint to its OwnerID before calling createSession.
     const remoteOwnerId = 'remote-host-owner-id'
     vi.mocked(fetch).mockResolvedValueOnce(okResponse({ Ref: { owner: remoteOwnerId, session: 'new-1' }, Accepted: true }))
@@ -133,7 +133,7 @@ describe('useV2State', () => {
   })
 
   it('omits target_owner entirely when no hostId is given (local create, unchanged default)', async () => {
-    const { result } = renderHook(() => useV2State())
+    const { result } = renderHook(() => useSessionState())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
 
     vi.mocked(fetch).mockResolvedValueOnce(okResponse({ Ref: { owner: 'me', session: 'new-1' }, Accepted: true }))
@@ -147,7 +147,7 @@ describe('useV2State', () => {
   })
 
   it('does not mutate the normalized workspace/catalog when moving a pane (layout mutation)', async () => {
-    const { result } = renderHook(() => useV2State())
+    const { result } = renderHook(() => useSessionState())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
     const socket = FakeSocket.instances[0]
 
@@ -222,7 +222,7 @@ describe('useV2State', () => {
       }),
     )
 
-    const { result } = renderHook(() => useV2State())
+    const { result } = renderHook(() => useSessionState())
     await waitFor(() => expect(result.current.state.catalog.sessionsByRef.size).toBe(2))
 
     // Bootstrap surfaced both the local and the remote peer's session, each

@@ -1,7 +1,7 @@
 /**
- * Typed v2 command client (Task 12).
+ * Typed command client (Task 12).
  *
- * Wraps POST /api/v2/session-commands and POST /api/v2/workspace-commands
+ * Wraps POST /api/state/session-commands and POST /api/state/workspace-commands
  * (pkg/server/routes_state_v2.go). Every command carries a caller-supplied
  * CommandID; the SAME id is reused on retry after an ambiguous network
  * failure (fetch throw / timeout / non-parseable response), so a retried
@@ -13,7 +13,7 @@
  */
 
 import type { CommandID, LayoutID, OwnerID, SessionRef, SplitDirection } from './types'
-import type { CommandResult, CommandResultWire, V2ErrorResponse } from './wireTypes'
+import type { CommandResult, CommandResultWire, ErrorResponse } from './wireTypes'
 import { decodeCommandResult, encodeSessionRefWire } from './wireCodec'
 
 // SessionCommandAction mirrors pkg/state/session_commands.go's ExecuteSessionCommand
@@ -27,7 +27,7 @@ import { decodeCommandResult, encodeSessionRefWire } from './wireCodec'
 // existing leaf in layout_id, the server places the new session by splitting
 // that leaf, atomically, as part of the same create command -- this is the
 // single-step replacement for the old create-then-split-command sequence
-// (see V2CommandClient.createSession and App.tsx's handleCreateSession).
+// (see CommandClient.createSession and App.tsx's handleCreateSession).
 export type SessionCommandAction =
   | { action: 'create'; name?: string; shell?: string; cwd?: string; worktree_branch?: string; cols?: number; rows?: number; layout_id?: LayoutID; agent_type?: string; target?: SessionRef; direction?: SplitDirection; new_first?: boolean; target_owner?: OwnerID }
   // remove_worktree mirrors pkg/state/session_commands.go's KillParams:
@@ -53,7 +53,7 @@ export type SessionCommandAction =
 // assigns the SessionID (executeCreate calls NewSessionID on the zero ref), so
 // sending any ref -- even a placeholder -- is wrong and is rejected by
 // ParseSessionRef once wire-encoded ("missing session id"). Use
-// V2CommandClient.createSession (which omits `ref` from the body), never
+// CommandClient.createSession (which omits `ref` from the body), never
 // sessionCommand, for creates.
 export type CreateSessionCommand = Extract<SessionCommandAction, { action: 'create' }>
 
@@ -100,10 +100,10 @@ function encodeWorkspaceCommandAction(cmd: WorkspaceCommandAction): Record<strin
   }
 }
 
-export class V2CommandError extends Error {
-  code: V2ErrorResponse['code']
+export class CommandError extends Error {
+  code: ErrorResponse['code']
   field?: string
-  constructor(resp: V2ErrorResponse) {
+  constructor(resp: ErrorResponse) {
     super(resp.message)
     this.code = resp.code
     this.field = resp.field
@@ -112,7 +112,7 @@ export class V2CommandError extends Error {
 
 // Thrown when a command exhausts its retries without a definitive
 // (successful or well-formed-error) server response.
-export class V2CommandNetworkError extends Error {
+export class CommandNetworkError extends Error {
   cause: unknown
   constructor(message: string, cause: unknown) {
     super(message)
@@ -120,7 +120,7 @@ export class V2CommandNetworkError extends Error {
   }
 }
 
-export type V2CommandClientOptions = {
+export type CommandClientOptions = {
   fetchImpl?: typeof fetch
   genId?: () => CommandID
   maxRetries?: number
@@ -128,14 +128,14 @@ export type V2CommandClientOptions = {
 }
 
 // The backend (pkg/state/ids.go's idPattern) requires every CommandID to
-// match `^[a-z0-9]+$` -- lowercase alphanumeric only, no hyphens. Every v2
+// match `^[a-z0-9]+$` -- lowercase alphanumeric only, no hyphens. Every
 // session/workspace command a browser issues (create/kill/label/recover/
 // dismiss/retry, and every workspace action) is REJECTED with a 400
-// invalid_input error by handleV2SessionCommand/handleV2WorkspaceCommand's
+// invalid_input error by the session/workspace command handlers'
 // cmd.ID.Validate() call unless this holds. crypto.randomUUID() (the
 // primary branch below) returns RFC 4122 hex groups joined by '-', which
-// never satisfies that pattern -- every real browser-issued v2 command was
-// silently 400ing (visible only in the console as "v2 label/kill/... command
+// never satisfies that pattern -- every real browser-issued command was
+// silently 400ing (visible only in the console as "label/kill/... command
 // failed", never surfaced to the user) until the hyphens were stripped here.
 function defaultGenId(): CommandID {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '') as CommandID
@@ -145,7 +145,7 @@ function defaultGenId(): CommandID {
 async function postWithRetry(
   url: string,
   body: unknown,
-  opts: Required<Pick<V2CommandClientOptions, 'fetchImpl' | 'maxRetries' | 'retryDelayMs'>>,
+  opts: Required<Pick<CommandClientOptions, 'fetchImpl' | 'maxRetries' | 'retryDelayMs'>>,
 ): Promise<unknown> {
   let lastErr: unknown
   for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
@@ -163,11 +163,11 @@ async function postWithRetry(
       // never retried -- the server has already told us what happened.
       const parsed = await res.json().catch(() => null)
       if (parsed && typeof parsed.code === 'string') {
-        throw new V2CommandError(parsed as V2ErrorResponse)
+        throw new CommandError(parsed as ErrorResponse)
       }
-      throw new V2CommandNetworkError(`unexpected response ${res.status}`, parsed)
+      throw new CommandNetworkError(`unexpected response ${res.status}`, parsed)
     } catch (err) {
-      if (err instanceof V2CommandError) throw err
+      if (err instanceof CommandError) throw err
       lastErr = err
       if (attempt < opts.maxRetries) {
         if (opts.retryDelayMs > 0) {
@@ -177,20 +177,20 @@ async function postWithRetry(
       }
     }
   }
-  throw new V2CommandNetworkError('command failed after retries', lastErr)
+  throw new CommandNetworkError('command failed after retries', lastErr)
 }
 
 /**
- * Typed client for the two v2 command endpoints. One instance per app
+ * Typed client for the two command endpoints. One instance per app
  * (or per test) is fine -- it is stateless aside from injected options.
  */
-export class V2CommandClient {
+export class CommandClient {
   private readonly fetchImpl: typeof fetch
   private readonly genId: () => CommandID
   private readonly maxRetries: number
   private readonly retryDelayMs: number
 
-  constructor(options: V2CommandClientOptions = {}) {
+  constructor(options: CommandClientOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch
     this.genId = options.genId ?? defaultGenId
     this.maxRetries = options.maxRetries ?? 2
@@ -201,7 +201,7 @@ export class V2CommandClient {
     const commandId = id ?? this.genId()
     const { action, ...params } = cmd
     const raw = await postWithRetry(
-      '/api/v2/session-commands',
+      '/api/state/session-commands',
       { id: commandId, ref: encodeSessionRefWire(ref), action, params },
       { fetchImpl: this.fetchImpl, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs },
     )
@@ -231,7 +231,7 @@ export class V2CommandClient {
       body.target_owner = target_owner
     }
     const raw = await postWithRetry(
-      '/api/v2/session-commands',
+      '/api/state/session-commands',
       body,
       { fetchImpl: this.fetchImpl, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs },
     )
@@ -242,7 +242,7 @@ export class V2CommandClient {
     const commandId = id ?? this.genId()
     const { action, ...params } = encodeWorkspaceCommandAction(cmd)
     return postWithRetry(
-      '/api/v2/workspace-commands',
+      '/api/state/workspace-commands',
       { id: commandId, layout, action, params },
       { fetchImpl: this.fetchImpl, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs },
     )
