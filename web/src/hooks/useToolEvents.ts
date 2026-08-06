@@ -1,17 +1,22 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Host } from './useHosts'
+import type { HostIndex } from '../state/session/viewModel'
 
 export interface ToolEvent {
+  /** Canonical identity, set once at ingestion by normalizeToolEvent -- the same key space as SessionView.key / sessionRefToKey ("owner/sessionId", or bare sessionId for a local/unknown owner). */
+  key: string
   tool: string
   status: 'active' | 'waiting' | 'completed' | 'error' | 'stuck'
+  // Raw host/session fields below are retained ONLY for display (host_name,
+  // session label) and the dismiss/DELETE request body (the server still
+  // identifies events by host/session/window/pane, not by `key`). No
+  // consumer should reconstruct identity from these -- use `key`.
   host?: string
   host_name?: string
   session: string
   /**
    * Durable session identity (state.SessionID on the wire); stable across
-   * renames, unlike `session` (a mutable display label). Prefer this for
-   * correlation whenever present; `session` remains for legacy events/tools
-   * that don't send it.
+   * renames, unlike `session` (a mutable display label). normalizeToolEvent
+   * prefers this over `session` when building `key`.
    */
   session_id?: string
   window: number
@@ -21,53 +26,94 @@ export interface ToolEvent {
   auto_detected?: boolean
 }
 
-// useToolEvents accepts the current host table (useHosts' Host[]) so
-// callers whose session keys are built from the canonical OwnerID
-// (SessionApp's sessionKey(), which is always `${ownerId}/${sessionId}`,
-// never the raw peer transport fingerprint) can match against it. Tool
-// events arrive keyed by `host` = peer fingerprint (empty = local) and
-// `session`/`session_id` = display label/stable id (see
-// pkg/toolevents.Event) -- a DIFFERENT identity encoding than SessionApp's
-// session keys. `hosts` is optional (omitted only in unit tests that don't
-// need OwnerID normalization); when omitted, every fingerprint maps to
-// itself instead of an OwnerID.
-export function useToolEvents(hosts?: Host[]) {
+/** Shape of a raw tool event as broadcast by the server (WS "tool-event" message, or an entry of the /api/tool-events snapshot) -- before normalization assigns `key`. */
+export interface RawToolEvent {
+  tool: string
+  status: ToolEvent['status']
+  host?: string
+  host_name?: string
+  session: string
+  session_id?: string
+  window: number
+  pane?: string
+  message?: string
+  timestamp: string
+  auto_detected?: boolean
+}
+
+/** Shape of a raw active-turn record from /api/active-turns -- same identity fields as RawToolEvent, without tool/status/window. */
+interface RawActiveTurn {
+  host?: string
+  session: string
+  session_id?: string
+}
+
+// fingerprint (''=local) -> canonical OwnerID, via hostIndex.byPeerId. Only
+// meaningful when hostIndex was supplied; otherwise every fingerprint maps
+// to itself (identity) -- hostIndex is optional only for unit tests that
+// don't need OwnerID normalization.
+function ownerIdFor(hostIndex: HostIndex | undefined, fingerprint: string): string {
+  if (!hostIndex) return fingerprint
+  if (fingerprint === '') return hostIndex.local?.owner_id || ''
+  return hostIndex.byPeerId.get(fingerprint)?.owner_id || fingerprint
+}
+
+// buildKey produces the canonical composite key used to correlate a tool
+// event with a session -- the same key space as SessionView.key /
+// sessionRefToKey ("owner/session", or bare "session" for a null/local
+// owner). Preferring `session_id` (stable) over `session` (a mutable
+// display label that changes on rename) avoids losing correlation across a
+// rename. When `hostIndex` is supplied, the host component is normalized
+// to the OwnerID via byPeerId; without it, the plain
+// "host ? host/session : session" shape is preserved exactly (unit tests).
+function buildKey(hostIndex: HostIndex | undefined, host: string | undefined, sessionIdentity: string): string {
+  const h = host || ''
+  if (hostIndex) {
+    const owner = ownerIdFor(hostIndex, h)
+    return owner ? `${owner}/${sessionIdentity}` : sessionIdentity
+  }
+  return h ? `${h}/${sessionIdentity}` : sessionIdentity
+}
+
+/**
+ * Normalizes a raw tool event (from the WS "tool-event" message or the
+ * /api/tool-events snapshot) into a canonical ToolEvent with `key` set
+ * once, here, at ingestion. This is the ONLY place identity is derived from
+ * raw transport fields -- every other consumer (TopBar, QuickSwitcher,
+ * Overview, SessionApp's handleJumpToSession) must use `.key` directly.
+ */
+export function normalizeToolEvent(raw: RawToolEvent, hostIndex?: HostIndex): ToolEvent {
+  const sessionIdentity = raw.session_id || raw.session
+  return {
+    key: buildKey(hostIndex, raw.host, sessionIdentity),
+    tool: raw.tool,
+    status: raw.status,
+    host: raw.host,
+    host_name: raw.host_name,
+    session: raw.session,
+    session_id: raw.session_id,
+    window: raw.window,
+    pane: raw.pane,
+    message: raw.message,
+    timestamp: raw.timestamp,
+    auto_detected: raw.auto_detected,
+  }
+}
+
+// useToolEvents accepts the current HostIndex (useHosts' hostIndex) so
+// normalizeToolEvent can map an event's peer fingerprint host to the
+// canonical OwnerID that SessionView.key is built from. `hostIndex` is
+// optional (omitted only in unit tests that don't need OwnerID
+// normalization); when omitted, every fingerprint maps to itself instead
+// of an OwnerID.
+export function useToolEvents(hostIndex?: HostIndex) {
   const [events, setEvents] = useState<ToolEvent[]>([])
-  // Tracks sessions with an in-progress hook-based agent turn.
-  // Keyed the same as sessionKey() in useSessions: "session" or
-  // "host/session" (bare key form), or "ownerId/sessionId" (SessionApp, via
-  // buildKey below). Set on hook-based active events; cleared on completed.
-  // Outlives individual pane events so the badge doesn't flicker "idle"
-  // during the brief gaps between tool calls within a single turn.
+  // Tracks sessions with an in-progress hook-based agent turn, keyed the
+  // same as ToolEvent.key. Set on hook-based active events; cleared on
+  // completed. Outlives individual pane events so the badge doesn't
+  // flicker "idle" during the brief gaps between tool calls within a
+  // single turn.
   const [activeSessions, setActiveSessions] = useState<Set<string>>(new Set())
-
-  // fingerprint (event.host; '' means local) -> canonical OwnerID, via the
-  // current host table. Only meaningful when `hosts` was supplied; otherwise
-  // every fingerprint maps to itself (identity).
-  const ownerIdFor = useCallback((fingerprint: string): string => {
-    if (!hosts) return fingerprint
-    if (fingerprint === '') return hosts.find(h => h.local)?.owner_id || ''
-    return hosts.find(h => h.id === fingerprint)?.owner_id || fingerprint
-  }, [hosts])
-
-  // buildKey produces the composite key used to correlate a tool event with
-  // a session. Preferring `session_id` (stable) over `session` (a mutable
-  // display label that changes on rename) avoids losing correlation across
-  // a rename. When `hosts` is supplied, the host component is normalized to
-  // the OwnerID and the key is ALWAYS "owner/session" (never bare), matching
-  // SessionApp's sessionKey() -- which always includes the OwnerID, even for
-  // local sessions. Without `hosts`, the plain
-  // "host ? host/session : session" shape is preserved exactly.
-  const buildKey = useCallback((host: string | undefined, sessionIdentity: string): string => {
-    const h = host || ''
-    if (hosts) {
-      const owner = ownerIdFor(h)
-      return owner ? `${owner}/${sessionIdentity}` : sessionIdentity
-    }
-    return h ? `${h}/${sessionIdentity}` : sessionIdentity
-  }, [hosts, ownerIdFor])
-
-  const eventKey = useCallback((e: ToolEvent): string => buildKey(e.host, e.session_id || e.session), [buildKey])
 
   // Fetch initial state
   const refresh = useCallback(async () => {
@@ -80,20 +126,23 @@ export function useToolEvents(hosts?: Host[]) {
       // dropped "completed" WebSocket frame can't leave the badge stuck on
       // "working". The server is reliable here: notify posts over HTTP.
       if (turnsRes.ok) {
-        const turns: { host?: string; session: string; session_id?: string }[] = await turnsRes.json() || []
-        const keys = turns.map(t => buildKey(t.host, t.session_id || t.session))
+        const turns: RawActiveTurn[] = await turnsRes.json() || []
+        const keys = turns.map(t => buildKey(hostIndex, t.host, t.session_id || t.session))
         setActiveSessions(new Set(keys))
       }
       if (res.ok) {
-        const serverData: ToolEvent[] = await res.json() || []
+        const raw: RawToolEvent[] = await res.json() || []
+        const serverData: ToolEvent[] = raw.map(r => normalizeToolEvent(r, hostIndex))
         setEvents(prev => {
           // Preserve hook-based active events — the server never persists them,
           // so a full replace would clear "working" state mid-turn.
           // Auto-detected active events are NOT preserved: the detector now sends
           // a completed event when the process exits, which clears them properly.
+          // Dedup/clear by canonical key plus pane coordinates -- not raw
+          // display label -- so a rename between polls can't split one pane's
+          // event into two.
           const samePane = (a: ToolEvent, b: ToolEvent) =>
-            a.session === b.session && a.window === b.window &&
-            (a.pane || '') === (b.pane || '') && (a.host || '') === (b.host || '')
+            a.key === b.key && a.window === b.window && (a.pane || '') === (b.pane || '')
           const localActives = prev.filter(e =>
             e.status === 'active' && !e.auto_detected && !serverData.some(s => samePane(s, e))
           )
@@ -103,7 +152,7 @@ export function useToolEvents(hosts?: Host[]) {
     } catch (err) {
       console.error('Failed to fetch tool events:', err)
     }
-  }, [buildKey])
+  }, [hostIndex])
 
   useEffect(() => {
     refresh()
@@ -116,34 +165,22 @@ export function useToolEvents(hosts?: Host[]) {
   const handleEvent = useCallback((evt: any) => {
     if (evt.type !== 'tool-event') return
 
-    const toolEvt: ToolEvent = {
-      tool: evt.tool,
-      status: evt.status,
-      host: evt.host,
-      host_name: evt.host_name,
-      session: evt.session,
-      session_id: evt.session_id,
-      window: evt.window,
-      pane: evt.pane,
-      message: evt.message,
-      timestamp: evt.timestamp,
-      auto_detected: evt.auto_detected,
-    }
+    const toolEvt = normalizeToolEvent(evt, hostIndex)
 
     // Session-level turn tracking (hook-based only — not auto-detected).
     // Both setEvents and setActiveSessions are batched into one render by React 18.
-    const sk = eventKey(toolEvt)
     if (toolEvt.status === 'active' && !toolEvt.auto_detected) {
-      setActiveSessions(prev => new Set([...prev, sk]))
+      setActiveSessions(prev => new Set([...prev, toolEvt.key]))
     } else if (toolEvt.status === 'completed') {
-      setActiveSessions(prev => { const next = new Set(prev); next.delete(sk); return next })
+      setActiveSessions(prev => { const next = new Set(prev); next.delete(toolEvt.key); return next })
     }
 
     setEvents(prev => {
-      // Remove existing event for same host/session/window/pane
-      // Normalize pane to handle undefined vs empty string
+      // Remove existing event for the same canonical session + pane
+      // coordinates (not raw display label -- a rename must not split one
+      // pane's event into two).
       const filtered = prev.filter(
-        e => !(e.session === toolEvt.session && e.window === toolEvt.window && (e.pane || '') === (toolEvt.pane || '') && (e.host || '') === (toolEvt.host || ''))
+        e => !(e.key === toolEvt.key && e.window === toolEvt.window && (e.pane || '') === (toolEvt.pane || ''))
       )
       // Don't persist completed events — they clear the pane's existing event
       if (toolEvt.status === 'completed') {
@@ -154,24 +191,19 @@ export function useToolEvents(hosts?: Host[]) {
       // Subsequent waiting/completed events will naturally replace the active one.
       return [...filtered, toolEvt]
     })
-  }, [eventKey])
+  }, [hostIndex])
 
-  // Get events for a specific session. Accepts either the plain
-  // composite key ("host/name" or bare "name") or, when `hosts` was
-  // supplied, SessionApp's "ownerId/sessionId" key -- eventKey normalizes each
-  // tracked event the same way, via `session_id` (stable) over `session`
-  // (mutable display label) and, for SessionApp, the fingerprint->OwnerID host
-  // mapping, so both sides of the comparison use an identical encoding.
+  // Get events for a specific session, by its canonical key (SessionView.key).
   const getSessionEvents = useCallback((key: string) => {
-    return events.filter(e => eventKey(e) === key)
-  }, [events, eventKey])
+    return events.filter(e => e.key === key)
+  }, [events])
 
   // Check if a session has any "waiting"/"stuck" events (same key contract
   // as getSessionEvents).
   const sessionNeedsAttention = useCallback((key: string) => {
     const needsAttn = (e: ToolEvent) => e.status === 'waiting' || e.status === 'stuck'
-    return events.some(e => eventKey(e) === key && needsAttn(e))
-  }, [events, eventKey])
+    return events.some(e => e.key === key && needsAttn(e))
+  }, [events])
 
   // Returns true if the session has an in-progress hook-based agent turn.
   // More stable than checking events directly — persists across the brief
@@ -180,7 +212,9 @@ export function useToolEvents(hosts?: Host[]) {
     return activeSessions.has(key)
   }, [activeSessions])
 
-  // Dismiss a specific event (clear from server and local state)
+  // Dismiss a specific event (clear from server and local state). The
+  // DELETE body still carries the raw host/session/window/pane fields --
+  // the server identifies events by those, not by the canonical `key`.
   const dismissEvent = useCallback(async (evt: ToolEvent) => {
     try {
       await fetch('/api/tool-event', {
@@ -192,7 +226,7 @@ export function useToolEvents(hosts?: Host[]) {
       console.error('Failed to dismiss event:', err)
     }
     setEvents(prev => prev.filter(
-      e => !(e.session === evt.session && e.window === evt.window && (e.pane || '') === (evt.pane || '') && (e.host || '') === (evt.host || ''))
+      e => !(e.key === evt.key && e.window === evt.window && (e.pane || '') === (evt.pane || ''))
     ))
   }, [])
 

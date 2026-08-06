@@ -8,6 +8,12 @@
 // session with live PTY output but no current tool-hook event was
 // misclassified as inactive because the lookup key never matched.
 //
+// Task 5 (identity canonicalization at ingestion): the hook now takes the
+// HostIndex directly (useHosts' hostIndex, byPeerId keyed) rather than a raw
+// Host[] the hook itself had to scan, and every snapshot carries the
+// canonical `key` set once by normalizeActivitySnapshot -- these tests build
+// a HostIndex the same way useHosts.ts does.
+//
 // This test drives useActivity's REAL implementation (not mocked) through
 // its actual public surface (handleActivityEvent, the same function App.tsx
 // wires to the WebSocket's "activity" message; getSessionActivity, the same
@@ -16,13 +22,25 @@
 // computed from -- not just an internal map having an entry.
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useActivity } from './useActivity'
+import { useActivity, normalizeActivitySnapshot } from './useActivity'
 import type { Host } from './useHosts'
-import type { SessionView } from '../state/session/viewModel'
+import type { HostIndex, SessionView } from '../state/session/viewModel'
 import { sessionViewSignal } from '../state/session/viewModel'
 
 const emptyJsonResponse = () =>
   Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as Response)
+
+function makeHostIndex(hosts: Host[]): HostIndex {
+  const byPeerId = new Map<string, Host>()
+  const byOwnerId = new Map<string, Host>()
+  let local: Host | undefined
+  for (const h of hosts) {
+    byPeerId.set(h.id, h)
+    if (h.owner_id) byOwnerId.set(h.owner_id, h)
+    if (h.local) local = h
+  }
+  return { hosts, local, byPeerId, byOwnerId }
+}
 
 function makeView(ownerId: string, stableSessionId: string): SessionView {
   return {
@@ -71,8 +89,9 @@ describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () =>
         last_seen: new Date().toISOString(),
       },
     ]
+    const hostIndex = makeHostIndex(hosts)
 
-    const { result } = renderHook(() => useActivity(hosts))
+    const { result } = renderHook(() => useActivity(hostIndex))
     await waitFor(() => expect(fetch).toHaveBeenCalled())
 
     // Real snapshot shape as broadcast by the server: host is the peer
@@ -90,6 +109,7 @@ describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () =>
     const looked = result.current.getSessionActivity(v2SessionKey)
     expect(looked).toBeDefined()
     expect(looked?.idle_seconds).toBe(1)
+    expect(looked?.key).toBe(v2SessionKey)
 
     // And the mismatched raw fingerprint key must NOT match (proves this
     // isn't accidentally passing via some other fallback).
@@ -117,8 +137,9 @@ describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () =>
         last_seen: new Date().toISOString(),
       },
     ]
+    const hostIndex = makeHostIndex(hosts)
 
-    const { result } = renderHook(() => useActivity(hosts))
+    const { result } = renderHook(() => useActivity(hostIndex))
     await waitFor(() => expect(fetch).toHaveBeenCalled())
 
     act(() => {
@@ -134,5 +155,15 @@ describe('useActivity SessionApp identity normalization (Finding, Gap 2)', () =>
     const view = makeView(ownerId, stableSessionId)
     const signal = sessionViewSignal(view, [], looked, false)
     expect(signal.state).toBe('working')
+  })
+})
+
+describe('normalizeActivitySnapshot', () => {
+  it('produces the same key format as SessionView.key / ToolEvent.key ("owner/sessionId")', () => {
+    const hostIndex = makeHostIndex([
+      { id: 'fp-1', owner_id: 'owner-1', name: 'box', online: true, sessions: [], last_seen: new Date().toISOString() },
+    ])
+    const snap = normalizeActivitySnapshot({ host: 'fp-1', session: 'stable-id-1', idle_seconds: 0, total_bytes: 0 }, hostIndex)
+    expect(snap.key).toBe('owner-1/stable-id-1')
   })
 })

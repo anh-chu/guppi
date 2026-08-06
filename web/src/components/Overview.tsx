@@ -172,7 +172,7 @@ function SessionCard({
       key={key}
       {...glanceTrigger({ name: session.id, host: session.ownerId, display_name: session.displayName, host_name: session.host?.name })}
       onClick={() => {
-        if (signal.state === 'needs_you' && loudEvent) onJumpToSession(loudEvent.host ? `${loudEvent.host}/${loudEvent.session}` : loudEvent.session, loudEvent.window, loudEvent.pane)
+        if (signal.state === 'needs_you' && loudEvent) onJumpToSession(session.key, loudEvent.window, loudEvent.pane)
         else onOpen(session)
       }}
       onContextMenu={(e) => onContextMenu(e, item)}

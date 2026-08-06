@@ -15,7 +15,10 @@ export function useNotifications(pushSubscribed = false) {
   pushSubscribedRef.current = pushSubscribed
 
   const processToolEvent = useCallback((evt: ToolEvent) => {
-    const key = `${evt.host || ''}:${evt.session}:${evt.window}:${evt.pane || ''}`
+    // Keyed by the canonical session identity (evt.key), not the raw
+    // host/session display label, so a rename mid-turn doesn't lose the
+    // prior-status memory and re-fire a notification that already fired.
+    const key = `${evt.key}:${evt.window}:${evt.pane || ''}`
     const prev = prevEventsRef.current.get(key)
 
     // When a tool transitions away from waiting/error, close browser notification

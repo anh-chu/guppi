@@ -47,7 +47,7 @@ export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, o
       return ta - tb
     })
     for (const evt of sorted) {
-      const evtKey = evt.host ? `${evt.host}/${evt.session}` : evt.session
+      const evtKey = evt.key
       items.push({
         type: 'waiting',
         label: `${evt.session}`,

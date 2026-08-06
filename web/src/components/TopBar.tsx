@@ -271,7 +271,7 @@ export function TopBar({
           <div className="relative">
             <button
               type="button"
-              onClick={() => onJumpToSession(primary.host ? `${primary.host}/${primary.session}` : primary.session, primary.window, primary.pane)}
+              onClick={() => onJumpToSession(primary.key, primary.window, primary.pane)}
               className="w-full flex items-center gap-2 px-3 py-1.5 pr-8 rounded-sm border border-warning/30 bg-warning/8 text-left min-h-8"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-warning animate-[pulse_1.5s_ease-in-out_infinite] shrink-0" />
@@ -323,7 +323,7 @@ export function TopBar({
                         type="button"
                         className="flex min-w-0 flex-1 items-center gap-2 text-left"
                         onClick={() => {
-                          onJumpToSession(evt.host ? `${evt.host}/${evt.session}` : evt.session, evt.window, evt.pane)
+                          onJumpToSession(evt.key, evt.window, evt.pane)
                           setShowAll(false)
                         }}
                       >

@@ -101,15 +101,17 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   const { prefs } = usePreferences()
   const wikiEnabled = !prefs.wiki_disabled
   const { hosts, refresh: refreshHosts, hostIndex } = useHosts()
-  // SessionApp's session keys (sessionKey()) are always "ownerId/sessionId", never
-  // the raw peer transport fingerprint -- passing `hosts` lets useToolEvents
-  // normalize incoming tool events (keyed by fingerprint + mutable display
-  // label) to the same OwnerID/stable-session-id encoding before matching.
-  const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents(hosts)
-  // Same OwnerID normalization rationale as useToolEvents(hosts) above --
+  // SessionApp's session keys (SessionView.key / sessionRefToKey) are always
+  // "ownerId/sessionId", never the raw peer transport fingerprint --
+  // passing `hostIndex` lets useToolEvents normalize incoming tool events
+  // (keyed by fingerprint + mutable display label) to the same
+  // OwnerID/stable-session-id encoding, once, at ingestion (normalizeToolEvent),
+  // before matching.
+  const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents(hostIndex)
+  // Same OwnerID normalization rationale as useToolEvents(hostIndex) above --
   // the server's activity snapshot is keyed by peer fingerprint, but SessionApp
   // looks activity up by OwnerID/SessionID.
-  const { getSessionActivity, handleActivityEvent } = useActivity(hosts)
+  const { getSessionActivity, handleActivityEvent } = useActivity(hostIndex)
   const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications()
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const { prefs: _ } = usePreferences() // already have prefs above
