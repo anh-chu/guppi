@@ -984,19 +984,18 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 
 	// Legacy session-attrs/session-order/groups sync routes do not exist in
 	// the canonical architecture: there is no backing store to register them
-	// against. AppLegacy, the only client that ever called them, is
-	// unreachable from production.
+	// against, and no reachable client calls them anymore.
 }
 
 func registerWSRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 	ptyHandler := ws.NewPTYTerminalHandler(opts.ActivityTracker, opts.Tracker)
 
 	daemonWS := func(w http.ResponseWriter, req *http.Request) {
-		// Route remote sessions through PTY relay. `host` may be a v2 OwnerID
-		// (what a v2-routed pane's SessionRef.Owner / terminalPool.ts identity
-		// actually carries) or a legacy peer fingerprint; ResolveHostParam
-		// accepts either and returns the live peer connection's fingerprint to
-		// use for routing, never conflating the two identity domains by
+		// Route remote sessions through PTY relay. `host` may be an OwnerID
+		// (what a pane's SessionRef.Owner / terminalPool.ts identity actually
+		// carries) or a peer transport fingerprint; ResolveHostParam accepts
+		// either and returns the live peer connection's fingerprint to use
+		// for routing, never conflating the two identity domains by
 		// comparing the raw value against fingerprints unconditionally.
 		hostID := req.URL.Query().Get("host")
 		if opts.PeerMgr != nil && hostID != "" {

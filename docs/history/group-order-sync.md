@@ -1,3 +1,5 @@
+> **Historical.** This document predates the destructive rewrite (see `docs/release-notes/hard-rewrite.md`). It describes a design/flag/subsystem that no longer exists in current code. Kept for historical record only; do not follow as current instructions.
+
 # Sync groups and ordering across peers
 
 ## Problem

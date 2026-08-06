@@ -168,18 +168,19 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      # scripts/task15-soak.sh is created by Task 15 Task 4 and is not part
-      # of this Task 1 change. Guard on its existence so the nightly
-      # workflow does not fail while that script has not landed yet; once
-      # it exists this step invokes it unconditionally.
-      - name: Run soak scenario (Task 15 Task 4 hook)
+      # scripts/soak.sh does not exist yet (no soak-run script has landed in
+      # this repo). Guard on its existence so the nightly workflow does not
+      # fail while it is absent; once it exists this step invokes it
+      # unconditionally. See docs/release-notes/hard-rewrite.md for what has
+      # and has not been run in this environment.
+      - name: Run soak scenario (hook, script not yet present)
         run: |
-          if [ -x scripts/task15-soak.sh ]; then
-            ./scripts/task15-soak.sh
-          elif [ -f scripts/task15-soak.sh ]; then
-            bash scripts/task15-soak.sh
+          if [ -x scripts/soak.sh ]; then
+            ./scripts/soak.sh
+          elif [ -f scripts/soak.sh ]; then
+            bash scripts/soak.sh
           else
-            echo "scripts/task15-soak.sh not present yet (Task 15 Task 4 not landed) — skipping soak run."
+            echo "scripts/soak.sh not present — skipping soak run."
           fi
 
       - name: Upload soak artifacts
@@ -188,7 +189,7 @@ jobs:
         with:
           name: soak-${{ github.sha }}
           path: |
-            .proof/task15-soak/**
+            .proof/soak/**
             soak.log
           if-no-files-found: ignore
           retention-days: 7

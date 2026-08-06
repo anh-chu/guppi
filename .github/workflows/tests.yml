@@ -73,6 +73,18 @@ jobs:
           name: frontend-dist
           path: pkg/server/dist
 
+      - name: Residue check (no legacy/v2 vocabulary in production code)
+        run: |
+          set -euo pipefail
+          if git grep -nE 'TERMYARD_V2_STATE|VITE_V2_STATE|termyard\.v2State|AppLegacy|isV2StateEnabled|V2[A-Z]|/api/v2|/ws/v2|state\.Manager|sessionattrs|sessionorder|groupsync|MsgStateUpdate|MsgStateEvent|MsgPeerState|MsgSessionAction|MsgRequestState|_compat|Compat[A-Z]' -- . \
+              ':!docs/history/**' ':!pkg/state/INVARIANTS.md' ':!*_test.go' ':!*.test.ts' \
+              ':!web/e2e/**' ':!*package-lock.json' ':!testdata/**' ':!scripts/proof.sh' \
+              ':!.github/workflows/tests.yml'; then
+            echo "unjustified legacy/v2 residue found (see docs/release-notes/hard-rewrite.md)" >&2
+            exit 1
+          fi
+          echo "no unjustified legacy/v2 residue found"
+
       - name: Go tests
         run: go test ./... -count=1
 
@@ -144,16 +156,16 @@ jobs:
         working-directory: web
 
       - name: Prepare proof evidence directory
-        run: mkdir -p .proof/task15/${{ github.sha }}
+        run: mkdir -p .proof/${{ github.sha }}
 
       - name: Run Playwright E2E suite
         id: e2e
         run: |
           set -euo pipefail
-          PLAYWRIGHT_JSON_OUTPUT_NAME="$GITHUB_WORKSPACE/.proof/task15/${{ github.sha }}/playwright-report.json" \
-          PLAYWRIGHT_HTML_REPORT="$GITHUB_WORKSPACE/.proof/task15/${{ github.sha }}/playwright-html-report" \
+          PLAYWRIGHT_JSON_OUTPUT_NAME="$GITHUB_WORKSPACE/.proof/${{ github.sha }}/playwright-report.json" \
+          PLAYWRIGHT_HTML_REPORT="$GITHUB_WORKSPACE/.proof/${{ github.sha }}/playwright-html-report" \
             npm run test:e2e -- --reporter=list,json,html --retries=0 \
-            2>&1 | tee "$GITHUB_WORKSPACE/.proof/task15/${{ github.sha }}/e2e-playwright-run.log"
+            2>&1 | tee "$GITHUB_WORKSPACE/.proof/${{ github.sha }}/e2e-playwright-run.log"
         working-directory: web
         env:
           TERMYARD_BIN: ${{ github.workspace }}/termyard
@@ -161,7 +173,7 @@ jobs:
       - name: Fail on mandatory skip/fixme in multi-node.spec.ts
         if: always() && steps.e2e.outcome != 'skipped'
         run: |
-          REPORT="$GITHUB_WORKSPACE/.proof/task15/${{ github.sha }}/playwright-report.json"
+          REPORT="$GITHUB_WORKSPACE/.proof/${{ github.sha }}/playwright-report.json"
           if [ ! -f "$REPORT" ]; then
             echo "no playwright-report.json produced (e2e step outcome: ${{ steps.e2e.outcome }}); skipping skip/fixme check, job already reflects the e2e step result"
             exit 0
@@ -203,14 +215,14 @@ jobs:
             echo "e2e_outcome: ${{ steps.e2e.outcome }}"
             echo "run_id: ${{ github.run_id }}"
             echo "run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          } > .proof/task15/${{ github.sha }}/ci-e2e-metadata.txt
+          } > .proof/${{ github.sha }}/ci-e2e-metadata.txt
 
       - name: Upload proof logs and metadata
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: task15-proof-logs-${{ github.sha }}
-          path: .proof/task15/${{ github.sha }}
+          name: proof-logs-${{ github.sha }}
+          path: .proof/${{ github.sha }}
           if-no-files-found: warn
           retention-days: 7
 

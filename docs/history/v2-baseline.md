@@ -1,3 +1,5 @@
+> **Historical.** This document predates the destructive rewrite (see `docs/release-notes/hard-rewrite.md`). It describes a design/flag/subsystem that no longer exists in current code. Kept for historical record only; do not follow as current instructions.
+
 # v2 Architecture Redesign — Task 1 Baseline
 
 This file records the current behavior baselines captured in Task 1 of the v2 redesign. All numbers were measured on the reviewed HEAD `3902bf9b4a1f35fdc26c8f474ce7f2891d551f91` plus the Task 1 test/baseline changes.

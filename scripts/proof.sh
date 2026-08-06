@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# scripts/task15-proof.sh — deterministic, independently inspectable proof
-# runner for Task 15 (see docs/task-15-plan.md, "Task 1: Make proof
-# execution reproducible and independently inspectable", and
-# docs/task-15-proof-ledger.md for the frozen contract this evidences).
+# scripts/proof.sh — deterministic, independently inspectable proof runner
+# for the canonical (schema-3, single-runtime) termyard build. See
+# docs/release-notes/hard-rewrite.md for the release this proof gate
+# evidences.
 #
 # Runs, in order, and logs start/end time + exit status for each:
 #   cd web && npm ci
@@ -13,6 +13,7 @@
 #   go build ./...
 #   go test ./... -count=1
 #   go vet ./...
+#   git grep residue check (legacy/v2 vocabulary must not reappear)
 #   go test -race <targeted packages> -count=<repeat-race>
 #   go test -race ./... -count=<repeat-race>
 #   cd web && npm run test:e2e       (only when --e2e 1)
@@ -21,22 +22,12 @@
 # completed before the failure are retained under --output.
 #
 # Usage:
-#   scripts/task15-proof.sh --mode ci|full|deletion --output <dir> \
-#       --e2e 0|1 --repeat-race <count>
+#   scripts/proof.sh --output <dir> --e2e 0|1 --repeat-race <count>
 #
 # All flags are optional:
-#   --mode         default: ci
-#   --output       default: .proof/task15/<sha>
+#   --output       default: .proof/<sha>
 #   --e2e          default: 0
 #   --repeat-race  default: 1   (used as -count=N for all `go test -race` runs)
-#
-# `--mode` currently affects only the recorded metadata/evidence label (ci =
-# pre-cutover release-candidate proof, full = complete pre-cutover ledger
-# sweep, deletion = final v2-only proof per plan Task 12). All three modes
-# execute the identical mandatory gate sequence above; there is no
-# behavioral branching by design, since Task 1 defines one reproducible gate
-# set and later tasks (soak/benchmarks/two-node harness) are separate
-# scripts/CI jobs, not additional modes of this script.
 
 set -uo pipefail
 
@@ -44,24 +35,18 @@ set -uo pipefail
 # Argument parsing
 # ---------------------------------------------------------------------------
 
-MODE="ci"
 OUTPUT_DIR=""
 E2E=0
 REPEAT_RACE=1
 
 usage() {
   cat >&2 <<'EOF'
-Usage: scripts/task15-proof.sh [--mode ci|full|deletion] [--output <dir>]
-                                [--e2e 0|1] [--repeat-race <count>]
+Usage: scripts/proof.sh [--output <dir>] [--e2e 0|1] [--repeat-race <count>]
 EOF
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --mode)
-      MODE="${2:-}"
-      shift 2
-      ;;
     --output)
       OUTPUT_DIR="${2:-}"
       shift 2
@@ -85,14 +70,6 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
-
-case "$MODE" in
-  ci|full|deletion) ;;
-  *)
-    echo "invalid --mode '$MODE' (must be ci|full|deletion)" >&2
-    exit 2
-    ;;
-esac
 
 case "$E2E" in
   0|1) ;;
@@ -123,7 +100,7 @@ cd "$REPO_ROOT"
 SHA="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
 
 if [ -z "$OUTPUT_DIR" ]; then
-  OUTPUT_DIR=".proof/task15/${SHA}"
+  OUTPUT_DIR=".proof/${SHA}"
 fi
 
 # Resolve to absolute path so logs are unambiguous regardless of caller cwd.
@@ -143,9 +120,8 @@ RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # ---------------------------------------------------------------------------
 
 {
-  echo "task15-proof.sh evidence metadata"
-  echo "=================================="
-  echo "mode:            $MODE"
+  echo "proof.sh evidence metadata"
+  echo "==========================="
   echo "e2e:             $E2E"
   echo "repeat-race:     $REPEAT_RACE"
   echo "output_dir:      $OUTPUT_DIR"
@@ -167,16 +143,14 @@ RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "uname:           $(uname -a 2>/dev/null || echo unavailable)"
 } > "$METADATA_FILE"
 
-echo "task15-proof: SHA=$SHA mode=$MODE e2e=$E2E repeat-race=$REPEAT_RACE"
-echo "task15-proof: evidence directory: $OUTPUT_DIR"
+echo "proof: SHA=$SHA e2e=$E2E repeat-race=$REPEAT_RACE"
+echo "proof: evidence directory: $OUTPUT_DIR"
 
 # ---------------------------------------------------------------------------
 # Step runner: logs start/end/duration/exit status for every command,
 # writes full stdout+stderr to its own log file, and — on failure — exits
 # nonzero immediately while retaining every log written so far.
 # ---------------------------------------------------------------------------
-
-OVERALL_STATUS=0
 
 run_step() {
   local name="$1"
@@ -187,7 +161,7 @@ run_step() {
   start_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   start_epoch="$(date +%s)"
 
-  echo "task15-proof: [$name] starting: $*"
+  echo "proof: [$name] starting: $*"
   ( "$@" ) >"$logfile" 2>&1
   status=$?
 
@@ -200,13 +174,13 @@ run_step() {
     >> "$SUMMARY_LOG"
 
   if [ "$status" -ne 0 ]; then
-    echo "task15-proof: [$name] FAILED (exit $status) after ${duration}s — see $logfile" >&2
+    echo "proof: [$name] FAILED (exit $status) after ${duration}s — see $logfile" >&2
     echo "RESULT=FAIL FIRST_FAILED_STEP=$name" >> "$SUMMARY_LOG"
-    echo "task15-proof: mandatory gate '$name' failed; stopping. Completed step logs retained in $LOG_DIR" >&2
+    echo "proof: mandatory gate '$name' failed; stopping. Completed step logs retained in $LOG_DIR" >&2
     finalize_and_exit 1
   fi
 
-  echo "task15-proof: [$name] OK (${duration}s)"
+  echo "proof: [$name] OK (${duration}s)"
   return 0
 }
 
@@ -254,6 +228,23 @@ go_race_all() { (cd "$REPO_ROOT" && go test -race ./... -count="$REPEAT_RACE"); 
 run_step "go-build" go_build_all
 run_step "go-test" go_test_all
 run_step "go-vet" go_vet_all
+
+# ---------------------------------------------------------------------------
+# Residue check: legacy/v2 vocabulary, dual-runtime selection, and
+# compatibility-shim symbols must never reappear in production code. Any
+# match must be a justified test assertion or historical doc (excluded via
+# docs/history/**) — see docs/release-notes/hard-rewrite.md.
+# ---------------------------------------------------------------------------
+
+residue_check() {
+  (cd "$REPO_ROOT" && \
+    ! git grep -nE 'TERMYARD_V2_STATE|VITE_V2_STATE|termyard\.v2State|AppLegacy|isV2StateEnabled|V2[A-Z]|/api/v2|/ws/v2|state\.Manager|sessionattrs|sessionorder|groupsync|MsgStateUpdate|MsgStateEvent|MsgPeerState|MsgSessionAction|MsgRequestState|_compat|Compat[A-Z]' -- . \
+      ':!docs/history/**' ':!pkg/state/INVARIANTS.md' ':!*_test.go' ':!*.test.ts' \
+      ':!web/e2e/**' ':!*package-lock.json' ':!testdata/**' ':!scripts/proof.sh' \
+  )
+}
+run_step "residue-check" residue_check
+
 run_step "go-race-targeted" go_race_targeted
 run_step "go-race-all" go_race_all
 
@@ -308,10 +299,10 @@ if [ "$E2E" = "1" ]; then
   }
   run_step "e2e-no-mandatory-skip-check" check_no_mandatory_skip
 else
-  echo "task15-proof: --e2e 0, skipping Playwright E2E step (not a mandatory gate for this run)"
+  echo "proof: --e2e 0, skipping Playwright E2E step (not a mandatory gate for this run)"
   printf 'STEP=%s\tSTATUS=%s\n' "e2e-playwright-run" "SKIPPED_BY_FLAG(--e2e 0)" >> "$SUMMARY_LOG"
 fi
 
 echo "RESULT=PASS" >> "$SUMMARY_LOG"
-echo "task15-proof: all gates passed for SHA=$SHA. Evidence: $OUTPUT_DIR"
+echo "proof: all gates passed for SHA=$SHA. Evidence: $OUTPUT_DIR"
 finalize_and_exit 0

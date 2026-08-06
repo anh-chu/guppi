@@ -21,8 +21,8 @@ runtime behavior remains behind existing code paths.
 
 ## State document
 
-- `AppDocument.Schema` must be exactly `2`. Schema values greater than `2` are
-  rejected as unknown future versions; values less than `2` are unsupported.
+- `AppDocument.Schema` must be exactly `3`. Schema values greater than `3` are
+  rejected as unknown future versions; values less than `3` are unsupported.
 - One `AppDocument` owns the catalog and layouts for exactly one `OwnerID`.
 - `LocalSessionRecord.ID` is stable for the lifetime of the session and is not
   changed by renaming.
