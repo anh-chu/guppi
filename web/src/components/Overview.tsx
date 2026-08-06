@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type DOMAttributes } from 'react'
-import { Session, sessionKey, sessionScheduleID, sessionCwd } from '../hooks/useSessions'
+import { Session, sessionKey, sessionScheduleID, sessionCwd } from '../lib/session'
 import { Host } from '../hooks/useHosts'
 import { ToolEvent } from '../hooks/useToolEvents'
 import { ActivitySnapshot } from '../hooks/useActivity'
 import { toolColors, statusConfig, signalTreatment } from '../theme'
 import { stateRank, sessionSignal, isSessionActive, isToolSession, SessionState } from '../lib/sessionState'
 import { formatSessionUptime, formatSystemUptime } from '../lib/time'
-import { sessionLabel } from '../hooks/useSessions'
+import { sessionLabel } from '../lib/session'
 import { SessionActionsMenu, SessionMenuTarget } from './SessionActionsMenu'
 import { Terminal } from './Terminal'
 import { useGlance, GlanceTarget } from './GlancePopover'
@@ -31,8 +31,6 @@ interface OverviewProps {
   // Tiled layout groups (sessionKeys per group). Used to fold non-agent
   // "tool" panes (build/dev terminals) into the agent card they were tiled with.
   layoutGroups?: { leaves: string[]; activeKey: string | null }[]
-  // Threaded through to SessionActionsMenu: see its v2Mode/onRenameSession doc.
-  v2Mode?: boolean
   onRenameSession?: (key: string, label: string) => void
 }
 
@@ -257,7 +255,7 @@ function SessionCard({
   )
 }
 
-export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, onOpenFile, layoutGroups, v2Mode, onRenameSession }: OverviewProps) {
+export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, onOpenFile, layoutGroups, onRenameSession }: OverviewProps) {
   const { schedules } = useSchedules()
   const scheduleById = useMemo(() => new Map(schedules.map(s => [s.id, s])), [schedules])
   const scheduleIdFor = useCallback((session: Session) => (
@@ -561,7 +559,6 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
           setSessionAttr={setSessionAttr}
           onSessionKilled={onSessionKilled}
           onClose={() => setMenu(null)}
-          v2Mode={v2Mode}
           onRenameSession={onRenameSession}
         />
       )}

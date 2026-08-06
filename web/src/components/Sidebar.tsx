@@ -1,13 +1,12 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react'
 import { generateKeyBetween } from 'fractional-indexing'
-import { Session, sessionKey, sessionLabel, sessionScheduleID } from '../hooks/useSessions'
-import type { SessionAttrSets } from '../hooks/useSessionAttrs'
+import { Session, sessionKey, sessionLabel, sessionScheduleID } from '../lib/session'
+import type { SessionPresentationAttrs } from '../state/session/viewModel'
 import { Host } from '../hooks/useHosts'
 import { ToolEvent } from '../hooks/useToolEvents'
 import { ActivitySnapshot } from '../hooks/useActivity'
 import { useSchedules } from '../hooks/useSchedules'
 import { cn } from '../lib/utils'
-import { renameSession, aiNameSession as aiNameSessionApi, killSession as killSessionApi } from '../lib/sessionActions'
 import { describeCron } from '../lib/cron'
 import { formatRelativeTime, formatUptime } from '../lib/time'
 import { pathLeaf } from '../lib/path'
@@ -60,14 +59,10 @@ interface SidebarProps {
   onPairSessions?: (keyA: string, keyB: string) => void
   onRemoveFromSplit?: (key: string) => void
   onSessionKilled?: (key: string) => void
-  sessionAttrs: SessionAttrSets
+  sessionAttrs: SessionPresentationAttrs
   setSessionAttr: (key: string, next: { background?: boolean; hidden?: boolean }) => void
-  // When true, this Sidebar is rendered under the v2 (AppV2) state path: the
-  // shared legacy REST session-action routes (kill/rename) must NOT also be
-  // invoked alongside the v2 callback (that would double-kill/double-write),
-  // and features with no v2 equivalent yet (AI rename, hide, background,
-  // worktree removal) must be hidden rather than shown as dead controls.
-  v2Mode?: boolean
+  // Canonical session rename: routes through v2State.sessionCommand's
+  // `label` action. There is no other (legacy REST) rename path any more.
   onRenameSession?: (key: string, label: string) => void
   // True while the session list is still converging after a WS (re)connect.
   // Pruning per-device ordering then would delete entries for sessions that
@@ -214,7 +209,6 @@ export function Sidebar({
   sessionAttrs,
   setSessionAttr,
   pruningSuspended,
-  v2Mode,
   onRenameSession,
 
   onQuickShell,
@@ -247,7 +241,6 @@ export function Sidebar({
   const [contextMenu, setContextMenu] = useState<{ key: string; id: string; name: string; label: string; host?: string; isWorktree?: boolean; x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const [confirmKillKey, setConfirmKillKey] = useState<string | null>(null)
-  const [confirmWorktreeKillKey, setConfirmWorktreeKillKey] = useState<string | null>(null)
   const [filterOpen, setFilterOpen] = useState(false)
   const [viewMode, setViewMode] = useState<'default' | 'status'>(() =>
     localStorage.getItem('termyard:view-mode') === 'status' ? 'status' : 'default')
@@ -331,13 +324,6 @@ export function Sidebar({
   const [groupRenameValue, setGroupRenameValue] = useState('')
   const [legacyAiGroupId, setLegacyAiGroupId] = useState<string | null>(null)
   const aiPendingGroupId = namingGroupId ?? legacyAiGroupId
-  // Session keys (host/name) currently being AI-named, for the inline spinner.
-  const [namingSessions, setNamingSessions] = useState<Set<string>>(new Set())
-  const setNaming = (key: string, on: boolean) => setNamingSessions(prev => {
-    const next = new Set(prev)
-    if (on) next.add(key); else next.delete(key)
-    return next
-  })
   const renameInputRef = useRef<HTMLInputElement>(null)
   const groupRenameInputRef = useRef<HTMLInputElement>(null)
   const filterRef = useRef<HTMLDivElement>(null)
@@ -369,7 +355,6 @@ export function Sidebar({
       if (filterOpen && target && filterRef.current?.contains(target)) return
       setContextMenu(null)
       setConfirmKillKey(null)
-      setConfirmWorktreeKillKey(null)
       setFilterOpen(false)
     }
     window.addEventListener('click', handler)
@@ -450,20 +435,7 @@ export function Sidebar({
   const killSession = (id: string, name: string, host?: string) => {
     setContextMenu(null)
     setConfirmKillKey(null)
-    setConfirmWorktreeKillKey(null)
     onSessionKilled?.(host ? `${host}/${name}` : name)
-    // In v2 mode, onSessionKilled already IS the real kill (routed through
-    // v2State.sessionCommand). Calling the legacy REST route too would fire
-    // a second, redundant kill attempt down a different path.
-    if (!v2Mode) killSessionApi(id, name, host)
-  }
-
-  const killSessionAndWorktree = (id: string, name: string, host?: string) => {
-    setContextMenu(null)
-    setConfirmKillKey(null)
-    setConfirmWorktreeKillKey(null)
-    onSessionKilled?.(host ? `${host}/${name}` : name)
-    if (!v2Mode) killSessionApi(id, name, host, true)
   }
 
   const submitRename = async () => {
@@ -471,25 +443,8 @@ export function Sidebar({
       setRenamingSession(null)
       return
     }
-    if (v2Mode) {
-      onRenameSession?.(renamingSession.key, renameValue.trim())
-    } else {
-      await renameSession(renamingSession.name, renameValue.trim(), renamingSession.host)
-    }
+    onRenameSession?.(renamingSession.key, renameValue.trim())
     setRenamingSession(null)
-  }
-
-  // Manually (re)generate an AI name for a session. The new name arrives via
-  // the websocket state update; we only own the per-session naming spinner.
-  const aiNameSession = async (name: string, host?: string) => {
-    setContextMenu(null)
-    const key = host ? `${host}/${name}` : name
-    setNaming(key, true)
-    try {
-      await aiNameSessionApi(name, host)
-    } finally {
-      setNaming(key, false)
-    }
   }
 
   const fallbackAiNameGroup = async (groupId: string, groupSessions: Session[], current?: string) => {
@@ -979,11 +934,6 @@ export function Sidebar({
                 >
                   {collapsed ? sessionLabel(session).charAt(0).toUpperCase() : sessionLabel(session)}
                 </span>
-              </span>
-            )}
-            {!collapsed && namingSessions.has(sessionKey(session)) && (
-              <span className="shrink-0" title="AI naming…">
-                <SparkleIcon spinning size={11} />
               </span>
             )}
             {!collapsed && (
@@ -1857,24 +1807,9 @@ export function Sidebar({
           >
             Rename
           </div>
-          {/* AI rename has no v2 equivalent (POST /api/group/name is legacy-only);
-              hide rather than show a control that silently no-ops. */}
-          {!v2Mode && (
-            <div
-              onClick={() => canRenameContextTarget && aiNameSession(contextMenu.name, contextMenu.host)}
-              className={cn(
-                'px-3 py-1.5 text-sm text-ink hover:bg-surface-card hover:text-ink',
-                canRenameContextTarget ? 'cursor-pointer' : 'cursor-not-allowed opacity-50',
-              )}
-            >
-              AI rename
-            </div>
-          )}
-          {/* Hide/Background: server-authoritative session attrs. In legacy
-              mode these go through useSessionAttrs' /api/session-attrs route;
-              in v2Mode, setSessionAttr instead dispatches the session
-              command's `set_presentation` action (ActionSetPresentation) --
-              see App.tsx's AppV2 for the wiring. Shown in both modes now. */}
+          {/* Hide/Background: server-authoritative session attrs, dispatched
+              via the session command's `set_presentation` action
+              (ActionSetPresentation) -- see SessionApp.tsx's wiring. */}
           <div
             onClick={() => toggleHide(contextMenu.key)}
             className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
@@ -1900,23 +1835,6 @@ export function Sidebar({
           >
             {confirmKillKey === contextMenu.key ? 'Confirm kill?' : 'Kill'}
           </div>
-          {/* Worktree removal has no v2 route (killSessionApi(..., true) is
-              legacy-only) — hide rather than fire a legacy call that bypasses
-              v2 authority. */}
-          {contextMenu.isWorktree && !v2Mode && (
-            <div
-              onClick={() => {
-                if (confirmWorktreeKillKey === contextMenu.key) {
-                  killSessionAndWorktree(contextMenu.id, contextMenu.name, contextMenu.host)
-                } else {
-                  setConfirmWorktreeKillKey(contextMenu.key)
-                }
-              }}
-              className="px-3 py-1.5 text-sm cursor-pointer text-red-400 hover:bg-red-500/10"
-            >
-              {confirmWorktreeKillKey === contextMenu.key ? 'Confirm remove worktree?' : 'Kill + remove worktree'}
-            </div>
-          )}
         </div>
       )}
     </aside>

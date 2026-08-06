@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useRef } from 'react'
-import type { WorkspaceAction } from '../state/workspaceReducer'
+// Pure session types and helpers shared by the canonical UI (SessionApp) and
+// its shared display components (Sidebar, Overview, TiledView,
+// NewSessionModal, QuickSwitcher, ScheduleModal). These are display-shape
+// helpers only -- there is no fetch/polling authority here any more (that
+// was hooks/useSessions.ts's useSessions() hook, deleted along with
+// AppLegacy/useWorkspace, the only callers of it).
 
 export interface Pane {
   id: string
@@ -114,69 +118,4 @@ export function optimisticSession(name: string, hostId?: string, hostName?: stri
       }],
     }],
   }
-}
-
-export interface ConnectionState {
-  live: boolean
-  livenessUnknown: boolean
-}
-
-export function useSessions(
-  dispatch: React.Dispatch<WorkspaceAction>,
-  connection: ConnectionState,
-  authenticated: boolean,
-) {
-  const generationRef = useRef(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  const refresh = useCallback(async () => {
-    if (!authenticated) return
-    generationRef.current += 1
-    const generation = generationRef.current
-    abortRef.current?.abort()
-    const controller = new AbortController()
-    abortRef.current = controller
-    try {
-      const res = await fetch('/api/sessions', { signal: controller.signal })
-      if (!res.ok) return
-      const data = (await res.json()) as Session[] || []
-      if (controller.signal.aborted) return
-      dispatch({
-        type: 'sessions/snapshot',
-        sessions: data,
-        generation,
-        now: performance.now(),
-      })
-    } catch {
-      // Network errors are expected during disconnect; the connection state
-      // tells us when to fall back to polling.
-    }
-  }, [authenticated, dispatch])
-
-  // Live events are primary. Reconcile on initial load and whenever the
-  // WebSocket reconnects. Use slow fallback polling only when liveness is
-  // unknown, and pause it in hidden tabs.
-  useEffect(() => {
-    if (!authenticated) return
-    refresh()
-    if (connection.live) return
-
-    const tick = () => {
-      if (!document.hidden) refresh()
-    }
-    const id = window.setInterval(tick, 5000)
-    return () => window.clearInterval(id)
-  }, [authenticated, connection.live, refresh])
-
-  // Refresh immediately when the tab becomes visible while liveness is unknown.
-  useEffect(() => {
-    if (!authenticated) return
-    const onVisibility = () => {
-      if (!document.hidden && !connection.live) refresh()
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [authenticated, connection.live, refresh])
-
-  return { refresh }
 }

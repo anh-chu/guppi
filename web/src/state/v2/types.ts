@@ -3,7 +3,7 @@
  *
  * These types mirror pkg/state/ids.go and pkg/state/document.go. They are a
  * design-freeze artifact; runtime code still uses the legacy types in
- * src/hooks/useSessions and src/state/workspaceReducer.
+ * src/lib/session (display shape) -- there is no legacy workspaceReducer any more.
  */
 
 export type OwnerID = string

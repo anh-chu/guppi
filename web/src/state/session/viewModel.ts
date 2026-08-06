@@ -5,16 +5,15 @@
  * v2 catalog (state/v2/types.ts's LocalSessionRecord) and hands to
  * presentation logic. It intentionally has no `windows`/`panes` fields: v2
  * sessions are always single-pane daemon sessions, unlike the legacy
- * `Session` type (src/hooks/useSessions.ts) which AppV2 previously had to
+ * `Session` type (src/lib/session.ts) which AppV2 previously had to
  * fake a `windows: []` shape for just to satisfy shared components' prop
  * types.
  *
- * This module must not import anything from src/hooks/useSessions.ts or
- * src/state/workspaceReducer.ts (the legacy hook/reducer modules) -- it is
- * the extraction point the v2 frontend depends on instead. Structural
+ * This module must not import anything from src/lib/session.ts -- it is
+ * the extraction point the canonical frontend depends on instead. Structural
  * (not nominal) typing means callers can still pass values built from this
- * module into components typed against the legacy `Session`/`SessionAttrSets`
- * shapes, as long as the fields line up; see App.tsx's AppV2 for the adapter
+ * module into components typed against the shared `Session`/`SessionPresentationAttrs`
+ * shapes, as long as the fields line up; see SessionApp.tsx for the adapter
  * that does that today.
  */
 
@@ -58,7 +57,7 @@ export interface SessionView {
   scheduleId: string | undefined
 }
 
-/** Canonical hidden/background/schedule attribute sets, structurally identical to hooks/useSessionAttrs.ts's SessionAttrSets. */
+/** Canonical hidden/background/schedule attribute sets AppV2 hands to Sidebar/Overview/SessionActionsMenu. */
 export interface SessionPresentationAttrs {
   hidden: Set<string>
   background: Set<string>

@@ -3,7 +3,7 @@
 // Regression proof for round-8 Finding C: AppV2's session keys are always
 // `${ownerId}/${stableSessionId}` (Session.host is the v2 OwnerID, never the
 // peer transport fingerprint -- see App.tsx's `sessions` memo and
-// sessionKey() in useSessions.ts), but tool/activity events arrive keyed by
+// sessionKey() in lib/session.ts), but tool/activity events arrive keyed by
 // `{host: peer-fingerprint, session: mutable-display-label}` with a SEPARATE
 // stable `session_id` field the frontend previously never read (see
 // pkg/toolevents.Event / pkg/ws/hub.go's WS wrapping). Before the fix, these
@@ -22,7 +22,7 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useToolEvents } from './useToolEvents'
 import type { Host } from './useHosts'
-import type { Session } from './useSessions'
+import type { Session } from '../lib/session'
 import { sessionSignal } from '../lib/sessionState'
 
 const emptyJsonResponse = () =>

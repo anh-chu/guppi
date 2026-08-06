@@ -1,26 +1,26 @@
 // @vitest-environment jsdom
 import { renderHook, act } from '@testing-library/react'
 import { describe, it, expect } from 'vitest'
-import { useReducer } from 'react'
+import { useState } from 'react'
 import { useWikiController } from './useWikiController'
-import {
-  workspaceReducer,
-  createInitialWorkspaceState,
-  type WikiTarget,
-} from '../state/workspaceReducer'
+import { WIKI_HISTORY_MAX, type WikiState, type WikiTarget } from '../state/wiki'
 
+// Mirrors SessionApp.tsx's wikiWorkspaceLike stub exactly: a small local
+// { target, history } reducer, since useWikiController only needs a
+// structural { state: { wiki }, actions: { openWiki, closeWiki } } shape and
+// there is no legacy workspace reducer any more to build one from.
 function renderController(enabled = true) {
   return renderHook(() => {
-    const [state, dispatch] = useReducer(
-      workspaceReducer,
-      createInitialWorkspaceState(),
-    )
+    const [wikiState, setWikiState] = useState<WikiState>({ target: null, history: [] })
     const workspace = {
-      state,
+      state: { wiki: wikiState },
       actions: {
         openWiki: (target: WikiTarget) =>
-          dispatch({ type: 'wiki/open', target }),
-        closeWiki: () => dispatch({ type: 'wiki/close' }),
+          setWikiState(s => ({
+            target,
+            history: [target, ...s.history.filter(t => t.path !== target.path)].slice(0, WIKI_HISTORY_MAX),
+          })),
+        closeWiki: () => setWikiState(s => ({ ...s, target: null })),
       },
     }
     return useWikiController(workspace, enabled)

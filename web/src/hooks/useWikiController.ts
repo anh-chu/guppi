@@ -2,7 +2,7 @@ import { useRef, useCallback, useMemo } from 'react'
 import type { WikiTarget, WikiState } from '../state/wiki'
 
 type WorkspaceLike = {
-  state: { wiki: WikiState; view: { activeKey: string | null; singleView: string | null } }
+  state: { wiki: WikiState }
   actions: { openWiki: (target: WikiTarget) => void; closeWiki: () => void }
 }
 

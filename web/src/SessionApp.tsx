@@ -15,8 +15,7 @@ import { HelpModal } from './components/HelpModal'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
-import { Session, sessionKey, parseSessionKey, optimisticSession, sessionCwd } from './hooks/useSessions'
-import { useWorkspace } from './hooks/useWorkspace'
+import { Session, sessionKey, parseSessionKey, optimisticSession, sessionCwd } from './lib/session'
 import { useHosts } from './hooks/useHosts'
 import { useToolEvents } from './hooks/useToolEvents'
 import { useActivity } from './hooks/useActivity'
@@ -25,8 +24,6 @@ import { useWebSocket } from './hooks/useWebSocket'
 import { usePushNotifications } from './hooks/usePushNotifications'
 import { usePreferences, PreferencesContext } from './hooks/usePreferences'
 import { useAuth } from './hooks/useAuth'
-import { useSessionAttrs } from './hooks/useSessionAttrs'
-import { useSessionOrder } from './hooks/useSessionOrder'
 import { useWikiController } from './hooks/useWikiController'
 import { WIKI_HISTORY_MAX, type WikiTarget, type WikiState } from './state/wiki'
 import { Toasts, Toast } from './components/Toasts'
@@ -141,7 +138,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   const [wikiState, setWikiState] = useState<WikiState>({ target: null, history: [] })
   const wikiWorkspaceLike = useMemo(
     () => ({
-      state: { wiki: wikiState, view: { activeKey: null, singleView: null } },
+      state: { wiki: wikiState },
       actions: {
         openWiki: (target: WikiTarget) =>
           setWikiState((s) => ({
@@ -641,7 +638,6 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
             onQuickShell={handleQuickShell}
             crashedCount={crashedHook.crashedSessions.length}
             onCrashedClick={() => crashedHook.refresh()}
-            v2Mode
             onRenameSession={handleRenameSession}
           />
         )}
@@ -740,7 +736,6 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
               setSessionAttr={setSessionAttr}
               onSessionKilled={handleKillSession}
               layoutGroups={layoutGroups}
-              v2Mode
               onRenameSession={handleRenameSession}
             />
           )}

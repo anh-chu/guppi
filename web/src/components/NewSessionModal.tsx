@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Host } from '../hooks/useHosts'
-import { Session } from '../hooks/useSessions'
+import { Session } from '../lib/session'
 import { usePreferences } from '../hooks/usePreferences'
 import { cn } from '../lib/utils'
 import { AgentMark } from './AgentMark'

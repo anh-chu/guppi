@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Terminal } from './Terminal'
-import { parseSessionKey } from '../hooks/useSessions'
+import { parseSessionKey } from '../lib/session'
 import { cn } from '../lib/utils'
 import { PaneTree, getLeaves } from '../lib/paneTree'
 

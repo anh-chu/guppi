@@ -3,26 +3,26 @@
  */
 
 /**
- * Integration test for App component mode-splitting.
+ * Integration test for App/SessionApp.
  *
- * Verifies:
- * 1. AppV2 with getTerminalIdentity resolver is activated when v2 is enabled
- * 2. AppLegacy is activated when v2 is disabled
- * 3. Branch happens at top-level App, not per-render conditionally
+ * App.tsx unconditionally renders SessionApp (the sole production UI --
+ * there is no legacy AppLegacy or v2Mode/feature-flag branch any more).
+ * Verifies SessionApp's getTerminalIdentity resolver, session-key/ref
+ * plumbing, and v2 state wiring.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { sessionKey } from './hooks/useSessions'
+import { sessionKey } from './lib/session'
 import { keyToSessionRef } from './state/v2/paneTreeAdapter'
 import { encodeSessionRef } from './state/v2/types'
 
-// Track which code path was taken
-let codePathTaken: 'appv2' | 'applegacy' | 'none' = 'none'
+// Track that SessionApp mounted (calls useV2State) -- kept from the old
+// mode-splitting test as a basic "did it render" sanity signal.
+let codePathTaken: 'appv2' | 'none' = 'none'
 
-// There is no feature flag any more: App.tsx unconditionally renders
-// SessionApp (the former AppV2). v2Enabled is kept as a harmless no-op local
-// so the many existing `v2Enabled = true` assignments below (predating the
-// hard cutover) remain valid without touching every call site.
+// Kept as a harmless no-op local so the many existing `v2Enabled = true`
+// assignments below (predating the hard cutover to a single UI) remain valid
+// without touching every call site.
 let v2Enabled = false
 
 // Mock hooks that are needed by App
@@ -94,60 +94,6 @@ vi.mock('./hooks/useV2State', () => ({
   },
 }))
 
-// Track if useWorkspace is called (only called in AppLegacy path)
-vi.mock('./hooks/useWorkspace', () => ({
-  useWorkspace: () => {
-    codePathTaken = 'applegacy'
-    return {
-      state: {
-        sessions: [],
-        loading: false,
-        groups: {},
-        groupsLoaded: true,
-        view: {
-          currentView: 'overview',
-          settingsOpen: false,
-          paneTree: null,
-          activeKey: null,
-          singleView: null,
-          activeGroupId: 'default',
-        },
-        connection: { livenessUnknown: false },
-      },
-      actions: {
-        setPaneTree: vi.fn(),
-        setActiveKey: vi.fn(),
-        setSingleView: vi.fn(),
-        setCurrentView: vi.fn(),
-        openSettings: vi.fn(),
-        setActiveGroup: vi.fn(),
-        navigate: vi.fn(),
-        refresh: vi.fn(),
-        addOptimistic: vi.fn(),
-        removeOptimistic: vi.fn(),
-        renameSession: vi.fn(),
-        selectSession: vi.fn(),
-        splitPane: vi.fn(),
-        closePane: vi.fn(),
-        removeFromLayout: vi.fn(),
-        dissolveToSingle: vi.fn(),
-        pruneMissing: vi.fn(),
-        onEvent: vi.fn(),
-        setConnection: vi.fn(),
-      },
-      groupSync: {
-        refresh: vi.fn(),
-        setTree: vi.fn(),
-        setName: vi.fn(),
-        setRank: vi.fn(),
-        deleteGroup: vi.fn(),
-        forceAiName: vi.fn(),
-        namingGroupId: null,
-      },
-    }
-  },
-}))
-
 // Mock other hooks with minimal implementations
 const createMockHook = (name: string) => vi.fn(() => {
   if (name === 'useHosts') return { hosts: mockHostsList ?? [], refresh: vi.fn() }
@@ -164,8 +110,6 @@ const createMockHook = (name: string) => vi.fn(() => {
   if (name === 'useNotifications') return { processToolEvent: vi.fn() }
   if (name === 'useWebSocket') return { connected: false } // overridden below for useWebSocket specifically
   if (name === 'usePushNotifications') return { pushState: 'unsupported', subscribe: vi.fn(), unsubscribe: vi.fn() }
-  if (name === 'useSessionAttrs') return { sets: { hidden: new Set(), background: new Set(), scheduleIDs: {} }, setAttr: vi.fn(), refresh: vi.fn() }
-  if (name === 'useSessionOrder') return { ranks: {}, loaded: true, refresh: vi.fn(), setRank: vi.fn() }
   if (name === 'useCrashedSessions') return { crashedSessions: [], recover: vi.fn(), dismiss: vi.fn(), dismissAll: vi.fn(), refresh: vi.fn() }
   if (name === 'useSelfUpdate') return { status: null, apply: vi.fn(), dismiss: vi.fn(), checkNow: vi.fn(), applying: false, restartMode: null, error: null, checking: false }
   if (name === 'useWikiController') return { target: null, closePanel: vi.fn(), togglePanel: vi.fn(), openFile: vi.fn() }
@@ -187,8 +131,6 @@ vi.mock('./hooks/useWebSocket', () => ({
   },
 }))
 vi.mock('./hooks/usePushNotifications', () => ({ usePushNotifications: createMockHook('usePushNotifications') }))
-vi.mock('./hooks/useSessionAttrs', () => ({ useSessionAttrs: createMockHook('useSessionAttrs') }))
-vi.mock('./hooks/useSessionOrder', () => ({ useSessionOrder: createMockHook('useSessionOrder') }))
 vi.mock('./hooks/useCrashedSessions', () => ({ useCrashedSessions: createMockHook('useCrashedSessions') }))
 vi.mock('./hooks/useSelfUpdate', () => ({ useSelfUpdate: createMockHook('useSelfUpdate') }))
 vi.mock('./hooks/useWikiController', () => ({ useWikiController: createMockHook('useWikiController') }))
@@ -231,7 +173,7 @@ describe('App: mode-splitting', () => {
     vi.resetModules()
   })
 
-  describe('branch point', () => {
+  describe('AppV2 getTerminalIdentity integration', () => {
     it('App always renders SessionApp (calls useV2State), unconditionally -- there is no mode switch any more', async () => {
       const { render } = await import('@testing-library/react')
       const App = (await import('./App')).default
@@ -240,9 +182,7 @@ describe('App: mode-splitting', () => {
 
       expect(codePathTaken).toBe('appv2')
     })
-  })
 
-  describe('AppV2 getTerminalIdentity integration', () => {
     it('AppV2 provides getTerminalIdentity resolver to TiledView', async () => {
       // This test verifies the integration point is wired.
       // The resolver itself is tested via unit tests in projections/store.
@@ -426,7 +366,7 @@ describe('App: mode-splitting', () => {
       )
     })
 
-    it('v2 mode never calls useSessionAttrs and treats session-attrs-updated as a no-op', async () => {
+    it('session-attrs-updated is a documented no-op, and sessionAttrs always has a well-formed empty shape when nothing is hidden/backgrounded', async () => {
       const workspaceCommand = vi.fn().mockResolvedValue({})
       mockV2State = {
         state: {
@@ -447,27 +387,18 @@ describe('App: mode-splitting', () => {
         workspaceCommand,
       }
 
-      const useSessionAttrsModule = await import('./hooks/useSessionAttrs')
-      const useSessionAttrsSpy = useSessionAttrsModule.useSessionAttrs as ReturnType<typeof vi.fn>
-      useSessionAttrsSpy.mockClear()
-
       v2Enabled = true
       const { render } = await import('@testing-library/react')
       const App = (await import('./App')).default
       render(<App />)
 
-      // AppV2 must never mount the legacy session-attrs hook: its route is not
-      // registered in v2 mode, so calling it would always 404 for nothing.
-      expect(useSessionAttrsSpy).not.toHaveBeenCalled()
-
       // Dispatching the legacy 'session-attrs-updated' event through the real
-      // onEvent handler must not throw and must not attempt to call into the
-      // (nonexistent) refresh function -- it is now a documented no-op.
+      // onEvent handler must not throw and must not attempt to call into any
+      // (nonexistent) refresh function -- it is a documented no-op.
       expect(capturedOnEvent).not.toBeNull()
       expect(() => capturedOnEvent!({ type: 'session-attrs-updated' })).not.toThrow()
 
-      // Sidebar/Overview must still receive a well-formed (empty) attrs shape,
-      // never a stale or undefined value from the removed hook.
+      // Sidebar/Overview must still receive a well-formed (empty) attrs shape.
       expect(mockSidebarProps.sessionAttrs).toEqual({ background: new Set(), hidden: new Set(), scheduleIDs: new Map() })
     })
 

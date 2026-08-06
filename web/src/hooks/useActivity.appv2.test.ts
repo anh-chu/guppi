@@ -19,7 +19,7 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useActivity } from './useActivity'
 import type { Host } from './useHosts'
-import type { Session } from './useSessions'
+import type { Session } from '../lib/session'
 import { sessionSignal } from '../lib/sessionState'
 
 const emptyJsonResponse = () =>

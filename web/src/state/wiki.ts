@@ -1,11 +1,11 @@
 /**
  * Wiki-panel target/history types.
  *
- * Extracted out of state/workspaceReducer.ts (the legacy v1 workspace
- * reducer) so that useWikiController.ts -- a hook shared by both AppLegacy
- * and AppV2 -- and AppV2 itself do not need to import a legacy-reducer
- * module purely to get these type names. workspaceReducer.ts re-exports
- * them for backward compatibility with existing legacy imports.
+ * Originally extracted out of the now-deleted legacy v1 workspace reducer
+ * (state/workspaceReducer.ts) so that useWikiController.ts and SessionApp
+ * itself didn't need to import a legacy-reducer module purely to get these
+ * type names. That reducer is gone; this module is now the sole home of
+ * these types.
  */
 
 export type WikiTarget = {

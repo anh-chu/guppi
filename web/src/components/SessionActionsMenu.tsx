@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { renameSession, aiNameSession, killSession } from '../lib/sessionActions'
 
 // Self-contained right-click menu for a single session. Owns the menu UI and
-// its confirm/rename state; the actual API calls live in lib/sessionActions so
-// the Sidebar context menu shares them.
+// its confirm/rename state; kill/rename route through the canonical v2
+// session-command callbacks passed in as props.
 
 export type SessionMenuTarget = {
   key: string
@@ -23,7 +22,6 @@ export function SessionActionsMenu({
   setSessionAttr,
   onSessionKilled,
   onClose,
-  v2Mode,
   onRenameSession,
 }: {
   target: SessionMenuTarget
@@ -34,11 +32,6 @@ export function SessionActionsMenu({
   setSessionAttr: (key: string, next: { background?: boolean; hidden?: boolean }) => void
   onSessionKilled?: (key: string) => void
   onClose: () => void
-  // When true, this menu is rendered under the v2 (AppV2) state path: legacy
-  // REST session-action routes (kill/rename/AI-rename) must not also fire
-  // alongside the v2 callback, and features with no v2 equivalent yet
-  // (AI rename, hide, background, worktree removal) are hidden.
-  v2Mode?: boolean
   onRenameSession?: (key: string, label: string) => void
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
@@ -46,7 +39,6 @@ export function SessionActionsMenu({
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(target.label)
   const [confirmKill, setConfirmKill] = useState(false)
-  const [confirmWorktreeKill, setConfirmWorktreeKill] = useState(false)
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -66,23 +58,14 @@ export function SessionActionsMenu({
   const submitRename = () => {
     const next = renameValue.trim()
     if (next && next !== target.label) {
-      if (v2Mode) onRenameSession?.(target.key, next)
-      else renameSession(target.name, next, target.host)
+      onRenameSession?.(target.key, next)
     }
     onClose()
   }
 
-  const aiName = () => {
-    onClose()
-    aiNameSession(target.name, target.host)
-  }
-
-  const kill = (removeWorktree: boolean) => {
+  const kill = () => {
     onClose()
     onSessionKilled?.(target.key)
-    // In v2 mode, onSessionKilled already IS the real kill (routed through
-    // v2State.sessionCommand). Don't also fire the legacy REST route.
-    if (!v2Mode) killSession(target.id, target.name, target.host, removeWorktree)
   }
 
   const item = 'px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink'
@@ -109,15 +92,11 @@ export function SessionActionsMenu({
       ) : (
         <>
           <div className={item} onClick={() => setRenaming(true)}>Rename</div>
-          {/* AI rename has no v2 equivalent (POST /api/group/name is legacy-only). */}
-          {!v2Mode && <div className={item} onClick={aiName}>AI rename</div>}
         </>
       )}
-      {/* Hide/Background: server-authoritative session attrs. In v2Mode,
-          setSessionAttr dispatches the session command's `set_presentation`
-          action (ActionSetPresentation) instead of the legacy
-          /api/session-attrs route -- see App.tsx's AppV2 wiring. Shown in
-          both modes now. */}
+      {/* Hide/Background: server-authoritative session attrs, dispatched via
+          the session command's `set_presentation` action
+          (ActionSetPresentation) -- see SessionApp.tsx's wiring. */}
       <div className={item} onClick={() => { setSessionAttr(target.key, { hidden: !hiddenSet.has(target.key) }); onClose() }}>
         {hiddenSet.has(target.key) ? 'Unhide' : 'Hide'}
       </div>
@@ -127,20 +106,10 @@ export function SessionActionsMenu({
       <div className="my-1 border-t border-hairline" />
       <div
         className="px-3 py-1.5 text-sm cursor-pointer text-red-400 hover:bg-red-500/10"
-        onClick={() => { if (confirmKill) kill(false); else setConfirmKill(true) }}
+        onClick={() => { if (confirmKill) kill(); else setConfirmKill(true) }}
       >
         {confirmKill ? 'Confirm kill?' : 'Kill'}
       </div>
-      {/* Worktree removal has no v2 route — hide rather than fire a legacy call
-          that bypasses v2 authority. */}
-      {target.isWorktree && !v2Mode && (
-        <div
-          className="px-3 py-1.5 text-sm cursor-pointer text-red-400 hover:bg-red-500/10"
-          onClick={() => { if (confirmWorktreeKill) kill(true); else setConfirmWorktreeKill(true) }}
-        >
-          {confirmWorktreeKill ? 'Confirm remove worktree?' : 'Kill + remove worktree'}
-        </div>
-      )}
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { Session, sessionKey, sessionLabel } from '../hooks/useSessions'
+import { Session, sessionKey, sessionLabel } from '../lib/session'
 import { ToolEvent } from '../hooks/useToolEvents'
 import { toolColors } from '../theme'
 import { cn } from '../lib/utils'

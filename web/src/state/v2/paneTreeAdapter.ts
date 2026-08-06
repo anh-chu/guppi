@@ -10,7 +10,7 @@
 import type { PaneNode, SessionRef } from './types'
 import type { PaneTree } from '../../lib/paneTree'
 
-/** Mirrors hooks/useSessions.ts sessionKey(): `${host}/${name}` or `name`. */
+/** Mirrors lib/session.ts sessionKey(): `${host}/${name}` or `name`. */
 export function sessionRefToKey(ref: SessionRef): string {
   return ref.owner ? `${ref.owner}/${ref.session}` : ref.session
 }

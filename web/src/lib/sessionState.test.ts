@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { sessionSignal, isSessionActive, stateRank } from './sessionState'
-import type { Session } from '../hooks/useSessions'
+import type { Session } from '../lib/session'
 import type { ToolEvent } from '../hooks/useToolEvents'
 import type { ActivitySnapshot } from '../hooks/useActivity'
 
