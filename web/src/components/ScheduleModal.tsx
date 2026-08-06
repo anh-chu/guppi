@@ -234,23 +234,11 @@ export function ScheduleModal({ onClose, sessions, killSession }: Props) {
   const deleteSchedule = async (schedule: Schedule) => {
     if (!confirm(`Delete schedule ${schedule.name}?`)) return
 
-    // Find the sessions this schedule spawned (the /api/session-attrs
-    // schedule_ids map, keyed by SessionView.key, is authoritative). Offer to
-    // kill them along with the schedule. The session list itself comes from
-    // the canonical catalog (sessions prop) -- there is no more standalone
-    // GET /api/sessions REST route.
-    let scheduleSessions: SessionView[] = []
-    try {
-      const attrsRes = await fetch('/api/session-attrs')
-      const attrs = attrsRes.ok ? await attrsRes.json().catch(() => null) : null
-      const scheduleIDs: Record<string, string> = attrs?.schedule_ids || {}
-      scheduleSessions = sessions.filter(s => {
-        const sid = scheduleIDs[s.key] || scheduleIDs[s.id]
-        return sid === schedule.id
-      })
-    } catch {
-      // non-fatal: proceed with schedule-only delete
-    }
+    // Find the sessions this schedule spawned. SessionView.scheduleId (mapped
+    // directly from the canonical LocalSessionRecord's schedule_id field --
+    // see viewModel.ts) is authoritative; there is no more standalone
+    // GET /api/sessions or /api/session-attrs REST route to fall back on.
+    const scheduleSessions: SessionView[] = sessions.filter(s => s.scheduleId === schedule.id)
 
     let killSessions = false
     if (scheduleSessions.length > 0) {
