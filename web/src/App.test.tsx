@@ -482,6 +482,90 @@ describe('App: mode-splitting', () => {
       expect(mockSidebarProps.sessionAttrs).toEqual({ background: new Set(), hidden: new Set(), scheduleIDs: new Map() })
     })
 
+    it('v2 hidden/background presentation: catalog records populate sessionAttrs, and setSessionAttr dispatches the set_presentation session command', async () => {
+      const sessionCommand = vi.fn().mockResolvedValue({})
+      const hiddenSession: any = {
+        id: 'sess-hidden',
+        owner: null,
+        ref: { owner: null, session: 'sess-hidden', window: 0, pane: 0 },
+        phase: 'active',
+        desired: 'run',
+        revision: 1,
+        created_at: '2025-01-01T00:00:00Z',
+        hidden: true,
+      }
+      const backgroundSession: any = {
+        id: 'sess-bg',
+        owner: null,
+        ref: { owner: null, session: 'sess-bg', window: 0, pane: 0 },
+        phase: 'active',
+        desired: 'run',
+        revision: 1,
+        created_at: '2025-01-01T00:00:00Z',
+        background: true,
+      }
+      const plainSession: any = {
+        id: 'sess-plain',
+        owner: null,
+        ref: { owner: null, session: 'sess-plain', window: 0, pane: 0 },
+        phase: 'active',
+        desired: 'run',
+        revision: 1,
+        created_at: '2025-01-01T00:00:00Z',
+      }
+      const sessionsByRef = new Map([
+        [encodeSessionRef(hiddenSession.ref), hiddenSession],
+        [encodeSessionRef(backgroundSession.ref), backgroundSession],
+        [encodeSessionRef(plainSession.ref), plainSession],
+      ])
+      mockV2State = {
+        state: {
+          catalog: { owner: null, revision: 3, generation: 1, sessionsByRef, layoutsById: new Map() },
+          workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          connectionGeneration: 1,
+          connectionOnline: true,
+          catalogBootstrapped: true,
+          workspaceBootstrapped: false,
+        },
+        bootstrapped: true,
+        connected: true,
+        paneTree: null,
+        activeKey: null,
+        layoutId: null,
+        createSession: vi.fn().mockResolvedValue({}),
+        sessionCommand,
+        workspaceCommand: vi.fn().mockResolvedValue({}),
+      }
+
+      v2Enabled = true
+      const { render } = await import('@testing-library/react')
+      const App = (await import('./App')).default
+      render(<App />)
+
+      expect(mockSidebarProps).not.toBeNull()
+      // Real catalog hidden/background bits reach Sidebar via SessionView ->
+      // toPresentationAttrs, not a fixed empty/no-op placeholder.
+      expect(mockSidebarProps.sessionAttrs.hidden.has('sess-hidden')).toBe(true)
+      expect(mockSidebarProps.sessionAttrs.hidden.has('sess-bg')).toBe(false)
+      expect(mockSidebarProps.sessionAttrs.background.has('sess-bg')).toBe(true)
+      expect(mockSidebarProps.sessionAttrs.background.has('sess-plain')).toBe(false)
+
+      // Toggling hidden off from the sidebar dispatches the set_presentation
+      // session command against the correct ref -- not a no-op.
+      mockSidebarProps.setSessionAttr('sess-hidden', { hidden: false })
+      expect(sessionCommand).toHaveBeenCalledWith(
+        { owner: null, session: 'sess-hidden', window: 0, pane: 0 },
+        { action: 'set_presentation', hidden: false },
+      )
+
+      sessionCommand.mockClear()
+      mockSidebarProps.setSessionAttr('sess-plain', { background: true })
+      expect(sessionCommand).toHaveBeenCalledWith(
+        { owner: null, session: 'sess-plain', window: 0, pane: 0 },
+        { action: 'set_presentation', background: true },
+      )
+    })
+
     it('handleCreateSession resolves the selected host fingerprint to its v2 OwnerID before calling v2State.createSession', async () => {
       // The New Session modal's hostId is a peer transport fingerprint
       // (HostInfo.ID from useHosts, matching /api/hosts). v2State.createSession's

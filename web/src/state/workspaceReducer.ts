@@ -13,16 +13,15 @@ import {
   popOut,
 } from '../lib/paneTree'
 import { generateKeyBetween } from 'fractional-indexing'
+import type { WikiTarget, WikiState } from './wiki'
+import { WIKI_HISTORY_MAX } from './wiki'
+
+// Re-exported for backward compatibility -- these types now live in
+// state/wiki.ts (see that file's header comment for why).
+export type { WikiTarget, WikiState } from './wiki'
+export { WIKI_HISTORY_MAX } from './wiki'
 
 export type View = 'overview' | 'session' | 'settings'
-
-export type WikiTarget = {
-  path: string | null
-  cwd?: string
-  hostId?: string
-  session?: string
-  nonce: number
-}
 
 export interface WorkspaceView {
   currentView: View
@@ -31,11 +30,6 @@ export interface WorkspaceView {
   activeKey: string | null
   singleView: string | null
   activeGroupId: string
-}
-
-export interface WikiState {
-  target: WikiTarget | null
-  history: WikiTarget[]
 }
 
 export interface WorkspaceState {
@@ -105,7 +99,6 @@ export interface LegacyMigrationInput {
 }
 
 const STUB_TTL_MS = 6000
-export const WIKI_HISTORY_MAX = 20
 
 export function sessionKey(session: Session): string {
   return session.host ? `${session.host}/${session.name}` : session.name

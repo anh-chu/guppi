@@ -113,18 +113,17 @@ export function SessionActionsMenu({
           {!v2Mode && <div className={item} onClick={aiName}>AI rename</div>}
         </>
       )}
-      {/* Hide/Background are server-authoritative session attrs v2 does not
-          support yet — hide rather than show a click with no durable effect. */}
-      {!v2Mode && (
-        <div className={item} onClick={() => { setSessionAttr(target.key, { hidden: !hiddenSet.has(target.key) }); onClose() }}>
-          {hiddenSet.has(target.key) ? 'Unhide' : 'Hide'}
-        </div>
-      )}
-      {!v2Mode && (
-        <div className={item} onClick={() => { setSessionAttr(target.key, { background: !backgroundSet.has(target.key) }); onClose() }}>
-          {backgroundSet.has(target.key) ? 'Foreground' : 'Background'}
-        </div>
-      )}
+      {/* Hide/Background: server-authoritative session attrs. In v2Mode,
+          setSessionAttr dispatches the session command's `set_presentation`
+          action (ActionSetPresentation) instead of the legacy
+          /api/session-attrs route -- see App.tsx's AppV2 wiring. Shown in
+          both modes now. */}
+      <div className={item} onClick={() => { setSessionAttr(target.key, { hidden: !hiddenSet.has(target.key) }); onClose() }}>
+        {hiddenSet.has(target.key) ? 'Unhide' : 'Hide'}
+      </div>
+      <div className={item} onClick={() => { setSessionAttr(target.key, { background: !backgroundSet.has(target.key) }); onClose() }}>
+        {backgroundSet.has(target.key) ? 'Foreground' : 'Background'}
+      </div>
       <div className="my-1 border-t border-hairline" />
       <div
         className="px-3 py-1.5 text-sm cursor-pointer text-red-400 hover:bg-red-500/10"

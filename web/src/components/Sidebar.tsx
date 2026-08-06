@@ -1870,25 +1870,23 @@ export function Sidebar({
               AI rename
             </div>
           )}
-          {/* Hide/Background are server-authoritative session attrs v2 does not
-              support yet (setSessionAttr is a fixed no-op in v2 mode) — hide
-              these controls rather than show a click with no durable effect. */}
-          {!v2Mode && (
-            <div
-              onClick={() => toggleHide(contextMenu.key)}
-              className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
-            >
-              {hiddenSet.has(contextMenu.key) ? 'Unhide' : 'Hide'}
-            </div>
-          )}
-          {!v2Mode && (
-            <div
-              onClick={() => toggleBackground(contextMenu.key)}
-              className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
-            >
-              {backgroundSet.has(contextMenu.key) ? 'Foreground' : 'Background'}
-            </div>
-          )}
+          {/* Hide/Background: server-authoritative session attrs. In legacy
+              mode these go through useSessionAttrs' /api/session-attrs route;
+              in v2Mode, setSessionAttr instead dispatches the session
+              command's `set_presentation` action (ActionSetPresentation) --
+              see App.tsx's AppV2 for the wiring. Shown in both modes now. */}
+          <div
+            onClick={() => toggleHide(contextMenu.key)}
+            className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
+          >
+            {hiddenSet.has(contextMenu.key) ? 'Unhide' : 'Hide'}
+          </div>
+          <div
+            onClick={() => toggleBackground(contextMenu.key)}
+            className="px-3 py-1.5 text-sm text-ink cursor-pointer hover:bg-surface-card hover:text-ink"
+          >
+            {backgroundSet.has(contextMenu.key) ? 'Foreground' : 'Background'}
+          </div>
           <div className="my-1 border-t border-hairline" />
           <div
             onClick={() => {

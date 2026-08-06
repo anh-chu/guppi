@@ -1,8 +1,8 @@
 import { useRef, useCallback, useMemo } from 'react'
-import type { WikiTarget, WikiState, WorkspaceState, WorkspaceAction } from '../state/workspaceReducer'
+import type { WikiTarget, WikiState } from '../state/wiki'
 
 type WorkspaceLike = {
-  state: { wiki: WikiState; view: Pick<WorkspaceState['view'], 'activeKey' | 'singleView'> }
+  state: { wiki: WikiState; view: { activeKey: string | null; singleView: string | null } }
   actions: { openWiki: (target: WikiTarget) => void; closeWiki: () => void }
 }
 

@@ -60,6 +60,12 @@ export type LocalSessionRecord = {
   daemon_pid?: number
   systemd_unit?: string
   generation?: string
+  // hidden/background: set via the session command's `set_presentation`
+  // action (ActionSetPresentation, pkg/state/session_commands.go). Optional
+  // and defaulted false by consumers (see state/session/viewModel.ts's
+  // toSessionView) since older servers/bootstrap snapshots may omit them.
+  hidden?: boolean
+  background?: boolean
 }
 
 export type WorkspaceRecord = {

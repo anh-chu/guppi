@@ -25,10 +25,10 @@ import { useWebSocket } from './hooks/useWebSocket'
 import { usePushNotifications } from './hooks/usePushNotifications'
 import { usePreferencesProvider, usePreferences, PreferencesContext } from './hooks/usePreferences'
 import { useAuth } from './hooks/useAuth'
-import { useSessionAttrs, type SessionAttrSets } from './hooks/useSessionAttrs'
+import { useSessionAttrs } from './hooks/useSessionAttrs'
 import { useSessionOrder } from './hooks/useSessionOrder'
 import { useWikiController } from './hooks/useWikiController'
-import { WIKI_HISTORY_MAX, type WikiTarget, type WikiState } from './state/workspaceReducer'
+import { WIKI_HISTORY_MAX, type WikiTarget, type WikiState } from './state/wiki'
 import { Toasts, Toast } from './components/Toasts'
 import { RecoveryPanel } from './components/RecoveryPanel'
 import { useCrashedSessions } from './hooks/useCrashedSessions'
@@ -43,6 +43,7 @@ import { sessionRefToKey } from './state/v2/paneTreeAdapter'
 import { selectSessionByRef } from './state/v2/projections'
 import { useV2State } from './hooks/useV2State'
 import { isV2StateEnabled } from './lib/featureFlags'
+import { toSessionView, toPresentationAttrs, sessionViewSignal, type SessionView } from './state/session/viewModel'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
 
@@ -1473,18 +1474,19 @@ function AppLegacy({ onLogout, authenticated }: { onLogout?: () => void; authent
   )
 }
 
-// v2 mode has no server-side hidden/background/schedule-id session attributes
-// yet (useSessionAttrs' /api/session-attrs route is deliberately NOT
-// registered when this node is in v2 mode, and the 'session-attrs-updated'
-// event it reacts to is never sent by a v2-mode backend either -- see
-// pkg/server/routes_sessions.go's legacy-route gating). Rather than mount a
-// hook whose initial fetch always 404s and whose refresh is never triggered,
-// AppV2 uses this fixed empty/default value everywhere the legacy hook's
-// output would have been consumed: no session is ever hidden or backgrounded,
-// and no session has a schedule id, which honestly reflects "v2 doesn't
-// support this feature yet" rather than faking a stale/broken result.
-const V2_EMPTY_SESSION_ATTRS: SessionAttrSets = { background: new Set(), hidden: new Set(), scheduleIDs: new Map() }
-const v2NoopSetSessionAttr = (_key: string, _next: { background?: boolean; hidden?: boolean }) => {}
+// v2 mode does NOT use useSessionAttrs (the legacy hook that binds to the
+// v1-only /api/session-attrs route -- deliberately not registered when this
+// node is in v2 mode, see pkg/server/routes_sessions.go's legacy-route
+// gating). Hidden/background presentation is instead read directly off each
+// session's catalog record (LocalSessionRecord.hidden/.background, set via
+// the session command's `set_presentation` action / ActionSetPresentation)
+// through state/session/viewModel.ts's toSessionView/toPresentationAttrs, and
+// mutated via v2State.sessionCommand(ref, { action: 'set_presentation', ... })
+// -- see AppV2's `sessionAttrs`/`setSessionAttr` below. There is no longer a
+// fixed empty/no-op placeholder: this genuinely round-trips once the backend
+// command lands (it is being added in parallel; the frontend is written
+// optimistically against the documented wire shape and degrades gracefully
+// to "nothing hidden/backgrounded" if the record fields are simply absent).
 
 function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticated: boolean }) {
   // V2 mode: normalized catalog + workspace state via useV2State.
@@ -1786,14 +1788,18 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
   }, [])
 
   const handleSessionSelect = (session: Session) => {
-    const key = sessionKey(session)
-    const { host, name } = parseSessionKey(key)
+    // Built directly from the session's own host/name -- not through the
+    // legacy sessionKey()/parseSessionKey() helpers (see viewModel.ts's
+    // header comment on why AppV2 avoids depending on hooks/useSessions.ts).
+    const ref: SessionRef = { owner: session.host || null, session: session.name, window: 0, pane: 0 }
+    const key = sessionRefToKey(ref)
+    const host = ref.owner ?? ''
+    const name = ref.session
     const path = host
       ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
       : `/session/${encodeURIComponent(name)}`
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
     setViewMode('session')
-    const ref = keyToSessionRef(key)
     // A remote-owned ref (owner set and not this node's own owner) is never a
     // leaf of the LOCAL layout tree, so workspaceCommand('select') against it
     // is guaranteed to be rejected server-side as missing_target. Render it as
@@ -1812,34 +1818,54 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
     setTimeout(refocusTerminal, 150)
   }
 
+  // Canonical session views, built straight from the v2 catalog via
+  // state/session/viewModel.ts -- no legacy Session shim involved at this
+  // step. `sessions` below is a compatibility adapter derived from these,
+  // built only because Sidebar/Overview/QuickSwitcher/NewSessionModal (shared
+  // with AppLegacy) are still typed against the legacy `Session` shape; see
+  // the task-15 frontend-prep notes for why those components aren't migrated
+  // to SessionView wholesale yet.
+  const sessionViews = useMemo<SessionView[]>(
+    () => Array.from(state.catalog.sessionsByRef.values()).map(toSessionView),
+    [state.catalog.sessionsByRef],
+  )
+
   // Real session list backing Sidebar/Overview/QuickSwitcher/NewSessionModal
   // and getBackend below. Previously these components were passed sessions={[]}
   // unconditionally, which made them appear to work while showing nothing.
   //
-  // name MUST be the immutable canonical session id (s.id): sessionKey(session)
-  // is `host/name`, and the pane tree / workspace path keys sessions by
-  // sessionRefToKey(ref) = `owner/ref.session`, where ref.session is the same
-  // canonical id. If name held the MUTABLE display label (name, set by
-  // the label/rename command), sessionKey() and sessionRefToKey() would diverge
-  // after any rename, and keyToSessionRef() would reconstruct a bogus ref whose
-  // .session is the label string. The friendly label therefore goes into
-  // display_name, which sessionLabel() (used by Sidebar/Overview) shows.
+  // name MUST be the immutable canonical session id (s.id): SessionView.key
+  // is `owner/id` (or bare id), matching sessionRefToKey(ref) = `owner/ref.session`,
+  // where ref.session is that same canonical id. If name held the MUTABLE
+  // display label instead (set by the label/rename command), the key encoding
+  // would diverge from the pane tree / workspace path keys after any rename.
+  // The friendly label therefore goes into display_name, which sessionLabel()
+  // (used by Sidebar/Overview) shows.
   const sessions = useMemo<Session[]>(
-    () => Array.from(state.catalog.sessionsByRef.values()).map(s => ({
-      id: s.id,
-      name: s.id,
-      display_name: s.name || undefined,
-      host: s.owner,
+    () => sessionViews.map(v => ({
+      id: v.id,
+      name: v.id,
+      display_name: v.displayName,
+      host: v.ownerId,
       windows: [],
-      created: s.created_at,
+      created: v.createdAt,
       attached: true,
       last_activity: new Date().toISOString(),
     } as Session)),
-    [state.catalog.sessionsByRef],
+    [sessionViews],
   )
 
+  // Real hidden/background presentation state (see the block comment above
+  // AppV2 for the set_presentation wiring this reads/writes).
+  const sessionAttrs = useMemo(() => toPresentationAttrs(sessionViews), [sessionViews])
+  const setSessionAttr = useCallback((key: string, next: { background?: boolean; hidden?: boolean }) => {
+    const ref = keyToSessionRef(key)
+    void v2State.sessionCommand(ref, { action: 'set_presentation', ...next })
+      .catch(err => console.error('v2 set_presentation command failed:', err))
+  }, [v2State])
+
   const handleJumpToSession = useCallback((sessionName: string, _windowIndex?: number, _pane?: string) => {
-    const found = sessions.find(s => sessionKey(s) === sessionName || s.name === sessionName)
+    const found = sessions.find(s => sessionRefToKey({ owner: s.host || null, session: s.name, window: 0, pane: 0 }) === sessionName || s.name === sessionName)
     if (found) handleSessionSelect(found)
   }, [sessions, layoutId, activeKey])
 
@@ -1909,15 +1935,14 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
 
   const glance = useMemo(() => {
     let parked = 0, working = 0, waiting = 0
-    for (const sess of sessions) {
-      const key = sessionKey(sess)
-      const signal = sessionSignal(sess, getSessionEvents(key), getSessionActivity(key), isSessionInActiveTurn(key))
+    for (const view of sessionViews) {
+      const signal = sessionViewSignal(getSessionEvents(view.key), getSessionActivity(view.key), isSessionInActiveTurn(view.key))
       if (signal.state === 'needs_you') waiting++
       else if (signal.state === 'working') working++
       else parked++
     }
     return { parked, working, waiting }
-  }, [sessions, getSessionEvents, getSessionActivity, isSessionInActiveTurn, allToolEvents])
+  }, [sessionViews, getSessionEvents, getSessionActivity, isSessionInActiveTurn, allToolEvents])
 
   const openNewSessionModal = useCallback(() => {
     setNewSessionModalOpen(true)
@@ -2042,8 +2067,8 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
             onPairSessions={() => {}}
             onRemoveFromSplit={() => {}}
             onSessionKilled={handleKillSession}
-            sessionAttrs={V2_EMPTY_SESSION_ATTRS}
-            setSessionAttr={v2NoopSetSessionAttr}
+            sessionAttrs={sessionAttrs}
+            setSessionAttr={setSessionAttr}
             pruningSuspended={false}
             onQuickShell={handleQuickShell}
             crashedCount={crashedHook.crashedSessions.length}
@@ -2135,16 +2160,16 @@ function AppV2({ onLogout, authenticated }: { onLogout?: () => void; authenticat
               sessions={sessions}
               onOpenFile={wiki.openFile}
               hosts={hosts}
-              hiddenSet={V2_EMPTY_SESSION_ATTRS.hidden}
-              backgroundSet={V2_EMPTY_SESSION_ATTRS.background}
-              scheduleIDs={V2_EMPTY_SESSION_ATTRS.scheduleIDs}
+              hiddenSet={sessionAttrs.hidden}
+              backgroundSet={sessionAttrs.background}
+              scheduleIDs={sessionAttrs.scheduleIDs}
               onSessionSelect={handleSessionSelect}
               getSessionEvents={getSessionEvents}
               getSessionActivity={getSessionActivity}
               isSessionInActiveTurn={isSessionInActiveTurn}
               onJumpToSession={handleJumpToSession}
               onDismissAlert={dismissEvent}
-              setSessionAttr={v2NoopSetSessionAttr}
+              setSessionAttr={setSessionAttr}
               onSessionKilled={handleKillSession}
               layoutGroups={layoutGroups}
               v2Mode

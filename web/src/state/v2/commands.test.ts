@@ -74,6 +74,30 @@ describe('V2CommandClient', () => {
     expect(capturedBody).toEqual({ id: 'fixed-id', ref: 'o/s:0.0', action: 'label', params: { label: 'a' } })
   })
 
+  it('sessionCommand nests kill remove_worktree under params', async () => {
+    let capturedBody: any = null
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string)
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const client = new V2CommandClient({ fetchImpl, genId: () => 'fixed-id' })
+    await client.sessionCommand(ref, { action: 'kill', remove_worktree: true })
+    expect(capturedBody).toEqual({ id: 'fixed-id', ref: 'o/s:0.0', action: 'kill', params: { remove_worktree: true } })
+  })
+
+  it('sessionCommand nests set_presentation hidden/background under params', async () => {
+    let capturedBody: any = null
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string)
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const client = new V2CommandClient({ fetchImpl, genId: () => 'fixed-id' })
+    await client.sessionCommand(ref, { action: 'set_presentation', hidden: true })
+    expect(capturedBody).toEqual({ id: 'fixed-id', ref: 'o/s:0.0', action: 'set_presentation', params: { hidden: true } })
+  })
+
   it('createSession omits ref entirely: a create carries no placeholder ref on the wire', async () => {
     let capturedUrl = ''
     let capturedBody: any = null

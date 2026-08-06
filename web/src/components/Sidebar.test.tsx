@@ -191,12 +191,16 @@ describe('Sidebar v2Mode kill/rename routing', () => {
     expect(fetchMock).not.toHaveBeenCalledWith('/api/session/display-name', expect.anything())
   })
 
-  it('v2Mode hides AI rename, Hide/Background, and worktree-removal controls', () => {
+  it('v2Mode hides AI rename but keeps Hide/Background controls (set_presentation is wired)', () => {
     renderSidebar({ v2Mode: true })
 
     openContextMenuForRow()
     expect(screen.queryByText('AI rename')).toBeNull()
-    expect(screen.queryByText('Hide')).toBeNull()
-    expect(screen.queryByText('Background')).toBeNull()
+    // Hide/Background now dispatch through setSessionAttr in both modes --
+    // in v2Mode that routes to the session command's `set_presentation`
+    // action (see App.tsx's AppV2) instead of the legacy /api/session-attrs
+    // route, so these controls are no longer v2Mode-gated.
+    expect(screen.queryByText('Hide')).not.toBeNull()
+    expect(screen.queryByText('Background')).not.toBeNull()
   })
 })

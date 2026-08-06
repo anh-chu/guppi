@@ -30,11 +30,23 @@ import { decodeCommandResult, encodeSessionRefWire } from './wireCodec'
 // (see V2CommandClient.createSession and App.tsx's handleCreateSession).
 export type SessionCommandAction =
   | { action: 'create'; name?: string; shell?: string; cwd?: string; worktree_branch?: string; cols?: number; rows?: number; layout_id?: LayoutID; agent_type?: string; target?: SessionRef; direction?: SplitDirection; new_first?: boolean; target_owner?: OwnerID }
-  | { action: 'kill' }
+  // remove_worktree mirrors pkg/state/session_commands.go's KillParams:
+  // when true, the server removes the session's worktree as part of the
+  // same kill command instead of a separate, later, non-atomic step.
+  | { action: 'kill'; remove_worktree?: boolean }
   | { action: 'label'; label: string }
   | { action: 'recover' }
   | { action: 'dismiss' }
   | { action: 'retry' }
+  // set_presentation mirrors pkg/state/session_commands.go's
+  // ActionSetPresentation: either field may be omitted to leave that bit
+  // unchanged server-side. Wire shape is exactly
+  // { action: 'set_presentation', params: { hidden?, background? } } --
+  // sessionCommand()'s `{ action, ...params }` destructure below already
+  // nests every non-`action` field under `params` for us, so no special
+  // casing is needed here (see createSession's target/target_owner handling
+  // for the one case that DOES need special casing).
+  | { action: 'set_presentation'; hidden?: boolean; background?: boolean }
 
 // CreateSessionCommand is the create variant of SessionCommandAction. Create is
 // the one session command that structurally carries NO SessionRef: the server
