@@ -230,9 +230,8 @@ func runSession(
 
 	// Initial pushes — the catalog/workspace snapshot pushes are the real
 	// state sync for this node, sent unconditionally: both peers must have
-	// advertised (and had verified) CapCatalogV1/CapCommandV1 to complete the
-	// handshake at all (see requiresCanonicalCaps), so pc.HasCanonicalCaps()
-	// is always true for a live session.
+	// negotiated the canonical protocol version to complete the handshake at
+	// all, so catalog and workspace RPC are always available.
 	sendInitialCatalog(pc, deps)
 	sendInitialWorkspace(pc, deps)
 

@@ -62,8 +62,9 @@ func DialPeerStream(ctx context.Context, addr string, id *identity.Identity, tok
 		return nil, fmt.Errorf("sign: %w", err)
 	}
 	authMsg, _ := NewMessage(MsgAuth, AuthPayload{
-		PublicKey: id.PublicKey,
-		Signature: base64.StdEncoding.EncodeToString(sig),
+		PublicKey:       id.PublicKey,
+		Signature:       base64.StdEncoding.EncodeToString(sig),
+		ProtocolVersion: ProtocolVersion,
 	})
 	if err := conn.WriteJSON(authMsg); err != nil {
 		conn.Close()

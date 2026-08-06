@@ -19,15 +19,10 @@ import (
 )
 
 func TestOpenUploadCapability(t *testing.T) {
-	found := false
-	for _, cap := range localCapabilities {
-		if cap == CapUpload {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("localCapabilities does not contain %q", CapUpload)
+	// CapUpload is an optional capability advertised by peers supporting
+	// dedicated upload connections. It's always available as a module const.
+	if CapUpload != "upload" {
+		t.Fatalf("expected CapUpload to be %q, got %q", "upload", CapUpload)
 	}
 }
 

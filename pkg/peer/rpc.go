@@ -133,10 +133,7 @@ func (pc *PeerConnection) EnqueueWorkspaceSnapshot(msg *Message) bool {
 	return pc.workspaceSlot.swap(msg)
 }
 
-// HasCanonicalCaps reports whether the peer advertised catalog/command capabilities.
-func (pc *PeerConnection) HasCanonicalCaps() bool {
-	return pc.HasCapability(CapCatalogV1) && pc.HasCapability(CapCommandV1)
-}
+
 
 // runCommandWriters starts the snapshot emitters and command sender for this
 // connection. It returns when all writers exit.
@@ -218,9 +215,6 @@ func (m *Manager) SendCommand(ctx context.Context, peerID string, cmd state.Sess
 	m.mu.RUnlock()
 	if pc == nil {
 		return result, fmt.Errorf("peer %s: %w", peerID, errors.New("no live connection"))
-	}
-	if !pc.HasCanonicalCaps() {
-		return result, fmt.Errorf("peer %s: %w", peerID, errors.New("command not supported"))
 	}
 
 	// Register waiter first to avoid lost-reply races. Only the leader for
@@ -316,9 +310,6 @@ func (m *Manager) SendWorkspaceCommand(ctx context.Context, peerID string, cmd s
 	if pc == nil {
 		return state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "peer_id", Detail: fmt.Sprintf("peer %s is offline", peerID)}
 	}
-	if !pc.HasCanonicalCaps() {
-		return state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %s does not support workspace commands", peerID)}
-	}
 
 	done := make(chan commandResult, 1)
 	isLeader := m.registerCommandWaiter(reqPayload.ID, peerID, pc, done)
@@ -373,9 +364,6 @@ func (m *Manager) SendRemoteCreate(ctx context.Context, peerID string, req state
 	m.mu.RUnlock()
 	if pc == nil {
 		return result, state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "peer_id", Detail: fmt.Sprintf("peer %s is offline", peerID)}
-	}
-	if !pc.HasCanonicalCaps() {
-		return result, state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %s does not support remote creates", peerID)}
 	}
 
 	done := make(chan commandResult, 1)

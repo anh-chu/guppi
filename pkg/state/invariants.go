@@ -24,10 +24,9 @@ const (
 	ErrStaleSplitID             ErrorCode = "stale_split_id"
 	ErrRevisionConflict         ErrorCode = "revision_conflict"
 	ErrCommandExpired           ErrorCode = "command_expired"
-	ErrTooManyCommands          ErrorCode = "too_many_commands"
-	ErrWorkspaceOwnerOffline    ErrorCode = "workspace_owner_offline"
-	ErrLegacyPeerUnsupported    ErrorCode = "legacy_peer_unsupported"
-	ErrGenerationMismatch       ErrorCode = "generation_mismatch"
+	ErrTooManyCommands       ErrorCode = "too_many_commands"
+	ErrWorkspaceOwnerOffline ErrorCode = "workspace_owner_offline"
+	ErrGenerationMismatch    ErrorCode = "generation_mismatch"
 	// ErrOwnershipMismatch is returned when a peer-originated command's
 	// stated owner/requester/target ref does not match the authenticated
 	// identity that must own it (e.g. a remote peer's SessionCommand.Ref.Owner

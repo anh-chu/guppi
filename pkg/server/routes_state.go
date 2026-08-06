@@ -373,14 +373,13 @@ func mapErrorCode(code state.ErrorCode) (int, string) {
 		return http.StatusConflict, "generation_mismatch"
 	case state.ErrUnknownLayout, state.ErrMissingTarget:
 		return http.StatusNotFound, "not_found"
-	case state.ErrWorkspaceOwnerOffline, state.ErrLegacyPeerUnsupported:
-		// Both mean "the remote owner/peer this command needed to reach is
-		// not currently usable" (no live connection bound to that owner, or
-		// the bound peer does not support this command) -- the same transient,
-		// retry-later condition as the plain-error peer_offline branch each
-		// remote-forwarding call site already handles for transport
-		// failures. Mapping these to 400 invalid_input would tell the
-		// browser this was a malformed request, which it was not.
+	case state.ErrWorkspaceOwnerOffline:
+		// Means "the remote owner/peer this command needed to reach is not
+		// currently usable" (no live connection bound to that owner) -- the same
+		// transient, retry-later condition as the plain-error peer_offline
+		// branch each remote-forwarding call site already handles for transport
+		// failures. Mapping this to 400 invalid_input would tell the browser
+		// this was a malformed request, which it was not.
 		return http.StatusServiceUnavailable, "peer_offline"
 	default:
 		return http.StatusBadRequest, "invalid_input"

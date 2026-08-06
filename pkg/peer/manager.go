@@ -1191,9 +1191,6 @@ func (m *Manager) RequestRemoteCreate(ctx context.Context, owner state.OwnerID, 
 	if pc == nil {
 		return state.RemoteCreateResult{}, state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "owner", Detail: fmt.Sprintf("workspace owner %q is offline", owner)}
 	}
-	if !pc.HasCanonicalCaps() {
-		return state.RemoteCreateResult{}, state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %q does not support remote creates", peerID)}
-	}
 	return m.SendRemoteCreate(ctx, peerID, req)
 }
 

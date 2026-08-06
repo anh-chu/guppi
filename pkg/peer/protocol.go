@@ -51,6 +51,9 @@ const (
 	MsgCapturePane = "capture-pane"
 )
 
+// ProtocolVersion is the single canonical wire protocol version for peer communication.
+const ProtocolVersion = 1
+
 // Message types reserved for future per-terminal stream setup.
 const (
 	// MsgOpenTerminal asks a peer to prepare a dedicated PTY data connection,
@@ -82,25 +85,6 @@ const CapPerStream = "per-stream"
 // CapUpload advertises dedicated /ws/peer-stream file-upload connections.
 const CapUpload = "upload"
 
-// CapCatalogV1 advertises owner-catalog snapshot exchange (v1 of the wire
-// contract).
-const CapCatalogV1 = "catalog-v1"
-
-// CapCommandV1 advertises the reliable command RPC path (v1 of the wire
-// contract).
-const CapCommandV1 = "command-v1"
-
-// localCapabilities is what this build always advertises in the hello: the
-// canonical state graph (catalog + command service) is the only runtime, so
-// CapCatalogV1/CapCommandV1 are unconditional, not deps-gated.
-var localCapabilities = []string{CapPerStream, CapUpload, CapCatalogV1, CapCommandV1}
-
-// capabilitiesFor returns the capability list to advertise. Every connected
-// node advertises the full canonical set unconditionally.
-func capabilitiesFor(deps SessionDeps) []string {
-	return append([]string(nil), localCapabilities...)
-}
-
 // hasCap reports whether caps contains the given capability string.
 func hasCap(caps []string, cap string) bool {
 	for _, c := range caps {
@@ -109,14 +93,6 @@ func hasCap(caps []string, cap string) bool {
 		}
 	}
 	return false
-}
-
-// peerCapsSatisfyCanonical reports whether a remote peer's advertised
-// capabilities satisfy this node's mandatory requirement of both the
-// catalog and command RPC caps. Every connected peer must satisfy this --
-// there is no legacy fallback to degrade to.
-func peerCapsSatisfyCanonical(caps []string) bool {
-	return hasCap(caps, CapCatalogV1) && hasCap(caps, CapCommandV1)
 }
 
 // Command kinds carried by CommandRequestPayload.
@@ -134,9 +110,10 @@ type Message struct {
 
 // AuthPayload is sent by the peer in response to a challenge
 type AuthPayload struct {
-	PublicKey    string   `json:"public_key"`
-	Signature    string   `json:"signature"` // base64-encoded signature of the challenge
-	Capabilities []string `json:"capabilities,omitempty"`
+	PublicKey       string   `json:"public_key"`
+	Signature       string   `json:"signature"` // base64-encoded signature of the challenge
+	ProtocolVersion int      `json:"protocol_version"`
+	Capabilities    []string `json:"capabilities,omitempty"` // optional: per-stream, upload
 }
 
 // ChallengePayload is sent by the hub to initiate auth
@@ -144,9 +121,10 @@ type ChallengePayload struct {
 	Challenge string `json:"challenge"` // base64-encoded random bytes
 }
 
-// AuthOKPayload advertises the listener's capabilities on the hello.
+// AuthOKPayload advertises the listener's protocol version and optional capabilities.
 type AuthOKPayload struct {
-	Capabilities []string `json:"capabilities,omitempty"`
+	ProtocolVersion int      `json:"protocol_version"`
+	Capabilities    []string `json:"capabilities,omitempty"` // optional: per-stream, upload
 }
 
 // ToolEventPayload wraps a tool event from a peer

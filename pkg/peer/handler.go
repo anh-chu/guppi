@@ -64,17 +64,6 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every connected peer must present both canonical capabilities: there is
-	// no legacy state-sync fallback to degrade to, so a peer missing either
-	// CapCatalogV1 or CapCommandV1 cannot be synchronized with at all and the
-	// connection is rejected outright.
-	if !peerCapsSatisfyCanonical(caps) {
-		log.WithFields(logrus.Fields{"peer": peer.Name, "id": peer.Fingerprint(), "caps": caps}).Warn("rejecting peer: missing required canonical capabilities")
-		sendAuthFail(conn, "canonical capabilities required")
-		conn.Close()
-		return
-	}
-
 	// Race resolution: if we already have a live connection for this peer,
 	// reject the newer one with "already connected" so the dialer flips role.
 	if h.deps.Manager.HasLiveConnection(peer.Fingerprint()) {
@@ -84,7 +73,10 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: capabilitiesFor(h.deps)})
+	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{
+		ProtocolVersion: ProtocolVersion,
+		Capabilities:    caps, // echo back any optional capabilities the peer sent
+	})
 	if err := conn.WriteJSON(authOK); err != nil {
 		conn.Close()
 		return
@@ -118,7 +110,10 @@ func (h *Handler) HandlePeerStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{Capabilities: capabilitiesFor(h.deps)})
+	authOK, _ := NewMessage(MsgAuthOK, AuthOKPayload{
+		ProtocolVersion: ProtocolVersion,
+		Capabilities:    []string{}, // echo back any optional capabilities the peer sent
+	})
 	if err := conn.WriteJSON(authOK); err != nil {
 		conn.Close()
 		return
@@ -215,6 +210,21 @@ func (h *Handler) authenticatePeer(ctx context.Context, conn *websocket.Conn, lo
 	}
 	if !identity.Verify(authPayload.PublicKey, challengeBytes, sig) {
 		sendAuthFail(conn, "invalid signature")
+		conn.Close()
+		return nil, nil, false
+	}
+
+	// Validate protocol version
+	if authPayload.ProtocolVersion != ProtocolVersion {
+		msg := struct {
+			Reason  string `json:"reason"`
+			Version int    `json:"version"`
+		}{
+			Reason:  "protocol version mismatch",
+			Version: ProtocolVersion,
+		}
+		msgObj, _ := NewMessage(MsgAuthFail, msg)
+		_ = conn.WriteJSON(msgObj)
 		conn.Close()
 		return nil, nil, false
 	}

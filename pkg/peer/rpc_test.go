@@ -28,7 +28,7 @@ func testEnv(t *testing.T) {
 
 func newPeerConnectionWithCaps(hostID string) *PeerConnection {
 	pc := NewPeerConnection(hostID, 8)
-	pc.Caps = []string{CapCatalogV1, CapCommandV1}
+	pc.Caps = []string{CapPerStream, CapUpload} // optional capabilities only; mandatory catalog/command via protocol version
 	pc.initSlotsLazy()
 	return pc
 }

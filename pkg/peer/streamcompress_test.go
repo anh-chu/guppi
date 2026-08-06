@@ -185,8 +185,9 @@ func dialPeerStreamGetResponse(ctx context.Context, addr string, id *identity.Id
 		return nil, nil, fmt.Errorf("sign: %w", err)
 	}
 	authMsg, _ := NewMessage(MsgAuth, AuthPayload{
-		PublicKey: id.PublicKey,
-		Signature: base64.StdEncoding.EncodeToString(sig),
+		PublicKey:       id.PublicKey,
+		Signature:       base64.StdEncoding.EncodeToString(sig),
+		ProtocolVersion: ProtocolVersion,
 	})
 	if err := conn.WriteJSON(authMsg); err != nil {
 		conn.Close()
@@ -261,8 +262,9 @@ func dialPeerStreamNoCompression(ctx context.Context, addr string, id *identity.
 		return nil, err
 	}
 	authMsg, _ := NewMessage(MsgAuth, AuthPayload{
-		PublicKey: id.PublicKey,
-		Signature: base64.StdEncoding.EncodeToString(sig),
+		PublicKey:       id.PublicKey,
+		Signature:       base64.StdEncoding.EncodeToString(sig),
+		ProtocolVersion: ProtocolVersion,
 	})
 	if err := conn.WriteJSON(authMsg); err != nil {
 		conn.Close()

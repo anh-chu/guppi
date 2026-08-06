@@ -22,51 +22,13 @@ func canonicalCommandSvcForTest() *state.SessionCommandService {
 	return &state.SessionCommandService{}
 }
 
-// TestPeerCapsSatisfyCanonical proves the exact predicate the handshake gate
-// relies on: a peer must advertise BOTH CapCatalogV1 and CapCommandV1 --
-// neither alone, and no legacy-only capability set, satisfies it.
-func TestPeerCapsSatisfyCanonical(t *testing.T) {
-	cases := []struct {
-		name string
-		caps []string
-		want bool
-	}{
-		{"no caps", nil, false},
-		{"only legacy caps", []string{CapPerStream, CapUpload}, false},
-		{"only catalog cap", []string{CapCatalogV1}, false},
-		{"only command cap", []string{CapCommandV1}, false},
-		{"both canonical caps", []string{CapCatalogV1, CapCommandV1}, true},
-		{"both canonical caps plus legacy", []string{CapPerStream, CapCatalogV1, CapUpload, CapCommandV1}, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := peerCapsSatisfyCanonical(tc.caps); got != tc.want {
-				t.Fatalf("peerCapsSatisfyCanonical(%v) = %v, want %v", tc.caps, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestLocalCapabilities_AlwaysAdvertisesCanonicalCaps proves capabilitiesFor
-// unconditionally includes both canonical capabilities -- there is no
-// deps-based gate anymore (the canonical state graph is the only runtime).
-func TestLocalCapabilities_AlwaysAdvertisesCanonicalCaps(t *testing.T) {
-	caps := capabilitiesFor(SessionDeps{})
-	if !hasCap(caps, CapCatalogV1) || !hasCap(caps, CapCommandV1) {
-		t.Fatalf("expected capabilitiesFor to always include canonical caps, got %v", caps)
-	}
-}
-
-// TestHandshake_PeerMissingCanonicalCapsIsRejected drives a real, fully
+// TestHandshake_ProtocolVersionMismatchIsRejected drives a real, fully
 // authenticated (ed25519 challenge-response) client through the actual
 // production listener handler (handler.go's HandlePeer, served over a real
-// httptest websocket server) and proves a peer whose advertised
-// capabilities lack CapCatalogV1/CapCommandV1 cannot complete the
-// handshake: the listener responds with MsgAuthFail and closes the
-// connection instead of MsgAuthOK. This is the acceptance proof that a
-// pre-rewrite (legacy-protocol) peer -- which never advertised these caps
-// at all -- cannot pair with a canonical-only node.
-func TestHandshake_PeerMissingCanonicalCapsIsRejected(t *testing.T) {
+// httptest websocket server) and proves a peer with a mismatched protocol
+// version is rejected before registration: the listener responds with
+// MsgAuthFail and closes the connection instead of MsgAuthOK.
+func TestHandshake_ProtocolVersionMismatchIsRejected(t *testing.T) {
 	depsB, _, psB, _ := makeTestDepsWithCatalog(t, "B")
 
 	handlerB := NewHandler(depsB, NewStreamRegistry())
@@ -75,12 +37,12 @@ func TestHandshake_PeerMissingCanonicalCapsIsRejected(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	clientID, err := identity.Generate("legacy-client")
+	clientID, err := identity.Generate("test-client")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := psB.Add(identity.Peer{
-		Name:      "legacy-client",
+		Name:      "test-client",
 		PublicKey: clientID.PublicKey,
 		Enabled:   true,
 	}); err != nil {
@@ -94,7 +56,7 @@ func TestHandshake_PeerMissingCanonicalCapsIsRejected(t *testing.T) {
 	u.Scheme = "ws"
 	u.Path = "/ws/peer"
 
-	dialAndHandshake := func(caps []string) (string, error) {
+	dialAndHandshake := func(protocolVersion int, caps []string) (string, error) {
 		conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 		if err != nil {
 			return "", err
@@ -122,9 +84,10 @@ func TestHandshake_PeerMissingCanonicalCapsIsRejected(t *testing.T) {
 			return "", err
 		}
 		authMsg, err := NewMessage(MsgAuth, AuthPayload{
-			PublicKey:    clientID.PublicKey,
-			Signature:    base64.StdEncoding.EncodeToString(sig),
-			Capabilities: caps,
+			PublicKey:       clientID.PublicKey,
+			Signature:       base64.StdEncoding.EncodeToString(sig),
+			ProtocolVersion: protocolVersion,
+			Capabilities:    caps,
 		})
 		if err != nil {
 			return "", err
@@ -139,43 +102,122 @@ func TestHandshake_PeerMissingCanonicalCapsIsRejected(t *testing.T) {
 		return result.Type, nil
 	}
 
-	// Missing both canonical caps -- exactly what a pre-rewrite legacy peer
-	// (never updated to advertise CapCatalogV1/CapCommandV1) would send.
-	gotType, err := dialAndHandshake([]string{CapPerStream, CapUpload})
+	// Protocol version mismatch (lower version) causes rejection
+	gotType, err := dialAndHandshake(0, []string{CapPerStream, CapUpload})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotType != MsgAuthFail {
-		t.Fatalf("expected %s for peer missing canonical caps, got %s", MsgAuthFail, gotType)
+		t.Fatalf("expected %s for protocol version 0, got %s", MsgAuthFail, gotType)
 	}
 
-	// A peer presenting both canonical caps completes the handshake.
-	gotType, err = dialAndHandshake([]string{CapPerStream, CapUpload, CapCatalogV1, CapCommandV1})
+	// Protocol version mismatch (higher version) causes rejection
+	gotType, err = dialAndHandshake(999, []string{CapPerStream, CapUpload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotType != MsgAuthFail {
+		t.Fatalf("expected %s for protocol version 999, got %s", MsgAuthFail, gotType)
+	}
+
+	// Matching protocol version allows handshake to proceed
+	gotType, err = dialAndHandshake(ProtocolVersion, []string{CapPerStream, CapUpload})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotType != MsgAuthOK {
-		t.Fatalf("expected %s for peer with canonical caps, got %s", MsgAuthOK, gotType)
+		t.Fatalf("expected %s for matching protocol version, got %s", MsgAuthOK, gotType)
+	}
+
+	// Matching protocol version with no optional caps also succeeds
+	gotType, err = dialAndHandshake(ProtocolVersion, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotType != MsgAuthOK {
+		t.Fatalf("expected %s for matching protocol version with no caps, got %s", MsgAuthOK, gotType)
 	}
 }
 
-// TestSchema4ProtocolVersion_FAILS documents the contract that in schema 4,
-// peer protocol compatibility is negotiated with a single ProtocolVersion
-// field instead of separate CapCatalogV1 and CapCommandV1 capability flags.
-// This test documents the target contract. It will fail until Task 4 is implemented.
-func TestSchema4ProtocolVersion_FAILS(t *testing.T) {
-	// Schema 4 peer handshake contract:
-	// - AuthPayload and AuthOKPayload each have a ProtocolVersion int field
-	// - ProtocolVersion is mandatory, negotiated once at handshake
-	// - CapCatalogV1 and CapCommandV1 are deleted (no longer exist)
-	// - CapPerStream and CapUpload remain as optional negotiated features
-	// - Mismatched ProtocolVersion causes handshake failure before registration
+// TestAuthOKPayload_IncludesProtocolVersion verifies that AuthOKPayload
+// sent by the listener includes the protocol version for the client to validate.
+func TestAuthOKPayload_IncludesProtocolVersion(t *testing.T) {
+	depsB, _, psB, _ := makeTestDepsWithCatalog(t, "B")
 
-	// Currently AuthPayload has Capabilities []string but no ProtocolVersion.
-	// After Task 4, AuthPayload will have ProtocolVersion int.
+	handlerB := NewHandler(depsB, NewStreamRegistry())
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws/peer", handlerB.HandlePeer)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
 
-	// This test documents the target behavior; it FAILS until Task 4.
-	t.Log("Schema 4 contract: Single ProtocolVersion field in AuthPayload")
-	t.Log("Schema 4 contract: CapCatalogV1 and CapCommandV1 are deleted")
-	t.Skip("Awaiting Task 4 implementation")
+	clientID, err := identity.Generate("test-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := psB.Add(identity.Peer{
+		Name:      "test-client",
+		PublicKey: clientID.PublicKey,
+		Enabled:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Scheme = "ws"
+	u.Path = "/ws/peer"
+
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var challengeMsg Message
+	if err := conn.ReadJSON(&challengeMsg); err != nil {
+		t.Fatal(err)
+	}
+	var ch ChallengePayload
+	if err := json.Unmarshal(challengeMsg.Payload, &ch); err != nil {
+		t.Fatal(err)
+	}
+	challengeBytes, err := base64.StdEncoding.DecodeString(ch.Challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := clientID.Sign(challengeBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authMsg, err := NewMessage(MsgAuth, AuthPayload{
+		PublicKey:       clientID.PublicKey,
+		Signature:       base64.StdEncoding.EncodeToString(sig),
+		ProtocolVersion: ProtocolVersion,
+		Capabilities:    []string{CapPerStream, CapUpload},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(authMsg); err != nil {
+		t.Fatal(err)
+	}
+
+	var result Message
+	if err := conn.ReadJSON(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Type != MsgAuthOK {
+		t.Fatalf("expected %s, got %s", MsgAuthOK, result.Type)
+	}
+
+	var okPayload AuthOKPayload
+	if err := json.Unmarshal(result.Payload, &okPayload); err != nil {
+		t.Fatal(err)
+	}
+	if okPayload.ProtocolVersion != ProtocolVersion {
+		t.Fatalf("expected protocol version %d, got %d", ProtocolVersion, okPayload.ProtocolVersion)
+	}
 }

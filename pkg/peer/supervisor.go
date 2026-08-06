@@ -401,9 +401,10 @@ func (s *LinkSupervisor) dialOnce(ctx context.Context, link *peerLink) error {
 		return fmt.Errorf("sign: %w", err)
 	}
 	authMsg, _ := NewMessage(MsgAuth, AuthPayload{
-		PublicKey:    s.deps.Identity.PublicKey,
-		Signature:    base64.StdEncoding.EncodeToString(sig),
-		Capabilities: capabilitiesFor(s.deps),
+		PublicKey:       s.deps.Identity.PublicKey,
+		Signature:       base64.StdEncoding.EncodeToString(sig),
+		ProtocolVersion: ProtocolVersion,
+		Capabilities:    []string{CapPerStream, CapUpload}, // optional features
 	})
 	if err := conn.WriteJSON(authMsg); err != nil {
 		conn.Close()
@@ -429,19 +430,18 @@ func (s *LinkSupervisor) dialOnce(ctx context.Context, link *peerLink) error {
 		conn.Close()
 		return fmt.Errorf("unexpected auth response: %s", result.Type)
 	}
+	var okPayload AuthOKPayload
 	if len(result.Payload) > 0 {
-		var okPayload AuthOKPayload
 		if err := json.Unmarshal(result.Payload, &okPayload); err == nil {
 			peerCaps = okPayload.Capabilities
 		}
 	}
 
-	// Every connected peer must present both canonical capabilities. Mirrors
-	// the listener-side check in handler.go's HandlePeer.
-	if !peerCapsSatisfyCanonical(peerCaps) {
-		logrus.WithFields(logrus.Fields{"peer": link.peer.Name, "addr": addr, "caps": peerCaps}).Warn("rejecting peer: missing required canonical capabilities")
+	// Validate protocol version
+	if okPayload.ProtocolVersion != ProtocolVersion {
+		logrus.WithFields(logrus.Fields{"peer": link.peer.Name, "addr": addr, "remote_version": okPayload.ProtocolVersion, "local_version": ProtocolVersion}).Warn("rejecting peer: protocol version mismatch")
 		conn.Close()
-		return fmt.Errorf("peer %s lacks required canonical capabilities", link.peer.Name)
+		return fmt.Errorf("peer %s protocol version mismatch (remote %d, local %d)", link.peer.Name, okPayload.ProtocolVersion, ProtocolVersion)
 	}
 
 	// Auth ok.
