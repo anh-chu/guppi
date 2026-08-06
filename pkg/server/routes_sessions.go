@@ -463,35 +463,24 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 
 	// Crashed sessions recovery endpoints
 	r.Get("/crashed-sessions", func(w http.ResponseWriter, r *http.Request) {
-		if opts.Catalog != nil {
-			var out []map[string]string
-			for _, rec := range opts.Catalog.Sessions() {
-				if rec.Phase != state.SessionPhaseCrashed {
-					continue
-				}
-				name := rec.Name
-				if name == "" {
-					name = string(rec.ID)
-				}
-				out = append(out, map[string]string{
-					"id":         name,
-					"shell":      rec.Shell,
-					"cwd":        rec.Cwd,
-					"generation": rec.Generation,
-				})
+		var out []map[string]string
+		for _, rec := range opts.Catalog.Sessions() {
+			if rec.Phase != state.SessionPhaseCrashed {
+				continue
 			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(out)
-			return
+			name := rec.Name
+			if name == "" {
+				name = string(rec.ID)
+			}
+			out = append(out, map[string]string{
+				"id":         name,
+				"shell":      rec.Shell,
+				"cwd":        rec.Cwd,
+				"generation": rec.Generation,
+			})
 		}
-		if opts.DaemonReg == nil {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]interface{}{})
-			return
-		}
-		crashed := opts.DaemonReg.CrashedSessions()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(crashed)
+		json.NewEncoder(w).Encode(out)
 	})
 
 	r.Post("/crashed-sessions/{id}/recover", func(w http.ResponseWriter, r *http.Request) {
@@ -508,35 +497,18 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 			// Empty body is fine; use crashed-record defaults.
 		}
 
-		if opts.CommandSvc != nil && opts.Catalog != nil {
-			ref, ok := opts.CommandSvc.LookupRefByDisplayName(id)
-			if !ok {
-				http.Error(w, "session not found", http.StatusNotFound)
-				return
-			}
-			params, _ := json.Marshal(state.RecoverParams{Shell: body.Shell, Cwd: body.Cwd})
-			if _, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
-				ID:     state.NewCommandID(),
-				Ref:    ref,
-				Action: state.ActionRecover,
-				Params: params,
-			}); err != nil {
-				http.Error(w, "recover failed: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if opts.RefreshSessions != nil {
-				opts.RefreshSessions()
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"ok": "true", "session": id})
+		ref, ok := opts.CommandSvc.LookupRefByDisplayName(id)
+		if !ok {
+			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-
-		if opts.DaemonReg == nil {
-			http.Error(w, "daemon registry unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if err := opts.DaemonReg.RecoverSession(id, body.Shell, body.Cwd); err != nil {
+		params, _ := json.Marshal(state.RecoverParams{Shell: body.Shell, Cwd: body.Cwd})
+		if _, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+			ID:     state.NewCommandID(),
+			Ref:    ref,
+			Action: state.ActionRecover,
+			Params: params,
+		}); err != nil {
 			http.Error(w, "recover failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -554,29 +526,16 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 			return
 		}
 
-		if opts.CommandSvc != nil && opts.Catalog != nil {
-			ref, ok := opts.CommandSvc.LookupRefByDisplayName(id)
-			if !ok {
-				http.Error(w, "session not found", http.StatusNotFound)
-				return
-			}
-			if _, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
-				ID:     state.NewCommandID(),
-				Ref:    ref,
-				Action: state.ActionDismiss,
-			}); err != nil {
-				http.Error(w, "dismiss failed: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
+		ref, ok := opts.CommandSvc.LookupRefByDisplayName(id)
+		if !ok {
+			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-
-		if opts.DaemonReg == nil {
-			http.Error(w, "daemon registry unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if err := opts.DaemonReg.DismissSession(id); err != nil {
+		if _, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+			ID:     state.NewCommandID(),
+			Ref:    ref,
+			Action: state.ActionDismiss,
+		}); err != nil {
 			http.Error(w, "dismiss failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -584,13 +543,18 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 	})
 
 	r.Delete("/crashed-sessions", func(w http.ResponseWriter, r *http.Request) {
-		if opts.DaemonReg == nil {
-			http.Error(w, "daemon registry unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if err := opts.DaemonReg.DismissAll(); err != nil {
-			http.Error(w, "dismiss all failed: "+err.Error(), http.StatusInternalServerError)
-			return
+		for _, rec := range opts.Catalog.Sessions() {
+			if rec.Phase != state.SessionPhaseCrashed {
+				continue
+			}
+			if _, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+				ID:     state.NewCommandID(),
+				Ref:    rec.Ref,
+				Action: state.ActionDismiss,
+			}); err != nil {
+				http.Error(w, "dismiss all failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})

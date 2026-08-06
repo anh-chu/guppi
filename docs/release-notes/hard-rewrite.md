@@ -230,3 +230,23 @@ the old behavior. `TERMYARD_V2_STATE` (and `VITE_V2_STATE` /
 `termyard.v2State` on the frontend) have zero effect in this build --
 `pkg/commands/server/runtime_test.go`'s
 `TestNewRuntimeEnvVarCannotSelectAlternatePath` proves it.
+
+## Known gaps (deferred)
+
+The crashed-session dismiss/dismiss-all routes
+(`pkg/server/routes_sessions.go`) were switched to run exclusively through
+`state.CommandSvc.ExecuteSessionCommand` with `state.ActionDismiss`; the
+dead `opts.DaemonReg` fallback branches (unreachable since
+`server.Options.Validate()` already requires `Catalog`/`CommandSvc`
+non-nil) were deleted, along with the now-unused `Registry.RecoverSession`
+and `Registry.DismissAll` in `pkg/pty/registry.go`. This is resolved.
+
+One related item remains deliberately deferred:
+`state.executeDismiss` (`pkg/state/session_commands.go`) marks a crashed
+session dismissed in the canonical store but does not itself stop the
+old systemd scope or remove the stale socket/metadata files for that
+session -- that daemon-side cleanup is not currently wired to the
+canonical dismiss path. This is low severity: the reconciler's
+crash-detection/`ProbeClean` reap pass picks up and cleans the orphaned
+unit/files on its next tick regardless, so no leak persists beyond one
+reconciler cycle. Not fixed here; tracked as a known, deferred gap.

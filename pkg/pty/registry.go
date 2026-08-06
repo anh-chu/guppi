@@ -767,73 +767,6 @@ func (r *Registry) DetectAndCleanupCrashes() []LifecycleRecord {
 	return crashed
 }
 
-// RecoverSession re-spawns a daemon for a previously crashed session.
-// It reads the saved shell/cwd from the lifecycle record, starts a new daemon,
-// and transitions the state to "recovered".  The old stale socket and metadata
-// files are cleaned up before the new daemon is spawned.
-// Optional shellOverride and cwdOverride allow the user to choose a different
-// shell or working directory at recovery time.
-func (r *Registry) RecoverSession(id string, shellOverride ...string) error {
-	if !validSessionID(id) {
-		return fmt.Errorf("invalid session id: %q", id)
-	}
-	r.recoveryMu.Lock()
-	defer r.recoveryMu.Unlock()
-	if r.lifecycleStore == nil {
-		return fmt.Errorf("no lifecycle store configured")
-	}
-
-	rec, err := r.lifecycleStore.Get(id)
-	if err != nil {
-		return fmt.Errorf("get lifecycle record for %s: %w", id, err)
-	}
-	if rec.State != LifecycleCrashed {
-		return fmt.Errorf("session %s is in state %q, not crashed", id, rec.State)
-	}
-
-	shell := rec.Shell
-	cwd := rec.Cwd
-	if len(shellOverride) > 0 && shellOverride[0] != "" {
-		shell = shellOverride[0]
-	}
-	if len(shellOverride) > 1 && shellOverride[1] != "" {
-		cwd = shellOverride[1]
-	}
-
-	// Stop the old systemd scope before removing files and spawning
-	// the replacement.  The crashed session's scope may still have
-	// orphaned child processes (shell, background jobs).
-	// Use the exact unit from the crashed record — do not re-read.
-	r.stopSystemdUnit(rec.SystemdUnit)
-
-	// Transition to recovered BEFORE spawning — the new daemon will
-	// overwrite the lifecycle record with a fresh "active" state on
-	// startup, which is the correct final state.
-	if err := r.lifecycleStore.Transition(id, LifecycleCrashed, LifecycleRecovered); err != nil {
-		return fmt.Errorf("transition to recovered: %w", err)
-	}
-
-	// Clean up old stale files so the new daemon can claim the socket.
-	os.Remove(r.SocketPath(id))
-	os.Remove(r.metadataPath(id))
-
-	// Spawn a new daemon with the saved (or overridden) configuration.
-	if err := r.Create(id, shell, cwd, rec.Cols, rec.Rows); err != nil {
-		// Rollback lifecycle state on spawn failure.
-		_ = r.lifecycleStore.Transition(id, LifecycleRecovered, LifecycleCrashed)
-		return fmt.Errorf("re-spawn daemon for %s: %w", id, err)
-	}
-
-	logrus.WithFields(logrus.Fields{
-		"component": "registry",
-		"id":        id,
-		"shell":     shell,
-		"cwd":       cwd,
-	}).Info("recovered crashed session")
-
-	return nil
-}
-
 // DismissSession marks a crashed session as dismissed and cleans up its files.
 func (r *Registry) DismissSession(id string) error {
 	if !validSessionID(id) {
@@ -879,17 +812,6 @@ func (r *Registry) dismissSessionLocked(id string) error {
 
 	os.Remove(r.SocketPath(id))
 	os.Remove(r.metadataPath(id))
-	return nil
-}
-
-// DismissAll marks all crashed sessions as dismissed and cleans up their files.
-func (r *Registry) DismissAll() error {
-	r.recoveryMu.Lock()
-	defer r.recoveryMu.Unlock()
-	crashed := r.CrashedSessions()
-	for _, rec := range crashed {
-		_ = r.dismissSessionLocked(rec.ID)
-	}
 	return nil
 }
 
