@@ -124,7 +124,7 @@ func ValidateDocument(doc *AppDocument) error {
 		seenSessions[doc.PendingRemoteCreates[i].Ref.Session] = struct{}{}
 	}
 
-	if doc.Workspace.Tree != nil {
+	if doc.Workspace != nil && doc.Workspace.Tree != nil {
 		if err := validateSessionRefIntegrity(*doc.Workspace.Tree, doc.Owner, seenSessions, "workspace.tree"); err != nil {
 			return err
 		}

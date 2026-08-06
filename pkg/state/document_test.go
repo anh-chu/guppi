@@ -84,12 +84,13 @@ func TestRatioFiniteValidation(t *testing.T) {
 
 func TestAppDocumentSchemaValidation(t *testing.T) {
 	owner := OwnerID("ownerdoc1234567890abcd")
+	leaf := Leaf(SessionRef{Owner: owner, Session: SessionID("s1")})
 	base := AppDocument{
 		Schema:     SchemaVersion,
 		Owner:      owner,
 		Revision:   1,
 		Sessions: []LocalSessionRecord{mkSession(owner, "sessdoc1234567890ab")},
-		Workspace: &WorkspaceRecord{Revision: 0, Tree: &Leaf(SessionRef{Owner: owner, Session: SessionID("s1")})},
+		Workspace: &WorkspaceRecord{Revision: 0, Tree: &leaf},
 	}
 
 	if err := ValidateDocument(&base); err != nil {

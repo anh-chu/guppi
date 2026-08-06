@@ -34,15 +34,17 @@ func leafs(tree PaneNode) []string {
 	return out
 }
 
-func mustPutLayout(t *testing.T, c *Catalog, owner OwnerID, id string, order int64, tree PaneNode) LayoutID {
+// setupWorkspace registers all session refs in the tree and initializes the
+// singleton workspace with that tree.
+func setupWorkspace(t *testing.T, c *Catalog, tree PaneNode) {
 	t.Helper()
 	registerTreeSessions(t, c, tree)
-	lid := SessionID(id)
-	rec := LayoutRecord{ID: lid, Owner: owner, Tree: tree, Revision: 0}
-	if err := c.PutLayout(rec); err != nil {
-		t.Fatalf("put layout: %v", err)
+	if err := c.apply("test/setup-workspace", func(doc *AppDocument) error {
+		doc.Workspace = &WorkspaceRecord{Revision: 0, Tree: cloneTreePtr(&tree)}
+		return nil
+	}); err != nil {
+		t.Fatalf("setup workspace: %v", err)
 	}
-	return lid
 }
 
 // registerTestSession inserts a LocalSessionRecord for ref directly into the
@@ -105,12 +107,11 @@ func TestWorkspaceSplitOnePane(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
 
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
+	setupWorkspace(t, c, Leaf(ref(owner, "s1")))
 	registerTestSession(t, c, ref(owner, "s2"))
 
 	cmd := WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionSplit,
 		Params: workspaceParams(map[string]interface{}{
 			"target":    ref(owner, "s1"),
@@ -126,11 +127,11 @@ func TestWorkspaceSplitOnePane(t *testing.T) {
 		t.Fatalf("revision %d, want %d", got, before+1)
 	}
 
-	snap, err := c.WorkspaceSnapshot(lID)
+	snap, err := c.WorkspaceSnapshot()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	leaves := leafs(snap.Record.Tree)
+	leaves := leafs(*snap.Record.Tree)
 	if len(leaves) != 2 || leaves[0] != ref(owner, "s1").MapKey() || leaves[1] != ref(owner, "s2").MapKey() {
 		t.Fatalf("unexpected leaves: %v", leaves)
 	}
@@ -145,11 +146,10 @@ func TestWorkspaceSplitOnePane(t *testing.T) {
 func TestWorkspaceMissingTarget(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
+	setupWorkspace(t, c, Leaf(ref(owner, "s1")))
 
 	cmd := WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionSplit,
 		Params: workspaceParams(map[string]interface{}{
 			"target":    ref(owner, "missing"),
@@ -174,12 +174,11 @@ func TestWorkspaceSplitReplayReturnsOriginalResultNotDuplicateLeafError(t *testi
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
 
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
+	setupWorkspace(t, c, Leaf(ref(owner, "s1")))
 	registerTestSession(t, c, ref(owner, "s2"))
 
 	cmd := WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionSplit,
 		Params: workspaceParams(map[string]interface{}{
 			"target":    ref(owner, "s1"),
@@ -192,11 +191,11 @@ func TestWorkspaceSplitReplayReturnsOriginalResultNotDuplicateLeafError(t *testi
 	}
 	afterFirst := c.Revision()
 
-	snapBefore, err := c.WorkspaceSnapshot(lID)
+	snapBefore, err := c.WorkspaceSnapshot()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	leavesBefore := leafs(snapBefore.Record.Tree)
+	leavesBefore := leafs(*snapBefore.Record.Tree)
 
 	// Retry with the EXACT SAME command ID -- this must return success
 	// (nil error) with no further mutation, not ErrDuplicateLeaf.
@@ -207,11 +206,11 @@ func TestWorkspaceSplitReplayReturnsOriginalResultNotDuplicateLeafError(t *testi
 		t.Fatalf("replay must not change revision: before=%d after=%d", afterFirst, got)
 	}
 
-	snapAfter, err := c.WorkspaceSnapshot(lID)
+	snapAfter, err := c.WorkspaceSnapshot()
 	if err != nil {
 		t.Fatalf("snapshot after replay: %v", err)
 	}
-	leavesAfter := leafs(snapAfter.Record.Tree)
+	leavesAfter := leafs(*snapAfter.Record.Tree)
 	if len(leavesAfter) != len(leavesBefore) {
 		t.Fatalf("replay must not change leaves: before=%v after=%v", leavesBefore, leavesAfter)
 	}
@@ -238,7 +237,7 @@ func TestApplyWorkspaceCommandFromPeer_SplitForeignOwnerRejected(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
 	foreignOwner := OwnerID("foreignownerabcd12345")
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
+	setupWorkspace(t, c, Leaf(ref(owner, "s1")))
 
 	// The split target is a real, correctly-owned local leaf (so the
 	// pre-existing findLeaf check alone would happily accept this), but the
@@ -248,7 +247,6 @@ func TestApplyWorkspaceCommandFromPeer_SplitForeignOwnerRejected(t *testing.T) {
 	// must reject it before any mutation.
 	cmd := WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionSplit,
 		Params: workspaceParams(map[string]interface{}{
 			"target":    ref(owner, "s1"),
@@ -287,7 +285,7 @@ func TestApplyWorkspaceCommandFromPeer_SplitForeignOwnerRejected(t *testing.T) {
 func TestApplyWorkspaceCommandFromPeer_SplitNonexistentRefRejected(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
+	setupWorkspace(t, c, Leaf(ref(owner, "s1")))
 
 	// Owner matches, but the target leaf does not exist in the local trusted
 	// layout tree. The pre-existing findLeaf check inside
@@ -295,7 +293,6 @@ func TestApplyWorkspaceCommandFromPeer_SplitNonexistentRefRejected(t *testing.T)
 	// passes.
 	cmd := WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionSplit,
 		Params: workspaceParams(map[string]interface{}{
 			"target":    ref(owner, "doesnotexist"),
@@ -314,12 +311,11 @@ func TestApplyWorkspaceCommandFromPeer_SplitNonexistentRefRejected(t *testing.T)
 func TestWorkspaceRevisionConflict(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
+	setupWorkspace(t, c, Leaf(ref(owner, "s1")))
 
 	badRev := int64(99)
 	cmd := WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionSplit,
 		Params: workspaceParams(map[string]interface{}{
 			"expected_revision": &badRev,
@@ -338,12 +334,11 @@ func TestWorkspaceMoveAndSwap(t *testing.T) {
 
 	// Build a tree: split(s1, s2) horizontal.
 	tree := Split(DirectionHorizontal, Ratio(0.5), Leaf(ref(owner, "s1")), Leaf(ref(owner, "s2")))
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, tree)
+	setupWorkspace(t, c, tree)
 
 	// Move s1 below s2.
 	cmd := WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionMove,
 		Params: workspaceParams(map[string]interface{}{
 			"source": ref(owner, "s1"),
@@ -354,18 +349,17 @@ func TestWorkspaceMoveAndSwap(t *testing.T) {
 	if err := c.ApplyWorkspaceCommand(cmd); err != nil {
 		t.Fatalf("move: %v", err)
 	}
-	snap, _ := c.WorkspaceSnapshot(lID)
-	if leaves := leafs(snap.Record.Tree); len(leaves) != 2 {
+	snap, _ := c.WorkspaceSnapshot()
+	if leaves := leafs(*snap.Record.Tree); len(leaves) != 2 {
 		t.Fatalf("move lost leaves: %v", leaves)
 	}
 	// Move s1 below s2 produces a vertical split with s2 first in DFS order.
-	if leaves := leafs(snap.Record.Tree); leaves[0] != ref(owner, "s2").MapKey() {
+	if leaves := leafs(*snap.Record.Tree); leaves[0] != ref(owner, "s2").MapKey() {
 		t.Fatalf("move order wrong: %v", leaves)
 	}
 
 	cmdSwap := WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionSwap,
 		Params: workspaceParams(map[string]interface{}{
 			"a": ref(owner, "s1"),
@@ -375,8 +369,8 @@ func TestWorkspaceMoveAndSwap(t *testing.T) {
 	if err := c.ApplyWorkspaceCommand(cmdSwap); err != nil {
 		t.Fatalf("swap: %v", err)
 	}
-	snap, _ = c.WorkspaceSnapshot(lID)
-	leaves := leafs(snap.Record.Tree)
+	snap, _ = c.WorkspaceSnapshot()
+	leaves := leafs(*snap.Record.Tree)
 	if leaves[0] != ref(owner, "s1").MapKey() || leaves[1] != ref(owner, "s2").MapKey() {
 		t.Fatalf("swap order wrong: %v", leaves)
 	}
@@ -391,19 +385,18 @@ func TestWorkspaceRemoveCollapsesSingleChild(t *testing.T) {
 		Leaf(ref(owner, "s1")),
 		Split(DirectionVertical, Ratio(0.5), Leaf(ref(owner, "s2")), Leaf(ref(owner, "s3"))),
 	)
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, tree)
+	setupWorkspace(t, c, tree)
 
 	cmd := WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionRemove,
 		Params: workspaceParams(map[string]interface{}{"ref": ref(owner, "s2")}),
 	}
 	if err := c.ApplyWorkspaceCommand(cmd); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	snap, _ := c.WorkspaceSnapshot(lID)
-	leaves := leafs(snap.Record.Tree)
+	snap, _ := c.WorkspaceSnapshot()
+	leaves := leafs(*snap.Record.Tree)
 	if len(leaves) != 2 || snap.Record.Tree.IsLeaf() {
 		t.Fatalf("expected collapsed 2-leaf tree, got leaves %v tree type %s", leaves, snap.Record.Tree.Type)
 	}
@@ -411,7 +404,6 @@ func TestWorkspaceRemoveCollapsesSingleChild(t *testing.T) {
 	// Removing the last leaf deletes the layout.
 	if err := c.ApplyWorkspaceCommand(WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionRemove,
 		Params: workspaceParams(map[string]interface{}{"ref": ref(owner, "s1")}),
 	}); err != nil {
@@ -419,13 +411,12 @@ func TestWorkspaceRemoveCollapsesSingleChild(t *testing.T) {
 	}
 	if err := c.ApplyWorkspaceCommand(WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionRemove,
 		Params: workspaceParams(map[string]interface{}{"ref": ref(owner, "s3")}),
 	}); err != nil {
 		t.Fatalf("remove s3: %v", err)
 	}
-	if _, err := c.WorkspaceSnapshot(lID); err == nil {
+	if _, err := c.WorkspaceSnapshot(); err == nil {
 		t.Fatal("expected layout deleted after last leaf removed")
 	}
 }
@@ -438,19 +429,18 @@ func TestWorkspacePopOut(t *testing.T) {
 		Leaf(ref(owner, "s1")),
 		Leaf(ref(owner, "s2")),
 	)
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, tree)
+	setupWorkspace(t, c, tree)
 
 	cmd := WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionPopOut,
 		Params: workspaceParams(map[string]interface{}{"ref": ref(owner, "s2")}),
 	}
 	if err := c.ApplyWorkspaceCommand(cmd); err != nil {
 		t.Fatalf("pop out: %v", err)
 	}
-	snap, _ := c.WorkspaceSnapshot(lID)
-	if leaves := leafs(snap.Record.Tree); len(leaves) != 1 || leaves[0] != ref(owner, "s2").MapKey() {
+	snap, _ := c.WorkspaceSnapshot()
+	if leaves := leafs(*snap.Record.Tree); len(leaves) != 1 || leaves[0] != ref(owner, "s2").MapKey() {
 		t.Fatalf("expected single s2 leaf, got %v", leaves)
 	}
 }
@@ -459,14 +449,13 @@ func TestWorkspaceResizeBySplitID(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
 
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1,
+	setupWorkspace(t, c,
 		Split(DirectionHorizontal, Ratio(0.5), Leaf(ref(owner, "s1")), Leaf(ref(owner, "s2"))))
 
 	// First split the root to get a child split with a stable ID.
 	registerTestSession(t, c, ref(owner, "s3"))
 	if err := c.ApplyWorkspaceCommand(WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionSplit,
 		Params: workspaceParams(map[string]interface{}{
 			"target":    ref(owner, "s1"),
@@ -477,7 +466,7 @@ func TestWorkspaceResizeBySplitID(t *testing.T) {
 		t.Fatalf("split: %v", err)
 	}
 
-	snap, _ := c.WorkspaceSnapshot(lID)
+	snap, _ := c.WorkspaceSnapshot()
 	var childID SplitID
 	var walk func(PaneNode)
 	walk = func(n PaneNode) {
@@ -493,14 +482,13 @@ func TestWorkspaceResizeBySplitID(t *testing.T) {
 			}
 		}
 	}
-	walk(snap.Record.Tree)
+	walk(*snap.Record.Tree)
 	if childID == "" {
 		t.Fatal("new split did not receive an id")
 	}
 
 	if err := c.ApplyWorkspaceCommand(WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionResize,
 		Params: workspaceParams(map[string]interface{}{
 			"split_id": childID,
@@ -510,7 +498,7 @@ func TestWorkspaceResizeBySplitID(t *testing.T) {
 		t.Fatalf("resize: %v", err)
 	}
 
-	snap, _ = c.WorkspaceSnapshot(lID)
+	snap, _ = c.WorkspaceSnapshot()
 	var found bool
 	walk = func(n PaneNode) {
 		if n.IsSplit() && n.ID == childID {
@@ -526,7 +514,7 @@ func TestWorkspaceResizeBySplitID(t *testing.T) {
 			walk(*n.Second)
 		}
 	}
-	walk(snap.Record.Tree)
+	walk(*snap.Record.Tree)
 	if !found {
 		t.Fatal("resized split not found")
 	}
@@ -534,7 +522,6 @@ func TestWorkspaceResizeBySplitID(t *testing.T) {
 	// Stale split id and invalid ratio.
 	err := c.ApplyWorkspaceCommand(WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionResize,
 		Params: workspaceParams(map[string]interface{}{
 			"split_id": NewSplitID(),
@@ -545,7 +532,6 @@ func TestWorkspaceResizeBySplitID(t *testing.T) {
 
 	err = c.ApplyWorkspaceCommand(WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionResize,
 		Params: workspaceParams(map[string]interface{}{
 			"split_id": childID,
@@ -559,19 +545,18 @@ func TestWorkspaceSelect(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
 
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1,
+	setupWorkspace(t, c,
 		Split(DirectionHorizontal, Ratio(0.5), Leaf(ref(owner, "s1")), Leaf(ref(owner, "s2"))))
 
 	if err := c.ApplyWorkspaceCommand(WorkspaceCommand{
 		ID:     NewCommandID(),
-		Layout: lID,
 		Action: WorkspaceActionSelect,
 		Params: workspaceParams(map[string]interface{}{"ref": ref(owner, "s2")}),
 	}); err != nil {
 		t.Fatalf("select: %v", err)
 	}
 
-	snap, _ := c.WorkspaceSnapshot(lID)
+	snap, _ := c.WorkspaceSnapshot()
 	if snap.Record.ActiveKey == nil || snap.Record.ActiveKey.MapKey() != ref(owner, "s2").MapKey() {
 		t.Fatalf("active key not set: %+v", snap.Record.ActiveKey)
 	}
@@ -588,13 +573,12 @@ func TestWorkspaceAtomicRevisionIncrement(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
 
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
+	setupWorkspace(t, c, Leaf(ref(owner, "s1")))
 	for i := 0; i < 5; i++ {
 		registerTestSession(t, c, ref(owner, fmt.Sprintf("s%d", i+2)))
 		before := c.Revision()
 		cmd := WorkspaceCommand{
 			ID:     NewCommandID(),
-			Layout: lID,
 			Action: WorkspaceActionSplit,
 			Params: workspaceParams(map[string]interface{}{
 				"target":    ref(owner, fmt.Sprintf("s%d", i+1)),
@@ -615,17 +599,17 @@ func TestWorkspaceRemoveSessionRefInternal(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
 
-	l1 := mustPutLayout(t, c, owner, "layout1234567890abcd", 1,
+	setupWorkspace(t, c,
 		Split(DirectionHorizontal, Ratio(0.5), Leaf(ref(owner, "s1")), Leaf(ref(owner, "s2"))))
 
 	if err := c.RemoveSessionRef(ref(owner, "s1")); err != nil {
 		t.Fatalf("remove session ref: %v", err)
 	}
 
-	snap1, _ := c.WorkspaceSnapshot(l1)
-	for _, k := range leafs(snap1.Record.Tree) {
+	snap1, _ := c.WorkspaceSnapshot()
+	for _, k := range leafs(*snap1.Record.Tree) {
 		if k == ref(owner, "s1").MapKey() {
-			t.Fatal("s1 still in l1")
+			t.Fatal("s1 removed but still appears in tree")
 		}
 	}
 }
@@ -634,7 +618,7 @@ func TestWorkspaceRandomizedCommandSequence(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
 
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s0")))
+	setupWorkspace(t, c, Leaf(ref(owner, "s0")))
 
 	rng := rand.New(rand.NewSource(42))
 	refs := []SessionRef{ref(owner, "s0")}
@@ -653,7 +637,6 @@ func TestWorkspaceRandomizedCommandSequence(t *testing.T) {
 			registerTestSession(t, c, newRef)
 			cmd = WorkspaceCommand{
 				ID:     NewCommandID(),
-				Layout: lID,
 				Action: WorkspaceActionSplit,
 				Params: workspaceParams(map[string]interface{}{
 					"target":    target,
@@ -670,7 +653,6 @@ func TestWorkspaceRandomizedCommandSequence(t *testing.T) {
 			refs = append(refs[:idx], refs[idx+1:]...)
 			cmd = WorkspaceCommand{
 				ID:     NewCommandID(),
-				Layout: lID,
 				Action: WorkspaceActionRemove,
 				Params: workspaceParams(map[string]interface{}{"ref": target}),
 			}
@@ -684,7 +666,6 @@ func TestWorkspaceRandomizedCommandSequence(t *testing.T) {
 			}
 			cmd = WorkspaceCommand{
 				ID:     NewCommandID(),
-				Layout: lID,
 				Action: WorkspaceActionSwap,
 				Params: workspaceParams(map[string]interface{}{
 					"a": refs[i],
@@ -698,16 +679,18 @@ func TestWorkspaceRandomizedCommandSequence(t *testing.T) {
 		}
 		err := c.ApplyWorkspaceCommand(cmd)
 		if err != nil {
-			// A remove that empties the layout is valid if it does not leave
-			// the catalog with zero layouts? Here it may delete the only layout.
+			// When the last leaf is removed from the singleton workspace,
+			// it becomes nil. The next command fails with ErrUnknownLayout.
+			// Recreate a minimal workspace to continue the fuzz.
 			var se StateError
 			if errors.As(err, &se) && se.Code == ErrUnknownLayout {
-				// layout was deleted; recreate to keep fuzz running
+				// workspace was deleted; recreate to keep fuzz running
 				name := fmt.Sprintf("s%d", nextID)
 				nextID++
 				r := ref(owner, name)
 				refs = []SessionRef{r}
-				mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(r))
+				registerTestSession(t, c, r)
+				setupWorkspace(t, c, Leaf(r))
 				continue
 			}
 			t.Fatalf("step %d action %d: %v", step, action, err)
@@ -716,9 +699,6 @@ func TestWorkspaceRandomizedCommandSequence(t *testing.T) {
 		snap := c.store.Snapshot()
 		if err := ValidateDocument(&snap); err != nil {
 			t.Fatalf("step %d invalid document: %v", step, err)
-		}
-		if err := CheckSessionMembershipAcrossLayouts(&snap); err != nil {
-			t.Fatalf("step %d membership conflict: %v", step, err)
 		}
 		if len(snap.Commands) > MaxPendingCommands {
 			t.Fatalf("step %d too many receipts: %d", step, len(snap.Commands))
@@ -746,8 +726,11 @@ func BenchmarkWorkspaceSplitOperations(b *testing.B) {
 	}
 	tree := buildBalanced(leaves)
 	registerTreeSessions(b, cat, tree)
-	lID := SessionID("layout1234567890abcd")
-	if err := cat.PutLayout(LayoutRecord{ID: lID, Owner: owner, Tree: tree, Revision: 0}); err != nil {
+	// Set up singleton workspace with the balanced tree
+	if err := cat.apply("bench/setup-workspace", func(doc *AppDocument) error {
+		doc.Workspace = &WorkspaceRecord{Revision: 0, Tree: cloneTreePtr(&tree)}
+		return nil
+	}); err != nil {
 		b.Fatal(err)
 	}
 
@@ -757,7 +740,6 @@ func BenchmarkWorkspaceSplitOperations(b *testing.B) {
 		registerTestSession(b, cat, ref(owner, name))
 		cmd := WorkspaceCommand{
 			ID:     NewCommandID(),
-			Layout: lID,
 			Action: WorkspaceActionSplit,
 			Params: workspaceParams(map[string]interface{}{
 				"target":    ref(owner, "leaf000"),
@@ -794,15 +776,12 @@ func TestWorkspaceSnapshotSynthesized(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
 
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
-	snap, err := c.WorkspaceSnapshot(lID)
+	setupWorkspace(t, c, Leaf(ref(owner, "s1")))
+	snap, err := c.WorkspaceSnapshot()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if snap.Record.ID != lID {
-		t.Fatalf("workspace id mismatch")
-	}
-	if len(leafs(snap.Record.Tree)) != 1 {
+	if len(leafs(*snap.Record.Tree)) != 1 {
 		t.Fatalf("expected one leaf")
 	}
 }

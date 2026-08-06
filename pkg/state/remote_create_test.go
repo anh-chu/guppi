@@ -203,7 +203,6 @@ func TestRemoteCreateRequest_JSONRoundTrip_WithSplitTarget(t *testing.T) {
 		IntentID:  NewCommandID(),
 		Requester: testOwner(),
 		Name:      "split-session",
-		LayoutID:  LayoutID("layout-1"),
 		Target:    &target,
 		Direction: DirectionVertical,
 	}

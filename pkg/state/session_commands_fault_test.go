@@ -12,7 +12,7 @@ import (
 // guarantee documented on executeSetPresentation: when backgrounding a
 // session (Background false->true) triggers a store/persistence failure, the
 // command must fail closed and leave NEITHER the Background flag flip NOR the
-// layout-membership removal visible afterward. It exercises the real
+// workspace-membership removal visible afterward. It exercises the real
 // OpenStore/NewCatalog/NewSessionCommandService wiring (not an isolated
 // in-memory helper) with a real StoreOptions.WriteHook fault injected on the
 // durable write triggered by the set_presentation command itself, mirroring
@@ -45,9 +45,13 @@ func TestSetPresentationBackgroundAtomicOnStoreFailure(t *testing.T) {
 	if err := catalog.PutSession(rec); err != nil {
 		t.Fatalf("PutSession setup: %v", err)
 	}
-	layout := LayoutRecord{ID: NewLayoutID(), Owner: owner, Revision: 1, Tree: Leaf(rec.Ref)}
-	if err := catalog.PutLayout(layout); err != nil {
-		t.Fatalf("PutLayout setup: %v", err)
+	// Set up a singleton workspace with the test session as a leaf.
+	leaf := Leaf(rec.Ref)
+	if err := catalog.apply("test/setup-workspace", func(doc *AppDocument) error {
+		doc.Workspace = &WorkspaceRecord{Revision: 1, Tree: &leaf}
+		return nil
+	}); err != nil {
+		t.Fatalf("setup workspace: %v", err)
 	}
 
 	backend := newTestBackend()
@@ -79,15 +83,16 @@ func TestSetPresentationBackgroundAtomicOnStoreFailure(t *testing.T) {
 	}
 	if gotSession.Background {
 		t.Fatal("ATOMICITY VIOLATION: Background flag was flipped to true despite the injected store write failure " +
-			"-- the flag change and layout removal must commit in the same transaction or not at all")
+			"-- the flag change and workspace removal must commit in the same transaction or not at all")
 	}
 
-	gotLayout, ok := catalog.Layout(layout.ID)
-	if !ok {
-		t.Fatal("ATOMICITY VIOLATION: layout was dropped entirely despite the injected store write failure")
+	// Verify workspace tree is still intact with the session leaf.
+	snap, err := catalog.WorkspaceSnapshot()
+	if err != nil {
+		t.Fatal("ATOMICITY VIOLATION: workspace was deleted entirely despite the injected store write failure")
 	}
-	if !findLeaf(gotLayout.Tree, rec.Ref) {
-		t.Fatal("ATOMICITY VIOLATION: session leaf was removed from the layout despite the injected store write " +
+	if snap.Record.Tree == nil || !findLeaf(*snap.Record.Tree, rec.Ref) {
+		t.Fatal("ATOMICITY VIOLATION: session leaf was removed from the workspace despite the injected store write " +
 			"failure, while (per the assertions above) the Background flag was not -- or vice versa; both must " +
 			"move together")
 	}
@@ -97,7 +102,7 @@ func TestSetPresentationBackgroundAtomicOnStoreFailure(t *testing.T) {
 			revBefore, store.Revision())
 	}
 
-	// Now disarm the fault and confirm the exact same command retried
+	// Now disarm the fault and confirm the exact same command retried can succeed.
 	// (replayed under a fresh CommandID, since the failed attempt's ID was
 	// never durably recorded as a receipt) succeeds and moves both changes
 	// together on the next attempt.
@@ -118,15 +123,18 @@ func TestSetPresentationBackgroundAtomicOnStoreFailure(t *testing.T) {
 	if !gotSession2.Background {
 		t.Fatal("expected Background = true after successful retry")
 	}
-	gotLayout2, ok := catalog.Layout(layout.ID)
-	if ok && findLeaf(gotLayout2.Tree, rec.Ref) {
-		t.Fatal("expected session leaf removed from layout after successful backgrounding retry")
+	snap2, err := catalog.WorkspaceSnapshot()
+	if err != nil {
+		t.Fatal("workspace disappeared after successful set_presentation")
+	}
+	if snap2.Record.Tree == nil || !findLeaf(*snap2.Record.Tree, rec.Ref) {
+		t.Fatal("expected session leaf removed from workspace after successful backgrounding retry")
 	}
 }
 
 // TestSetPresentationBackgroundRemovesLeafInSingleRevision proves that
-// backgrounding a session (Background false->true) removes it from the sole
-// layout's pane tree in the same catalog.apply mutation as the flag flip --
+// backgrounding a session (Background false->true) removes it from the
+// workspace's pane tree in the same catalog.apply mutation as the flag flip --
 // not a second, separately-committed mutation -- and that the whole command
 // (mutation + its receipt commit, the two-phase pattern every session
 // command in this file uses) durably advances the revision by exactly 2 no
@@ -140,8 +148,12 @@ func TestSetPresentationBackgroundRemovesLeafInSingleRevision(t *testing.T) {
 	if err := catalog.PutSession(rec); err != nil {
 		t.Fatal(err)
 	}
-	layout := LayoutRecord{ID: NewLayoutID(), Owner: testOwner(), Revision: 1, Tree: Leaf(rec.Ref)}
-	if err := catalog.PutLayout(layout); err != nil {
+	// Set up a singleton workspace with the test session as a leaf.
+	leaf := Leaf(rec.Ref)
+	if err := catalog.apply("test/setup-workspace", func(doc *AppDocument) error {
+		doc.Workspace = &WorkspaceRecord{Revision: 1, Tree: &leaf}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -160,7 +172,7 @@ func TestSetPresentationBackgroundRemovesLeafInSingleRevision(t *testing.T) {
 		t.Fatalf("expected accepted, got %+v", result)
 	}
 
-	// One catalog.apply for the flag flip + layout-leaf removal (committed
+	// One catalog.apply for the flag flip + workspace-leaf removal (committed
 	// together, atomically), plus one catalog.apply for the receipt --
 	// exactly 2 durable revisions for one accepted command, and no more.
 	if got := store.Revision(); got != revBefore+2 {
@@ -175,9 +187,12 @@ func TestSetPresentationBackgroundRemovesLeafInSingleRevision(t *testing.T) {
 		t.Fatal("expected Background = true")
 	}
 
-	gotLayout, ok := catalog.Layout(layout.ID)
-	if ok && findLeaf(gotLayout.Tree, rec.Ref) {
-		t.Fatal("expected no matching leaf left in the layout after backgrounding")
+	snap, err := catalog.WorkspaceSnapshot()
+	if err != nil {
+		t.Fatal("workspace disappeared after backgrounding")
+	}
+	if snap.Record.Tree != nil && findLeaf(*snap.Record.Tree, rec.Ref) {
+		t.Fatal("expected no matching leaf left in the workspace after backgrounding")
 	}
 
 	// Exactly one receipt for this command ID.

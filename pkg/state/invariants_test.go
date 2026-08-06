@@ -64,54 +64,14 @@ func TestInvariantSessionOwnerMismatch(t *testing.T) {
 	}
 }
 
-func TestInvariantDuplicateLayoutIDs(t *testing.T) {
-	// A document can never legitimately carry two layouts (see
-	// TestInvariantMultipleLayoutsRejected below), so a document with two
-	// layouts -- duplicate ID or not -- always fails ValidateDocument with
-	// ErrMultipleLayouts before any per-layout duplicate-ID check is reached.
-	owner := OwnerID("ownerinv1234567890ab")
-	doc := AppDocument{
-		Schema:   SchemaVersion,
-		Owner:    owner,
-		Revision: 1,
-		Sessions: []LocalSessionRecord{
-			mkSession(owner, "sessdoc1234567890ab"),
-		},
-	}
-	err := ValidateDocument(&doc)
-	if err == nil {
-		t.Fatal("expected an error for a document with two layouts")
-	}
-	var se StateError
-	if !errors.As(err, &se) || se.Code != ErrMultipleLayouts {
-		t.Fatalf("wrong error: %v", err)
-	}
+// TestInvariantDuplicateLayoutIDs_OBSOLETE is removed; schema 4 has no layouts.
+func TestInvariantDuplicateLayoutIDs_OBSOLETE(t *testing.T) {
+	t.Skip("Schema 4: no layouts")
 }
 
-// TestInvariantMultipleLayoutsRejected is the acceptance test for the
-// one-workspace-layout invariant: a document with two DISTINCT layouts (no
-// duplicate IDs, no shared leaves) must still fail closed with
-// ErrMultipleLayouts, never persisted, since the product exposes no
-// group/multi-layout controls.
-func TestInvariantMultipleLayoutsRejected(t *testing.T) {
-	owner := OwnerID("ownerinv1234567890ab")
-	doc := AppDocument{
-		Schema:   SchemaVersion,
-		Owner:    owner,
-		Revision: 1,
-		Sessions: []LocalSessionRecord{
-			mkSession(owner, "sessinv1234567890ab"),
-			mkSession(owner, "otherinv1234567890ab"),
-		},
-	}
-	err := ValidateDocument(&doc)
-	if err == nil {
-		t.Fatal("expected a document with two layouts to be rejected")
-	}
-	var se StateError
-	if !errors.As(err, &se) || se.Code != ErrMultipleLayouts {
-		t.Fatalf("wrong error: %v", err)
-	}
+// TestInvariantMultipleLayoutsRejected_OBSOLETE is removed; schema 4 has one workspace.
+func TestInvariantMultipleLayoutsRejected_OBSOLETE(t *testing.T) {
+	t.Skip("Schema 4: one workspace")
 }
 
 func TestInvariantDuplicateLeaves(t *testing.T) {
@@ -189,36 +149,21 @@ func ptrLeaf(ref SessionRef) *PaneNode {
 	return &p
 }
 
-func TestInvariantSessionInMultipleLayouts(t *testing.T) {
-	owner := OwnerID("ownerinv1234567890ab")
-	ref := SessionRef{Owner: owner, Session: "sessinv1234567890ab"}
-	doc := AppDocument{
-		Schema:   SchemaVersion,
-		Owner:    owner,
-		Revision: 1,
-	}
-	err := CheckSessionMembershipAcrossLayouts(&doc)
-	if err == nil {
-		t.Fatal("expected session-in-multiple-layouts error")
-	}
-	var se StateError
-	if !errors.As(err, &se) || se.Code != ErrSessionInMultipleLayouts {
-		t.Fatalf("wrong error: %v", err)
-	}
+// TestInvariantSessionInMultipleLayouts_OBSOLETE is removed; schema 4 has one workspace.
+func TestInvariantSessionInMultipleLayouts_OBSOLETE(t *testing.T) {
+	t.Skip("Schema 4: one workspace")
 }
 
 // TestValidateDocumentRejectsOrphanedSessionRef is the regression-prevention
-// test for the whole class of bug fixed here: a layout pane-tree leaf whose
+// test for the whole class of bug fixed here: a workspace pane-tree leaf whose
 // SessionRef.Session names no LocalSessionRecord anywhere in the document
 // (not doc.Sessions, not a PendingCreate, not a PendingRemoteCreate) must be
-// rejected by ValidateDocument, whether or not this specific leaf was ever
-// touched by a workspace "rename" command. This guards against any future
-// code path (not just WorkspaceActionRename) leaving a leaf pointing at a
-// session that was never created or has already been removed.
+// rejected by ValidateDocument. This guards against any future code path
+// leaving a leaf pointing at a session that was never created or has already
+// been removed.
 func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 	owner := OwnerID("ownerinv1234567890ab")
-	real := SessionRef{Owner: owner, Session: "sessdoc1234567890ab"}
-	orphan := SessionRef{Owner: owner, Session: "orphaninv1234567890a"}
+	orphanLeaf := Leaf(SessionRef{Owner: owner, Session: "orphaninv1234567890a"})
 
 	doc := AppDocument{
 		Schema:   SchemaVersion,
@@ -227,7 +172,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 		Sessions: []LocalSessionRecord{
 			mkSession(owner, "sessdoc1234567890ab"),
 		},
-		Workspace: &WorkspaceRecord{Revision: 1, Tree: nil},
+		Workspace: &WorkspaceRecord{Revision: 1, Tree: &orphanLeaf},
 	}
 
 	err := ValidateDocument(&doc)
@@ -241,7 +186,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 
 	// A leaf whose owner does not match the document's own owner is rejected
 	// the same way, even if the session ID happens to collide with a real one.
-	foreignOwnerLeaf := SessionRef{Owner: "foreignownerabcd12345", Session: "sessdoc1234567890ab"}
+	foreignLeaf := Leaf(SessionRef{Owner: "foreignownerabcd12345", Session: "sessdoc1234567890ab"})
 	doc2 := AppDocument{
 		Schema:   SchemaVersion,
 		Owner:    owner,
@@ -249,6 +194,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 		Sessions: []LocalSessionRecord{
 			mkSession(owner, "sessdoc1234567890ab"),
 		},
+		Workspace: &WorkspaceRecord{Revision: 1, Tree: &foreignLeaf},
 	}
 	err2 := ValidateDocument(&doc2)
 	if err2 == nil {
@@ -264,6 +210,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 	// relies on (see session_commands.go), and must not be confused with an
 	// orphaned ref.
 	pendingRef := SessionRef{Owner: owner, Session: "pendinginv1234567890"}
+	pendingLeaf := Leaf(pendingRef)
 	doc3 := AppDocument{
 		Schema:   SchemaVersion,
 		Owner:    owner,
@@ -271,6 +218,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 		PendingCreates: []PendingCreateRecord{
 			{IntentID: NewCommandID(), Ref: pendingRef},
 		},
+		Workspace: &WorkspaceRecord{Revision: 1, Tree: &pendingLeaf},
 	}
 	if err := ValidateDocument(&doc3); err != nil {
 		t.Fatalf("pending-create-backed leaf should be accepted: %v", err)
@@ -289,45 +237,43 @@ func TestShouldAcceptSnapshot(t *testing.T) {
 	}
 }
 
-// TestSchema4SingletonWorkspace_FAILS proves the contract that a workspace tree
+// TestSchema4SingletonWorkspace proves the contract that a workspace tree
 // is optional (Tree == nil is valid) and is the ONLY workspace representation.
-func TestSchema4SingletonWorkspace_FAILS(t *testing.T) {
+func TestSchema4SingletonWorkspace(t *testing.T) {
 	owner := OwnerID("ownerinv1234567890ab")
 	
 	// Empty workspace with nil tree should be valid in schema 4.
-	// This will FAIL now; will pass after Task 1.
-	// emptyWorkspace := AppDocument{
-	//	Schema:    4, // Currently is 3; Task 1 bumps to 4
-	//	Owner:     owner,
-	//	Revision:  0,
-	//	Sessions:  []LocalSessionRecord{},
-	//	// Workspace: WorkspaceRecord{Revision: 0, Tree: nil}, // Does not exist yet
-	// }
+	emptyWorkspace := AppDocument{
+		Schema:    SchemaVersion,
+		Owner:     owner,
+		Revision:  0,
+		Sessions:  []LocalSessionRecord{},
+		Workspace: &WorkspaceRecord{Revision: 0, Tree: nil},
+	}
 	
-	// Expect ValidateDocument to accept it. This FAILS because Workspace field
-	// does not exist, so this document would fail schema version check instead.
-	// err := ValidateDocument(&emptyWorkspace)
-	// if err != nil {
-	//	t.Fatalf("empty workspace should be valid: %v", err)
-	// }
+	if err := ValidateDocument(&emptyWorkspace); err != nil {
+		t.Fatalf("empty workspace should be valid: %v", err)
+	}
 	
 	// Document with a workspace tree and a leaf referencing a pending session
 	// should be valid.
 	pendingRef := SessionRef{Owner: owner, Session: "pendinginv1234567890"}
+	pendingLeaf := Leaf(pendingRef)
 	withTree := AppDocument{
-		Schema:   4,
+		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []LocalSessionRecord{},
 		PendingCreates: []PendingCreateRecord{
 			{IntentID: NewCommandID(), Ref: pendingRef},
 		},
-		// Workspace: WorkspaceRecord{
-		//   Revision: 1,
-		//   Tree: &Leaf(pendingRef),
-		// },
+		Workspace: &WorkspaceRecord{
+		  Revision: 1,
+		  Tree: &pendingLeaf,
+		},
 	}
 	
-	// Will be valid once schema 4 is implemented.
-	_ = withTree
+	if err := ValidateDocument(&withTree); err != nil {
+		t.Fatalf("workspace with pending-create-backed leaf should be valid: %v", err)
+	}
 }

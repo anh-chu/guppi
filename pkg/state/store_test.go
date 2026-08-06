@@ -311,17 +311,20 @@ func TestUpdateInvalidDocumentRejected(t *testing.T) {
 	dir := t.TempDir()
 	s := mustOpenEmpty(t, dir)
 
-	owner := s.Owner()
-	err := s.Update("bad-layout", func(doc *AppDocument) error {
-		doc.Layouts = append(doc.Layouts, LayoutRecord{
-			ID:    LayoutID("layoutbad12345678901"),
-			Owner: owner,
-			Tree:  Split(DirectionHorizontal, Ratio(0.5), Leaf(SessionRef{}), Leaf(SessionRef{})),
-		})
+	err := s.Update("bad-workspace", func(doc *AppDocument) error {
+		// Create an invalid workspace tree with leaves that reference non-existent sessions
+		invalidTree := Split(DirectionHorizontal, Ratio(0.5), 
+			Leaf(SessionRef{}), 
+			Leaf(SessionRef{}),
+		)
+		doc.Workspace = &WorkspaceRecord{
+			Revision: 0,
+			Tree:     &invalidTree,
+		}
 		return nil
 	})
 	if err == nil {
-		t.Fatal("expected invalid document to be rejected")
+		t.Fatal("expected invalid document with orphaned workspace leaf to be rejected")
 	}
 	if s.Revision() != 0 {
 		t.Fatalf("revision should not advance on invalid update: %d", s.Revision())
@@ -682,10 +685,10 @@ func TestFilePermission0600(t *testing.T) {
 	checkFilePerm(t, s.currentPath(), 0600)
 }
 
-func BenchmarkStoreUpdate100Sessions50Layouts(b *testing.B) {
+func BenchmarkStoreUpdate100Sessions(b *testing.B) {
 	dir := b.TempDir()
 	owner := OwnerID("ownerbench1234567890")
-	doc := mkLargeDoc(owner, 100, 50)
+	doc := mkLargeDoc(owner, 100)
 	mustWriteJSON(b, filepath.Join(dir, "bench.state.json"), doc)
 	s, err := OpenStore(dir, "bench", StoreOptions{})
 	if err != nil {
@@ -702,10 +705,10 @@ func BenchmarkStoreUpdate100Sessions50Layouts(b *testing.B) {
 	}
 }
 
-func BenchmarkStoreUpdate500Sessions200Layouts(b *testing.B) {
+func BenchmarkStoreUpdate500Sessions(b *testing.B) {
 	dir := b.TempDir()
 	owner := OwnerID("ownerbench1234567890")
-	doc := mkLargeDoc(owner, 500, 200)
+	doc := mkLargeDoc(owner, 500)
 	mustWriteJSON(b, filepath.Join(dir, "bench.state.json"), doc)
 	s, err := OpenStore(dir, "bench", StoreOptions{})
 	if err != nil {
@@ -737,6 +740,7 @@ func mustOpenEmptyInDir(t testing.TB, dir string) *Store {
 }
 
 func mkBasicDoc(owner OwnerID) AppDocument {
+	leaf := Leaf(SessionRef{Owner: owner, Session: SessionID("sessbasic12345678901")})
 	return AppDocument{
 		Schema:   SchemaVersion,
 		Owner:    owner,
@@ -751,24 +755,19 @@ func mkBasicDoc(owner OwnerID) AppDocument {
 				Generation: "test-gen",
 			},
 		},
-		Layouts: []LayoutRecord{
-			{
-				ID:       LayoutID("layoutbasic123456789"),
-				Owner:    owner,
-				Revision: 1,
-				Tree:     Leaf(SessionRef{Owner: owner, Session: SessionID("sessbasic12345678901")}),
-			},
+		Workspace: &WorkspaceRecord{
+			Revision: 1,
+			Tree:     &leaf,
 		},
 	}
 }
 
-func mkLargeDoc(owner OwnerID, sessions, layouts int) AppDocument {
+func mkLargeDoc(owner OwnerID, sessions int) AppDocument {
 	doc := AppDocument{
 		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Sessions: make([]LocalSessionRecord, sessions),
-		Layouts:  make([]LayoutRecord, layouts),
 	}
 	for i := 0; i < sessions; i++ {
 		id := SessionID(fmt.Sprintf("sess%025d", i))
@@ -782,15 +781,13 @@ func mkLargeDoc(owner OwnerID, sessions, layouts int) AppDocument {
 			Revision:   1,
 		}
 	}
-	for i := 0; i < layouts; i++ {
-		id := LayoutID(fmt.Sprintf("layout%023d", i))
-		sid := SessionID(fmt.Sprintf("sess%025d", i))
-		doc.Layouts[i] = LayoutRecord{
-			ID:       id,
-			Owner:    owner,
-
+	// Create a singleton workspace with the first session as a leaf
+	if sessions > 0 {
+		firstSid := SessionID(fmt.Sprintf("sess%025d", 0))
+		leaf := Leaf(SessionRef{Owner: owner, Session: firstSid})
+		doc.Workspace = &WorkspaceRecord{
 			Revision: 1,
-			Tree:     Leaf(SessionRef{Owner: owner, Session: sid}),
+			Tree:     &leaf,
 		}
 	}
 	return doc

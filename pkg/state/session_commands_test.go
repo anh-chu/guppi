@@ -172,13 +172,16 @@ func TestCreateReturnsStableIDAndActivates(t *testing.T) {
 		t.Fatal("expected stable session ref")
 	}
 
-	// Before the worker runs, only the pending intent and layout exist.
+	// Before the worker runs, only the pending intent and workspace exist.
 	if p := catalog.PendingCreates(); len(p) != 1 {
 		t.Fatalf("expected 1 pending create, got %d", len(p))
 	}
-	layouts := catalog.Layouts()
-	if len(layouts) != 1 {
-		t.Fatalf("expected 1 layout, got %d", len(layouts))
+	snap, err := catalog.WorkspaceSnapshot()
+	if err != nil {
+		t.Fatalf("expected workspace to exist: %v", err)
+	}
+	if snap.Record.Tree == nil {
+		t.Fatalf("expected workspace tree to be non-nil")
 	}
 
 	// Wait for the worker to start the daemon and commit the running record.
@@ -547,9 +550,9 @@ func TestLabelOnlyMutatesDisplayName(t *testing.T) {
 	if got.Ref != origRef {
 		t.Fatalf("label changed session ref: %v -> %v", origRef, got.Ref)
 	}
-	layouts := catalog.Layouts()
-	if len(layouts) != 0 && !findLeaf(layouts[0].Tree, origRef) {
-		t.Fatal("label removed session ref from layout")
+	snap, err := catalog.WorkspaceSnapshot()
+	if err == nil && snap.Record.Tree != nil && !findLeaf(*snap.Record.Tree, origRef) {
+		t.Fatal("label removed session ref from workspace")
 	}
 }
 
@@ -589,8 +592,12 @@ func TestNaturalExitCleansSessionAndWorkspace(t *testing.T) {
 	rec := activeRecord(SessionID("exitme"), "gen-exit")
 	rec.Desired = DesiredStop
 	_ = catalog.PutSession(rec)
-	layout := LayoutRecord{ID: NewLayoutID(), Owner: owner, Revision: 1, Tree: Leaf(rec.Ref)}
-	_ = catalog.PutLayout(layout)
+	// Set up a singleton workspace with the test session as a leaf.
+	leaf := Leaf(rec.Ref)
+	_ = catalog.apply("test/setup-workspace", func(doc *AppDocument) error {
+		doc.Workspace = &WorkspaceRecord{Revision: 1, Tree: &leaf}
+		return nil
+	})
 
 	backend := newFakeBackend()
 	backend.setProbe(bindingForRecord(&rec), pty.ProbeEvidence{
@@ -610,8 +617,9 @@ func TestNaturalExitCleansSessionAndWorkspace(t *testing.T) {
 	if _, ok := catalog.Session(rec.ID); ok {
 		t.Fatal("expected clean session removed")
 	}
-	if len(catalog.Layouts()) != 0 {
-		t.Fatalf("expected empty layout removed after clean exit, got %d", len(catalog.Layouts()))
+	snap, err := catalog.WorkspaceSnapshot()
+	if err == nil && snap.Record.Tree != nil {
+		t.Fatalf("expected workspace tree to be nil or empty after clean exit")
 	}
 }
 
@@ -831,16 +839,15 @@ func TestCreateWithSplitTargetPlacesAtomicallyWithoutDuplicateLeaf(t *testing.T)
 	svc, catalog, _, _, cleanup := newTestCommandService(t)
 	defer cleanup()
 
-	// Seed an existing layout with one session to split beside.
+	// Seed an existing workspace with one session to split beside.
 	existing := activeRecord(SessionID("existingpane"), "gen-ex")
 	if err := catalog.PutSession(existing); err != nil {
 		t.Fatal(err)
 	}
-	layoutID := LayoutID("splitlayout1234567")
-	if err := catalog.PutLayout(LayoutRecord{
-		ID:    layoutID,
-		Owner: testOwner(),
-		Tree:  Leaf(existing.Ref),
+	leaf := Leaf(existing.Ref)
+	if err := catalog.apply("test/setup-workspace", func(doc *AppDocument) error {
+		doc.Workspace = &WorkspaceRecord{Revision: 0, Tree: &leaf}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -849,7 +856,6 @@ func TestCreateWithSplitTargetPlacesAtomicallyWithoutDuplicateLeaf(t *testing.T)
 		Name:      "splitcreated",
 		Shell:     "/bin/bash",
 		Cwd:       "/tmp",
-		LayoutID:  layoutID,
 		Target:    &existing.Ref,
 		Direction: DirectionVertical,
 	})
@@ -861,17 +867,17 @@ func TestCreateWithSplitTargetPlacesAtomicallyWithoutDuplicateLeaf(t *testing.T)
 		t.Fatalf("expected accepted result: %+v", res)
 	}
 
-	layout, ok := catalog.Layout(layoutID)
-	if !ok {
-		t.Fatal("expected layout to still exist")
+	snap, err := catalog.WorkspaceSnapshot()
+	if err != nil {
+		t.Fatal("expected workspace to exist")
 	}
-	if !layout.Tree.IsSplit() {
-		t.Fatalf("expected a split tree after atomic create+split placement, got %+v", layout.Tree)
+	if !snap.Record.Tree.IsSplit() {
+		t.Fatalf("expected a split tree after atomic create+split placement, got %+v", snap.Record.Tree)
 	}
-	if layout.Tree.Direction != DirectionVertical {
-		t.Fatalf("expected vertical split direction, got %q", layout.Tree.Direction)
+	if snap.Record.Tree.Direction != DirectionVertical {
+		t.Fatalf("expected vertical split direction, got %q", snap.Record.Tree.Direction)
 	}
-	leaves := leafs(layout.Tree)
+	leaves := leafs(*snap.Record.Tree)
 	if len(leaves) != 2 {
 		t.Fatalf("expected exactly 2 leaves (existing + new), got %d: %v", len(leaves), leaves)
 	}
@@ -890,8 +896,8 @@ func TestCreateWithSplitTargetPlacesAtomicallyWithoutDuplicateLeaf(t *testing.T)
 	// same new ref WOULD now be rejected as a duplicate, proving create truly
 	// already placed it (this documents why the frontend must not send a
 	// separate split after this kind of create).
-	if findLeaf(layout.Tree, res.Ref) == false {
-		t.Fatalf("expected new ref to already be a leaf in the layout")
+	if findLeaf(*snap.Record.Tree, res.Ref) == false {
+		t.Fatalf("expected new ref to already be a leaf in the workspace")
 	}
 }
 
