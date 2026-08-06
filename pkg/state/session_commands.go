@@ -1101,7 +1101,6 @@ func placeSessionInWorkspace(doc *AppDocument, layoutID LayoutID, ref SessionRef
 		doc.Layouts = append(doc.Layouts, LayoutRecord{
 			ID:       NewLayoutID(),
 			Owner:    doc.Owner,
-			Order:    1,
 			Revision: doc.Revision + 1,
 			Tree:     Leaf(ref),
 		})

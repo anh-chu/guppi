@@ -71,7 +71,7 @@ let mockHostsList: any[] | null = null
 const defaultSessionState = {
   state: {
     catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
-    workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+    workspace: { layoutId: null, revision: 0, generation: 0, record: null },
     connectionGeneration: 0,
     connectionOnline: false,
     catalogBootstrapped: false,
@@ -318,7 +318,7 @@ describe('App: mode-splitting', () => {
       mockSessionState = {
         state: {
           catalog: { owner: null, revision: 3, generation: 1, sessionsByRef, layoutsById: new Map() },
-          workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null },
           connectionGeneration: 1,
           connectionOnline: true,
           catalogBootstrapped: true,
@@ -380,7 +380,7 @@ describe('App: mode-splitting', () => {
       mockSessionState = {
         state: {
           catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
-          workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          workspace: { layoutId: null, revision: 0, generation: 0, record: null },
           connectionGeneration: 0,
           connectionOnline: false,
           catalogBootstrapped: false,
@@ -450,7 +450,7 @@ describe('App: mode-splitting', () => {
       mockSessionState = {
         state: {
           catalog: { owner: null, revision: 3, generation: 1, sessionsByRef, layoutsById: new Map() },
-          workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          workspace: { layoutId: null, revision: 0, generation: 0, record: null },
           connectionGeneration: 1,
           connectionOnline: true,
           catalogBootstrapped: true,
@@ -504,7 +504,7 @@ describe('App: mode-splitting', () => {
       mockSessionState = {
         state: {
           catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
-          workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          workspace: { layoutId: null, revision: 0, generation: 0, record: null },
           connectionGeneration: 0,
           connectionOnline: false,
           catalogBootstrapped: false,
@@ -545,7 +545,7 @@ describe('App: mode-splitting', () => {
       mockSessionState = {
         state: {
           catalog: { owner: null, revision: 0, generation: 0, sessionsByRef: new Map(), layoutsById: new Map() },
-          workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          workspace: { layoutId: null, revision: 0, generation: 0, record: null },
           connectionGeneration: 0,
           connectionOnline: false,
           catalogBootstrapped: false,
@@ -608,7 +608,7 @@ describe('App: mode-splitting', () => {
       mockSessionState = {
         state: {
           catalog: { owner: null, revision: 2, generation: 1, sessionsByRef, layoutsById: new Map() },
-          workspace: { layoutId: null, revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          workspace: { layoutId: null, revision: 0, generation: 0, record: null },
           connectionGeneration: 1,
           connectionOnline: true,
           catalogBootstrapped: true,
@@ -677,7 +677,7 @@ describe('App: mode-splitting', () => {
       mockSessionState = {
         state: {
           catalog: { owner: null, revision: 1, generation: 1, sessionsByRef, layoutsById: new Map() },
-          workspace: { layoutId: 'layout-1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          workspace: { layoutId: 'layout-1', revision: 0, generation: 0, record: null },
           connectionGeneration: 1,
           connectionOnline: true,
           catalogBootstrapped: true,
@@ -774,7 +774,7 @@ describe('App: mode-splitting', () => {
             sessionsByRef,
             layoutsById: new Map(),
           },
-          workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null },
           connectionGeneration: 1,
           connectionOnline: true,
           catalogBootstrapped: true,
@@ -921,7 +921,7 @@ describe('App: mode-splitting', () => {
       mockSessionState = {
         state: {
           catalog: { localOwner, ownerMeta: new Map(), sessionsByRef, layoutsById: new Map() },
-          workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null, presentationsByRef: new Map() },
+          workspace: { layoutId: 'g1', revision: 0, generation: 0, record: null },
           connectionGeneration: 1,
           connectionOnline: true,
           catalogBootstrapped: true,

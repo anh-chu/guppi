@@ -44,7 +44,6 @@ type bootstrapResponse struct {
 	Remote        []state.OwnerCatalogSnapshot      `json:"remote,omitempty"`
 	Hosts         interface{}                       `json:"hosts"`
 	Workspace     *state.WorkspaceRecord            `json:"workspace,omitempty"`
-	Presentations []state.PresentationRecord        `json:"presentations,omitempty"`
 	Pending       []state.PendingCreateRecord       `json:"pending"`
 	PendingRemote []state.PendingRemoteCreateRecord `json:"pending_remote,omitempty"`
 }
@@ -102,7 +101,6 @@ func handleBootstrap(w http.ResponseWriter, r *http.Request, opts *Options) {
 		if wsRes, err := opts.Catalog.WorkspaceSnapshot(agg.Local.Layouts[0].ID); err == nil {
 			ws := wsRes.Record
 			resp.Workspace = &ws
-			resp.Presentations = wsRes.Presentations
 		}
 	}
 

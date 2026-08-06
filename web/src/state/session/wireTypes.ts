@@ -16,12 +16,6 @@ import type {
   WorkspaceRecord,
 } from './types'
 
-export type PresentationRecord = {
-  ref: SessionRef
-  selected: boolean
-  z_index?: number
-}
-
 export type PendingRemoteCreateRecord = {
   intent_id: string
   owner: OwnerID
@@ -59,7 +53,6 @@ export type BootstrapResponse = {
   remote?: OwnerCatalogSnapshot[]
   hosts: unknown
   workspace?: WorkspaceRecord
-  presentations?: PresentationRecord[]
   pending: PendingCreateRecord[]
   pending_remote?: PendingRemoteCreateRecord[]
 }

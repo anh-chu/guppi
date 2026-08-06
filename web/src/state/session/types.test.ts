@@ -96,7 +96,6 @@ describe('Fixtures', () => {
         {
           id: (fixtures.layout as { id: string }).id,
           owner: (fixtures.layout as { owner: string }).owner,
-          order: (fixtures.layout as { order: number }).order,
           revision: (fixtures.layout as { revision: number }).revision,
           tree: (fixtures.layout as unknown as { tree: PaneNode }).tree,
         },

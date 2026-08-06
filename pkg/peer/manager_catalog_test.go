@@ -500,7 +500,6 @@ func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
 	spoofedLayout := state.LayoutRecord{
 		ID:    layoutID,
 		Owner: ownerSpoof, // SPOOF: different from snapshot owner
-		Order: 0,
 		Tree:  state.Leaf(state.SessionRef{Owner: owner, Session: "s1"}),
 	}
 	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
@@ -540,7 +539,6 @@ func TestRemoteSnapshot_LayoutLeafForeignOwnerRejected(t *testing.T) {
 	spoofedLayout := state.LayoutRecord{
 		ID:    layoutID,
 		Owner: owner,
-		Order: 0,
 		Tree:  state.Leaf(state.SessionRef{Owner: ownerSpoof, Session: sessionID}), // SPOOF: leaf owner != snap.Owner
 	}
 	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{
@@ -608,7 +606,6 @@ func TestRemoteSnapshot_WellFormedAccepted(t *testing.T) {
 	layout := state.LayoutRecord{
 		ID:    layoutID,
 		Owner: owner,
-		Order: 0,
 		Tree:  state.Leaf(state.SessionRef{Owner: owner, Session: sessionID}),
 	}
 	mgr.UpdateRemoteCatalog(peerID, conn, state.OwnerCatalogSnapshot{

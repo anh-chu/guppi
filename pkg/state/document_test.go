@@ -88,9 +88,8 @@ func TestAppDocumentSchemaValidation(t *testing.T) {
 		Schema:     SchemaVersion,
 		Owner:      owner,
 		Revision:   1,
-		Sessions:   []LocalSessionRecord{mkSession(owner, "sessdoc1234567890ab")},
-		Workspaces: []WorkspaceRecord{mkWorkspace(owner, "layoutdoc1234567890a")},
-		Layouts:    []LayoutRecord{mkLayout(owner, "layoutdoc1234567890a", 1)},
+		Sessions: []LocalSessionRecord{mkSession(owner, "sessdoc1234567890ab")},
+		Layouts:  []LayoutRecord{mkLayout(owner, "layoutdoc1234567890a")},
 	}
 
 	if err := ValidateDocument(&base); err != nil {
@@ -137,18 +136,8 @@ func mkSession(owner OwnerID, id string) LocalSessionRecord {
 	}
 }
 
-func mkLayout(owner OwnerID, id string, order int64) LayoutRecord {
+func mkLayout(owner OwnerID, id string) LayoutRecord {
 	return LayoutRecord{
-		ID:       LayoutID(id),
-		Owner:    owner,
-		Order:    order,
-		Tree:     Leaf(SessionRef{Owner: owner, Session: "sessdoc1234567890ab"}),
-		Revision: 1,
-	}
-}
-
-func mkWorkspace(owner OwnerID, id string) WorkspaceRecord {
-	return WorkspaceRecord{
 		ID:       LayoutID(id),
 		Owner:    owner,
 		Tree:     Leaf(SessionRef{Owner: owner, Session: "sessdoc1234567890ab"}),

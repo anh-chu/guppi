@@ -37,10 +37,6 @@ type Catalog struct {
 	// commands mirrors the last known receipts so in-memory catalogs can
 	// participate in the bounded receipt mechanism.
 	commands []CommandReceipt
-
-	// presentations is an in-memory map keyed by layout ID. Previews and
-	// selection state live here and are intentionally never persisted.
-	presentations map[LayoutID]map[string]PresentationRecord
 }
 
 // NewCatalog creates an empty catalog for owner. If store is non-nil, the

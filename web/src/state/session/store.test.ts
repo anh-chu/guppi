@@ -9,11 +9,9 @@ import {
   selectRemoteOwners,
   selectSessionByRef,
   selectSessionsByLifecycle,
-  selectPresentation,
   selectAllLayouts,
 } from './store'
 import type { LayoutRecord, LocalSessionRecord, OwnerCatalogSnapshot, SessionRef, WorkspaceRecord } from './types'
-import type { PresentationRecord } from './wireTypes'
 
 const owner = 'owner1'
 
@@ -41,7 +39,6 @@ function layout(id: string, revision = 1): LayoutRecord {
   return {
     id,
     owner,
-    order: 1,
     revision,
     tree: { type: 'leaf', ref: ref('a') },
   }
@@ -111,27 +108,24 @@ describe('replaceCatalog', () => {
 })
 
 describe('replaceWorkspace', () => {
-  const pres = (s: string, selected: boolean): PresentationRecord => ({ ref: ref(s), selected })
-
-  it('replaces missing presentations rather than merging them', () => {
+  it('replaces the workspace record on a newer revision within the same generation', () => {
     const s0 = initialSessionStoreState()
-    const { state: s1 } = replaceWorkspace(s0, workspaceRecord('L1', 1), 1, [pres('a', true), pres('b', false)])
-    expect(s1.workspace.presentationsByRef.size).toBe(2)
-    const { state: s2, diff } = replaceWorkspace(s1, workspaceRecord('L1', 2), 1, [pres('a', true)])
-    expect(s2.workspace.presentationsByRef.size).toBe(1)
-    expect(selectPresentation(s2.workspace, ref('b'))).toBeUndefined()
-    expect(diff.removed.length).toBe(1)
+    const { state: s1 } = replaceWorkspace(s0, workspaceRecord('L1', 1), 1)
+    expect(s1.workspace.record?.id).toBe('L1')
+    expect(s1.workspace.revision).toBe(1)
+    const { state: s2, diff } = replaceWorkspace(s1, workspaceRecord('L1', 2), 1)
+    expect(s2.workspace.revision).toBe(2)
+    expect(diff.removed.length).toBe(0)
   })
 
   it('rejects stale revision in the same generation, accepts lower revision on new generation', () => {
     const s0 = initialSessionStoreState()
-    const { state: s1 } = replaceWorkspace(s0, workspaceRecord('L1', 10), 1, [pres('a', true)])
-    const { state: s2 } = replaceWorkspace(s1, workspaceRecord('L1', 3), 1, [pres('b', true)])
+    const { state: s1 } = replaceWorkspace(s0, workspaceRecord('L1', 10), 1)
+    const { state: s2 } = replaceWorkspace(s1, workspaceRecord('L1', 3), 1)
     expect(s2).toBe(s1)
 
-    const { state: s3 } = replaceWorkspace(s1, workspaceRecord('L1', 1), 2, [pres('b', true)])
+    const { state: s3 } = replaceWorkspace(s1, workspaceRecord('L1', 1), 2)
     expect(s3.workspace.revision).toBe(1)
-    expect(selectPresentation(s3.workspace, ref('b'))).toBeDefined()
   })
 })
 
@@ -230,7 +224,7 @@ describe('rename/layout stability (zero-remount acceptance check)', () => {
     // Workspace/layout revision bump (simulating a move/split/pop-out) is a
     // separate stream from the catalog; the catalog (session identity) must
     // be untouched by it.
-    const { state: s2 } = replaceWorkspace(s1, workspaceRecord('L1', 5), 1, [])
+    const { state: s2 } = replaceWorkspace(s1, workspaceRecord('L1', 5), 1)
     const before = selectSessionByRef(s1.catalog, ref('a'))
     const after = selectSessionByRef(s2.catalog, ref('a'))
     expect(after).toBe(before) // same object reference: zero remount

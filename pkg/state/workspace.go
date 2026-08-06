@@ -3,7 +3,6 @@ package state
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
 )
 
@@ -14,17 +13,12 @@ const (
 	WorkspaceActionPopOut         = "pop_out"
 	WorkspaceActionRemove         = "remove"
 	WorkspaceActionResize         = "resize"
-	WorkspaceActionReorderLayouts = "reorder_layouts"
-	WorkspaceActionRename         = "rename"
 	WorkspaceActionSelect         = "select"
-	WorkspaceActionPresent        = "present"
 )
 
 // WorkspaceSnapshotResult is the read-only view returned by WorkspaceSnapshot.
-// Presentation data is in-memory only and is never persisted.
 type WorkspaceSnapshotResult struct {
-	Record        WorkspaceRecord
-	Presentations []PresentationRecord
+	Record WorkspaceRecord
 }
 
 // workspaceBaseParams carries the optimistic concurrency check used by most
@@ -70,18 +64,9 @@ type workspaceResizeParams struct {
 	Ratio   float64 `json:"ratio"`
 }
 
-type workspaceReorderParams struct {
-	SourceIndex int `json:"source_index"`
-	TargetIndex int `json:"target_index"`
-}
-
 type workspaceSelectParams struct {
 	workspaceBaseParams
 	Ref SessionRef `json:"ref"`
-}
-
-type workspacePresentParams struct {
-	Presents []PresentationRecord `json:"presents"`
 }
 
 // ApplyWorkspaceCommand applies one atomic workspace command. Accepted commands
@@ -93,32 +78,10 @@ func (c *Catalog) ApplyWorkspaceCommand(cmd WorkspaceCommand) error {
 		return StateError{Code: ErrInvalidIdentity, Field: "id", Detail: err.Error()}
 	}
 
-	// Presentation updates are purely in-memory and intentionally never touch
-	// persisted state.
-	if cmd.Action == WorkspaceActionPresent {
-		var p workspacePresentParams
-		if err := json.Unmarshal(cmd.Params, &p); err != nil {
-			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
-		}
-		return c.applyPresentLocked(cmd.Layout, p.Presents)
-	}
-
-	if cmd.Action == WorkspaceActionReorderLayouts {
-		err := c.apply("workspace/reorder_layouts", func(doc *AppDocument) error {
-			return applyReorderLayoutsCommand(doc, cmd)
-		})
-		// Reorder affects all layouts; publish each to keep remote caches
-		// consistent without exposing intermediate steps.
-		if err == nil {
-			c.publishAllWorkspaces()
-		}
-		return err
-	}
-
 	err := c.apply("workspace/"+cmd.Action, func(doc *AppDocument) error {
 		return applyLayoutTreeCommand(doc, c, cmd)
 	})
-	if err == nil && cmd.Action != WorkspaceActionPresent {
+	if err == nil {
 		c.publishWorkspace(cmd.Layout)
 	}
 	return err
@@ -207,11 +170,6 @@ func (c *Catalog) validatePeerWorkspaceRefOwnership(cmd WorkspaceCommand) error 
 			return StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
 		}
 		return checkRef("ref", p.Ref)
-	case WorkspaceActionRename:
-		// Rename is deprecated (see the WorkspaceActionRename case in
-		// applyLayoutTreeCommand for why); no ref-ownership check is needed
-		// here because the command is unconditionally rejected downstream.
-		return nil
 	case WorkspaceActionSelect:
 		var p workspaceSelectParams
 		if err := json.Unmarshal(cmd.Params, &p); err != nil {
@@ -246,18 +204,7 @@ func (c *Catalog) WorkspaceSnapshot(layout LayoutID) (WorkspaceSnapshotResult, e
 		ws.ActiveKey = active
 	}
 
-	var presentations []PresentationRecord
-	if m, ok := c.presentations[layout]; ok {
-		presentations = make([]PresentationRecord, 0, len(m))
-		for _, pr := range m {
-			presentations = append(presentations, pr)
-		}
-		sort.Slice(presentations, func(i, j int) bool {
-			return presentations[i].Ref.MapKey() < presentations[j].Ref.MapKey()
-		})
-	}
-
-	return WorkspaceSnapshotResult{Record: ws, Presentations: presentations}, nil
+	return WorkspaceSnapshotResult{Record: ws}, nil
 }
 
 // RemoveSessionRef removes a session from every layout in the same atomic
@@ -421,18 +368,6 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 		rec.Tree = tree
 		rec.Revision = nextRev
 
-	case WorkspaceActionRename:
-		// WorkspaceActionRename is removed: it used to rewrite the SessionRef
-		// (owner+session id) stored inside pane-tree leaves, but session
-		// identity is immutable for the lifetime of a session (see
-		// INVARIANTS.md) and this action never updated the corresponding
-		// catalog session record, so it could leave a leaf pointing at a
-		// SessionRef with no matching session (an orphaned ref). Renaming a
-		// session's user-visible display label must go through the session
-		// label command (ActionLabel in session_commands.go), which only
-		// touches the mutable label, never the identity.
-		return StateError{Code: ErrDeprecatedAction, Field: "action", Detail: "workspace \"rename\" action is removed; use the session label command to change a session's display name instead"}
-
 	case WorkspaceActionSelect:
 		var p workspaceSelectParams
 		if err := json.Unmarshal(cmd.Params, &p); err != nil {
@@ -461,57 +396,19 @@ func applyLayoutTreeCommand(doc *AppDocument, c *Catalog, cmd WorkspaceCommand) 
 	return nil
 }
 
-func applyReorderLayoutsCommand(doc *AppDocument, cmd WorkspaceCommand) error {
-	// Idempotent replay: a retried reorder returns success again without
-	// re-swapping orders a second time.
-	if _, ok := findCommandReceipt(doc, cmd.ID); ok {
-		return nil
-	}
-
-	var p workspaceReorderParams
-	if err := json.Unmarshal(cmd.Params, &p); err != nil {
-		return StateError{Code: ErrMalformedOrder, Field: "params", Detail: err.Error()}
-	}
-	if p.SourceIndex < 0 || p.TargetIndex < 0 || p.SourceIndex >= len(doc.Layouts) || p.TargetIndex >= len(doc.Layouts) {
-		return StateError{Code: ErrMalformedOrder, Field: "index", Detail: fmt.Sprintf("index out of range [%d,%d)", 0, len(doc.Layouts))}
-	}
-	if p.SourceIndex == p.TargetIndex {
-		return nil
-	}
-
-	sorted := make([]int, len(doc.Layouts))
-	for i := range sorted {
-		sorted[i] = i
-	}
-	sort.Slice(sorted, func(i, j int) bool {
-		return doc.Layouts[sorted[i]].Order < doc.Layouts[sorted[j]].Order
-	})
-
-	srcIdx := sorted[p.SourceIndex]
-	dstIdx := sorted[p.TargetIndex]
-	doc.Layouts[srcIdx].Order, doc.Layouts[dstIdx].Order = doc.Layouts[dstIdx].Order, doc.Layouts[srcIdx].Order
-
-	if err := appendCommandReceipt(doc, cmd.ID, doc.Revision+1, "workspace:"+cmd.Action, ""); err != nil {
-		return err
-	}
-	return nil
-}
-
+// removeSessionFromWorkspacesLocked removes ref from the sole layout's pane
+// tree (a no-op if it is not present). The layout itself is dropped from the
+// document when removing the leaf leaves it empty.
 func removeSessionFromWorkspacesLocked(doc *AppDocument, ref SessionRef) error {
-	key := ref.MapKey()
-	changed := false
 	newLayouts := doc.Layouts[:0]
 	for i := range doc.Layouts {
 		if !findLeaf(doc.Layouts[i].Tree, ref) {
 			newLayouts = append(newLayouts, doc.Layouts[i])
 			continue
 		}
-		tree, removed, err := removeTree(doc.Layouts[i].Tree, ref)
+		tree, _, err := removeTree(doc.Layouts[i].Tree, ref)
 		if err != nil {
 			return err
-		}
-		if removed {
-			changed = true
 		}
 		if tree.Type == "" {
 			continue
@@ -522,39 +419,6 @@ func removeSessionFromWorkspacesLocked(doc *AppDocument, ref SessionRef) error {
 		newLayouts = append(newLayouts, rec)
 	}
 	doc.Layouts = newLayouts
-
-	newWorkspaces := doc.Workspaces[:0]
-	for i := range doc.Workspaces {
-		if !findLeaf(doc.Workspaces[i].Tree, ref) {
-			newWorkspaces = append(newWorkspaces, doc.Workspaces[i])
-			continue
-		}
-		tree, removed, err := removeTree(doc.Workspaces[i].Tree, ref)
-		if err != nil {
-			return err
-		}
-		if removed {
-			changed = true
-		}
-		if tree.Type == "" {
-			continue
-		}
-		rec := doc.Workspaces[i]
-		rec.Tree = tree
-		rec.Revision = doc.Revision + 1
-		newWorkspaces = append(newWorkspaces, rec)
-	}
-	doc.Workspaces = newWorkspaces
-
-	if !changed {
-		return nil
-	}
-
-	// Removing a session from the catalog must also clear its presentation
-	// state. There is no PresentationRecord persisted on the document, so this
-	// is a no-op at the document level but leaves the in-memory map for callers
-	// to clean up.
-	_ = key
 	return nil
 }
 
@@ -598,33 +462,6 @@ func appendCommandReceipt(doc *AppDocument, id CommandID, seq int64, kind, targe
 	}
 	doc.Commands = append(doc.Commands, receipt)
 	pruneReceipts(doc, MaxCommandReceiptAge, MaxPendingCommands)
-	return nil
-}
-
-func (c *Catalog) applyPresentLocked(layout LayoutID, presents []PresentationRecord) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, ok := c.layouts[layout]; !ok {
-		return StateError{Code: ErrUnknownLayout, Field: "layout", Detail: fmt.Sprintf("layout %q not found", layout)}
-	}
-	if c.presentations == nil {
-		c.presentations = make(map[LayoutID]map[string]PresentationRecord)
-	}
-	m, ok := c.presentations[layout]
-	if !ok {
-		m = make(map[string]PresentationRecord)
-		c.presentations[layout] = m
-	}
-	for _, pr := range presents {
-		if pr.Ref.Session == "" {
-			return StateError{Code: ErrInvalidPresentation, Field: "ref", Detail: "presentation ref has empty session id"}
-		}
-		if pr.ZIndex < 0 {
-			return StateError{Code: ErrInvalidPresentation, Field: "z_index", Detail: fmt.Sprintf("presentation z_index %d must be non-negative", pr.ZIndex)}
-		}
-		m[pr.Ref.MapKey()] = pr
-	}
 	return nil
 }
 
@@ -693,19 +530,6 @@ func (c *Catalog) publishWorkspace(layout LayoutID) {
 	}
 	for _, s := range subs {
 		s.fn(layout, rec)
-	}
-}
-
-// publishAllWorkspaces emits a snapshot for every known layout.
-func (c *Catalog) publishAllWorkspaces() {
-	c.mu.RLock()
-	layouts := make([]LayoutID, 0, len(c.layouts))
-	for id := range c.layouts {
-		layouts = append(layouts, id)
-	}
-	c.mu.RUnlock()
-	for _, id := range layouts {
-		c.publishWorkspace(id)
 	}
 }
 
@@ -961,24 +785,12 @@ func resizeTree(tree PaneNode, id SplitID, ratio Ratio) (PaneNode, bool) {
 }
 
 // MembershipIndex returns the derived membership map from session ref key to
-// owning layout/workspace ID. Workspaces are treated as the active view of a
-// layout with the same ID, so a ref owned by both a saved layout and its
-// active workspace maps to that single ID.
+// owning layout ID.
 func MembershipIndex(doc *AppDocument) map[string]LayoutID {
 	m := make(map[string]LayoutID)
 	for _, l := range doc.Layouts {
 		forEachLeaf(l.Tree, func(ref SessionRef) {
 			m[ref.MapKey()] = l.ID
-		})
-	}
-	for _, w := range doc.Workspaces {
-		forEachLeaf(w.Tree, func(ref SessionRef) {
-			// Workspace with the same ID as its layout is the active view of
-			// that layout, not a second membership container.
-			if _, exists := m[ref.MapKey()]; exists {
-				return
-			}
-			m[ref.MapKey()] = w.ID
 		})
 	}
 	return m

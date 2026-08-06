@@ -14,7 +14,6 @@
   "layout": {
     "id": "layoutfixture1234567890",
     "owner": "ownerfixture1234567890ab",
-    "order": 1,
     "revision": 4,
     "tree": {
       "type": "split",

@@ -15,14 +15,12 @@ const (
 	ErrDuplicateIdentity        ErrorCode = "duplicate_identity"
 	ErrUnknownLayout            ErrorCode = "unknown_layout"
 	ErrDuplicateLayout          ErrorCode = "duplicate_layout"
-	ErrDuplicateLayoutOrder     ErrorCode = "duplicate_layout_order"
 	ErrDuplicateLeaf            ErrorCode = "duplicate_leaf"
 	ErrMalformedSplit           ErrorCode = "malformed_split"
 	ErrSessionInMultipleLayouts ErrorCode = "session_in_multiple_layouts"
 	ErrInvalidRatio             ErrorCode = "invalid_ratio"
 	ErrMissingTarget            ErrorCode = "missing_target"
 	ErrDuplicateMembership      ErrorCode = "duplicate_membership"
-	ErrMalformedOrder           ErrorCode = "malformed_order"
 	ErrStaleSplitID             ErrorCode = "stale_split_id"
 	ErrRevisionConflict         ErrorCode = "revision_conflict"
 	ErrCommandExpired           ErrorCode = "command_expired"
@@ -46,11 +44,6 @@ const (
 	// it, and nothing may leave a leaf pointing at a session that was never
 	// created or has already been removed.
 	ErrOrphanedSessionRef       ErrorCode = "orphaned_session_ref"
-	// ErrDeprecatedAction is returned when a caller submits a workspace action
-	// that has been intentionally removed because it mutated data it must
-	// never touch (e.g. the old "rename" action rewrote SessionRef identity
-	// inside pane-tree leaves). The error detail names the replacement.
-	ErrDeprecatedAction         ErrorCode = "deprecated_action"
 	// ErrOwnerRefMismatch is returned when a LocalSessionRecord's own Owner
 	// field disagrees with its Ref.Owner. Both are supposed to name the same
 	// owning node; a mismatch means the record was corrupted or constructed
@@ -62,13 +55,15 @@ const (
 	// generation: it is what exact-generation termination/adoption and
 	// mayRemoveClean (reconciler.go) key off of.
 	ErrMissingGeneration ErrorCode = "missing_generation"
-	// ErrInvalidPresentation is returned when a PresentationRecord carries an
-	// invalid field (an empty ref, or a negative z-index).
-	ErrInvalidPresentation ErrorCode = "invalid_presentation"
 	// ErrInconsistentScheduleOwnership is returned when more than one pending
 	// create (local or remote) in the same document carries the same non-empty
 	// ScheduleID. A schedule may own at most one in-flight create at a time.
 	ErrInconsistentScheduleOwnership ErrorCode = "inconsistent_schedule_ownership"
+	// ErrMultipleLayouts is returned when a document carries more than one
+	// layout. Backgrounding a session removes it from the sole local
+	// workspace and the product exposes no controls for multiple/named
+	// layouts, so a document must never persist more than one.
+	ErrMultipleLayouts ErrorCode = "multiple_layouts"
 )
 
 // StateError reports a typed contract violation.
@@ -129,8 +124,11 @@ func ValidateDocument(doc *AppDocument) error {
 		seenSessions[doc.PendingRemoteCreates[i].Ref.Session] = struct{}{}
 	}
 
+	if len(doc.Layouts) > 1 {
+		return StateError{Code: ErrMultipleLayouts, Field: "layouts", Detail: fmt.Sprintf("document carries %d layouts, at most 1 is allowed", len(doc.Layouts))}
+	}
+
 	seenLayouts := make(map[LayoutID]struct{}, len(doc.Layouts))
-	seenOrders := make(map[int64]struct{}, len(doc.Layouts))
 	for i := range doc.Layouts {
 		l := &doc.Layouts[i]
 		if err := ValidateLayout(l, doc.Owner); err != nil {
@@ -139,28 +137,9 @@ func ValidateDocument(doc *AppDocument) error {
 		if _, exists := seenLayouts[l.ID]; exists {
 			return StateError{Code: ErrDuplicateIdentity, Field: fmt.Sprintf("layouts[%d].id", i), Detail: fmt.Sprintf("duplicate layout id %q", l.ID)}
 		}
-		if _, exists := seenOrders[l.Order]; exists {
-			return StateError{Code: ErrDuplicateLayoutOrder, Field: fmt.Sprintf("layouts[%d].order", i), Detail: fmt.Sprintf("duplicate layout order %d", l.Order)}
-		}
 		seenLayouts[l.ID] = struct{}{}
-		seenOrders[l.Order] = struct{}{}
 		if err := validateSessionRefIntegrity(l.Tree, doc.Owner, seenSessions, fmt.Sprintf("layouts[%d].tree", i)); err != nil {
 			return err
-		}
-	}
-
-	for i := range doc.Workspaces {
-		w := &doc.Workspaces[i]
-		if err := ValidateWorkspace(w, doc.Owner, seenLayouts); err != nil {
-			return StateError{Code: err.(StateError).Code, Field: fmt.Sprintf("workspaces[%d].%s", i, err.(StateError).Field), Detail: err.Error()}
-		}
-		if err := validateSessionRefIntegrity(w.Tree, doc.Owner, seenSessions, fmt.Sprintf("workspaces[%d].tree", i)); err != nil {
-			return err
-		}
-		if w.ActiveKey != nil {
-			if err := validateSingleSessionRefIntegrity(*w.ActiveKey, doc.Owner, seenSessions, fmt.Sprintf("workspaces[%d].active_key", i)); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -252,27 +231,6 @@ func ValidateLayout(l *LayoutRecord, owner OwnerID) error {
 	return nil
 }
 
-// ValidateWorkspace checks an active workspace and that it references only
-// layouts present in the document.
-func ValidateWorkspace(w *WorkspaceRecord, owner OwnerID, layouts map[LayoutID]struct{}) error {
-	if err := w.ID.Validate(); err != nil {
-		return StateError{Code: ErrInvalidIdentity, Field: "id", Detail: err.Error()}
-	}
-	if w.Owner != owner {
-		return StateError{Code: ErrInvalidIdentity, Field: "owner", Detail: fmt.Sprintf("workspace owner %q does not match document owner %q", w.Owner, owner)}
-	}
-	if _, ok := layouts[w.ID]; !ok {
-		return StateError{Code: ErrUnknownLayout, Field: "id", Detail: fmt.Sprintf("workspace id %q is not present in layouts", w.ID)}
-	}
-	if w.Revision < 0 {
-		return StateError{Code: ErrBadSchema, Field: "revision", Detail: "revision must be non-negative"}
-	}
-	if err := ValidatePaneTree(w.Tree); err != nil {
-		return err
-	}
-	return nil
-}
-
 // ValidatePaneTree checks structural invariants of a pane tree: split ratios,
 // finite numbers, and unique leaf references.
 func ValidatePaneTree(tree PaneNode) error {
@@ -357,7 +315,10 @@ func validateSingleSessionRefIntegrity(ref SessionRef, owner OwnerID, sessions m
 
 // CheckSessionMembershipAcrossLayouts returns an error if any session appears
 // in more than one layout within the same document. This is a document-level
-// invariant, not a per-tree invariant.
+// invariant, not a per-tree invariant. With the one-layout invariant
+// (ErrMultipleLayouts in ValidateDocument) this is unreachable for a
+// document that already validated, but it remains as defense in depth for
+// callers that invoke it directly.
 func CheckSessionMembershipAcrossLayouts(doc *AppDocument) error {
 	membership := make(map[string]LayoutID)
 	for _, l := range doc.Layouts {
@@ -371,19 +332,6 @@ func CheckSessionMembershipAcrossLayouts(doc *AppDocument) error {
 				return StateError{Code: ErrSessionInMultipleLayouts, Field: "layouts", Detail: fmt.Sprintf("session %q appears in layouts %q and %q", key, prev, l.ID)}
 			}
 			membership[key] = l.ID
-		}
-	}
-	for _, w := range doc.Workspaces {
-		leaves, err := collectLeaves(w.Tree)
-		if err != nil {
-			return err
-		}
-		for _, ref := range leaves {
-			key := ref.MapKey()
-			if prev, exists := membership[key]; exists {
-				return StateError{Code: ErrSessionInMultipleLayouts, Field: "workspaces", Detail: fmt.Sprintf("session %q appears in layout/workspace %q and %q", key, prev, w.ID)}
-			}
-			membership[key] = w.ID
 		}
 	}
 	return nil

@@ -86,10 +86,8 @@ export type WorkspaceRecord = {
 export type LayoutRecord = {
   id: LayoutID
   owner: OwnerID
-  order: number
   revision: number
   tree: PaneNode
-  name?: string
 }
 
 export type BrowserSession = {
@@ -107,7 +105,6 @@ export type AppDocument = {
   owner: OwnerID
   revision: number
   sessions: LocalSessionRecord[]
-  workspaces?: WorkspaceRecord[]
   layouts?: LayoutRecord[]
   commands?: CommandReceipt[]
   tmux_catalog_revision?: number

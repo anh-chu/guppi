@@ -18,7 +18,7 @@ func TestInvariantDuplicateSessionIDs(t *testing.T) {
 			mkSession(owner, "sessinv1234567890ab"),
 		},
 		Layouts: []LayoutRecord{
-			mkLayout(owner, "layoutinv1234567890", 1),
+			mkLayout(owner, "layoutinv1234567890"),
 		},
 	}
 	err := ValidateDocument(&doc)
@@ -68,6 +68,10 @@ func TestInvariantSessionOwnerMismatch(t *testing.T) {
 }
 
 func TestInvariantDuplicateLayoutIDs(t *testing.T) {
+	// A document can never legitimately carry two layouts (see
+	// TestInvariantMultipleLayoutsRejected below), so a document with two
+	// layouts -- duplicate ID or not -- always fails ValidateDocument with
+	// ErrMultipleLayouts before any per-layout duplicate-ID check is reached.
 	owner := OwnerID("ownerinv1234567890ab")
 	doc := AppDocument{
 		Schema:   SchemaVersion,
@@ -77,61 +81,46 @@ func TestInvariantDuplicateLayoutIDs(t *testing.T) {
 			mkSession(owner, "sessdoc1234567890ab"),
 		},
 		Layouts: []LayoutRecord{
-			mkLayout(owner, "layoutinv1234567890", 1),
-			mkLayout(owner, "layoutinv1234567890", 2),
+			mkLayout(owner, "layoutinv1234567890"),
+			{ID: "layoutinv1234567890", Owner: owner, Tree: Leaf(SessionRef{Owner: owner, Session: "sessdoc1234567890ab"})},
 		},
 	}
 	err := ValidateDocument(&doc)
 	if err == nil {
-		t.Fatal("expected duplicate layout error")
+		t.Fatal("expected an error for a document with two layouts")
 	}
 	var se StateError
-	if !errors.As(err, &se) || se.Code != ErrDuplicateIdentity {
+	if !errors.As(err, &se) || se.Code != ErrMultipleLayouts {
 		t.Fatalf("wrong error: %v", err)
 	}
 }
 
-func TestInvariantDuplicateLayoutOrder(t *testing.T) {
+// TestInvariantMultipleLayoutsRejected is the acceptance test for the
+// one-workspace-layout invariant: a document with two DISTINCT layouts (no
+// duplicate IDs, no shared leaves) must still fail closed with
+// ErrMultipleLayouts, never persisted, since the product exposes no
+// group/multi-layout controls.
+func TestInvariantMultipleLayoutsRejected(t *testing.T) {
 	owner := OwnerID("ownerinv1234567890ab")
 	doc := AppDocument{
 		Schema:   SchemaVersion,
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []LocalSessionRecord{
-			mkSession(owner, "a"),
-			mkSession(owner, "b"),
+			mkSession(owner, "sessinv1234567890ab"),
+			mkSession(owner, "otherinv1234567890ab"),
 		},
 		Layouts: []LayoutRecord{
-			{ID: "layoutinv1234567890a", Owner: owner, Order: 1, Tree: Leaf(SessionRef{Owner: owner, Session: "a"})},
-			{ID: "layoutinv1234567890b", Owner: owner, Order: 1, Tree: Leaf(SessionRef{Owner: owner, Session: "b"})},
+			{ID: "layoutinv1234567890a", Owner: owner, Tree: Leaf(SessionRef{Owner: owner, Session: "sessinv1234567890ab"})},
+			{ID: "layoutinv1234567890b", Owner: owner, Tree: Leaf(SessionRef{Owner: owner, Session: "otherinv1234567890ab"})},
 		},
 	}
 	err := ValidateDocument(&doc)
 	if err == nil {
-		t.Fatal("expected duplicate layout order error")
+		t.Fatal("expected a document with two layouts to be rejected")
 	}
 	var se StateError
-	if !errors.As(err, &se) || se.Code != ErrDuplicateLayoutOrder {
-		t.Fatalf("wrong error: %v", err)
-	}
-}
-
-func TestInvariantUnknownWorkspaceLayoutID(t *testing.T) {
-	owner := OwnerID("ownerinv1234567890ab")
-	doc := AppDocument{
-		Schema:   SchemaVersion,
-		Owner:    owner,
-		Revision: 1,
-		Workspaces: []WorkspaceRecord{
-			mkWorkspace(owner, "missinglayout1234567"),
-		},
-	}
-	err := ValidateDocument(&doc)
-	if err == nil {
-		t.Fatal("expected unknown layout error")
-	}
-	var se StateError
-	if !errors.As(err, &se) || se.Code != ErrUnknownLayout {
+	if !errors.As(err, &se) || se.Code != ErrMultipleLayouts {
 		t.Fatalf("wrong error: %v", err)
 	}
 }
@@ -257,8 +246,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 			{
 				ID:    "layoutinv1234567890a",
 				Owner: owner,
-				Order: 1,
-				Tree: Split(DirectionHorizontal, Ratio(0.5), Leaf(real), Leaf(orphan)),
+				Tree:  Split(DirectionHorizontal, Ratio(0.5), Leaf(real), Leaf(orphan)),
 			},
 		},
 	}
@@ -283,7 +271,7 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 			mkSession(owner, "sessdoc1234567890ab"),
 		},
 		Layouts: []LayoutRecord{
-			{ID: "layoutinv1234567890b", Owner: owner, Order: 1, Tree: Leaf(foreignOwnerLeaf)},
+			{ID: "layoutinv1234567890b", Owner: owner, Tree: Leaf(foreignOwnerLeaf)},
 		},
 	}
 	err2 := ValidateDocument(&doc2)
@@ -308,39 +296,11 @@ func TestValidateDocumentRejectsOrphanedSessionRef(t *testing.T) {
 			{IntentID: NewCommandID(), Ref: pendingRef},
 		},
 		Layouts: []LayoutRecord{
-			{ID: "layoutinv1234567890c", Owner: owner, Order: 1, Tree: Leaf(pendingRef)},
+			{ID: "layoutinv1234567890c", Owner: owner, Tree: Leaf(pendingRef)},
 		},
 	}
 	if err := ValidateDocument(&doc3); err != nil {
 		t.Fatalf("pending-create-backed leaf should be accepted: %v", err)
-	}
-}
-
-func TestInvariantSessionInWorkspaceAndLayout(t *testing.T) {
-	owner := OwnerID("ownerinv1234567890ab")
-	ref := SessionRef{Owner: owner, Session: "sessinv1234567890ab"}
-	doc := AppDocument{
-		Schema:   SchemaVersion,
-		Owner:    owner,
-		Revision: 1,
-		Sessions: []LocalSessionRecord{
-			mkSession(owner, "sessinv1234567890ab"),
-			mkSession(owner, "otherinv1234567890ab"),
-		},
-		Workspaces: []WorkspaceRecord{
-			{ID: "workspaceinv123456789", Owner: owner, Tree: Leaf(ref)},
-		},
-		Layouts: []LayoutRecord{
-			{ID: "workspaceinv123456789", Owner: owner, Order: 1, Tree: Leaf(ref)},
-			{ID: "layoutinv1234567890ab", Owner: owner, Order: 2, Tree: Leaf(SessionRef{Owner: owner, Session: "otherinv1234567890ab"})},
-		},
-	}
-	if err := ValidateDocument(&doc); err != nil {
-		t.Fatalf("document should be structurally valid before membership check: %v", err)
-	}
-	err := CheckSessionMembershipAcrossLayouts(&doc)
-	if err == nil {
-		t.Fatal("expected session-in-multiple-layouts error")
 	}
 }
 

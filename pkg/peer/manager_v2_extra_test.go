@@ -61,7 +61,6 @@ func TestRemoteCatalog_DuplicateLeavesRejected(t *testing.T) {
 		Layouts: []state.LayoutRecord{{
 			ID:    state.NewLayoutID(),
 			Owner: owner,
-			Order: 0,
 			Tree:  duplicateTree,
 		}},
 	})
@@ -102,7 +101,6 @@ func TestRemoteCatalog_MalformedSplitNodeRejected(t *testing.T) {
 		Layouts: []state.LayoutRecord{{
 			ID:    state.NewLayoutID(),
 			Owner: owner,
-			Order: 0,
 			Tree:  malformedTree,
 		}},
 	})
@@ -144,7 +142,6 @@ func TestRemoteCatalog_InvalidRatioRejected(t *testing.T) {
 		Layouts: []state.LayoutRecord{{
 			ID:    state.NewLayoutID(),
 			Owner: owner,
-			Order: 0,
 			Tree:  invalidRatioTree,
 		}},
 	})
@@ -180,7 +177,6 @@ func TestRemoteCatalog_UnknownSessionRefRejected(t *testing.T) {
 		Layouts: []state.LayoutRecord{{
 			ID:    state.NewLayoutID(),
 			Owner: owner,
-			Order: 0,
 			Tree:  unknownRefTree,
 		}},
 	})

@@ -117,7 +117,7 @@ export function useSessionState(): UseSessionStateResult {
             store.replaceCatalog(remoteSnapshot, generation, false)
           }
           if (body.workspace) {
-            store.replaceWorkspace(body.workspace, generation, body.presentations)
+            store.replaceWorkspace(body.workspace, generation)
           }
         }
       } catch {

@@ -67,7 +67,6 @@ func TestStateStreamSendsCompleteSnapshotOnConnect(t *testing.T) {
 	if err := catalog.PutLayout(state.LayoutRecord{
 		ID:    state.NewLayoutID(),
 		Owner: catalog.Owner(),
-		Order: 1,
 		Tree:  state.Leaf(state.SessionRef{Owner: catalog.Owner(), Session: sessionID}),
 	}); err != nil {
 		t.Fatalf("PutLayout: %v", err)

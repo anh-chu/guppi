@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"sort"
 	"testing"
 	"time"
 )
@@ -39,7 +38,7 @@ func mustPutLayout(t *testing.T, c *Catalog, owner OwnerID, id string, order int
 	t.Helper()
 	registerTreeSessions(t, c, tree)
 	lid := LayoutID(id)
-	rec := LayoutRecord{ID: lid, Owner: owner, Order: order, Tree: tree, Revision: 0}
+	rec := LayoutRecord{ID: lid, Owner: owner, Tree: tree, Revision: 0}
 	if err := c.PutLayout(rec); err != nil {
 		t.Fatalf("put layout: %v", err)
 	}
@@ -312,26 +311,6 @@ func TestApplyWorkspaceCommandFromPeer_SplitNonexistentRefRejected(t *testing.T)
 	}
 }
 
-func TestWorkspaceDuplicateMembership(t *testing.T) {
-	c, owner, cleanup := mustNewWorkspaceCatalog(t)
-	defer cleanup()
-	l1 := mustPutLayout(t, c, owner, "layout1234567890abcd", 1, Leaf(ref(owner, "s1")))
-	mustPutLayout(t, c, owner, "layout2234567890abcd", 2, Leaf(ref(owner, "s2")))
-
-	cmd := WorkspaceCommand{
-		ID:     NewCommandID(),
-		Layout: l1,
-		Action: WorkspaceActionSplit,
-		Params: workspaceParams(map[string]interface{}{
-			"target":    ref(owner, "s1"),
-			"direction": DirectionHorizontal,
-			"new":       ref(owner, "s2"),
-		}),
-	}
-	err := c.ApplyWorkspaceCommand(cmd)
-	assertCode(t, err, ErrDuplicateMembership)
-}
-
 func TestWorkspaceRevisionConflict(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
@@ -576,104 +555,7 @@ func TestWorkspaceResizeBySplitID(t *testing.T) {
 	assertCode(t, err, ErrInvalidRatio)
 }
 
-func TestWorkspaceReorderLayouts(t *testing.T) {
-	c, owner, cleanup := mustNewWorkspaceCatalog(t)
-	defer cleanup()
-
-	mustPutLayout(t, c, owner, "layout1234567890abcd", 10, Leaf(ref(owner, "a")))
-	mustPutLayout(t, c, owner, "layout2234567890abcd", 20, Leaf(ref(owner, "b")))
-	mustPutLayout(t, c, owner, "layout3234567890abcd", 30, Leaf(ref(owner, "c")))
-
-	cmd := WorkspaceCommand{
-		ID:     NewCommandID(),
-		Action: WorkspaceActionReorderLayouts,
-		Params: workspaceParams(map[string]interface{}{
-			"source_index": 0,
-			"target_index": 2,
-		}),
-	}
-	if err := c.ApplyWorkspaceCommand(cmd); err != nil {
-		t.Fatalf("reorder: %v", err)
-	}
-
-	layouts := c.Layouts()
-	orders := make([]int64, len(layouts))
-	for i, l := range layouts {
-		orders[i] = l.Order
-	}
-	want := append([]int64(nil), orders...)
-	sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
-	got := append([]int64(nil), orders...)
-	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("orders not a permutation: %+v", orders)
-		}
-	}
-
-	err := c.ApplyWorkspaceCommand(WorkspaceCommand{
-		ID:     NewCommandID(),
-		Action: WorkspaceActionReorderLayouts,
-		Params: workspaceParams(map[string]interface{}{
-			"source_index": 0,
-			"target_index": 5,
-		}),
-	})
-	assertCode(t, err, ErrMalformedOrder)
-}
-
-// TestWorkspaceRenameActionRemoved proves that the deprecated workspace
-// "rename" action is rejected outright and never mutates the layout tree.
-// Session identity (owner + session id) is immutable for a session's
-// lifetime; only the session label command may change a session's
-// user-visible display name. Before this fix, submitting this same command
-// would silently rewrite the leaf's SessionRef without touching the
-// catalog's session record, producing a layout leaf that pointed at a
-// SessionRef no real session record corresponded to (an orphaned ref).
-func TestWorkspaceRenameActionRemoved(t *testing.T) {
-	c, owner, cleanup := mustNewWorkspaceCatalog(t)
-	defer cleanup()
-
-	lID := mustPutLayout(t, c, owner, "layout1234567890abcd", 1,
-		Split(DirectionHorizontal, Ratio(0.5), Leaf(ref(owner, "s1")), Leaf(ref(owner, "s2"))))
-
-	beforeRev := c.Revision()
-	err := c.ApplyWorkspaceCommand(WorkspaceCommand{
-		ID:     NewCommandID(),
-		Layout: lID,
-		Action: WorkspaceActionRename,
-		Params: workspaceParams(map[string]interface{}{
-			"old": ref(owner, "s1"),
-			"new": ref(owner, "renamed"),
-		}),
-	})
-	assertCode(t, err, ErrDeprecatedAction)
-	if c.Revision() != beforeRev {
-		t.Fatalf("revision changed on rejected rename command: before=%d after=%d", beforeRev, c.Revision())
-	}
-
-	// The layout must be completely unchanged: still s1/s2, never "renamed",
-	// so the layout can never diverge from the catalog's session records.
-	snap, _ := c.WorkspaceSnapshot(lID)
-	leaves := leafs(snap.Record.Tree)
-	if len(leaves) != 2 || leaves[0] != ref(owner, "s1").MapKey() || leaves[1] != ref(owner, "s2").MapKey() {
-		t.Fatalf("rejected rename must not mutate the tree, got leaves: %v", leaves)
-	}
-	for _, l := range leaves {
-		if l == ref(owner, "renamed").MapKey() {
-			t.Fatal("rejected rename command must not introduce the new ref into the tree")
-		}
-	}
-
-	// The document as a whole must still validate: every leaf still
-	// corresponds to a real session record, proving no divergence occurred.
-	doc := c.store.Snapshot()
-	if err := ValidateDocument(&doc); err != nil {
-		t.Fatalf("document invalid after rejected rename: %v", err)
-	}
-}
-
-func TestWorkspaceSelectAndPresent(t *testing.T) {
+func TestWorkspaceSelect(t *testing.T) {
 	c, owner, cleanup := mustNewWorkspaceCatalog(t)
 	defer cleanup()
 
@@ -694,26 +576,8 @@ func TestWorkspaceSelectAndPresent(t *testing.T) {
 		t.Fatalf("active key not set: %+v", snap.Record.ActiveKey)
 	}
 
-	if err := c.ApplyWorkspaceCommand(WorkspaceCommand{
-		ID:     NewCommandID(),
-		Layout: lID,
-		Action: WorkspaceActionPresent,
-		Params: workspaceParams(map[string]interface{}{
-			"presents": []PresentationRecord{
-				{Ref: ref(owner, "s1"), Selected: true, ZIndex: 1},
-				{Ref: ref(owner, "s2"), Selected: false, ZIndex: 2},
-			},
-		}),
-	}); err != nil {
-		t.Fatalf("present: %v", err)
-	}
-
-	snap, _ = c.WorkspaceSnapshot(lID)
-	if len(snap.Presentations) != 2 {
-		t.Fatalf("expected 2 presentations, got %d", len(snap.Presentations))
-	}
-
-	// Presentation is not persisted.
+	// Selecting an active key never persists a command receipt beyond the
+	// select itself.
 	doc := c.store.Snapshot()
 	if len(doc.Commands) != 1 {
 		t.Fatalf("expected only select receipt persisted, got %d", len(doc.Commands))
@@ -753,8 +617,6 @@ func TestWorkspaceRemoveSessionRefInternal(t *testing.T) {
 
 	l1 := mustPutLayout(t, c, owner, "layout1234567890abcd", 1,
 		Split(DirectionHorizontal, Ratio(0.5), Leaf(ref(owner, "s1")), Leaf(ref(owner, "s2"))))
-	l2 := mustPutLayout(t, c, owner, "layout2234567890abcd", 2,
-		Leaf(ref(owner, "s3")))
 
 	if err := c.RemoveSessionRef(ref(owner, "s1")); err != nil {
 		t.Fatalf("remove session ref: %v", err)
@@ -764,12 +626,6 @@ func TestWorkspaceRemoveSessionRefInternal(t *testing.T) {
 	for _, k := range leafs(snap1.Record.Tree) {
 		if k == ref(owner, "s1").MapKey() {
 			t.Fatal("s1 still in l1")
-		}
-	}
-	snap2, _ := c.WorkspaceSnapshot(l2)
-	for _, k := range leafs(snap2.Record.Tree) {
-		if k == ref(owner, "s1").MapKey() {
-			t.Fatal("s1 still in l2")
 		}
 	}
 }
@@ -891,7 +747,7 @@ func BenchmarkWorkspaceSplitOperations(b *testing.B) {
 	tree := buildBalanced(leaves)
 	registerTreeSessions(b, cat, tree)
 	lID := LayoutID("layout1234567890abcd")
-	if err := cat.PutLayout(LayoutRecord{ID: lID, Owner: owner, Order: 1, Tree: tree, Revision: 0}); err != nil {
+	if err := cat.PutLayout(LayoutRecord{ID: lID, Owner: owner, Tree: tree, Revision: 0}); err != nil {
 		b.Fatal(err)
 	}
 

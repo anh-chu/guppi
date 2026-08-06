@@ -316,7 +316,6 @@ func TestUpdateInvalidDocumentRejected(t *testing.T) {
 		doc.Layouts = append(doc.Layouts, LayoutRecord{
 			ID:    LayoutID("layoutbad12345678901"),
 			Owner: owner,
-			Order: 1,
 			Tree:  Split(DirectionHorizontal, Ratio(0.5), Leaf(SessionRef{}), Leaf(SessionRef{})),
 		})
 		return nil
@@ -756,7 +755,6 @@ func mkBasicDoc(owner OwnerID) AppDocument {
 			{
 				ID:       LayoutID("layoutbasic123456789"),
 				Owner:    owner,
-				Order:    1,
 				Revision: 1,
 				Tree:     Leaf(SessionRef{Owner: owner, Session: SessionID("sessbasic12345678901")}),
 			},
@@ -790,7 +788,7 @@ func mkLargeDoc(owner OwnerID, sessions, layouts int) AppDocument {
 		doc.Layouts[i] = LayoutRecord{
 			ID:       id,
 			Owner:    owner,
-			Order:    int64(i),
+
 			Revision: 1,
 			Tree:     Leaf(SessionRef{Owner: owner, Session: sid}),
 		}

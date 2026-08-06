@@ -589,7 +589,7 @@ func TestNaturalExitCleansSessionAndWorkspace(t *testing.T) {
 	rec := activeRecord(SessionID("exitme"), "gen-exit")
 	rec.Desired = DesiredStop
 	_ = catalog.PutSession(rec)
-	layout := LayoutRecord{ID: NewLayoutID(), Owner: owner, Order: 1, Revision: 1, Tree: Leaf(rec.Ref)}
+	layout := LayoutRecord{ID: NewLayoutID(), Owner: owner, Revision: 1, Tree: Leaf(rec.Ref)}
 	_ = catalog.PutLayout(layout)
 
 	backend := newFakeBackend()
@@ -840,7 +840,6 @@ func TestCreateWithSplitTargetPlacesAtomicallyWithoutDuplicateLeaf(t *testing.T)
 	if err := catalog.PutLayout(LayoutRecord{
 		ID:    layoutID,
 		Owner: testOwner(),
-		Order: 1,
 		Tree:  Leaf(existing.Ref),
 	}); err != nil {
 		t.Fatal(err)

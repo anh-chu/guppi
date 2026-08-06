@@ -45,7 +45,6 @@ type AppDocument struct {
 	Owner                OwnerID                     `json:"owner"`
 	Revision             int64                       `json:"revision"`
 	Sessions             []LocalSessionRecord        `json:"sessions"`
-	Workspaces           []WorkspaceRecord           `json:"workspaces,omitempty"`
 	Layouts              []LayoutRecord              `json:"layouts,omitempty"`
 	Commands             []CommandReceipt            `json:"commands,omitempty"`
 	PendingCreates       []PendingCreateRecord       `json:"pending_creates,omitempty"`
@@ -115,15 +114,15 @@ type WorkspaceRecord struct {
 	Name string `json:"name,omitempty"`
 }
 
-// LayoutRecord is a named, persisted layout in the owner's catalog.
+// LayoutRecord is a persisted layout in the owner's catalog. A document has
+// at most one layout (see ErrMultipleLayouts in invariants.go); Order and
+// Name were removed with multi-layout support since there is nothing left
+// to order or distinguish by name.
 type LayoutRecord struct {
 	ID       LayoutID `json:"id"`
 	Owner    OwnerID  `json:"owner"`
-	Order    int64    `json:"order"`
 	Revision int64    `json:"revision"`
 	Tree     PaneNode `json:"tree"`
-	// Name is the mutable, human-selected layout name.
-	Name string `json:"name,omitempty"`
 }
 
 // PaneNode is a concrete tagged-union node in a workspace layout tree.
@@ -227,14 +226,6 @@ func (n *PaneNode) UnmarshalJSON(data []byte) error {
 	default:
 		return fmt.Errorf("unknown pane node type %q", tag.Type)
 	}
-}
-
-// PresentationRecord maps a session reference to its on-screen presentation
-// state for a particular browser connection.
-type PresentationRecord struct {
-	Ref      SessionRef `json:"ref"`
-	Selected bool       `json:"selected"`
-	ZIndex   int        `json:"z_index,omitempty"`
 }
 
 // PendingCreateRecord tracks a local create intent that has been issued but is

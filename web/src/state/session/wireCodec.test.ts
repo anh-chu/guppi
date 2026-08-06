@@ -24,7 +24,6 @@ import {
   decodeLocalSessionRecord,
   decodePaneNode,
   decodePendingCreateRecord,
-  decodePresentationRecord,
   decodeSessionRef,
   decodeWorkspaceRecord,
   decodeWorkspaceSnapshotMessage,
@@ -146,11 +145,6 @@ describe('nested SessionRef decoding', () => {
     expect(ws.active_key).toBeUndefined()
   })
 
-  it('decodes PresentationRecord.ref', () => {
-    const p = decodePresentationRecord({ ref: wire, selected: true })
-    expect(p.ref).toEqual(decoded)
-  })
-
   it('decodes PendingCreateRecord.ref', () => {
     const p = decodePendingCreateRecord({ intent_id: 'cmdabc', ref: wire, inserted_at: '2025-01-01T00:00:00Z' })
     expect(p.ref).toEqual(decoded)
@@ -209,7 +203,6 @@ describe('nested SessionRef decoding', () => {
         tree: { type: 'leaf', ref: wire },
         active_key: wire,
       },
-      presentations: [{ ref: wire, selected: true }],
       pending: [{ intent_id: 'cmdabc', ref: wire, inserted_at: '2025-01-01T00:00:00Z' }],
       pending_remote: [
         {
@@ -226,7 +219,6 @@ describe('nested SessionRef decoding', () => {
     expect(decodedBody.local.layouts?.[0]?.tree).toEqual({ type: 'leaf', ref: decoded })
     expect(decodedBody.workspace?.tree).toEqual({ type: 'leaf', ref: decoded })
     expect(decodedBody.workspace?.active_key).toEqual(decoded)
-    expect(decodedBody.presentations?.[0]?.ref).toEqual(decoded)
     expect(decodedBody.pending[0]?.ref).toEqual(decoded)
     expect(decodedBody.pending_remote?.[0]?.ref).toEqual(decoded)
 

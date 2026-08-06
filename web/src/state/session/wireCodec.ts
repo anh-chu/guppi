@@ -41,7 +41,6 @@ import type {
   CommandResult,
   CommandResultWire,
   PendingRemoteCreateRecord,
-  PresentationRecord,
   BootstrapResponse,
   WorkspaceSnapshotMessage,
 } from './wireTypes'
@@ -97,10 +96,6 @@ export function decodeWorkspaceRecord(raw: any): WorkspaceRecord {
   }
 }
 
-export function decodePresentationRecord(raw: any): PresentationRecord {
-  return { ...raw, ref: decodeSessionRef(raw.ref) }
-}
-
 export function decodePendingCreateRecord(raw: any): PendingCreateRecord {
   return { ...raw, ref: decodeSessionRef(raw.ref) }
 }
@@ -126,7 +121,6 @@ export function decodeBootstrapResponse(raw: any): BootstrapResponse {
     remote: raw.remote ? raw.remote.map(decodeOwnerCatalogSnapshot) : undefined,
     hosts: raw.hosts,
     workspace: raw.workspace ? decodeWorkspaceRecord(raw.workspace) : undefined,
-    presentations: raw.presentations ? raw.presentations.map(decodePresentationRecord) : undefined,
     pending: (raw.pending ?? []).map(decodePendingCreateRecord),
     pending_remote: raw.pending_remote ? raw.pending_remote.map(decodePendingRemoteCreateRecord) : undefined,
   }

@@ -2,8 +2,8 @@
  * Normalized canonical browser store.
  *
  * Design rules (Task 11):
- *  - Snapshots REPLACE state completely. A session/layout/presentation
- *    missing from an incoming snapshot is gone, never merged/kept around.
+ *  - Snapshots REPLACE state completely. A session/layout missing from an
+ *    incoming snapshot is gone, never merged/kept around.
  *  - No wall-clock last-write-wins. Ordering is by (connection generation,
  *    revision) only. Within one connection generation, a revision <= the
  *    last-applied revision for that stream is rejected as stale. A NEW
@@ -25,7 +25,6 @@ import type {
   SessionRef,
   WorkspaceRecord,
 } from './types'
-import type { PresentationRecord } from './wireTypes'
 
 // OwnerCatalogMeta tracks the acceptance bookkeeping (revision + connection
 // generation) for ONE owner's catalog stream -- the local node's own, or one
@@ -58,7 +57,6 @@ export type NormalizedWorkspace = {
   revision: number
   generation: number
   record: WorkspaceRecord | null
-  presentationsByRef: Map<string, PresentationRecord>
 }
 
 export type CatalogDiff = {
@@ -94,7 +92,6 @@ export function emptyWorkspace(): NormalizedWorkspace {
     revision: -1,
     generation: -1,
     record: null,
-    presentationsByRef: new Map(),
   }
 }
 
@@ -233,16 +230,13 @@ export function removeOwnerCatalog(
 }
 
 /**
- * Replaces the workspace projection (layout tree + presentations) with a
- * complete snapshot, using the same generation/revision acceptance rule.
- * Presentations are supplied separately (they are not part of
- * WorkspaceRecord on the wire) and always fully replace the prior set.
+ * Replaces the workspace projection (layout tree) with a complete snapshot,
+ * using the same generation/revision acceptance rule.
  */
 export function replaceWorkspace(
   state: SessionStoreState,
   snapshot: WorkspaceRecord,
   connectionGeneration: number,
-  presentations?: PresentationRecord[],
 ): { state: SessionStoreState; diff: CatalogDiff } {
   const prev = state.workspace
   const isNewGeneration = connectionGeneration !== prev.generation
@@ -250,22 +244,11 @@ export function replaceWorkspace(
     return { state, diff: { removed: [], generationChanged: false } }
   }
 
-  const presentationsByRef = new Map<string, PresentationRecord>()
-  for (const p of presentations ?? []) {
-    presentationsByRef.set(encodeSessionRef(p.ref), p)
-  }
-
-  const removed: string[] = []
-  for (const key of prev.presentationsByRef.keys()) {
-    if (!presentationsByRef.has(key)) removed.push(key)
-  }
-
   const nextWorkspace: NormalizedWorkspace = {
     layoutId: snapshot.id,
     revision: snapshot.revision,
     generation: connectionGeneration,
     record: snapshot,
-    presentationsByRef,
   }
 
   return {
@@ -274,7 +257,7 @@ export function replaceWorkspace(
       workspace: nextWorkspace,
       workspaceBootstrapped: true,
     },
-    diff: { removed, generationChanged: isNewGeneration },
+    diff: { removed: [], generationChanged: isNewGeneration },
   }
 }
 
@@ -328,12 +311,8 @@ export class SessionStore {
     return diff
   }
 
-  replaceWorkspace(
-    snapshot: WorkspaceRecord,
-    connectionGeneration: number,
-    presentations?: PresentationRecord[],
-  ): CatalogDiff {
-    const { state, diff } = replaceWorkspace(this.state, snapshot, connectionGeneration, presentations)
+  replaceWorkspace(snapshot: WorkspaceRecord, connectionGeneration: number): CatalogDiff {
+    const { state, diff } = replaceWorkspace(this.state, snapshot, connectionGeneration)
     this.setState(state)
     return diff
   }
@@ -403,13 +382,4 @@ export function selectIsLocalOwner(catalog: NormalizedCatalog, owner: OwnerID): 
   return catalog.localOwner === owner
 }
 
-export function selectPresentation(
-  workspace: NormalizedWorkspace,
-  ref: SessionRef,
-): PresentationRecord | undefined {
-  return workspace.presentationsByRef.get(encodeSessionRef(ref))
-}
 
-export function selectAllPresentations(workspace: NormalizedWorkspace): PresentationRecord[] {
-  return Array.from(workspace.presentationsByRef.values())
-}
