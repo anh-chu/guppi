@@ -14,6 +14,7 @@ function makeSession(id: string): SessionView {
     label: id,
     createdAt: new Date().toISOString(),
     generation: undefined,
+    phase: 'active',
     hidden: false,
     background: false,
     scheduleId: undefined,

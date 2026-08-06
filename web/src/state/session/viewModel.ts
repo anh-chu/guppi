@@ -11,12 +11,12 @@
  * the extraction point the canonical frontend depends on instead.
  */
 
-import type { LocalSessionRecord, SessionRef } from './types'
+import type { LocalSessionRecord, SessionRef, SessionPhase } from './types'
 import { sessionRefToKey } from './paneTreeAdapter'
-import type { HostSnapshot } from './wireTypes'
+import type { HostSnapshot, SessionRuntime } from './wireTypes'
 import type { ToolEvent } from '../../hooks/useToolEvents'
 
-export type SessionState = 'needs_you' | 'working' | 'idle' | 'offline'
+export type SessionState = 'crashed' | 'needs_you' | 'offline' | 'starting' | 'working' | 'idle'
 
 export interface SessionSignal {
   state: SessionState
@@ -26,10 +26,12 @@ export interface SessionSignal {
 }
 
 export const stateRank: Record<SessionState, number> = {
-  needs_you: 0,
-  working: 1,
-  idle: 2,
-  offline: 3,
+  crashed: 0,
+  needs_you: 1,
+  working: 2,
+  starting: 3,
+  idle: 4,
+  offline: 5,
 }
 
 /**
@@ -58,6 +60,8 @@ export interface SessionView {
   label: string
   createdAt: string
   generation: string | undefined
+  /** Session lifecycle phase: pending, starting, active, crashed, cleanly_ended, dismissed. */
+  phase: SessionPhase
   /** true once ActionSetPresentation ("set_presentation") has hidden this session. */
   hidden: boolean
   /** true once ActionSetPresentation has backgrounded this session. */
@@ -78,6 +82,17 @@ export interface SessionView {
    * offline -- never optimistically online.
    */
   hostOnline: boolean
+  /** Runtime fields from latest session snapshot. */
+  currentPath?: string
+  currentCommand?: string
+  promptPreview?: string
+  lastActivity?: string
+  /** Idle time in seconds; populated from runtime snapshot. */
+  idleSeconds?: number
+  /** Total bytes transferred; populated from runtime snapshot. */
+  totalBytes?: number
+  /** Latest tool event for this session, if any. */
+  latestToolEvent?: ToolEvent
 }
 
 /** Canonical hidden/background/schedule attribute sets SessionApp hands to Sidebar/Overview/SessionActionsMenu. */
@@ -87,12 +102,21 @@ export interface SessionPresentationAttrs {
   scheduleIDs: Map<string, string>
 }
 
-/** Builds a SessionView straight from a canonical catalog record and the current host table -- no legacy Session shim involved. */
+/**
+ * Builds a SessionView straight from a canonical catalog record, host table,
+ * runtime snapshot, and latest tool events. Components never join raw stores
+ * themselves; SessionApp builds these once and distributes to all presenters.
+ */
 export function toSessionView(
-  record: LocalSessionRecord,
-  hosts: HostIndex,
-  localOwner: string | null,
+  opts: {
+    record: LocalSessionRecord
+    hosts: HostIndex
+    localOwner: string | null
+    runtime?: SessionRuntime
+    latestToolEvent?: ToolEvent
+  },
 ): SessionView {
+  const { record, hosts, localOwner, runtime, latestToolEvent } = opts
   const label = record.name && record.name.trim() !== '' ? record.name : record.id
   const isLocal = record.owner === localOwner
   const host = isLocal ? hosts.local : hosts.byOwnerId.get(record.owner)
@@ -106,16 +130,24 @@ export function toSessionView(
     label,
     createdAt: record.created_at,
     generation: record.generation,
+    phase: record.phase,
     hidden: record.hidden === true,
     background: record.background === true,
     scheduleId: record.schedule_id,
-    cwd: record.cwd,
+    cwd: record.cwd || runtime?.current_path,
     shell: record.shell,
     agentType: record.agent_type,
     worktreeBranch: record.worktree_branch,
     isLocal,
     host,
     hostOnline,
+    currentPath: runtime?.current_path,
+    currentCommand: runtime?.current_command,
+    promptPreview: runtime?.prompt_preview,
+    lastActivity: runtime?.last_active,
+    idleSeconds: (runtime as any)?.idle_seconds,
+    totalBytes: (runtime as any)?.total_bytes,
+    latestToolEvent,
   }
 }
 
@@ -135,18 +167,38 @@ export function toPresentationAttrs(views: SessionView[]): SessionPresentationAt
 const loudStatuses = new Set(['waiting', 'stuck', 'error'])
 
 /**
- * Pure display-state classifier for a v2 session -- the canonical
- * replacement for lib/sessionState.ts's sessionSignal(), which requires a
- * legacy `Session` (with a faked `windows: []`) to run. There is no
- * isSessionActive()/isToolSession() equivalent here: canonical sessions are always
- * single-pane daemon sessions, so "is a real process running in some pane"
- * cannot be derived from a windows/panes tree the way legacy sessions can.
- * `inActiveTurn`/`activity` are the only working signals available beyond
- * connectivity.
- *
- * `view.hostOnline` (see toSessionView) is the sole source of connectivity here
- * -- callers can no longer pass an ad hoc/optional hostOnline flag and
- * accidentally skip it.
+ * Shell command patterns: commands that represent an idle shell prompt,
+ * not active work. Used by isNonShellCommand to decide if currentCommand
+ * should be considered active work.
+ */
+const shellCommands = new Set(['bash', 'sh', 'zsh', 'fish', 'ksh', 'tcsh', 'csh'])
+
+function isNonShellCommand(cmd?: string): boolean {
+  if (!cmd || !cmd.trim()) return false
+  // Extract the base command name (first word, no args)
+  const base = cmd.split(/\s+/)[0]
+  const baseName = base.split('/').pop() || ''
+  return !shellCommands.has(baseName)
+}
+
+function getIdleSeconds(lastActivity?: string, createdAt?: string): number | undefined {
+  if (!lastActivity) return undefined
+  const lastTime = new Date(lastActivity).getTime()
+  if (Number.isNaN(lastTime)) return undefined
+  // Compute idle time relative to lastActivity, not wall clock
+  const now = Date.now()
+  const idleMs = Math.max(0, now - lastTime)
+  return Math.floor(idleMs / 1000)
+}
+
+/**
+ * Pure display-state classifier implementing the canonical status priority:
+ * 1. crashed (phase === 'crashed')
+ * 2. needs_you (loud tool event)
+ * 3. offline (remote host offline)
+ * 4. starting (phase === 'pending' || phase === 'starting')
+ * 5. working (active tool turn, activity idle <= 5 sec, or non-shell currentCommand)
+ * 6. idle (fallback)
  */
 export function sessionViewSignal(
   view: SessionView,
@@ -156,14 +208,39 @@ export function sessionViewSignal(
   const loudEvent = events.find(e => loudStatuses.has(e.status))
   const tool = (loudEvent || events[0])?.tool
 
+  // Priority 1: crashed
+  if (view.phase === 'crashed') {
+    return { state: 'crashed', loud: true, reason: 'crashed', tool }
+  }
+
+  // Priority 2: needs_you (loud tool event)
   if (loudEvent) {
     return { state: 'needs_you', loud: true, reason: loudEvent.status, tool }
   }
+
+  // Priority 3: offline (remote host offline)
   if (!view.hostOnline) {
     return { state: 'offline', loud: false, tool }
   }
+
+  // Priority 4: starting
+  if (view.phase === 'pending' || view.phase === 'starting') {
+    return { state: 'starting', loud: false, tool }
+  }
+
+  // Priority 5: working
+  // Active in an agent tool turn OR activity idle <= 5 sec OR non-shell currentCommand
   if (inActiveTurn) {
     return { state: 'working', loud: false, tool }
   }
+  const idleSeconds = getIdleSeconds(view.lastActivity, view.createdAt)
+  if (idleSeconds !== undefined && idleSeconds <= 5) {
+    return { state: 'working', loud: false, tool }
+  }
+  if (isNonShellCommand(view.currentCommand)) {
+    return { state: 'working', loud: false, tool }
+  }
+
+  // Priority 6: idle
   return { state: 'idle', loud: false, tool }
 }

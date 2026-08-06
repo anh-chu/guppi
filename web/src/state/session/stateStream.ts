@@ -22,9 +22,10 @@ import {
   decodeCatalogSnapshotMessage,
   decodeWorkspaceSnapshotMessage,
   decodeHostsSnapshotMessage,
+  decodeRuntimeSnapshotMessage,
 } from './wireCodec'
 import type { OwnerCatalogSnapshot, OwnerID, WorkspaceRecord } from './types'
-import type { HostSnapshot } from './wireTypes'
+import type { HostSnapshot, SessionRuntimeSnapshot } from './wireTypes'
 
 export type StateStreamCallbacks = {
   onCatalog: (snapshot: OwnerCatalogSnapshot, generation: number, isLocal: boolean) => void
@@ -33,6 +34,7 @@ export type StateStreamCallbacks = {
   onCatalogRemoved: (owner: OwnerID, generation: number) => void
   onWorkspace: (snapshot: WorkspaceRecord, generation: number) => void
   onHosts: (snapshots: HostSnapshot[], generation: number) => void
+  onRuntime?: (snapshots: SessionRuntimeSnapshot[], generation: number) => void
   // Called whenever the socket transitions open/closed. `generation` is the
   // generation this transition belongs to; callers should ignore it if it
   // does not match the generation they last accepted data from.
@@ -196,6 +198,9 @@ export class StateStreamClient {
       } else if (parsed.type === 'hosts_snapshot') {
         const decoded = decodeHostsSnapshotMessage(parsed)
         this.opts.callbacks.onHosts(decoded.hosts, generation)
+      } else if (parsed.type === 'runtime_snapshot') {
+        const decoded = decodeRuntimeSnapshotMessage(parsed)
+        this.opts.callbacks.onRuntime?.(decoded.snapshots, generation)
       }
     } catch (err) {
       this.opts.callbacks.onError?.(err)

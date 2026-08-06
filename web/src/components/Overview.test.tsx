@@ -17,6 +17,7 @@ function makeSession(id: string, overrides: Partial<SessionView> = {}): SessionV
     label: id,
     createdAt: new Date().toISOString(),
     generation: 'test-gen',
+    phase: 'active',
     hidden: false,
     background: false,
     scheduleId: undefined,

@@ -114,6 +114,10 @@ export function useSessionState(): UseSessionStateResult {
           if (disposed) return
           store.replaceHosts(snapshots)
         },
+        onRuntime: (snapshots) => {
+          if (disposed) return
+          store.updateRuntimeSnapshots(snapshots)
+        },
         onConnectionChange: (online) => {
           if (disposed) return
           store.setConnectionOnline(online)
@@ -136,6 +140,16 @@ export function useSessionState(): UseSessionStateResult {
           }
           if (body.hosts) {
             store.replaceHosts(body.hosts)
+          }
+          // Populate initial runtime snapshots from bootstrap
+          const allRuntimeSnapshots: any[] = []
+          if (body.runtime) {
+            for (const ownerRuntime of body.runtime) {
+              allRuntimeSnapshots.push(...(ownerRuntime.snapshots ?? []))
+            }
+          }
+          if (allRuntimeSnapshots.length > 0) {
+            store.updateRuntimeSnapshots(allRuntimeSnapshots)
           }
         }
       } catch {

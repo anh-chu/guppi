@@ -64,6 +64,7 @@ function makeView(ownerId: string, stableSessionId: string): SessionView {
     worktreeBranch: undefined,
     isLocal: false,
     host: undefined,
+    phase: 'active',
     hostOnline: true,
   }
 }

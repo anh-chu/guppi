@@ -29,7 +29,7 @@ interface SidebarProps {
   getSessionEvents: (session: string) => ToolEvent[]
   sessionNeedsAttention: (session: string) => boolean
   isSessionInActiveTurn: (session: string) => boolean
-  glance?: { parked: number; working: number; waiting: number }
+  glance?: { needsYou: number; working: number; starting: number; idle: number; offline: number; crashed: number }
   onToggleCollapse?: () => void
   onSessionKilled?: (key: string) => void
   sessionAttrs: SessionPresentationAttrs
@@ -47,8 +47,10 @@ interface SidebarProps {
 }
 
 const STATE_BADGE: Record<SessionState, { label: string; color: string; bg: string; pulse: boolean }> = {
+  crashed:   { label: 'crashed',   color: 'var(--error)',          bg: 'rgba(244,63,77,0.12)',  pulse: true },
   needs_you: { label: 'attention', color: 'var(--accent-yellow)', bg: 'rgba(255,197,51,0.12)', pulse: true },
   working:   { label: 'working',   color: 'var(--accent-green)',  bg: 'rgba(89,212,153,0.12)', pulse: true },
+  starting:  { label: 'starting',  color: 'var(--info)',           bg: 'rgba(41,128,185,0.12)', pulse: true },
   idle:      { label: 'idle',      color: 'var(--mute)',          bg: 'transparent',           pulse: false },
   offline:   { label: 'offline',   color: 'var(--mute)',          bg: 'transparent',           pulse: false },
 }
@@ -805,7 +807,7 @@ export function Sidebar({
         <div className="mt-auto shrink-0 border-t border-hairline px-3 py-1.5 text-[11px] font-mono text-mute/60 flex items-center gap-1.5 whitespace-nowrap overflow-hidden">
           <span>{sessions.length} session{sessions.length === 1 ? '' : 's'}</span>
           {glance && <><span>\u00b7</span><span>{glance.working} working</span></>}
-          {glance && glance.waiting > 0 && <><span>\u00b7</span><span className="text-warning font-bold">{glance.waiting} waiting</span></>}
+          {glance && glance.needsYou > 0 && <><span>\u00b7</span><span className="text-warning font-bold">{glance.needsYou} waiting</span></>}
           {selfUpdateAvailable && (
             <span className="ml-auto rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[10px] font-bold text-warning">update</span>
           )}

@@ -57,49 +57,49 @@ function mkEvent(over: Partial<ToolEvent> = {}): ToolEvent {
 
 describe('toSessionView', () => {
   it('keys by sessionRefToKey(record.ref), not by name', () => {
-    const view = toSessionView(mkRecord({ ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 }, owner: 'owner1', name: 'Renamed' }), emptyHostIndex, null)
+    const view = toSessionView({ record: mkRecord({ ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 }, owner: 'owner1', name: 'Renamed' }), hosts: emptyHostIndex, localOwner: null })
     expect(view.key).toBe('owner1/sess-1')
     expect(view.id).toBe('sess-1')
   })
 
   it('keys with bare id when ref.owner is null (local session)', () => {
-    const view = toSessionView(mkRecord({ ref: { owner: null, session: 'sess-1', window: 0, pane: 0 } }), emptyHostIndex, null)
+    const view = toSessionView({ record: mkRecord({ ref: { owner: null, session: 'sess-1', window: 0, pane: 0 } }), hosts: emptyHostIndex, localOwner: null })
     expect(view.key).toBe('sess-1')
   })
 
   it('renaming a record does not change its key (key derives from ref, not name)', () => {
     const base = mkRecord({ ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 }, owner: 'owner1', name: 'Original' })
     const renamed = { ...base, name: 'Renamed Twice' }
-    expect(toSessionView(base, emptyHostIndex, null).key).toBe(toSessionView(renamed, emptyHostIndex, null).key)
+    expect(toSessionView({ record: base, hosts: emptyHostIndex, localOwner: null }).key).toBe(toSessionView({ record: renamed, hosts: emptyHostIndex, localOwner: null }).key)
   })
 
   it('label falls back to the immutable id when displayName is unset or blank', () => {
-    expect(toSessionView(mkRecord(), emptyHostIndex, null).label).toBe('sess-1')
-    expect(toSessionView(mkRecord({ name: '   ' }), emptyHostIndex, null).label).toBe('sess-1')
-    expect(toSessionView(mkRecord({ name: 'Friendly Name' }), emptyHostIndex, null).label).toBe('Friendly Name')
+    expect(toSessionView({ record: mkRecord(), hosts: emptyHostIndex, localOwner: null }).label).toBe('sess-1')
+    expect(toSessionView({ record: mkRecord({ name: '   ' }), hosts: emptyHostIndex, localOwner: null }).label).toBe('sess-1')
+    expect(toSessionView({ record: mkRecord({ name: 'Friendly Name' }), hosts: emptyHostIndex, localOwner: null }).label).toBe('Friendly Name')
   })
 
   it('defaults hidden/background to false when absent from the record', () => {
-    const view = toSessionView(mkRecord(), emptyHostIndex, null)
+    const view = toSessionView({ record: mkRecord(), hosts: emptyHostIndex, localOwner: null })
     expect(view.hidden).toBe(false)
     expect(view.background).toBe(false)
   })
 
   it('reads hidden/background straight off the record when present', () => {
-    const view = toSessionView(mkRecord({ hidden: true, background: true }), emptyHostIndex, null)
+    const view = toSessionView({ record: mkRecord({ hidden: true, background: true }), hosts: emptyHostIndex, localOwner: null })
     expect(view.hidden).toBe(true)
     expect(view.background).toBe(true)
   })
 
   it('maps cwd, shell, agentType, worktreeBranch, generation, and scheduleId directly onto the view', () => {
-    const view = toSessionView(mkRecord({
+    const view = toSessionView({ record: mkRecord({
       cwd: '/home/user/project',
       shell: '/bin/zsh',
       agent_type: 'claude',
       worktree_branch: 'feature/foo',
       generation: 'gen-1',
       schedule_id: 'sched-1',
-    }), emptyHostIndex, null)
+    }), hosts: emptyHostIndex, localOwner: null })
     expect(view.cwd).toBe('/home/user/project')
     expect(view.shell).toBe('/bin/zsh')
     expect(view.agentType).toBe('claude')
@@ -110,14 +110,14 @@ describe('toSessionView', () => {
 
   it('is local and online when record.owner matches localOwner and a local host exists', () => {
     const hosts = mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner1', local: true, online: true })])
-    const view = toSessionView(mkRecord({ owner: 'owner1', ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 } }), hosts, 'owner1')
+    const view = toSessionView({ record: mkRecord({ owner: 'owner1', ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 } }), hosts: hosts, localOwner: 'owner1' })
     expect(view.isLocal).toBe(true)
     expect(view.hostOnline).toBe(true)
   })
 
   it('is local and online even if the local host record reports online=false (local presence is enough)', () => {
     const hosts = mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner1', local: true, online: false })])
-    const view = toSessionView(mkRecord({ owner: 'owner1', ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 } }), hosts, 'owner1')
+    const view = toSessionView({ record: mkRecord({ owner: 'owner1', ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 } }), hosts: hosts, localOwner: 'owner1' })
     expect(view.isLocal).toBe(true)
     expect(view.hostOnline).toBe(true)
   })
@@ -127,7 +127,7 @@ describe('toSessionView', () => {
       mkHost({ peer_id: 'peer-1', owner_id: 'owner-local', local: true, online: true }),
       mkHost({ peer_id: 'peer-2', owner_id: 'owner-remote', local: false, online: true }),
     ])
-    const view = toSessionView(mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), hosts, 'owner-local')
+    const view = toSessionView({ record: mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), hosts: hosts, localOwner: 'owner-local' })
     expect(view.isLocal).toBe(false)
     expect(view.hostOnline).toBe(true)
     expect(view.host?.peer_id).toBe('peer-2')
@@ -135,7 +135,7 @@ describe('toSessionView', () => {
 
   it('reports offline (not optimistically online) for an unknown remote owner with no host record', () => {
     const hosts = mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner-local', local: true, online: true })])
-    const view = toSessionView(mkRecord({ owner: 'owner-unknown', ref: { owner: 'owner-unknown', session: 'sess-1', window: 0, pane: 0 } }), hosts, 'owner-local')
+    const view = toSessionView({ record: mkRecord({ owner: 'owner-unknown', ref: { owner: 'owner-unknown', session: 'sess-1', window: 0, pane: 0 } }), hosts: hosts, localOwner: 'owner-local' })
     expect(view.isLocal).toBe(false)
     expect(view.hostOnline).toBe(false)
     expect(view.host).toBeUndefined()
@@ -146,12 +146,12 @@ describe('toSessionView', () => {
       mkHost({ peer_id: 'peer-1', owner_id: 'owner-local', local: true, online: true }),
       mkHost({ peer_id: 'peer-2', owner_id: 'owner-remote', local: false, online: false }),
     ])
-    const view = toSessionView(mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), hosts, 'owner-local')
+    const view = toSessionView({ record: mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), hosts: hosts, localOwner: 'owner-local' })
     expect(view.hostOnline).toBe(false)
   })
 
   it('has no windows, panes, attached, or fake-timestamp fields', () => {
-    const view = toSessionView(mkRecord(), emptyHostIndex, null) as unknown as Record<string, unknown>
+    const view = toSessionView({ record: mkRecord(), hosts: emptyHostIndex, localOwner: null }) as unknown as Record<string, unknown>
     expect(view.windows).toBeUndefined()
     expect(view.panes).toBeUndefined()
     expect(view.attached).toBeUndefined()
@@ -161,9 +161,9 @@ describe('toSessionView', () => {
 
 describe('toPresentationAttrs', () => {
   it('buckets views into hidden/background/scheduleId sets keyed by SessionView.key', () => {
-    const hidden = toSessionView(mkRecord({ ref: { owner: null, session: 'a', window: 0, pane: 0 }, id: 'a', hidden: true }), emptyHostIndex, null)
-    const bg = toSessionView(mkRecord({ ref: { owner: null, session: 'b', window: 0, pane: 0 }, id: 'b', background: true }), emptyHostIndex, null)
-    const scheduled = toSessionView(mkRecord({ ref: { owner: null, session: 'c', window: 0, pane: 0 }, id: 'c', schedule_id: 'sched-9' }), emptyHostIndex, null)
+    const hidden = toSessionView({ record: mkRecord({ ref: { owner: null, session: 'a', window: 0, pane: 0 }, id: 'a', hidden: true }), hosts: emptyHostIndex, localOwner: null })
+    const bg = toSessionView({ record: mkRecord({ ref: { owner: null, session: 'b', window: 0, pane: 0 }, id: 'b', background: true }), hosts: emptyHostIndex, localOwner: null })
+    const scheduled = toSessionView({ record: mkRecord({ ref: { owner: null, session: 'c', window: 0, pane: 0 }, id: 'c', schedule_id: 'sched-9' }), hosts: emptyHostIndex, localOwner: null })
     const attrs = toPresentationAttrs([hidden, bg, scheduled])
     expect(attrs.hidden.has('a')).toBe(true)
     expect(attrs.hidden.has('b')).toBe(false)
@@ -181,8 +181,8 @@ describe('toPresentationAttrs', () => {
 })
 
 describe('sessionViewSignal', () => {
-  const onlineView = toSessionView(mkRecord({ owner: 'owner1', ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 } }), mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner1', local: true, online: true })]), 'owner1')
-  const offlineView = toSessionView(mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner-local', local: true, online: true })]), 'owner-local')
+  const onlineView = toSessionView({ record: mkRecord({ owner: 'owner1', ref: { owner: 'owner1', session: 'sess-1', window: 0, pane: 0 } }), hosts: mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner1', local: true, online: true })]), localOwner: 'owner1' })
+  const offlineView = toSessionView({ record: mkRecord({ owner: 'owner-remote', ref: { owner: 'owner-remote', session: 'sess-1', window: 0, pane: 0 } }), hosts: mkHostIndex([mkHost({ peer_id: 'peer-1', owner_id: 'owner-local', local: true, online: true })]), localOwner: 'owner-local' })
 
   it('reports needs_you for a loud (waiting/stuck/error) event, regardless of activity or connectivity', () => {
     const signal = sessionViewSignal(offlineView, [mkEvent({ status: 'waiting' })], true)
@@ -225,8 +225,8 @@ describe('Schema 4 SessionView contract - FAILS', () => {
     const crashedRecord = mkRecord({ phase: 'crashed' })
 
     // These will fail because SessionView doesn't have phase yet:
-    // const startingView = toSessionView(startingRecord, emptyHostIndex, null)
-    // const crashedView = toSessionView(crashedRecord, emptyHostIndex, null)
+    // const startingView = toSessionView({ record: startingRecord, hosts: emptyHostIndex, localOwner: null) })
+    // const crashedView = toSessionView({ record: crashedRecord, hosts: emptyHostIndex, localOwner: null) })
     // expect(startingView.phase).toBe('starting')
     // expect(crashedView.phase).toBe('crashed')
 
@@ -240,7 +240,7 @@ describe('Schema 4 SessionView contract - FAILS', () => {
     // This will FAIL until Task 7 implements the phase check in priority order.
 
     // const crashedRecord = mkRecord({ phase: 'crashed' })
-    // const crashedView = toSessionView(crashedRecord, emptyHostIndex, null)
+    // const crashedView = toSessionView({ record: crashedRecord, hosts: emptyHostIndex, localOwner: null) })
     // const signal = sessionViewSignal(crashedView, [], undefined, false)
     // expect(signal.state).toBe('crashed')
     // expect(signal.reason).toBe('crashed')
@@ -255,8 +255,8 @@ describe('Schema 4 SessionView contract - FAILS', () => {
 
     // const pendingRecord = mkRecord({ phase: 'pending' })
     // const startingRecord = mkRecord({ phase: 'starting' })
-    // const pendingView = toSessionView(pendingRecord, emptyHostIndex, null)
-    // const startingView = toSessionView(startingRecord, emptyHostIndex, null)
+    // const pendingView = toSessionView({ record: pendingRecord, hosts: emptyHostIndex, localOwner: null) })
+    // const startingView = toSessionView({ record: startingRecord, hosts: emptyHostIndex, localOwner: null) })
 
     // const pendingSignal = sessionViewSignal(pendingView, [], undefined, false)
     // const startingSignal = sessionViewSignal(startingView, [], undefined, false)

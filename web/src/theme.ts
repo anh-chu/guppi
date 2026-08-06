@@ -26,8 +26,10 @@ export interface SignalTreatment {
 }
 
 export const signalTreatment: Record<SessionState, SignalTreatment> = {
+    crashed: { dot: 'var(--destructive)', text: 'var(--destructive)', pulse: true, hollow: false },
     needs_you: { dot: 'var(--warning)', text: 'var(--warning)', pulse: true, hollow: false },
     working: { dot: 'var(--success)', text: 'var(--body-text)', pulse: false, hollow: false },
+    starting: { dot: 'var(--info)', text: 'var(--info)', pulse: true, hollow: false },
     idle: { dot: 'var(--mute)', text: 'var(--mute)', pulse: false, hollow: true },
     offline: { dot: 'var(--stone)', text: 'var(--mute)', pulse: false, hollow: true },
 }

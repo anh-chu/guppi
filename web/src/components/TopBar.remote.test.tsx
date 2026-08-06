@@ -46,7 +46,7 @@ describe('TopBar remote alert navigation (Task 5)', () => {
         onJumpToSession={onJumpToSession}
         onDismiss={() => {}}
         onDismissAll={() => {}}
-        glance={{ parked: 0, working: 0, waiting: 1 }}
+        glance={{ needsYou: 1, working: 0, starting: 0, idle: 0, offline: 0, crashed: 0 }}
       />,
     )
 

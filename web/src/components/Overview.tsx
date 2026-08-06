@@ -12,7 +12,7 @@ import { useGlance, GlanceTarget } from './GlancePopover'
 import { pathLeaf } from '../lib/path'
 import { useSchedules } from '../hooks/useSchedules'
 
-const stateRank: Record<SessionState, number> = { needs_you: 0, working: 1, idle: 2, offline: 3 }
+const stateRank: Record<SessionState, number> = { crashed: 0, needs_you: 1, working: 2, starting: 3, idle: 4, offline: 5 }
 
 interface OverviewProps {
   sessions: SessionView[]
@@ -129,12 +129,14 @@ type CardItem = {
   scheduleRunCount?: number
 }
 
-const COLUMN_ORDER: SessionState[] = ['needs_you', 'working', 'idle', 'offline']
+const COLUMN_ORDER: SessionState[] = ['needs_you', 'working', 'starting', 'idle', 'offline', 'crashed']
 const COLUMN_META: Record<SessionState, { label: string; color: string }> = {
   needs_you: { label: 'Needs you', color: 'var(--warning)' },
   working: { label: 'Working', color: 'var(--success)' },
+  starting: { label: 'Starting', color: 'var(--info)' },
   idle: { label: 'Idle', color: 'var(--mute)' },
   offline: { label: 'Offline', color: 'var(--mute)' },
+  crashed: { label: 'Crashed', color: 'var(--error)' },
 }
 
 function SessionCard({

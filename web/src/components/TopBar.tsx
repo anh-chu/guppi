@@ -27,7 +27,7 @@ interface TopBarProps {
   onDismissAll: () => void
   panesCount?: number
   onSplitPane?: (direction: 'h' | 'v') => void
-  glance: { parked: number; working: number; waiting: number }
+  glance: { needsYou: number; working: number; starting: number; idle: number; offline: number; crashed: number }
 }
 
 function formatPane(pane?: string): string {
@@ -223,11 +223,11 @@ export function TopBar({
           )}
         </div>
 
-        {glance.waiting > 0 && (
+        {glance.needsYou > 0 && (
           <div className="flex items-center gap-2 text-[11px] font-mono">
             <span className="text-warning inline-flex items-center gap-1">
               <span className="animate-[pulse_1.5s_ease-in-out_infinite]">●</span>
-              {glance.waiting} waiting
+              {glance.needsYou} waiting
             </span>
           </div>
         )}

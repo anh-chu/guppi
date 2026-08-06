@@ -367,8 +367,21 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   // QuickSwitcher, NewSessionModal, SessionActionsMenu) now consumes these
   // directly -- there is no synthetic Session[] shim any more.
   const sessionViews = useMemo<SessionView[]>(
-    () => Array.from(state.catalog.sessionsByRef.values()).map(record => toSessionView(record, hostIndex, state.catalog.localOwner)),
-    [state.catalog.sessionsByRef, hostIndex, state.catalog.localOwner],
+    () => Array.from(state.catalog.sessionsByRef.values()).map(record => {
+      const key = sessionRefToKey(record.ref)
+      const runtimeSnapshot = state.runtimeByRef?.get(key)
+      const runtime = runtimeSnapshot?.runtime
+      const events = getSessionEvents(key)
+      const latestToolEvent = events[0]
+      return toSessionView({
+        record,
+        hosts: hostIndex,
+        localOwner: state.catalog.localOwner,
+        runtime,
+        latestToolEvent,
+      })
+    }),
+    [state.catalog.sessionsByRef, state.runtimeByRef, hostIndex, state.catalog.localOwner, getSessionEvents],
   )
 
   // Real hidden/background presentation state (see the block comment above
@@ -438,14 +451,31 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   }, [])
 
   const glance = useMemo(() => {
-    let parked = 0, working = 0, waiting = 0
+    let needsYou = 0, working = 0, starting = 0, idle = 0, offline = 0, crashed = 0
     for (const view of sessionViews) {
       const signal = sessionViewSignal(view, getSessionEvents(view.key), isSessionInActiveTurn(view.key))
-      if (signal.state === 'needs_you') waiting++
-      else if (signal.state === 'working') working++
-      else parked++
+      switch (signal.state) {
+        case 'needs_you':
+          needsYou++
+          break
+        case 'working':
+          working++
+          break
+        case 'starting':
+          starting++
+          break
+        case 'idle':
+          idle++
+          break
+        case 'offline':
+          offline++
+          break
+        case 'crashed':
+          crashed++
+          break
+      }
     }
-    return { parked, working, waiting }
+    return { needsYou, working, starting, idle, offline, crashed }
   }, [sessionViews, getSessionEvents, isSessionInActiveTurn, allToolEvents])
 
   const openNewSessionModal = useCallback(() => {
