@@ -7,14 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/anh-chu/termyard/pkg/git"
 	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/state"
 )
@@ -52,11 +49,6 @@ type Result struct {
 	Host   string
 	Path   string
 	Remote bool
-}
-
-// DaemonRegistry is the session backend needed to spawn a local daemon.
-type DaemonRegistry interface {
-	Create(name, shell, cwd string, cols, rows uint16) error
 }
 
 // ScheduleAttr is the metadata snapshot the launch service stores and fans out.
@@ -113,7 +105,6 @@ type Commander interface {
 
 // Service is the sole owner of session launch semantics.
 type Service struct {
-	DaemonReg DaemonRegistry
 	Attrs     ScheduleAttrStore
 	Hub       BrowserHub
 	Identity  Identity
@@ -121,20 +112,24 @@ type Service struct {
 	Fanout    PeerFanout
 	Names     ExistingNames
 	Refresh   RefreshFunc
-	Commander Commander // nil falls back to the direct daemon-create path
+	Commander Commander // required: all session creation is routed through the canonical state commander
 
 	// ReliableRemote dispatches a remote-host create through the
 	// remote-create coordinator + command RPC (pkg/state.RemoteCreateCoordinator,
 	// pkg/peer's Manager.SendRemoteCreate), instead of the fire-and-forget
-	// Remote path. When Commander and ReliableRemote are both non-nil, createRemote
-	// prefers ReliableRemote unconditionally, since Remote's fire-and-forget
-	// delivery cannot confirm the remote session was actually created. nil
-	// falls back to the fire-and-forget Remote path for any remote target.
+	// Remote path. When ReliableRemote is set, createRemote prefers it
+	// unconditionally, since Remote's fire-and-forget delivery cannot confirm
+	// the remote session was actually created. nil falls back to the
+	// fire-and-forget Remote path for any remote target.
 	ReliableRemote RemoteLauncher
 }
 
-// Create validates, resolves, and launches one session.
+// Create validates, resolves, and launches one session. Panics if Commander
+// is nil: Commander is a required dependency, not an optional one.
 func (s *Service) Create(ctx context.Context, req Request) (Result, error) {
+	if s.Commander == nil {
+		panic("sessionlaunch: Service.Commander is required and must not be nil")
+	}
 	req = s.normalize(req)
 	if err := s.validate(req); err != nil {
 		return Result{}, err
@@ -180,9 +175,8 @@ func (s *Service) createRemote(ctx context.Context, req Request) (Result, error)
 	// The fire-and-forget RemoteLauncher (Remote) reports success once the
 	// frame is merely enqueued on the peer connection, not once the remote
 	// session genuinely exists. When a reliable remote-create path is wired
-	// (Commander != nil and ReliableRemote != nil), always prefer it for any
-	// non-local target.
-	if s.Commander != nil && s.ReliableRemote != nil {
+	// (ReliableRemote != nil), always prefer it for any non-local target.
+	if s.ReliableRemote != nil {
 		res, err := s.ReliableRemote(ctx, req)
 		if err != nil {
 			return Result{}, err
@@ -228,43 +222,7 @@ func (s *Service) applyRemoteScheduleAttr(req Request, res Result) {
 
 func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) {
 	req.Name = s.resolveName(req)
-
-	if s.Commander != nil {
-		return s.createLocalViaCommander(ctx, req)
-	}
-
-	cwd, err := s.prepareLocalPath(req)
-	if err != nil {
-		return Result{}, err
-	}
-
-	if err := s.daemonCreate(ctx, req.Name, req.Command, cwd, req.Cols, req.Rows); err != nil {
-		if cwd != req.Path && req.Path != "" {
-			_ = git.RemoveWorktree(cwd)
-		}
-		return Result{}, err
-	}
-
-	if s.Attrs != nil && req.ScheduleID != "" {
-		key := sessionKey(req.LocalHost, req.Name)
-		attr, err := s.Attrs.SetScheduleID(key, req.ScheduleID)
-		if err != nil {
-			logrus.WithError(err).Warn("failed to store schedule id")
-		} else {
-			if s.Fanout != nil {
-				s.Fanout(key, attr)
-			}
-			if s.Hub != nil {
-				s.Hub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": key})
-			}
-		}
-	}
-
-	if s.Refresh != nil {
-		s.Refresh()
-	}
-
-	return Result{Name: req.Name, Host: req.Host, Path: cwd}, nil
+	return s.createLocalViaCommander(ctx, req)
 }
 
 func (s *Service) createLocalViaCommander(ctx context.Context, req Request) (Result, error) {
@@ -311,40 +269,6 @@ func (s *Service) createLocalViaCommander(ctx context.Context, req Request) (Res
 	return Result{Name: res.DisplayName, Host: req.Host, Path: res.Path}, nil
 }
 
-func (s *Service) prepareLocalPath(req Request) (string, error) {
-	cwd := req.Path
-	if cwd == "~" {
-		cwd = ""
-	}
-
-	if req.WorktreeBranch != "" && cwd != "" {
-		expanded := expandPath(cwd)
-		sanitized := strings.ReplaceAll(req.WorktreeBranch, "/", "-")
-		worktreesDir := filepath.Join(expanded, ".worktrees")
-		if err := os.MkdirAll(worktreesDir, 0755); err != nil {
-			return "", fmt.Errorf("%w: mkdir .worktrees: %w", ErrWorktree, err)
-		}
-		destPath := filepath.Join(worktreesDir, sanitized)
-		if err := git.CreateWorktree(expanded, req.WorktreeBranch, destPath); err != nil {
-			return "", fmt.Errorf("%w: git worktree add: %w", ErrWorktree, err)
-		}
-		cwd = destPath
-	}
-
-	return cwd, nil
-}
-
-func (s *Service) daemonCreate(ctx context.Context, name, command, cwd string, cols, rows uint16) error {
-	shell := command
-	if shell == "" || shell == "shell" {
-		shell = ""
-	}
-	if err := s.DaemonReg.Create(name, shell, cwd, cols, rows); err != nil {
-		return fmt.Errorf("%w: %w", ErrSpawn, err)
-	}
-	return nil
-}
-
 func (s *Service) resolveName(req Request) string {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -368,20 +292,6 @@ func sessionKey(host, name string) string {
 		return host + "/" + name
 	}
 	return name
-}
-
-func expandPath(p string) string {
-	if strings.HasPrefix(p, "~") {
-		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			p = home + p[1:]
-		}
-	}
-	if !filepath.IsAbs(p) {
-		if home, err := os.UserHomeDir(); err == nil {
-			p = filepath.Join(home, p)
-		}
-	}
-	return p
 }
 
 func defaultSessionName(command, projectPath string) string {

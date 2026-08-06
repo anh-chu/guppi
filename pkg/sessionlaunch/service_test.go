@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,21 +11,48 @@ import (
 	"github.com/anh-chu/termyard/pkg/state"
 )
 
-type fakeDaemon struct {
-	created []createCall
-	err     error
+// fakeCommander is the shared Commander stub used by every test: it records
+// each SessionCommand it receives (unmarshaled CreateParams included) and,
+// unless err is set, echoes back a CommandResult that mirrors what the real
+// canonical Commander would produce for a create (DisplayName defaults to
+// the resolved name, Path defaults to the requested cwd).
+type fakeCommander struct {
+	calls       []state.SessionCommand
+	err         error
+	displayName string // overrides the echoed DisplayName when set
+	path        string // overrides the echoed Path when set
 }
 
-type createCall struct {
-	name       string
-	shell      string
-	cwd        string
-	cols, rows uint16
+func (f *fakeCommander) ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error) {
+	f.calls = append(f.calls, cmd)
+	if f.err != nil {
+		return state.CommandResult{}, f.err
+	}
+	var params state.CreateParams
+	_ = json.Unmarshal(cmd.Params, &params)
+	name := f.displayName
+	if name == "" {
+		name = params.Name
+	}
+	path := f.path
+	if path == "" {
+		path = params.Cwd
+	}
+	return state.CommandResult{DisplayName: name, Path: path}, nil
 }
 
-func (f *fakeDaemon) Create(name, shell, cwd string, cols, rows uint16) error {
-	f.created = append(f.created, createCall{name: name, shell: shell, cwd: cwd, cols: cols, rows: rows})
-	return f.err
+// params unmarshals the CreateParams payload of the call at index i. Fails
+// the test if the call is out of range or the payload doesn't decode.
+func (f *fakeCommander) params(t *testing.T, i int) state.CreateParams {
+	t.Helper()
+	if i >= len(f.calls) {
+		t.Fatalf("call %d out of range, only %d calls recorded", i, len(f.calls))
+	}
+	var params state.CreateParams
+	if err := json.Unmarshal(f.calls[i].Params, &params); err != nil {
+		t.Fatalf("unmarshal params for call %d: %v", i, err)
+	}
+	return params
 }
 
 type fakeAttrs struct {
@@ -80,21 +104,21 @@ func (f *fanoutSpy) Fanout(key string, attr ScheduleAttr) {
 	}{key, attr})
 }
 
-func newService() (*Service, *fakeDaemon, *fakeAttrs, *fakeHub) {
-	d := &fakeDaemon{}
+func newService() (*Service, *fakeCommander, *fakeAttrs, *fakeHub) {
+	c := &fakeCommander{}
 	a := &fakeAttrs{}
 	h := &fakeHub{}
 	s := &Service{
-		DaemonReg: d,
+		Commander: c,
 		Attrs:     a,
 		Hub:       h,
 		Refresh:   func() {},
 	}
-	return s, d, a, h
+	return s, c, a, h
 }
 
 func TestCreateLocalSuccess(t *testing.T) {
-	s, d, a, h := newService()
+	s, c, a, h := newService()
 
 	res, err := s.Create(context.Background(), Request{Name: "foo", Path: "/tmp", Command: "bash", Cols: 100, Rows: 30})
 	if err != nil {
@@ -106,12 +130,12 @@ func TestCreateLocalSuccess(t *testing.T) {
 	if res.Path != "/tmp" {
 		t.Fatalf("path = %q", res.Path)
 	}
-	if len(d.created) != 1 {
-		t.Fatalf("created calls = %d", len(d.created))
+	if len(c.calls) != 1 {
+		t.Fatalf("commander calls = %d", len(c.calls))
 	}
-	call := d.created[0]
-	if call.name != "foo" || call.shell != "bash" || call.cwd != "/tmp" || call.cols != 100 || call.rows != 30 {
-		t.Fatalf("unexpected call: %+v", call)
+	params := c.params(t, 0)
+	if params.Name != "foo" || params.Shell != "bash" || params.Cwd != "/tmp" || params.Cols != 100 || params.Rows != 30 {
+		t.Fatalf("unexpected params: %+v", params)
 	}
 	if len(a.calls) != 0 || len(h.broadcasts) != 0 {
 		t.Fatalf("schedule metadata should not be written without schedule id")
@@ -119,7 +143,7 @@ func TestCreateLocalSuccess(t *testing.T) {
 }
 
 func TestCreateGeneratesName(t *testing.T) {
-	s, d, _, _ := newService()
+	s, c, _, _ := newService()
 
 	res, err := s.Create(context.Background(), Request{Command: "node server.js", Path: "/home/proj"})
 	if err != nil {
@@ -128,13 +152,13 @@ func TestCreateGeneratesName(t *testing.T) {
 	if res.Name != "node-proj" {
 		t.Fatalf("name = %q", res.Name)
 	}
-	if d.created[0].name != "node-proj" {
-		t.Fatalf("daemon created with %q", d.created[0].name)
+	if c.params(t, 0).Name != "node-proj" {
+		t.Fatalf("commander created with %q", c.params(t, 0).Name)
 	}
 }
 
 func TestCreateDeduplicatesName(t *testing.T) {
-	s, d, _, _ := newService()
+	s, c, _, _ := newService()
 	s.Names = func(host string) []string {
 		return []string{"foo", "foo-2"}
 	}
@@ -146,13 +170,13 @@ func TestCreateDeduplicatesName(t *testing.T) {
 	if res.Name != "foo-3" {
 		t.Fatalf("name = %q", res.Name)
 	}
-	if d.created[0].name != "foo-3" {
-		t.Fatalf("daemon created with %q", d.created[0].name)
+	if c.params(t, 0).Name != "foo-3" {
+		t.Fatalf("commander created with %q", c.params(t, 0).Name)
 	}
 }
 
 func TestCreateRemoteSuccess(t *testing.T) {
-	s, d, a, h := newService()
+	s, c, a, h := newService()
 	remote := &fakeRemote{result: Result{Name: "foo"}}
 	s.Remote = remote.Launch
 	s.Fanout = (&fanoutSpy{}).Fanout
@@ -164,8 +188,8 @@ func TestCreateRemoteSuccess(t *testing.T) {
 	if !res.Remote {
 		t.Fatalf("expected remote result")
 	}
-	if len(d.created) != 0 {
-		t.Fatalf("local daemon should not be created for remote")
+	if len(c.calls) != 0 {
+		t.Fatalf("local commander should not be called for remote")
 	}
 	if len(remote.called) != 1 {
 		t.Fatalf("remote not called")
@@ -178,24 +202,13 @@ func TestCreateRemoteSuccess(t *testing.T) {
 	}
 }
 
-// fakeCommander is a minimal Commander stub used only to make
-// s.Commander non-nil in routing tests; createRemote's routing decision
-// only checks Commander != nil, it never calls it directly (session
-// creation via Commander is exercised by createLocal's own tests).
-type fakeCommander struct{}
-
-func (fakeCommander) ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error) {
-	return state.CommandResult{}, nil
-}
-
 // TestCreateRemotePrefersReliableRemoteOverFireAndForget proves the Finding-3 fix:
-// once Commander is set and a reliable remote-create path is wired
-// (ReliableRemote set), createRemote must always route through ReliableRemote
-// and must never fall back to the fire-and-forget Remote launcher, even
-// though both are configured on the Service.
+// when a reliable remote-create path is wired (ReliableRemote set),
+// createRemote must always route through ReliableRemote and must never fall
+// back to the fire-and-forget Remote launcher, even though both are
+// configured on the Service.
 func TestCreateRemotePrefersReliableRemoteOverFireAndForget(t *testing.T) {
 	s, _, a, h := newService()
-	s.Commander = fakeCommander{}
 	s.Fanout = (&fanoutSpy{}).Fanout
 
 	fireAndForgetRemote := &fakeRemote{result: Result{Name: "should-not-be-used"}}
@@ -226,53 +239,11 @@ func TestCreateRemotePrefersReliableRemoteOverFireAndForget(t *testing.T) {
 	}
 }
 
-// TestCreateRemoteWithoutCommanderUsesFireAndForget proves remote creation
-// with Commander nil is unchanged: it must still use the fire-and-forget
-// Remote launcher exactly as before, even if a ReliableRemote happens to be set.
-func TestCreateRemoteWithoutCommanderUsesFireAndForget(t *testing.T) {
-	s, _, _, _ := newService()
-	// Commander intentionally left nil: exercises the fire-and-forget path.
-
-	fireAndForgetRemote := &fakeRemote{result: Result{Name: "foo", Host: "peer-1"}}
-	s.Remote = fireAndForgetRemote.Launch
-
-	reliableRemote := &fakeRemote{result: Result{Name: "should-not-be-used"}}
-	s.ReliableRemote = reliableRemote.Launch
-
-	res, err := s.Create(context.Background(), Request{Host: "peer-1", LocalHost: "local-fingerprint", Name: "foo"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !res.Remote {
-		t.Fatalf("expected remote result")
-	}
-	if len(reliableRemote.called) != 0 {
-		t.Fatalf("ReliableRemote must not be called when Commander is nil, got %d calls", len(reliableRemote.called))
-	}
-	if len(fireAndForgetRemote.called) != 1 {
-		t.Fatalf("expected exactly one fire-and-forget Remote call, got %d", len(fireAndForgetRemote.called))
-	}
-}
-
-// fakeCommanderWithDisplayName is a Commander stub that echoes back a
-// DisplayName so createLocalViaCommander's post-create AgentType branch can be
-// exercised deterministically.
-type fakeCommanderWithDisplayName struct {
-	displayName string
-	calls       []state.SessionCommand
-}
-
-func (f *fakeCommanderWithDisplayName) ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error) {
-	f.calls = append(f.calls, cmd)
-	return state.CommandResult{DisplayName: f.displayName}, nil
-}
-
 // TestCreateLocalCarriesAgentType proves AgentType flows into the
 // CreateParams command payload.
 func TestCreateLocalCarriesAgentType(t *testing.T) {
-	s, _, _, _ := newService()
-	commander := &fakeCommanderWithDisplayName{displayName: "foo"}
-	s.Commander = commander
+	s, c, _, _ := newService()
+	c.displayName = "foo"
 
 	res, err := s.Create(context.Background(), Request{Name: "foo", AgentType: "claude"})
 	if err != nil {
@@ -281,20 +252,17 @@ func TestCreateLocalCarriesAgentType(t *testing.T) {
 	if res.Name != "foo" {
 		t.Fatalf("unexpected result: %+v", res)
 	}
-	if len(commander.calls) != 1 {
-		t.Fatalf("expected exactly one create command, got %d", len(commander.calls))
+	if len(c.calls) != 1 {
+		t.Fatalf("expected exactly one create command, got %d", len(c.calls))
 	}
-	var params state.CreateParams
-	if err := json.Unmarshal(commander.calls[0].Params, &params); err != nil {
-		t.Fatalf("unmarshal params: %v", err)
-	}
+	params := c.params(t, 0)
 	if params.AgentType != "claude" {
 		t.Fatalf("expected AgentType to be carried in CreateParams, got %+v", params)
 	}
 }
 
 func TestCreateLocalHostQualifiedRequestUsesLocalDaemon(t *testing.T) {
-	s, d, a, h := newService()
+	s, c, a, h := newService()
 
 	var namesHost string
 	s.Names = func(host string) []string {
@@ -320,11 +288,11 @@ func TestCreateLocalHostQualifiedRequestUsesLocalDaemon(t *testing.T) {
 	if remoteCalled != 0 {
 		t.Fatalf("remote launch called %d times", remoteCalled)
 	}
-	if len(d.created) != 1 {
-		t.Fatalf("expected one local daemon create, got %d", len(d.created))
+	if len(c.calls) != 1 {
+		t.Fatalf("expected one local commander create, got %d", len(c.calls))
 	}
-	if d.created[0].name != res.Name {
-		t.Fatalf("resolved name mismatch: result %q, daemon created %q", res.Name, d.created[0].name)
+	if c.params(t, 0).Name != res.Name {
+		t.Fatalf("resolved name mismatch: result %q, commander created %q", res.Name, c.params(t, 0).Name)
 	}
 	if res.Remote {
 		t.Fatalf("expected local result")
@@ -361,74 +329,6 @@ func TestCreateRemoteQueueFull(t *testing.T) {
 	_, err := s.Create(context.Background(), Request{Host: "peer-1", Name: "foo"})
 	if !errors.Is(err, ErrPeerQueueFull) {
 		t.Fatalf("expected ErrPeerQueueFull, got %v", err)
-	}
-}
-
-func TestCreateNormalizesPath(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	// Exact "~" becomes empty so the daemon uses its default.
-	s, d, _, _ := newService()
-	_, err := s.Create(context.Background(), Request{Name: "foo", Path: "~", Command: "bash"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d.created[0].cwd != "" {
-		t.Fatalf("cwd = %q, want empty", d.created[0].cwd)
-	}
-
-	// Worktree path with ~ is expanded before git worktree add.
-	d.created = nil
-	repo := filepath.Join(home, "repo")
-	initGitRepoAt(t, repo)
-	res, err := s.Create(context.Background(), Request{Name: "feat", Path: "~/repo", WorktreeBranch: "feature", Command: "bash"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := filepath.Join(repo, ".worktrees", "feature")
-	if res.Path != want {
-		t.Fatalf("path = %q, want %q", res.Path, want)
-	}
-	if d.created[0].cwd != want {
-		t.Fatalf("daemon cwd = %q", d.created[0].cwd)
-	}
-}
-
-func TestCreateWorktree(t *testing.T) {
-	repo := initGitRepo(t)
-	t.Setenv("HOME", t.TempDir())
-	s, d, _, _ := newService()
-
-	res, err := s.Create(context.Background(), Request{Name: "feat", Path: repo, WorktreeBranch: "feature", Command: "bash"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := filepath.Join(repo, ".worktrees", "feature")
-	if res.Path != want {
-		t.Fatalf("path = %q, want %q", res.Path, want)
-	}
-	if d.created[0].cwd != want {
-		t.Fatalf("daemon cwd = %q", d.created[0].cwd)
-	}
-	if _, err := os.Stat(want); err != nil {
-		t.Fatalf("worktree dir missing: %v", err)
-	}
-}
-
-func TestCreateWorktreeRollbackOnSpawnFailure(t *testing.T) {
-	repo := initGitRepo(t)
-	t.Setenv("HOME", t.TempDir())
-	s, d, _, _ := newService()
-	d.err = errors.New("spawn-err")
-
-	_, err := s.Create(context.Background(), Request{Name: "feat", Path: repo, WorktreeBranch: "feature", Command: "bash"})
-	if !errors.Is(err, ErrSpawn) {
-		t.Fatalf("expected ErrSpawn, got %v", err)
-	}
-	dest := filepath.Join(repo, ".worktrees", "feature")
-	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
-		t.Fatalf("worktree dir should have been rolled back: %v", statErr)
 	}
 }
 
@@ -487,33 +387,25 @@ func TestCreateInvalidInput(t *testing.T) {
 	}
 }
 
+// TestCreateNoPartialMetadataOnSpawnFailure proves that when the Commander
+// fails to create the session, no schedule metadata is written and the
+// underlying error propagates unwrapped.
 func TestCreateNoPartialMetadataOnSpawnFailure(t *testing.T) {
-	s, d, a, h := newService()
-	d.err = errors.New("boom")
+	s, c, a, h := newService()
+	sentinel := errors.New("boom")
+	c.err = sentinel
 
 	_, err := s.Create(context.Background(), Request{Name: "foo", ScheduleID: "sched-1"})
-	if !errors.Is(err, ErrSpawn) {
-		t.Fatalf("expected ErrSpawn, got %v", err)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error, got %v", err)
 	}
 	if len(a.calls) != 0 || len(h.broadcasts) != 0 {
-		t.Fatalf("metadata should not be written on spawn failure")
-	}
-}
-
-func TestCreateCommandShellNormalized(t *testing.T) {
-	s, d, _, _ := newService()
-
-	_, err := s.Create(context.Background(), Request{Name: "foo", Command: "shell"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d.created[0].shell != "" {
-		t.Fatalf("shell = %q", d.created[0].shell)
+		t.Fatalf("metadata should not be written on create failure")
 	}
 }
 
 func TestResolveNameUsesFallback(t *testing.T) {
-	s, d, _, _ := newService()
+	s, c, _, _ := newService()
 
 	res, err := s.Create(context.Background(), Request{Fallback: "fallback-123"})
 	if err != nil {
@@ -522,35 +414,7 @@ func TestResolveNameUsesFallback(t *testing.T) {
 	if !strings.HasPrefix(res.Name, "fallback-") {
 		t.Fatalf("name = %q", res.Name)
 	}
-	if d.created[0].name != res.Name {
-		t.Fatalf("daemon name = %q", d.created[0].name)
-	}
-}
-
-func initGitRepo(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	initGitRepoAt(t, dir)
-	return dir
-}
-
-func initGitRepoAt(t *testing.T, dir string) {
-	t.Helper()
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatalf("mkdir repo: %v", err)
-	}
-	cmds := [][]string{
-		{"git", "init"},
-		{"git", "config", "user.email", "test@example.com"},
-		{"git", "config", "user.name", "Test"},
-		{"git", "commit", "--allow-empty", "-m", "init"},
-	}
-	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE=2024-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-01T00:00:00Z")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("%v: %s", args, out)
-		}
+	if c.params(t, 0).Name != res.Name {
+		t.Fatalf("commander name = %q", c.params(t, 0).Name)
 	}
 }

@@ -248,7 +248,6 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	}
 
 	launchSvc := &sessionlaunch.Service{
-		DaemonReg:      rt.daemonReg,
 		Identity:       nodeIdentity,
 		Refresh:        rt.refreshSessionsFunc,
 		ReliableRemote: remoteLauncher,
