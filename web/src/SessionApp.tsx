@@ -480,7 +480,13 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       )}
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
       {portForwardsOpen && <PortForwardModal onClose={() => setPortForwardsOpen(false)} />}
-      {schedulesOpen && <ScheduleModal onClose={() => setSchedulesOpen(false)} />}
+      {schedulesOpen && (
+        <ScheduleModal
+          onClose={() => setSchedulesOpen(false)}
+          sessions={sessionViews}
+          killSession={(ref) => sessionState.sessionCommand(ref, { action: 'kill' }).then(() => undefined)}
+        />
+      )}
       {quickSwitcherOpen && (
         <QuickSwitcher
           sessions={sessionViews}

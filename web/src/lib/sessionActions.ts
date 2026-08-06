@@ -1,49 +1,32 @@
 // Shared session action calls used by both the Sidebar context menu and the
 // Overview SessionActionsMenu. Pure API wrappers: callers own their own UI
 // state (rename input, naming spinner, kill confirms, optimistic removal).
+//
+// Routed through the canonical POST /api/state/session-commands command
+// client (state/session/commands.ts) -- the legacy /api/session/display-name,
+// /api/session/regenerate-name and /api/session/kill REST routes were
+// deleted server-side (Task 7). There is no server-side replacement for AI
+// (re)naming; that feature was removed along with the old routes.
 
-const JSON_HEADERS = { 'Content-Type': 'application/json' }
+import { CommandClient } from '../state/session/commands'
+import type { SessionRef } from '../state/session/types'
+
+const client = new CommandClient()
 
 // Sets the friendly display label only; the underlying session name is
 // left untouched (renaming it would break session keys, attachment, and agent
-// hooks). clear=false marks it user-set so the AI namer never overwrites it.
-// The new label arrives via the websocket state update.
-export async function renameSession(name: string, displayName: string, host?: string): Promise<void> {
+// hooks). The new label arrives via the websocket state update.
+export async function renameSession(ref: SessionRef, label: string): Promise<void> {
   try {
-    await fetch('/api/session/display-name', {
-      method: 'POST',
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ session: name, display_name: displayName, clear: false, host: host || undefined }),
-    })
+    await client.sessionCommand(ref, { action: 'label', label })
   } catch (err) {
     console.error('Failed to rename session:', err)
   }
 }
 
-// (Re)generates an AI name. The new name arrives via the websocket state
-// update; failures surface as backend notice toasts.
-export async function aiNameSession(name: string, host?: string): Promise<void> {
+export async function killSession(ref: SessionRef, removeWorktree?: boolean): Promise<void> {
   try {
-    const res = await fetch('/api/session/regenerate-name', {
-      method: 'POST',
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ session: name, host: host || undefined }),
-    })
-    if (!res.ok && res.status !== 204) {
-      console.error('AI name failed:', res.status, await res.text().catch(() => ''))
-    }
-  } catch (err) {
-    console.error('Failed to AI name session:', err)
-  }
-}
-
-export async function killSession(id: string, name: string, host?: string, removeWorktree?: boolean): Promise<void> {
-  try {
-    await fetch('/api/session/kill', {
-      method: 'POST',
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ id, name, host: host || undefined, remove_worktree: removeWorktree || undefined }),
-    })
+    await client.sessionCommand(ref, { action: 'kill', remove_worktree: removeWorktree || undefined })
   } catch (err) {
     console.error('Failed to kill session:', err)
   }

@@ -2,22 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useHosts } from '../hooks/useHosts'
 import { usePreferences } from '../hooks/usePreferences'
 import { Schedule, ScheduleForm, useSchedules } from '../hooks/useSchedules'
-// Minimal local shape for the legacy /api/sessions + /api/session-attrs REST
-// endpoints this delete-flow still calls directly -- these predate the
-// canonical catalog and are unrelated to state/session/viewModel.ts.
-interface LegacyScheduleSession {
-  id: string
-  name: string
-  host?: string
-  scheduleID?: string
-  schedule_id?: string
-}
-function legacySessionKey(s: LegacyScheduleSession): string {
-  return s.host ? `${s.host}/${s.name}` : s.name
-}
-function legacyScheduleID(s: LegacyScheduleSession): string {
-  return s.scheduleID || s.schedule_id || ''
-}
+import type { SessionView } from '../state/session/viewModel'
+import type { SessionRef } from '../state/session/types'
 import { AgentMark } from './AgentMark'
 import { HostSelect } from './HostSelect'
 import { cn } from '../lib/utils'
@@ -26,6 +12,12 @@ import { formatRelativeTime, formatRunCount } from '../lib/time'
 
 interface Props {
   onClose: () => void
+  // Canonical session list (SessionApp's sessionViews) and kill command,
+  // routed through CommandClient.sessionCommand -- the legacy
+  // GET /api/sessions and POST /api/session/kill REST routes this
+  // delete-flow used to call directly were deleted server-side (Task 7).
+  sessions: SessionView[]
+  killSession: (ref: SessionRef) => Promise<void>
 }
 
 const agentPresets = [
@@ -61,7 +53,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (nex
   )
 }
 
-export function ScheduleModal({ onClose }: Props) {
+export function ScheduleModal({ onClose, sessions, killSession }: Props) {
   const { schedules, create, update, remove, runNow, refresh } = useSchedules()
   const { hosts } = useHosts()
   const { prefs } = usePreferences()
@@ -242,19 +234,18 @@ export function ScheduleModal({ onClose }: Props) {
   const deleteSchedule = async (schedule: Schedule) => {
     if (!confirm(`Delete schedule ${schedule.name}?`)) return
 
-    // Find the sessions this schedule spawned (attrs map is authoritative; the
-    // session field is the fallback). Offer to kill them along with the schedule.
-    let scheduleSessions: LegacyScheduleSession[] = []
+    // Find the sessions this schedule spawned (the /api/session-attrs
+    // schedule_ids map, keyed by SessionView.key, is authoritative). Offer to
+    // kill them along with the schedule. The session list itself comes from
+    // the canonical catalog (sessions prop) -- there is no more standalone
+    // GET /api/sessions REST route.
+    let scheduleSessions: SessionView[] = []
     try {
-      const [sessRes, attrsRes] = await Promise.all([
-        fetch('/api/sessions'),
-        fetch('/api/session-attrs'),
-      ])
-      const sessions: LegacyScheduleSession[] = sessRes.ok ? (await sessRes.json()) || [] : []
+      const attrsRes = await fetch('/api/session-attrs')
       const attrs = attrsRes.ok ? await attrsRes.json().catch(() => null) : null
       const scheduleIDs: Record<string, string> = attrs?.schedule_ids || {}
       scheduleSessions = sessions.filter(s => {
-        const sid = scheduleIDs[legacySessionKey(s)] || scheduleIDs[s.name] || legacyScheduleID(s)
+        const sid = scheduleIDs[s.key] || scheduleIDs[s.id]
         return sid === schedule.id
       })
     } catch {
@@ -268,13 +259,7 @@ export function ScheduleModal({ onClose }: Props) {
 
     setBusyId(schedule.id)
     if (killSessions) {
-      await Promise.all(scheduleSessions.map(s =>
-        fetch('/api/session/kill', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: s.id, name: s.name, host: s.host || undefined }),
-        }).catch(() => {}),
-      ))
+      await Promise.all(scheduleSessions.map(s => killSession(s.ref).catch(() => {})))
     }
     const err = await remove(schedule.id)
     setBusyId(null)
