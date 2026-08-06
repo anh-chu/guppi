@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { SessionStore, type SessionStoreState } from '../state/session/store'
 import { StateStreamClient } from '../state/session/stateStream'
 import { CommandClient, type SessionCommandAction, type WorkspaceCommandAction } from '../state/session/commands'
-import { paneNodeToPaneTree, sessionRefToKey } from '../state/session/paneTreeAdapter'
+import { paneNodeToPaneTree } from '../state/session/paneTreeAdapter'
 import { decodeBootstrapResponse } from '../state/session/wireCodec'
 import type { SessionRef, LayoutID, SplitDirection } from '../state/session/types'
 import type { CommandResult, BootstrapResponse } from '../state/session/wireTypes'
@@ -36,7 +36,6 @@ export type UseSessionStateResult = {
   // active layout the stream tracks. No groups/singleView: this path only
   // ever has one layout in view (see StateStreamHub's primaryLayout note).
   paneTree: PaneTree | null
-  activeKey: string | null
   layoutId: LayoutID | null
   // Convenience accessors for host snapshots
   hosts: HostSnapshot[]
@@ -225,10 +224,6 @@ export function useSessionState(): UseSessionStateResult {
     () => (state.workspace.record ? paneNodeToPaneTree(state.workspace.record.tree) : null),
     [state.workspace.record],
   )
-  const activeKey = useMemo(
-    () => (state.workspace.record?.active_key ? sessionRefToKey(state.workspace.record.active_key) : null),
-    [state.workspace.record],
-  )
   const layoutId = state.workspace.layoutId
 
   const hosts = state.hosts.hosts
@@ -239,7 +234,6 @@ export function useSessionState(): UseSessionStateResult {
     bootstrapped: state.catalogBootstrapped,
     connected: state.connectionOnline,
     paneTree,
-    activeKey,
     layoutId,
     hosts,
     selectHostByOwner: (owner: string) => selectHostByOwner(hostsState, owner),

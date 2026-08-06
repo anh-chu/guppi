@@ -46,7 +46,29 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
   // Normalized catalog + workspace state via useSessionState. Only one
   // layout exists (no groups/singleView).
   const sessionState = useSessionState()
-  const { state, paneTree, activeKey, layoutId } = sessionState
+  const { state, paneTree, layoutId } = sessionState
+
+  // Selection is browser-local only (schema 4 removed WorkspaceRecord's
+  // ActiveKey -- there is no durable server-side "selected pane"). This is
+  // the local source of truth for which leaf is active; it is updated
+  // directly by handleSessionSelect and TiledView's onActivate, never
+  // derived from server state.
+  const [localActiveKey, setLocalActiveKey] = useState<string | null>(null)
+  const firstLeafKey = useMemo(() => {
+    if (!paneTree) return null
+    const leaves = getLeaves(paneTree)
+    return leaves.length > 0 ? leaves[0] : null
+  }, [paneTree])
+  // Fall back to the first leaf whenever nothing has been explicitly picked
+  // yet, or the previously-picked leaf no longer exists (session closed/
+  // killed/backgrounded out of the tree).
+  const activeKey = useMemo(() => {
+    if (!paneTree) return null
+    if (localActiveKey && getLeaves(paneTree).includes(localActiveKey)) {
+      return localActiveKey
+    }
+    return firstLeafKey
+  }, [paneTree, localActiveKey, firstLeafKey])
 
   // Local navigation state. There is no workspace reducer, so the view mode
   // is tracked locally and kept in sync with the URL. It must NOT be derived
@@ -355,6 +377,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
       setRemotePaneKey(key)
     } else {
       setRemotePaneKey(null)
+      setLocalActiveKey(key)
     }
     setTimeout(refocusTerminal, 150)
   }
@@ -621,7 +644,7 @@ function SessionApp({ onLogout, authenticated }: { onLogout?: () => void; authen
               activeKey={remotePaneKey ?? activeKey}
               onActivate={(key) => {
                 // Selection is purely local in schema 4; no server command is sent.
-                // TiledView actively maintains activeKey through its own state.
+                setLocalActiveKey(key)
                 refocusTerminal()
               }}
               onClose={(key) => {
