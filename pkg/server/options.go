@@ -12,7 +12,6 @@ import (
 	"github.com/anh-chu/termyard/pkg/preferences"
 	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/scheduler"
-	"github.com/anh-chu/termyard/pkg/sessionlaunch"
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 	"github.com/anh-chu/termyard/pkg/webpush"
@@ -63,8 +62,7 @@ type Options struct {
 	FileReadReg    *peer.FileReadRegistry
 	LinkSupervisor *peer.LinkSupervisor
 
-	// Launch / registry / canonical state
-	Launch      *sessionlaunch.Service
+	// Registry / canonical state
 	DaemonReg   *pty.Registry
 	Hub         *ws.Hub
 	Catalog     *state.Catalog
@@ -120,8 +118,8 @@ func (o *Options) Validate() error {
 		}
 	}
 
-	if o.SchedulerStore != nil && o.Launch == nil {
-		errs = append(errs, errors.New("SchedulerStore configured but Launch is nil"))
+	if o.SchedulerStore != nil && o.SchedulerRunner == nil {
+		errs = append(errs, errors.New("SchedulerStore configured but SchedulerRunner is nil"))
 	}
 
 	if o.SchedulerRunner != nil && o.SchedulerStore == nil {

@@ -15,7 +15,7 @@ import (
 // CreateSessionReq reuses the session-spawn contract across HTTP and cron.
 type CreateSessionReq struct {
 	Name           string
-	Host           string
+	TargetOwner    state.OwnerID
 	Path           string
 	Command        string
 	AgentType      string
@@ -93,6 +93,22 @@ func (r *Runner) Run(ctx context.Context) {
 	}
 }
 
+// peerOnline reports whether a job's TargetOwner currently resolves to a
+// live peer connection. Local targets ('' or resolved local) are always
+// online. This is a liveness check only -- the resolved peer id is never
+// threaded into CreateSessionReq, which carries TargetOwner (an OwnerID);
+// only peer.Manager maps OwnerID to a connection, done at launch time.
+func (r *Runner) peerOnline(job Job) bool {
+	if job.TargetOwner == "" || r.peerMgr == nil {
+		return true
+	}
+	peerID, isLocal := r.peerMgr.ResolveHostParam(string(job.TargetOwner))
+	if isLocal {
+		return true
+	}
+	return peerID != "" && r.peerMgr.GetPeerConnection(peerID) != nil
+}
+
 func (r *Runner) runOnce(now time.Time) {
 	for _, job := range r.store.List() {
 		if !job.Enabled || job.CronSpec == "" {
@@ -114,30 +130,18 @@ func (r *Runner) runOnce(now time.Time) {
 			next = now.Add(time.Minute)
 		}
 
+		if !r.peerOnline(job) {
+			r.log.WithField("job_id", job.ID).WithField("target_owner", job.TargetOwner).Warn("scheduler peer offline, skipping fire")
+			job.NextRun = next
+			if _, updErr := r.store.Update(job); updErr != nil {
+				r.log.WithError(updErr).WithField("job_id", job.ID).Warn("scheduler next-run update failed")
+			}
+			continue
+		}
+
 		cmdID := ""
 		if r.Owner != "" {
 			cmdID = string(state.NewCommandIDFromSchedule(r.Owner, job.ID, now))
-		}
-
-		// targetPeerID is the resolved live peer connection id for a remote
-		// job's TargetOwner ('' and isLocal=true for a local job). Resolved
-		// once here and reused both for the offline-peer skip check and for
-		// CreateSessionReq.Host below, so both places agree on the exact same
-		// resolution.
-		targetPeerID := ""
-		if job.TargetOwner != "" && r.peerMgr != nil {
-			peerID, isLocal := r.peerMgr.ResolveHostParam(string(job.TargetOwner))
-			if !isLocal {
-				if peerID == "" || r.peerMgr.GetPeerConnection(peerID) == nil {
-					r.log.WithField("job_id", job.ID).WithField("target_owner", job.TargetOwner).Warn("scheduler peer offline, skipping fire")
-					job.NextRun = next
-					if _, updErr := r.store.Update(job); updErr != nil {
-						r.log.WithError(updErr).WithField("job_id", job.ID).Warn("scheduler next-run update failed")
-					}
-					continue
-				}
-				targetPeerID = peerID
-			}
 		}
 
 		name := job.SessionNamePrefix
@@ -149,7 +153,7 @@ func (r *Runner) runOnce(now time.Time) {
 		}
 		req := CreateSessionReq{
 			Name:           fmt.Sprintf("%s-%d", name, now.Unix()),
-			Host:           targetPeerID,
+			TargetOwner:    job.TargetOwner,
 			Path:           job.Path,
 			Command:        job.Command,
 			AgentType:      job.AgentType,
@@ -172,4 +176,54 @@ func (r *Runner) runOnce(now time.Time) {
 			r.log.WithError(err).WithField("job_id", job.ID).Warn("scheduler mark-ran failed")
 		}
 	}
+}
+
+// RunJobNow immediately fires the given job's session, bypassing its cron
+// schedule, and records the run. This is the sole path a manual "run now"
+// HTTP endpoint uses to trigger a job: it goes through the same createFn the
+// ticker uses, so no HTTP handler needs direct access to the launch service.
+func (r *Runner) RunJobNow(id string) (Job, error) {
+	if r == nil || r.store == nil || r.createFn == nil {
+		return Job{}, fmt.Errorf("scheduler not available")
+	}
+	job, ok := r.store.Get(id)
+	if !ok {
+		return Job{}, fmt.Errorf("job not found")
+	}
+
+	nowFn := r.nowFn
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn()
+
+	if job.MaxConcurrency > 0 && r.capFn != nil {
+		r.capFn(job)
+	}
+
+	name := job.SessionNamePrefix
+	if name == "" {
+		name = job.Name
+	}
+	if name == "" {
+		name = "schedule"
+	}
+	cmdID := ""
+	if r.Owner != "" {
+		cmdID = string(state.NewCommandIDFromSchedule(r.Owner, job.ID, now))
+	}
+	req := CreateSessionReq{
+		Name:           fmt.Sprintf("%s-%d", name, now.Unix()),
+		TargetOwner:    job.TargetOwner,
+		Path:           job.Path,
+		Command:        job.Command,
+		AgentType:      job.AgentType,
+		WorktreeBranch: job.WorktreeBranch,
+		ScheduleID:     job.ID,
+		CommandID:      cmdID,
+	}
+	if err := r.createFn(req); err != nil {
+		return Job{}, err
+	}
+	return r.store.MarkRan(job.ID, now, job.NextRun)
 }

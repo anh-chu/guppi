@@ -95,7 +95,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"GET /api/pty-benchmark",
 		"GET /api/push/vapid-key",
 		"GET /api/schedules",
-		"GET /api/sessions",
 		"GET /api/stats",
 		"GET /api/tool-events",
 		"GET /api/update",
@@ -126,12 +125,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"POST /api/push/unsubscribe",
 		"POST /api/schedules",
 		"POST /api/schedules/{id}/run",
-		"POST /api/session/display-name",
-		"POST /api/session/kill",
-		"POST /api/session/new",
-		"POST /api/session/regenerate-name",
-		"POST /api/session/rename",
-		"POST /api/session/select-window",
 		"POST /api/tool-event",
 		"POST /api/update/apply",
 		"POST /api/update/check",
@@ -184,14 +177,49 @@ func TestRouteTableSnapshot(t *testing.T) {
 		}
 	})
 
-	t.Run("protected sessions rejects anonymous", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/api/sessions")
+	t.Run("protected state session-commands rejects anonymous", func(t *testing.T) {
+		resp, err := http.Post(srv.URL+"/api/state/session-commands", "application/json", bytes.NewReader([]byte("{}")))
 		if err != nil {
-			t.Fatalf("get sessions: %v", err)
+			t.Fatalf("post state/session-commands: %v", err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusUnauthorized {
-			t.Errorf("sessions should require auth; got %d", resp.StatusCode)
+			t.Errorf("state/session-commands should require auth; got %d", resp.StatusCode)
+		}
+	})
+
+	// The old per-verb session routes were deleted in favor of the single
+	// canonical POST /api/state/session-commands lifecycle API (create/kill/
+	// rename/label all go through it as an action). They must return 404
+	// unconditionally, not merely reject for lack of auth, proving they are
+	// not registered at all.
+	t.Run("deleted duplicate session routes return 404", func(t *testing.T) {
+		deleted := []struct {
+			method string
+			path   string
+		}{
+			{http.MethodGet, "/api/sessions"},
+			{http.MethodPost, "/api/session/new"},
+			{http.MethodPost, "/api/session/display-name"},
+			{http.MethodPost, "/api/session/regenerate-name"},
+			{http.MethodPost, "/api/session/rename"},
+			{http.MethodPost, "/api/session/select-window"},
+			{http.MethodPost, "/api/session/kill"},
+		}
+		for _, d := range deleted {
+			req, err := http.NewRequest(d.method, srv.URL+d.path, bytes.NewReader([]byte("{}")))
+			if err != nil {
+				t.Fatalf("build request for %s %s: %v", d.method, d.path, err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s %s: %v", d.method, d.path, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("%s %s: got %d, want 404 (route must not be registered)", d.method, d.path, resp.StatusCode)
+			}
 		}
 	})
 }

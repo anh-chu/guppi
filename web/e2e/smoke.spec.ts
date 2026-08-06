@@ -146,6 +146,16 @@ async function installBackendStubs(
       })
     }
 
+    // NOTE(Task 7): the backend routes stubbed below (/api/sessions,
+    // /api/session/new, /api/session/kill, /api/session/display-name,
+    // /api/session/regenerate-name, /api/session/select-window) were deleted
+    // server-side in favor of the single canonical POST
+    // /api/state/session-commands lifecycle API, but web/src still calls the
+    // old paths (lib/sessionActions.ts, ScheduleModal.tsx) pending a frontend
+    // migration. Left intact here rather than removed so this suite keeps
+    // exercising the current (soon-to-be-replaced) frontend call sites; Task
+    // 8's full e2e rewrite is expected to migrate both the frontend calls and
+    // these stubs together.
     if (path === '/api/sessions') {
       return route.fulfill({
         status: 200,

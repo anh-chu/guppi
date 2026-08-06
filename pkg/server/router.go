@@ -23,9 +23,6 @@ func BuildRouter(ctx context.Context, opts *Options) (chi.Router, *ws.Hub, error
 	}
 
 	hub := setupHub(opts)
-	if opts.Launch != nil {
-		opts.Launch.Hub = opts.Hub
-	}
 
 	r := chi.NewRouter()
 	r.Use(chimiddleware.Recoverer)

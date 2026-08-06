@@ -176,3 +176,65 @@ func TestRunnerReconcileStartupNextRun(t *testing.T) {
 		t.Fatalf("next run not recomputed: %#v", updated.NextRun)
 	}
 }
+
+
+func TestRunJobNowFiresImmediatelyWithTargetOwner(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Unix(1_700_000_000, 0)
+	job, err := s.Add(Job{
+		Name:        "remote",
+		CronSpec:    "0 0 1 1 *", // far in the future; RunJobNow must bypass this
+		TargetOwner: state.OwnerID("owner-remote"),
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var got CreateSessionReq
+	r := &Runner{
+		store:   s,
+		peerMgr: stubPeers{},
+		createFn: func(req CreateSessionReq) error {
+			mu.Lock()
+			got = req
+			mu.Unlock()
+			return nil
+		},
+		log:   logrus.NewEntry(logrus.New()),
+		nowFn: func() time.Time { return now },
+	}
+
+	updated, err := r.RunJobNow(job.ID)
+	if err != nil {
+		t.Fatalf("RunJobNow: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Same canonical request field (TargetOwner) that the cron tick path
+	// uses in TestRunnerFiresDueJob/TestRunnerSkipsOfflinePeerAndAdvancesNextRun.
+	if got.TargetOwner != job.TargetOwner {
+		t.Fatalf("TargetOwner = %q, want %q", got.TargetOwner, job.TargetOwner)
+	}
+	if got.ScheduleID != job.ID {
+		t.Fatalf("schedule id = %q; want %q", got.ScheduleID, job.ID)
+	}
+	if updated.RunCount != 1 {
+		t.Fatalf("run count = %d, want 1", updated.RunCount)
+	}
+}
+
+func TestRunJobNowUnknownJobReturnsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	r := &Runner{
+		store:    s,
+		peerMgr:  stubPeers{},
+		createFn: func(req CreateSessionReq) error { return nil },
+		log:      logrus.NewEntry(logrus.New()),
+	}
+	if _, err := r.RunJobNow("does-not-exist"); err == nil {
+		t.Fatal("expected error for unknown job id")
+	}
+}

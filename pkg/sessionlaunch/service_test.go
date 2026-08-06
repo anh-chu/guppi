@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/anh-chu/termyard/pkg/state"
 )
@@ -55,30 +53,6 @@ func (f *fakeCommander) params(t *testing.T, i int) state.CreateParams {
 	return params
 }
 
-type fakeAttrs struct {
-	calls []struct{ key, scheduleID string }
-	attrs map[string]ScheduleAttr
-}
-
-func (f *fakeAttrs) SetScheduleID(key, scheduleID string) (ScheduleAttr, error) {
-	f.calls = append(f.calls, struct{ key, scheduleID string }{key, scheduleID})
-	attr := ScheduleAttr{ScheduleID: scheduleID, UpdatedAt: time.Now()}
-	if f.attrs == nil {
-		f.attrs = map[string]ScheduleAttr{}
-	}
-	f.attrs[key] = attr
-	return attr, nil
-}
-
-type fakeHub struct {
-	broadcasts []map[string]interface{}
-}
-
-func (f *fakeHub) BroadcastJSON(v interface{}) {
-	m, _ := v.(map[string]interface{})
-	f.broadcasts = append(f.broadcasts, m)
-}
-
 type fakeRemote struct {
 	called []Request
 	result Result
@@ -90,35 +64,14 @@ func (f *fakeRemote) Launch(ctx context.Context, req Request) (Result, error) {
 	return f.result, f.err
 }
 
-type fanoutSpy struct {
-	calls []struct {
-		key  string
-		attr ScheduleAttr
-	}
-}
-
-func (f *fanoutSpy) Fanout(key string, attr ScheduleAttr) {
-	f.calls = append(f.calls, struct {
-		key  string
-		attr ScheduleAttr
-	}{key, attr})
-}
-
-func newService() (*Service, *fakeCommander, *fakeAttrs, *fakeHub) {
+func newService() (*Service, *fakeCommander) {
 	c := &fakeCommander{}
-	a := &fakeAttrs{}
-	h := &fakeHub{}
-	s := &Service{
-		Commander: c,
-		Attrs:     a,
-		Hub:       h,
-		Refresh:   func() {},
-	}
-	return s, c, a, h
+	s := &Service{Commander: c}
+	return s, c
 }
 
 func TestCreateLocalSuccess(t *testing.T) {
-	s, c, a, h := newService()
+	s, c := newService()
 
 	res, err := s.Create(context.Background(), Request{Name: "foo", Path: "/tmp", Command: "bash", Cols: 100, Rows: 30})
 	if err != nil {
@@ -137,13 +90,10 @@ func TestCreateLocalSuccess(t *testing.T) {
 	if params.Name != "foo" || params.Shell != "bash" || params.Cwd != "/tmp" || params.Cols != 100 || params.Rows != 30 {
 		t.Fatalf("unexpected params: %+v", params)
 	}
-	if len(a.calls) != 0 || len(h.broadcasts) != 0 {
-		t.Fatalf("schedule metadata should not be written without schedule id")
-	}
 }
 
 func TestCreateGeneratesName(t *testing.T) {
-	s, c, _, _ := newService()
+	s, c := newService()
 
 	res, err := s.Create(context.Background(), Request{Command: "node server.js", Path: "/home/proj"})
 	if err != nil {
@@ -157,31 +107,12 @@ func TestCreateGeneratesName(t *testing.T) {
 	}
 }
 
-func TestCreateDeduplicatesName(t *testing.T) {
-	s, c, _, _ := newService()
-	s.Names = func(host string) []string {
-		return []string{"foo", "foo-2"}
-	}
-
-	res, err := s.Create(context.Background(), Request{Name: "foo"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if res.Name != "foo-3" {
-		t.Fatalf("name = %q", res.Name)
-	}
-	if c.params(t, 0).Name != "foo-3" {
-		t.Fatalf("commander created with %q", c.params(t, 0).Name)
-	}
-}
-
 func TestCreateRemoteSuccess(t *testing.T) {
-	s, c, a, h := newService()
+	s, c := newService()
 	remote := &fakeRemote{result: Result{Name: "foo"}}
-	s.Remote = remote.Launch
-	s.Fanout = (&fanoutSpy{}).Fanout
+	s.RemoteCreate = remote.Launch
 
-	res, err := s.Create(context.Background(), Request{Host: "peer-1", LocalHost: "local-fingerprint", Name: "foo", ScheduleID: "sched-1"})
+	res, err := s.Create(context.Background(), Request{TargetOwner: state.OwnerID("peer-1"), Name: "foo", ScheduleID: "sched-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,55 +125,12 @@ func TestCreateRemoteSuccess(t *testing.T) {
 	if len(remote.called) != 1 {
 		t.Fatalf("remote not called")
 	}
-	if len(a.calls) != 1 || a.calls[0].key != "peer-1/foo" || a.calls[0].scheduleID != "sched-1" {
-		t.Fatalf("unexpected attr calls: %+v", a.calls)
-	}
-	if len(h.broadcasts) != 1 || h.broadcasts[0]["key"] != "peer-1/foo" {
-		t.Fatalf("unexpected broadcasts: %+v", h.broadcasts)
-	}
-}
-
-// TestCreateRemotePrefersReliableRemoteOverFireAndForget proves the Finding-3 fix:
-// when a reliable remote-create path is wired (ReliableRemote set),
-// createRemote must always route through ReliableRemote and must never fall
-// back to the fire-and-forget Remote launcher, even though both are
-// configured on the Service.
-func TestCreateRemotePrefersReliableRemoteOverFireAndForget(t *testing.T) {
-	s, _, a, h := newService()
-	s.Fanout = (&fanoutSpy{}).Fanout
-
-	fireAndForgetRemote := &fakeRemote{result: Result{Name: "should-not-be-used"}}
-	s.Remote = fireAndForgetRemote.Launch
-
-	reliableRemote := &fakeRemote{result: Result{Name: "foo", Host: "peer-1"}}
-	s.ReliableRemote = reliableRemote.Launch
-
-	res, err := s.Create(context.Background(), Request{Host: "peer-1", LocalHost: "local-fingerprint", Name: "foo", ScheduleID: "sched-1"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !res.Remote {
-		t.Fatalf("expected remote result")
-	}
-	if len(fireAndForgetRemote.called) != 0 {
-		t.Fatalf("fire-and-forget Remote launcher must not be called when ReliableRemote is configured, got %d calls", len(fireAndForgetRemote.called))
-	}
-	if len(reliableRemote.called) != 1 {
-		t.Fatalf("expected exactly one ReliableRemote call, got %d", len(reliableRemote.called))
-	}
-	// Schedule-metadata fanout must still work through the reliable remote path.
-	if len(a.calls) != 1 || a.calls[0].key != "peer-1/foo" || a.calls[0].scheduleID != "sched-1" {
-		t.Fatalf("unexpected attr calls: %+v", a.calls)
-	}
-	if len(h.broadcasts) != 1 || h.broadcasts[0]["key"] != "peer-1/foo" {
-		t.Fatalf("unexpected broadcasts: %+v", h.broadcasts)
-	}
 }
 
 // TestCreateLocalCarriesAgentType proves AgentType flows into the
 // CreateParams command payload.
 func TestCreateLocalCarriesAgentType(t *testing.T) {
-	s, c, _, _ := newService()
+	s, c := newService()
 	c.displayName = "foo"
 
 	res, err := s.Create(context.Background(), Request{Name: "foo", AgentType: "claude"})
@@ -261,26 +149,24 @@ func TestCreateLocalCarriesAgentType(t *testing.T) {
 	}
 }
 
-func TestCreateLocalHostQualifiedRequestUsesLocalDaemon(t *testing.T) {
-	s, c, a, h := newService()
+// TestCreateLocalOwnerTargetUsesLocalDaemon proves a request whose
+// TargetOwner equals the Service's own LocalOwner is routed to Commander,
+// not RemoteCreate.
+func TestCreateLocalOwnerTargetUsesLocalDaemon(t *testing.T) {
+	s, c := newService()
+	s.LocalOwner = state.OwnerID("local-owner")
 
-	var namesHost string
-	s.Names = func(host string) []string {
-		namesHost = host
-		return nil
-	}
 	var remoteCalled int
-	s.Remote = func(ctx context.Context, req Request) (Result, error) {
+	s.RemoteCreate = func(ctx context.Context, req Request) (Result, error) {
 		remoteCalled++
-		t.Fatalf("remote launch should not be called for local host, got req=%+v", req)
+		t.Fatalf("remote launch should not be called for local owner target, got req=%+v", req)
 		return Result{}, nil
 	}
 
 	res, err := s.Create(context.Background(), Request{
-		Name:       "shell",
-		Host:       "local-fingerprint",
-		LocalHost:  "local-fingerprint",
-		ScheduleID: "sched-1",
+		Name:        "shell",
+		TargetOwner: state.OwnerID("local-owner"),
+		ScheduleID:  "sched-1",
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -297,84 +183,33 @@ func TestCreateLocalHostQualifiedRequestUsesLocalDaemon(t *testing.T) {
 	if res.Remote {
 		t.Fatalf("expected local result")
 	}
-	if res.Host != "" {
-		t.Fatalf("result.Host = %q, want empty", res.Host)
-	}
-	if namesHost != "" {
-		t.Fatalf("Names called with %q, want empty host", namesHost)
-	}
-	wantKey := "local-fingerprint/" + res.Name
-	if len(a.calls) != 1 || a.calls[0].key != wantKey || a.calls[0].scheduleID != "sched-1" {
-		t.Fatalf("unexpected attr calls: %+v", a.calls)
-	}
-	if len(h.broadcasts) != 1 || h.broadcasts[0]["key"] != wantKey {
-		t.Fatalf("unexpected broadcasts: %+v", h.broadcasts)
+	if res.TargetOwner != "" {
+		t.Fatalf("expected empty TargetOwner on local result, got %q", res.TargetOwner)
 	}
 }
 
 func TestCreateRemoteUnavailable(t *testing.T) {
-	s, _, _, _ := newService()
+	s, _ := newService()
 
-	_, err := s.Create(context.Background(), Request{Host: "peer-1", Name: "foo"})
+	_, err := s.Create(context.Background(), Request{TargetOwner: state.OwnerID("peer-1"), Name: "foo"})
 	if !errors.Is(err, ErrPeerUnavailable) {
 		t.Fatalf("expected ErrPeerUnavailable, got %v", err)
 	}
 }
 
 func TestCreateRemoteQueueFull(t *testing.T) {
-	s, _, _, _ := newService()
+	s, _ := newService()
 	remote := &fakeRemote{err: ErrPeerQueueFull}
-	s.Remote = remote.Launch
+	s.RemoteCreate = remote.Launch
 
-	_, err := s.Create(context.Background(), Request{Host: "peer-1", Name: "foo"})
+	_, err := s.Create(context.Background(), Request{TargetOwner: state.OwnerID("peer-1"), Name: "foo"})
 	if !errors.Is(err, ErrPeerQueueFull) {
 		t.Fatalf("expected ErrPeerQueueFull, got %v", err)
 	}
 }
 
-func TestCreateScheduleMetadataLocalHost(t *testing.T) {
-	s, _, a, h := newService()
-
-	_, err := s.Create(context.Background(), Request{Name: "foo", ScheduleID: "sched-1", LocalHost: "host1"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(a.calls) != 1 || a.calls[0].key != "host1/foo" {
-		t.Fatalf("attr key = %q", a.calls[0].key)
-	}
-	if len(h.broadcasts) != 1 || h.broadcasts[0]["key"] != "host1/foo" {
-		t.Fatalf("broadcast key = %v", h.broadcasts)
-	}
-}
-
-func TestCreateScheduleMetadataBareKey(t *testing.T) {
-	s, _, a, _ := newService()
-
-	_, err := s.Create(context.Background(), Request{Name: "foo", ScheduleID: "sched-1"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if a.calls[0].key != "foo" {
-		t.Fatalf("attr key = %q", a.calls[0].key)
-	}
-}
-
-func TestCreateRefreshOnce(t *testing.T) {
-	s, _, _, _ := newService()
-	var refreshCount int
-	s.Refresh = func() { refreshCount++ }
-
-	_, err := s.Create(context.Background(), Request{Name: "foo"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if refreshCount != 1 {
-		t.Fatalf("refreshCount = %d", refreshCount)
-	}
-}
-
 func TestCreateInvalidInput(t *testing.T) {
-	s, _, _, _ := newService()
+	s, _ := newService()
 
 	_, err := s.Create(context.Background(), Request{})
 	if !errors.Is(err, ErrInvalidInput) {
@@ -387,34 +222,15 @@ func TestCreateInvalidInput(t *testing.T) {
 	}
 }
 
-// TestCreateNoPartialMetadataOnSpawnFailure proves that when the Commander
-// fails to create the session, no schedule metadata is written and the
-// underlying error propagates unwrapped.
-func TestCreateNoPartialMetadataOnSpawnFailure(t *testing.T) {
-	s, c, a, h := newService()
+// TestCreatePropagatesSpawnFailure proves that when the Commander fails to
+// create the session, the underlying error propagates unwrapped.
+func TestCreatePropagatesSpawnFailure(t *testing.T) {
+	s, c := newService()
 	sentinel := errors.New("boom")
 	c.err = sentinel
 
 	_, err := s.Create(context.Background(), Request{Name: "foo", ScheduleID: "sched-1"})
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
-	}
-	if len(a.calls) != 0 || len(h.broadcasts) != 0 {
-		t.Fatalf("metadata should not be written on create failure")
-	}
-}
-
-func TestResolveNameUsesFallback(t *testing.T) {
-	s, c, _, _ := newService()
-
-	res, err := s.Create(context.Background(), Request{Fallback: "fallback-123"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.HasPrefix(res.Name, "fallback-") {
-		t.Fatalf("name = %q", res.Name)
-	}
-	if c.params(t, 0).Name != res.Name {
-		t.Fatalf("commander name = %q", c.params(t, 0).Name)
 	}
 }

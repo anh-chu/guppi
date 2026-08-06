@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -119,50 +118,19 @@ func registerSchedulerRoutes(r chi.Router, opts *Options) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	r.Post("/schedules/{id}/run", func(w http.ResponseWriter, r *http.Request) {
-		if opts.SchedulerStore == nil || opts.SchedulerRunner == nil || opts.Launch == nil {
+		if opts.SchedulerStore == nil || opts.SchedulerRunner == nil {
 			http.Error(w, "scheduler not available", http.StatusServiceUnavailable)
 			return
 		}
 		id := chi.URLParam(r, "id")
-		job, ok := opts.SchedulerStore.Get(id)
-		if !ok {
-			http.Error(w, "job not found", http.StatusNotFound)
-			return
-		}
-		name := job.SessionNamePrefix
-		if name == "" {
-			name = job.Name
-		}
-		if name == "" {
-			name = "schedule"
-		}
-		name = name + "-" + strconv.FormatInt(time.Now().Unix(), 10)
-		if job.MaxConcurrency > 0 {
-			EnforceScheduleCap(opts, job.ID, job.MaxConcurrency-1)
-		}
-		// job.TargetOwner is an OwnerID (or, on a legacy-only node, a raw peer
-		// fingerprint -- see Job.TargetOwner's doc); sessionlaunch.Request.Host
-		// must carry a peer transport fingerprint (or "" for local), so resolve
-		// through the same ResolveHostParam accessor every other v2/legacy host
-		// param goes through (see routes_sessions.go's identical pattern).
-		targetHost := ""
-		if job.TargetOwner != "" && opts.PeerMgr != nil {
-			resolvedPeerID, isLocal := opts.PeerMgr.ResolveHostParam(string(job.TargetOwner))
-			if !isLocal {
-				targetHost = resolvedPeerID
-			}
-		}
-		res, err := opts.Launch.Create(r.Context(), sessionlaunch.Request{
-			Name:           name,
-			Host:           targetHost,
-			Path:           job.Path,
-			Command:        job.Command,
-			AgentType:      job.AgentType,
-			WorktreeBranch: job.WorktreeBranch,
-			ScheduleID:     job.ID,
-		})
+		// RunJobNow goes through the same createFn the scheduler ticker uses
+		// (constructed once in the runtime, wrapping launchSvc.Create); no
+		// HTTP handler holds a reference to the launch service itself.
+		updated, err := opts.SchedulerRunner.RunJobNow(id)
 		if err != nil {
 			switch {
+			case strings.Contains(err.Error(), "not found"):
+				http.Error(w, err.Error(), http.StatusNotFound)
 			case errors.Is(err, sessionlaunch.ErrPeerUnavailable), errors.Is(err, sessionlaunch.ErrPeerQueueFull):
 				http.Error(w, err.Error(), http.StatusBadGateway)
 			default:
@@ -170,13 +138,6 @@ func registerSchedulerRoutes(r chi.Router, opts *Options) {
 			}
 			return
 		}
-		_ = res
-		nextRun := job.NextRun
-		if _, err := opts.SchedulerStore.MarkRan(job.ID, time.Now(), nextRun); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		updated, _ := opts.SchedulerStore.Get(job.ID)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(updated)
 	})

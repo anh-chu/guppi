@@ -219,10 +219,11 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	rt.silenceMonitor.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.reconciler.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 
-	// Remote launcher: routes through RemoteCreateCoordinator on the remote
-	// owner via the reliable command RPC (pkg/peer's
-	// Manager.SendRemoteCreate), which blocks for a genuine ack/nack instead
-	// of merely enqueuing a frame. This is the only remote-create path.
+	// Remote launcher: routes through peer.Manager.RequestRemoteCreate, which
+	// maps a target OwnerID to its live peer connection internally (the only
+	// place that mapping happens) and blocks for a genuine ack/nack over the
+	// reliable command RPC instead of merely enqueuing a frame. This is the
+	// only remote-create path; there is no fire-and-forget fallback.
 	remoteLauncher := func(ctx context.Context, req sessionlaunch.Request) (sessionlaunch.Result, error) {
 		cmdID := state.CommandID(req.CommandID)
 		if cmdID == "" {
@@ -240,40 +241,16 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 			AgentType:      req.AgentType,
 			ScheduleID:     req.ScheduleID,
 		}
-		res, err := rt.peerMgr.SendRemoteCreate(ctx, req.Host, rreq)
+		res, err := rt.peerMgr.RequestRemoteCreate(ctx, req.TargetOwner, rreq)
 		if err != nil {
 			return sessionlaunch.Result{}, err
 		}
-		return sessionlaunch.Result{Name: res.DisplayName, Host: req.Host, Path: res.Path, Remote: true}, nil
+		return sessionlaunch.Result{Name: res.DisplayName, TargetOwner: req.TargetOwner, Path: res.Path, Remote: true}, nil
 	}
 
 	launchSvc := &sessionlaunch.Service{
-		Identity:       nodeIdentity,
-		Refresh:        rt.refreshSessionsFunc,
-		ReliableRemote: remoteLauncher,
-		Names: func(host string) []string {
-			if host != "" && rt.peerMgr != nil && !rt.peerMgr.IsLocal(host) {
-				snap, ok := rt.peerMgr.RemoteCatalogSnapshot(state.OwnerIDFromFingerprint(host))
-				if !ok {
-					return nil
-				}
-				names := make([]string, 0, len(snap.Sessions))
-				for _, rec := range snap.Sessions {
-					if rec.Name != "" {
-						names = append(names, rec.Name)
-					}
-				}
-				return names
-			}
-			recs := rt.catalog.Sessions()
-			names := make([]string, 0, len(recs))
-			for _, rec := range recs {
-				if rec.Name != "" {
-					names = append(names, rec.Name)
-				}
-			}
-			return names
-		},
+		LocalOwner:   rt.catalog.Owner(),
+		RemoteCreate: remoteLauncher,
 	}
 
 	streamReg := peer.NewStreamRegistry()
@@ -353,7 +330,6 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		SchedulerStore:   schedulerStore,
 		WikiLite:         rt.wikiSup,
 		DaemonReg:        rt.daemonReg,
-		Launch:           launchSvc,
 		CWDResolver:      rt.adapter,
 		RefreshSessions:  rt.refreshSessionsFunc,
 		OnDaemonOutput: func(paneID string) {
@@ -362,14 +338,13 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		OnPrefsChanged: applyNamerFromPrefs,
 		Hub:            rt.hub,
 	}
-	launchSvc.Hub = rt.hub
 	launchSvc.Commander = rt.commandSvc
 
 	if schedulerStore != nil {
 		rt.schedulerRunner = scheduler.NewRunner(schedulerStore, rt.peerMgr, func(req scheduler.CreateSessionReq) error {
 			_, err := launchSvc.Create(rt.ctx, sessionlaunch.Request{
 				Name:           req.Name,
-				Host:           req.Host,
+				TargetOwner:    req.TargetOwner,
 				Path:           req.Path,
 				Command:        req.Command,
 				AgentType:      req.AgentType,

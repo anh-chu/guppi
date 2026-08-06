@@ -8,9 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
-
-	"github.com/sirupsen/logrus"
 
 	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/state"
@@ -29,14 +26,12 @@ var (
 // Request carries everything needed to launch one session.
 type Request struct {
 	Name           string
-	Host           string // empty, the current node ID, or a remote target host ID
+	TargetOwner    state.OwnerID // empty means the local node
 	Path           string
 	Command        string
 	AgentType      string
 	WorktreeBranch string
 	ScheduleID     string
-	LocalHost      string // the current node ID, used both for target classification (local vs remote) and for local schedule-metadata key construction
-	Fallback       string // used only for local requests when a name cannot be derived
 	CommandID      string // stable command id for state commands (optional)
 
 	Cols uint16
@@ -45,83 +40,34 @@ type Request struct {
 
 // Result reports the session that was launched.
 type Result struct {
-	Name   string
-	Host   string
-	Path   string
-	Remote bool
+	Name        string
+	TargetOwner state.OwnerID
+	Path        string
+	Remote      bool
 }
-
-// ScheduleAttr is the metadata snapshot the launch service stores and fans out.
-type ScheduleAttr struct {
-	Background bool
-	Hidden     bool
-	ScheduleID string
-	UpdatedAt  time.Time
-}
-
-// AttrStoreFunc lets callers satisfy ScheduleAttrStore with a plain function.
-type AttrStoreFunc func(key, scheduleID string) (ScheduleAttr, error)
-
-// SetScheduleID implements ScheduleAttrStore.
-func (f AttrStoreFunc) SetScheduleID(key, scheduleID string) (ScheduleAttr, error) {
-	return f(key, scheduleID)
-}
-
-// ScheduleAttrStore records schedule ownership for a session key.
-type ScheduleAttrStore interface {
-	SetScheduleID(key, scheduleID string) (ScheduleAttr, error)
-}
-
-// BrowserHub pushes lightweight JSON notifications to browsers.
-type BrowserHub interface {
-	BroadcastJSON(v interface{})
-}
-
-// Identity provides the local host fingerprint for peer fan-out.
-type Identity interface {
-	Fingerprint() string
-}
-
-// RemoteLauncher dispatches a launch for a non-local host. A nil launcher
-// means remote launching is unavailable.
-type RemoteLauncher func(ctx context.Context, req Request) (Result, error)
-
-// PeerFanout broadcasts a single-key schedule-attribute delta to other peers.
-// nil skips fan-out.
-type PeerFanout func(key string, attr ScheduleAttr)
-
-// ExistingNames returns the current session names for a host. An empty host
-// means the local node. nil is treated as "no existing sessions".
-type ExistingNames func(host string) []string
-
-// RefreshFunc triggers a state refresh so browsers see the new session.
-// nil skips the refresh.
-type RefreshFunc func()
 
 // Commander executes state commands against the canonical catalog.
 type Commander interface {
 	ExecuteSessionCommand(ctx context.Context, cmd state.SessionCommand) (state.CommandResult, error)
 }
 
-// Service is the sole owner of session launch semantics.
-type Service struct {
-	Attrs     ScheduleAttrStore
-	Hub       BrowserHub
-	Identity  Identity
-	Remote    RemoteLauncher
-	Fanout    PeerFanout
-	Names     ExistingNames
-	Refresh   RefreshFunc
-	Commander Commander // required: all session creation is routed through the canonical state commander
+// RemoteLauncher dispatches a launch for a non-local owner via the reliable
+// remote-create path (pkg/state.RemoteCreateCoordinator, peer.Manager's
+// OwnerID-routed RequestRemoteCreate). A nil launcher means remote launching
+// is unavailable; requesting a remote target with a nil RemoteLauncher is an
+// explicit error, never a silent local fallback.
+type RemoteLauncher func(ctx context.Context, req Request) (Result, error)
 
-	// ReliableRemote dispatches a remote-host create through the
-	// remote-create coordinator + command RPC (pkg/state.RemoteCreateCoordinator,
-	// pkg/peer's Manager.SendRemoteCreate), instead of the fire-and-forget
-	// Remote path. When ReliableRemote is set, createRemote prefers it
-	// unconditionally, since Remote's fire-and-forget delivery cannot confirm
-	// the remote session was actually created. nil falls back to the
-	// fire-and-forget Remote path for any remote target.
-	ReliableRemote RemoteLauncher
+// Service is the sole owner of session launch semantics. A local target
+// (TargetOwner == "" or TargetOwner == LocalOwner) is routed through
+// Commander; any other target is routed through RemoteCreate. There is no
+// other path: no browser fan-out, no client-side uniqueness checking, and no
+// fire-and-forget delivery -- SessionCommandService is the sole authority
+// for unique naming, and RemoteCreate is required for any remote target.
+type Service struct {
+	LocalOwner   state.OwnerID
+	Commander    Commander
+	RemoteCreate RemoteLauncher
 }
 
 // Create validates, resolves, and launches one session. Panics if Commander
@@ -135,16 +81,15 @@ func (s *Service) Create(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	if req.Host != "" && req.Host != req.LocalHost {
+	if req.TargetOwner != "" && req.TargetOwner != s.LocalOwner {
 		return s.createRemote(ctx, req)
 	}
-	req.Host = ""
+	req.TargetOwner = ""
 	return s.createLocal(ctx, req)
 }
 
 func (s *Service) normalize(req Request) Request {
 	req.Name = strings.TrimSpace(req.Name)
-	req.Host = strings.TrimSpace(req.Host)
 	req.Path = strings.TrimSpace(req.Path)
 	req.Command = strings.TrimSpace(req.Command)
 	req.AgentType = strings.TrimSpace(req.AgentType)
@@ -158,9 +103,6 @@ func (s *Service) validate(req Request) error {
 		name = defaultSessionName(req.Command, req.Path)
 	}
 	if name == "" {
-		name = strings.TrimSpace(req.Fallback)
-	}
-	if name == "" {
 		return fmt.Errorf("%w: name or path is required", ErrInvalidInput)
 	}
 	if err := model.ValidateSessionName(name); err != nil {
@@ -171,53 +113,15 @@ func (s *Service) validate(req Request) error {
 
 func (s *Service) createRemote(ctx context.Context, req Request) (Result, error) {
 	req.Name = s.resolveName(req)
-
-	// The fire-and-forget RemoteLauncher (Remote) reports success once the
-	// frame is merely enqueued on the peer connection, not once the remote
-	// session genuinely exists. When a reliable remote-create path is wired
-	// (ReliableRemote != nil), always prefer it for any non-local target.
-	if s.ReliableRemote != nil {
-		res, err := s.ReliableRemote(ctx, req)
-		if err != nil {
-			return Result{}, err
-		}
-		res.Remote = true
-		s.applyRemoteScheduleAttr(req, res)
-		return res, nil
+	if s.RemoteCreate == nil {
+		return Result{}, fmt.Errorf("%w: %s", ErrPeerUnavailable, req.TargetOwner)
 	}
-
-	if s.Remote == nil {
-		return Result{}, fmt.Errorf("%w: %s", ErrPeerUnavailable, req.Host)
-	}
-
-	res, err := s.Remote(ctx, req)
+	res, err := s.RemoteCreate(ctx, req)
 	if err != nil {
 		return Result{}, err
 	}
 	res.Remote = true
-	s.applyRemoteScheduleAttr(req, res)
 	return res, nil
-}
-
-// applyRemoteScheduleAttr records and fans out schedule ownership for a
-// remotely-created session. Shared by both the fire-and-forget and reliable
-// remote-create paths.
-func (s *Service) applyRemoteScheduleAttr(req Request, res Result) {
-	if s.Attrs == nil || req.ScheduleID == "" {
-		return
-	}
-	key := sessionKey(req.Host, res.Name)
-	attr, err := s.Attrs.SetScheduleID(key, req.ScheduleID)
-	if err != nil {
-		logrus.WithError(err).Warn("failed to store schedule id for remote session")
-		return
-	}
-	if s.Fanout != nil {
-		s.Fanout(key, attr)
-	}
-	if s.Hub != nil {
-		s.Hub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": key})
-	}
 }
 
 func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) {
@@ -249,47 +153,16 @@ func (s *Service) createLocalViaCommander(ctx context.Context, req Request) (Res
 	if err != nil {
 		return Result{}, err
 	}
-	if s.Attrs != nil && req.ScheduleID != "" {
-		key := sessionKey(req.LocalHost, res.DisplayName)
-		attr, err := s.Attrs.SetScheduleID(key, req.ScheduleID)
-		if err != nil {
-			logrus.WithError(err).Warn("failed to store schedule id")
-		} else {
-			if s.Fanout != nil {
-				s.Fanout(key, attr)
-			}
-			if s.Hub != nil {
-				s.Hub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": key})
-			}
-		}
-	}
-	if s.Refresh != nil {
-		s.Refresh()
-	}
-	return Result{Name: res.DisplayName, Host: req.Host, Path: res.Path}, nil
+	return Result{Name: res.DisplayName, Path: res.Path}, nil
 }
 
+// resolveName fills in a default name (derived from command/path) when the
+// caller didn't supply one. Uniqueness is not checked here: the canonical
+// command service (Commander) is the sole authority for unique naming.
 func (s *Service) resolveName(req Request) string {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		name = defaultSessionName(req.Command, req.Path)
-	}
-	if name == "" {
-		name = strings.TrimSpace(req.Fallback)
-	}
-	if name == "" {
-		return ""
-	}
-	existing := []string(nil)
-	if s.Names != nil {
-		existing = s.Names(req.Host)
-	}
-	return ensureUniqueSessionName(name, existing)
-}
-
-func sessionKey(host, name string) string {
-	if host != "" {
-		return host + "/" + name
 	}
 	return name
 }
@@ -319,32 +192,6 @@ func defaultSessionName(command, projectPath string) string {
 	}
 
 	return sanitizeSessionSegment(base) + "-" + projectBase
-}
-
-func ensureUniqueSessionName(name string, existing []string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return ""
-	}
-
-	used := make(map[string]struct{}, len(existing))
-	for _, candidate := range existing {
-		candidate = strings.TrimSpace(candidate)
-		if candidate != "" {
-			used[candidate] = struct{}{}
-		}
-	}
-
-	if _, exists := used[name]; !exists {
-		return name
-	}
-
-	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", name, i)
-		if _, exists := used[candidate]; !exists {
-			return candidate
-		}
-	}
 }
 
 func sanitizeSessionSegment(value string) string {
