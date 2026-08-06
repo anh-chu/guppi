@@ -27,6 +27,7 @@ vi.mock('../lib/artifactPreview', () => ({
 vi.mock('../lib/pip', () => ({
   popOut: vi.fn(),
   pipUnavailableReason: vi.fn(() => null),
+  transferNode: vi.fn((node, dest) => ({ crossedDocument: false })),
 }))
 
 // ── Helpers ──────────────────────────────────────────────────────────

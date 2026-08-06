@@ -80,13 +80,10 @@ func (s *Store) SaveRemoteCatalogs(entries []RemoteCatalogCacheEntry) error {
 func cloneOwnerCatalogSnapshot(c OwnerCatalogSnapshot) OwnerCatalogSnapshot {
 	sessions := make([]LocalSessionRecord, len(c.Sessions))
 	copy(sessions, c.Sessions)
-	layouts := make([]LayoutRecord, len(c.Layouts))
-	copy(layouts, c.Layouts)
 	return OwnerCatalogSnapshot{
 		Owner:    c.Owner,
 		Revision: c.Revision,
 		Sessions: sessions,
-		Layouts:  layouts,
 	}
 }
 

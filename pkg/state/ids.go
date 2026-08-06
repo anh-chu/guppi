@@ -17,7 +17,6 @@ import (
 const (
 	KindOwner   = "owner"
 	KindSession = "session"
-	KindLayout  = "layout"
 	KindSplit   = "split"
 	KindCommand = "command"
 )
@@ -38,9 +37,6 @@ type OwnerID string
 // session is renamed, so identity stays stable while display labels stay mutable.
 type SessionID string
 
-// LayoutID identifies a saved workspace layout.
-type LayoutID string
-
 // SplitID identifies a split node inside a pane tree.
 type SplitID string
 
@@ -49,7 +45,6 @@ type CommandID string
 
 func NewOwnerID() OwnerID     { return OwnerID(newID()) }
 func NewSessionID() SessionID { return SessionID(newID()) }
-func NewLayoutID() LayoutID   { return LayoutID(newID()) }
 func NewSplitID() SplitID     { return SplitID(newID()) }
 func NewCommandID() CommandID { return CommandID(newID()) }
 
@@ -95,13 +90,11 @@ func OwnerIDFromFingerprint(fingerprint string) OwnerID {
 
 func (id OwnerID) String() string   { return string(id) }
 func (id SessionID) String() string { return string(id) }
-func (id LayoutID) String() string  { return string(id) }
 func (id SplitID) String() string   { return string(id) }
 func (id CommandID) String() string { return string(id) }
 
 func (id OwnerID) Validate() error   { return validateID(string(id), KindOwner) }
 func (id SessionID) Validate() error { return validateID(string(id), KindSession) }
-func (id LayoutID) Validate() error  { return validateID(string(id), KindLayout) }
 func (id SplitID) Validate() error   { return validateID(string(id), KindSplit) }
 func (id CommandID) Validate() error { return validateID(string(id), KindCommand) }
 

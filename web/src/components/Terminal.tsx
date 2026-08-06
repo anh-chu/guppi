@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { useTerminal } from '../hooks/useTerminal'
 import { usePreferences } from '../hooks/usePreferences'
 import { useArtifacts } from '../hooks/useArtifacts'
+import { terminalPool } from '../lib/terminalPool'
 import { UploadStatus } from './UploadStatus'
 import { cn } from '../lib/utils'
 import { popOut, pipUnavailableReason } from '../lib/pip'
@@ -59,7 +60,6 @@ export function Terminal({ sessionName, hostId, backend, sessionId, ownerId, gen
     clearAltModifier,
     selectionMenu,
     setSelectionMenu,
-    reconfigure,
   } = useTerminal(sessionName, hostId, backend, sessionId, ownerId, generation)
 
   const {
@@ -211,14 +211,17 @@ export function Terminal({ sessionName, hostId, backend, sessionId, ownerId, gen
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionName, hostId, backend, sessionId, ownerId, generation])
 
-  // Reconfigure the live terminal when renderer, grapheme, or predictive-echo
-  // prefs change, without tearing down the WebSocket connection.
+  // Apply theme/font/scrollback preference changes to all open terminals
+  // without tearing down the WebSocket connection.
   useEffect(() => {
     if (!prefs) return
-    reconfigure(prefs.terminal.renderer, prefs.terminal.unicode_graphemes, prefs.terminal.predictive_echo)
-  }, [prefs.terminal.renderer, prefs.terminal.unicode_graphemes, prefs.terminal.predictive_echo,
-      prefs.terminal.scrollback, prefs.terminal.font_size, prefs.terminal.font_family,
-      prefs.theme, reconfigure])
+    terminalPool.applyGlobalPrefs({
+      theme: prefs.theme,
+      fontFamily: prefs.terminal.font_family,
+      fontSize: prefs.terminal.font_size,
+      scrollback: prefs.terminal.scrollback,
+    })
+  }, [prefs.terminal.scrollback, prefs.terminal.font_size, prefs.terminal.font_family, prefs.theme])
 
   // Auto-focus on mount only for the active pane — the inactive pane's
   // auto-focus would steal focus from the intended target.

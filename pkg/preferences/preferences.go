@@ -10,12 +10,9 @@ import (
 )
 
 type Terminal struct {
-	FontSize         int    `json:"font_size"`
-	FontFamily       string `json:"font_family"`
-	Scrollback       int    `json:"scrollback"`
-	Renderer         string `json:"renderer"`
-	UnicodeGraphemes bool   `json:"unicode_graphemes"`
-	PredictiveEcho   bool   `json:"predictive_echo"`
+	FontSize   int    `json:"font_size"`
+	FontFamily string `json:"font_family"`
+	Scrollback int    `json:"scrollback"`
 }
 
 type Sidebar struct {
@@ -68,12 +65,9 @@ type Preferences struct {
 func Default() *Preferences {
 	return &Preferences{
 		Terminal: Terminal{
-			FontSize:         13,
-			FontFamily:       "Space Mono",
-			Scrollback:       5000,
-			Renderer:         "dom",
-			UnicodeGraphemes: false,
-			PredictiveEcho:   false,
+			FontSize:   13,
+			FontFamily: "Space Mono",
+			Scrollback: 5000,
 		},
 		Theme: "dark",
 		Sidebar: Sidebar{

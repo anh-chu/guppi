@@ -263,9 +263,6 @@ export interface TerminalPrefs {
   fontFamily: string
   fontSize: number
   scrollback: number
-  renderer: string
-  unicodeGraphemes: boolean
-  predictiveEcho: boolean
 }
 
 /** Identity for a pool entry. */
@@ -336,9 +333,7 @@ interface PoolEntry {
   webglAddon: WebglAddon | null
   imageAddon: ImageAddon | null
   graphemesAddon: UnicodeGraphemesAddon | null
-  graphemesLoaded: boolean
   predictiveEcho: PredictiveEcho | null
-  predictiveEchoEnabled: boolean
 
   // Delegates
   connection: ConnectionMachine
@@ -506,6 +501,20 @@ export class TerminalPool {
     }
     try { term.open(container) } catch { /* ignored */ }
     neutralizeXtermScrollbarFallback(term)
+
+    // Attempt WebGL initialization exactly once after term.open()
+    if (!entry.webglAddon) {
+      const wa = this.factory.createWebglAddon()
+      if (wa) {
+        wa.onContextLoss(() => {
+          // On context loss: dispose only WebGL, do not retry in loop
+          wa.dispose()
+          entry.webglAddon = null
+        })
+        try { term.loadAddon(wa) } catch { /* ignored */ }
+        entry.webglAddon = wa as WebglAddon
+      }
+    }
 
     entry.activeContainer = container
 
@@ -695,7 +704,7 @@ export class TerminalPool {
 
   // ── public API: preferences ─────────────────────────────────────────
 
-  /** Reconcile entry against current prefs (idempotent). Call on checkout. */
+  /** Reconcile entry theme and font against current prefs (idempotent). Call on checkout. */
   reconcilePrefs(entry: PoolEntry, prefs: TerminalPrefs): void {
     // Theme
     const xtermTheme = getXtermTheme(prefs.theme)
@@ -707,45 +716,6 @@ export class TerminalPool {
     entry.terminal.options.fontSize = prefs.fontSize
     entry.terminal.options.fontFamily = fontFamily
     measureXtermCharSize(entry.terminal)
-
-    // Renderer
-    if (prefs.renderer === 'webgl' && !entry.webglAddon) {
-      const wa = this.factory.createWebglAddon()
-      if (wa) {
-        wa.onContextLoss(() => {
-          wa.dispose()
-          entry.webglAddon = null
-        })
-        try { entry.terminal.loadAddon(wa) } catch { /* ignored */ }
-        entry.webglAddon = wa as WebglAddon
-      }
-    } else if (prefs.renderer === 'dom' && entry.webglAddon) {
-      entry.webglAddon.dispose()
-      entry.webglAddon = null
-    }
-
-    // Unicode graphemes
-    if (prefs.unicodeGraphemes && !entry.graphemesLoaded) {
-      const ga = this.factory.createUnicodeGraphemesAddon()
-      if (ga) {
-        try { entry.terminal.loadAddon(ga) } catch { /* ignored */ }
-        entry.graphemesAddon = ga as UnicodeGraphemesAddon
-        entry.graphemesLoaded = true
-      }
-    } else if (!prefs.unicodeGraphemes && entry.graphemesAddon) {
-      entry.graphemesAddon.dispose()
-      entry.graphemesAddon = null
-      entry.graphemesLoaded = false
-    }
-
-    // Predictive echo
-    if (prefs.predictiveEcho && !entry.predictiveEcho) {
-      entry.predictiveEcho = this.factory.createPredictiveEcho(entry.terminal)
-    } else if (!prefs.predictiveEcho && entry.predictiveEcho) {
-      entry.predictiveEcho.dispose()
-      entry.predictiveEcho = null
-    }
-    entry.predictiveEchoEnabled = prefs.predictiveEcho
 
     entry.appliedPrefs = { ...prefs }
   }
@@ -779,7 +749,19 @@ export class TerminalPool {
           neutralizeXtermScrollbarFallback(newEntry.terminal)
           if (root) prevContainer.appendChild(root)
           this.attachListeners(newEntry)
-          // Load renderer-dependent addons (WebGL) AFTER open() above.
+          // Attempt WebGL initialization after open()
+          if (!newEntry.webglAddon) {
+            const wa = this.factory.createWebglAddon()
+            if (wa) {
+              wa.onContextLoss(() => {
+                wa.dispose()
+                newEntry.webglAddon = null
+              })
+              try { newEntry.terminal.loadAddon(wa) } catch { /* ignored */ }
+              newEntry.webglAddon = wa as WebglAddon
+            }
+          }
+          // Reconcile theme/font preferences
           this.reconcilePrefs(newEntry, prefs)
           fitPreservingScroll(newEntry, prevContainer, { refreshAfter: true })
           // Send resize
@@ -950,21 +932,16 @@ export class TerminalPool {
       try { term.loadAddon(imageAddon) } catch { /* ignored */ }
     }
 
+    // Unicode graphemes are always loaded
     let graphemesAddon: UnicodeGraphemesAddon | null = null
-    let graphemesLoaded = false
-    if (prefs.unicodeGraphemes) {
-      const ga = ef.createUnicodeGraphemesAddon()
-      if (ga) {
-        try { term.loadAddon(ga) } catch { /* ignored */ }
-        graphemesAddon = ga as UnicodeGraphemesAddon
-        graphemesLoaded = true
-      }
+    const ga = ef.createUnicodeGraphemesAddon()
+    if (ga) {
+      try { term.loadAddon(ga) } catch { /* ignored */ }
+      graphemesAddon = ga as UnicodeGraphemesAddon
     }
 
-    let predictiveEcho: PredictiveEcho | null = null
-    if (prefs.predictiveEcho) {
-      predictiveEcho = ef.createPredictiveEcho(term)
-    }
+    // Predictive echo is always created
+    let predictiveEcho: PredictiveEcho | null = ef.createPredictiveEcho(term)
 
     const replayBuffer = new ReplayBuffer()
 
@@ -1005,9 +982,7 @@ export class TerminalPool {
       webglAddon,
       imageAddon,
       graphemesAddon,
-      graphemesLoaded,
       predictiveEcho,
-      predictiveEchoEnabled: prefs.predictiveEcho,
 
       connection,
       replayBuffer,
@@ -1503,12 +1478,8 @@ export class TerminalPool {
             }
           }
         }
-        let pe = entry.predictiveEcho
-        if (!pe && entry.predictiveEchoEnabled) {
-          pe = this.factory.createPredictiveEcho(entry.terminal)
-          entry.predictiveEcho = pe
-        }
-        if (pe && entry.predictiveEchoEnabled) {
+        const pe = entry.predictiveEcho
+        if (pe) {
           if (pe.canPredict(data)) {
             pe.predict(data)
           } else {

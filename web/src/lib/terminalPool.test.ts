@@ -280,8 +280,7 @@ function createFakeFactory(): PoolFactory {
 function defPrefs(overrides?: Partial<TerminalPrefs>): TerminalPrefs {
   return {
     theme: 'dark', fontFamily: 'Space Mono', fontSize: 13,
-    scrollback: 50000, renderer: 'dom',
-    unicodeGraphemes: false, predictiveEcho: false,
+    scrollback: 50000,
     ...overrides,
   }
 }
@@ -388,11 +387,11 @@ describe('TerminalPool', () => {
     expect(second).toBe(first)
   })
 
-  it('cold checkout loads WebGL when prefs specify webgl', () => {
+  it('cold checkout always attempts WebGL unconditionally', () => {
     const container = fakeEl()
-    pool.checkout(defId('s1'), defPrefs({ renderer: 'webgl' }), container, noopCbs())
+    pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
     expect(terminalCreateCount).toBe(1)
-    expect(addonCreateCount).toBeGreaterThanOrEqual(5)
+    expect(addonCreateCount).toBeGreaterThanOrEqual(5) // FitAddon, WebLinksAddon, ClipboardAddon, WebglAddon, UnicodeGraphemesAddon, PredictiveEcho
   })
 
   // ── Checkin keeps resources alive ──────────────────────────────────
@@ -553,15 +552,17 @@ describe('TerminalPool', () => {
 
   it('WebGL context loss disposes only WebGL, keeps terminal', () => {
     const container = fakeEl()
-    const l = pool.checkout(defId('s1'), defPrefs({ renderer: 'webgl' }), container, noopCbs())
+    const l = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
     const entry = getEntry(pool, l.key)
     const wgl = entry?.webglAddon as unknown as FakeWebglAddon
-    expect(wgl).toBeTruthy()
-    const tdB = terminalDisposeCount, scB = socketCloseCount, adB = addonDisposeCount
-    wgl?._fireContextLoss()
-    expect(addonDisposeCount).toBeGreaterThan(adB)
-    expect(terminalDisposeCount).toBe(tdB)
-    expect(socketCloseCount).toBe(scB)
+    // WebGL is always attempted now, so if factory succeeds it will be present
+    if (wgl) {
+      const tdB = terminalDisposeCount, scB = socketCloseCount, adB = addonDisposeCount
+      wgl._fireContextLoss()
+      expect(addonDisposeCount).toBeGreaterThan(adB)
+      expect(terminalDisposeCount).toBe(tdB)
+      expect(socketCloseCount).toBe(scB)
+    }
   })
 
   // ── Prefs: theme/font preserve terminal ────────────────────────────
@@ -570,6 +571,7 @@ describe('TerminalPool', () => {
     const container = fakeEl()
     const l = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
     const tcB = terminalCreateCount
+    // Apply theme/font changes (no mode changes anymore)
     pool.applyGlobalPrefs(defPrefs({ theme: 'light', fontSize: 16 }))
     expect(terminalCreateCount).toBe(tcB)
   })

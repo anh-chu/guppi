@@ -5,9 +5,6 @@ export interface Preferences {
     font_size: number
     font_family: string
     scrollback: number
-    renderer: string
-    unicode_graphemes: boolean
-    predictive_echo: boolean
   }
   theme: string
   sidebar: {
@@ -39,9 +36,6 @@ export const defaultPreferences: Preferences = {
     font_size: 13,
     font_family: 'Space Mono',
     scrollback: 50000,
-    renderer: 'dom',
-    unicode_graphemes: false,
-    predictive_echo: false,
   },
   theme: 'dark',
   sidebar: {
