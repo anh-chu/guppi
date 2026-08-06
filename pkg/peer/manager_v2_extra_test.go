@@ -9,7 +9,7 @@ import (
 // TestRemoteCatalog_SessionRefSessionMismatchRejected proves that a session with
 // Ref.Session != its own record ID is rejected.
 func TestRemoteCatalog_SessionRefSessionMismatchRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
@@ -39,7 +39,7 @@ func TestRemoteCatalog_SessionRefSessionMismatchRejected(t *testing.T) {
 // TestRemoteCatalog_DuplicateLeavesRejected proves that a layout tree with
 // duplicate leaf references is rejected.
 func TestRemoteCatalog_DuplicateLeavesRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
@@ -75,7 +75,7 @@ func TestRemoteCatalog_DuplicateLeavesRejected(t *testing.T) {
 // TestRemoteCatalog_MalformedSplitNodeRejected proves that a layout tree with
 // missing children is rejected.
 func TestRemoteCatalog_MalformedSplitNodeRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
@@ -116,7 +116,7 @@ func TestRemoteCatalog_MalformedSplitNodeRejected(t *testing.T) {
 // TestRemoteCatalog_InvalidRatioRejected proves that a layout tree with an
 // invalid split ratio is rejected.
 func TestRemoteCatalog_InvalidRatioRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
@@ -158,7 +158,7 @@ func TestRemoteCatalog_InvalidRatioRejected(t *testing.T) {
 // TestRemoteCatalog_UnknownSessionRefRejected proves that a layout tree
 // referencing a session not in the catalog is rejected.
 func TestRemoteCatalog_UnknownSessionRefRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
@@ -194,7 +194,7 @@ func TestRemoteCatalog_UnknownSessionRefRejected(t *testing.T) {
 // TestRemoteWorkspace_MalformedTreeRejected proves that a workspace with an
 // invalid pane tree is rejected.
 func TestRemoteWorkspace_MalformedTreeRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
@@ -227,7 +227,7 @@ func TestRemoteWorkspace_MalformedTreeRejected(t *testing.T) {
 // TestRemoteWorkspace_DuplicateLeavesRejected proves that a workspace tree
 // with duplicate leaves is rejected.
 func TestRemoteWorkspace_DuplicateLeavesRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()

@@ -15,11 +15,11 @@ import (
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
-// makeTestDepsV2 builds a SessionDeps + supervisor + real v2 catalog wired
-// together BEFORE the LinkSupervisor is constructed (NewLinkSupervisor takes
-// SessionDeps by value, so V2CommandSvc/Manager.v2Catalog must be set first
-// or the supervisor's dialer would advertise stale, v2-less capabilities).
-func makeTestDepsV2(t *testing.T, name string) (SessionDeps, *LinkSupervisor, *identity.PeerStore, *state.Catalog) {
+// makeTestDepsWithCatalog builds a SessionDeps + supervisor + real catalog
+// wired together BEFORE the LinkSupervisor is constructed (NewLinkSupervisor
+// takes SessionDeps by value, so CommandSvc/Manager.Catalog must be set
+// first or the supervisor's dialer would advertise stale capabilities).
+func makeTestDepsWithCatalog(t *testing.T, name string) (SessionDeps, *LinkSupervisor, *identity.PeerStore, *state.Catalog) {
 	t.Helper()
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -36,14 +36,14 @@ func makeTestDepsV2(t *testing.T, name string) (SessionDeps, *LinkSupervisor, *i
 	mgr := NewManager(id, ps)
 	owner := state.OwnerIDFromFingerprint(id.Fingerprint())
 	cat := state.NewCatalog(owner, nil)
-	mgr.SetV2Catalog(cat)
+	mgr.SetCatalog(cat)
 	deps := SessionDeps{
 		Manager:      mgr,
 		Identity:     id,
 		ActTracker:   activity.NewTracker(),
 		ToolTracker:  toolevents.NewTracker(),
 		PeerStore:    ps,
-		V2CommandSvc: v2CommandSvcForTest(),
+		CommandSvc: canonicalCommandSvcForTest(),
 	}
 	sup := NewLinkSupervisor(deps)
 	return deps, sup, ps, cat
@@ -54,7 +54,7 @@ func makeTestDepsV2(t *testing.T, name string) (SessionDeps, *LinkSupervisor, *i
 // (case 2/3/4/5's "seeded session on B never replicated to A remote
 // catalog" symptom): a local catalog mutation made AFTER a peer connection
 // is already established must be pushed to that connected peer, not just
-// the one-time snapshot sent at connect time by sendInitialV2Catalog.
+// the one-time snapshot sent at connect time by sendInitialCatalog.
 //
 // This drives two real peer.Manager instances joined by a real, fully
 // authenticated (ed25519 challenge-response) websocket connection --
@@ -62,8 +62,8 @@ func makeTestDepsV2(t *testing.T, name string) (SessionDeps, *LinkSupervisor, *i
 // as it does in production (pkg/peer/handler.go's HandlePeer and
 // pkg/peer/supervisor.go's dialOnce). Nothing here is mocked.
 func TestRunSession_LocalCatalogMutationAfterConnectReachesConnectedPeer(t *testing.T) {
-	depsA, supA, psA, _ := makeTestDepsV2(t, "A")
-	depsB, _, psB, catB := makeTestDepsV2(t, "B")
+	depsA, supA, psA, _ := makeTestDepsWithCatalog(t, "A")
+	depsB, _, psB, catB := makeTestDepsWithCatalog(t, "B")
 
 	ownerB := state.OwnerIDFromFingerprint(depsB.Identity.Fingerprint())
 
@@ -118,7 +118,7 @@ func TestRunSession_LocalCatalogMutationAfterConnectReachesConnectedPeer(t *test
 	}, "peers never reached a live connection")
 
 	// A's remote-catalog cache should already have B's (empty) initial
-	// snapshot from the connect-time push (sendInitialV2Catalog).
+	// snapshot from the connect-time push (sendInitialCatalog).
 	waitFor(t, 5*time.Second, func() bool {
 		_, ok := depsA.Manager.RemoteCatalogSnapshot(ownerB)
 		return ok
@@ -148,7 +148,7 @@ func TestRunSession_LocalCatalogMutationAfterConnectReachesConnectedPeer(t *test
 		}
 		return false
 	}, "session created on B after pairing never replicated to A's remote-catalog cache "+
-		"(sendInitialV2Catalog only fires once at connect; the local Catalog's own "+
+		"(sendInitialCatalog only fires once at connect; the local Catalog's own "+
 		"SubscribeCatalog change-notification was never wired to push a follow-up "+
 		"snapshot to already-connected peers)")
 }

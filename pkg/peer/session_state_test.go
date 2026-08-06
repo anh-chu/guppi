@@ -9,7 +9,6 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/anh-chu/termyard/pkg/identity"
-	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
@@ -26,45 +25,6 @@ func makeTestManager(t *testing.T) *Manager {
 		t.Fatal(err)
 	}
 	return NewManager(id, ps)
-}
-
-func TestGetPeerSessions(t *testing.T) {
-	mgr := makeTestManager(t)
-	want := []*model.Session{{Name: "alpha"}}
-	mgr.hosts["peer-a"] = &HostState{ID: "peer-a", Sessions: want}
-
-	got := getPeerSessions(mgr, "peer-a")
-	if len(got) != 1 || got[0].Name != "alpha" {
-		t.Fatalf("got %+v, want alpha", got)
-	}
-
-	if got := getPeerSessions(mgr, "missing"); got != nil {
-		t.Fatalf("expected nil for missing peer, got %+v", got)
-	}
-}
-
-func TestHandleStateMessageUpdate(t *testing.T) {
-	mgr := makeTestManager(t)
-	mgr.RegisterPeer("peera", "remotea", "", nil)
-	pc := NewPeerConnection("peer", 1)
-	deps := SessionDeps{Manager: mgr}
-	log := logrus.NewEntry(logrus.New())
-
-	payload := StateUpdatePayload{
-		Sessions: []*model.Session{{Name: "remote"}},
-		Version:  "v-test",
-	}
-	msg, err := NewMessage(MsgStateUpdate, payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	handleStateMessage("peera", msg, pc, deps, log)
-
-	got := getPeerSessions(mgr, "peera")
-	if len(got) != 1 || got[0].Name != "remote" {
-		t.Fatalf("expected remote session, got %+v", got)
-	}
 }
 
 // TestHandleSessionMessage_ToolEventStampsAuthenticatedHost drives a real
@@ -129,25 +89,4 @@ func TestHandleSessionMessage_ToolEventStampsAuthenticatedHost(t *testing.T) {
 	}
 }
 
-// TestHandleStateMessageRequestState proves a legacy MsgRequestState from a
-// peer is dropped silently: there is no legacy session state to reply with,
-// v2 peers exchange catalog/workspace snapshots instead.
-func TestHandleStateMessageRequestState(t *testing.T) {
-	mgr := makeTestManager(t)
-	pc := NewPeerConnection("peer", 1)
-	deps := SessionDeps{Manager: mgr}
-	log := logrus.NewEntry(logrus.New())
 
-	msg, err := NewMessage(MsgRequestState, struct{}{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	handleStateMessage("peera", msg, pc, deps, log)
-
-	select {
-	case f := <-pc.LoLane():
-		t.Fatalf("expected no reply frame, got %+v", f)
-	case <-time.After(50 * time.Millisecond):
-	}
-}

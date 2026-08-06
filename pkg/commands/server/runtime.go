@@ -205,7 +205,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	}
 
 	rt.peerMgr = peer.NewManager(nodeIdentity, peerStore)
-	rt.peerMgr.SetV2Catalog(rt.catalog)
+	rt.peerMgr.SetCatalog(rt.catalog)
 	rt.peerMgr.SetRemoteCreateCoordinator(rt.remoteCreate)
 	rt.peerMgr.SetRemoteStore(rt.store)
 	if err := rt.peerMgr.LoadRemoteCatalogCache(); err != nil {
@@ -255,11 +255,14 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		V2Remote:  remoteLauncher,
 		Names: func(host string) []string {
 			if host != "" && rt.peerMgr != nil && !rt.peerMgr.IsLocal(host) {
-				sessions := rt.peerMgr.GetAllSessions()
-				names := make([]string, 0, len(sessions))
-				for _, s := range sessions {
-					if s != nil && s.Host == host {
-						names = append(names, s.Name)
+				snap, ok := rt.peerMgr.RemoteCatalogSnapshot(state.OwnerIDFromFingerprint(host))
+				if !ok {
+					return nil
+				}
+				names := make([]string, 0, len(snap.Sessions))
+				for _, rec := range snap.Sessions {
+					if rec.Name != "" {
+						names = append(names, rec.Name)
 					}
 				}
 				return names
@@ -281,7 +284,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 
 	deps := peer.SessionDeps{
 		Manager:                 rt.peerMgr,
-		V2Catalog:               rt.catalog,
+		Catalog:               rt.catalog,
 		Identity:                nodeIdentity,
 		ActTracker:              rt.actTracker,
 		ToolTracker:             rt.tracker,
@@ -291,7 +294,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		StreamReg:               streamReg,
 		CaptureReg:              captureReg,
 		FileReadReg:             fileReadReg,
-		V2CommandSvc:            rt.commandSvc,
+		CommandSvc:            rt.commandSvc,
 		RemoteCreateCoordinator: rt.remoteCreate,
 	}
 

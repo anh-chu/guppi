@@ -45,27 +45,6 @@ func NewHandler(deps SessionDeps, streamReg *StreamRegistry) *Handler {
 	return &Handler{deps: deps, streamReg: streamReg}
 }
 
-// SetAttrsSink wires the session-attrs store after construction.
-func (h *Handler) SetAttrsSink(sink SessionAttrsSink) {
-	h.deps.AttrsSink = sink
-}
-
-// SetOrderSink wires the session-order store after construction.
-func (h *Handler) SetOrderSink(sink SessionOrderSink) {
-	h.deps.OrderSink = sink
-}
-
-// SetGroupSink wires the group store after construction.
-func (h *Handler) SetGroupSink(sink GroupSink) {
-	h.deps.GroupSink = sink
-}
-
-// SetBrowserHub wires the browser-events hub after construction.
-func (h *Handler) SetBrowserHub(hub BrowserBroadcaster) {
-	h.deps.BrowserHub = hub
-
-}
-
 // HandlePeer handles /ws/peer for incoming control-channel connections.
 // Performs ed25519 challenge-response auth, then delegates to runSession.
 func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
@@ -85,12 +64,13 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// v2-only nodes have no legacy state-sync fallback: reject peers that
-	// don't advertise both v2 capabilities rather than silently degrading to
-	// (nonexistent) legacy per-field sync.
-	if requiresV2Peer(h.deps) && !peerCapsSatisfyV2(caps) {
-		log.WithFields(logrus.Fields{"peer": peer.Name, "id": peer.Fingerprint(), "caps": caps}).Warn("rejecting peer: this node is v2-only and remote peer lacks required v2 capabilities")
-		sendAuthFail(conn, "v2 capabilities required")
+	// Every connected peer must present both canonical capabilities: there is
+	// no legacy state-sync fallback to degrade to, so a peer missing either
+	// CapCatalogV1 or CapCommandV1 cannot be synchronized with at all and the
+	// connection is rejected outright.
+	if !peerCapsSatisfyCanonical(caps) {
+		log.WithFields(logrus.Fields{"peer": peer.Name, "id": peer.Fingerprint(), "caps": caps}).Warn("rejecting peer: missing required canonical capabilities")
+		sendAuthFail(conn, "canonical capabilities required")
 		conn.Close()
 		return
 	}

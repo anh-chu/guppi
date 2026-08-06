@@ -7,52 +7,13 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/state"
 )
 
-// handleStateMessage processes peer-state and session-state control messages.
+// handleStateMessage processes activity/stats/tool-event/peer-notify control
+// messages received from an authenticated peer connection.
 func handleStateMessage(peerID string, msg *Message, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
 	switch msg.Type {
-	case MsgStateUpdate:
-		var p StateUpdatePayload
-		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			log.WithError(err).Debug("invalid state-update")
-			return
-		}
-		deps.Manager.UpdatePeerSessions(peerID, p.Sessions)
-		if p.Version != "" {
-			deps.Manager.UpdatePeerVersion(peerID, p.Version)
-		}
-
-	case MsgStateEvent:
-		var p StateEventPayload
-		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			return
-		}
-		if p.EventType == "session-renamed" && deps.BrowserHub != nil {
-			newName := ""
-			switch data := p.Data.(type) {
-			case map[string]any:
-				if v, ok := data["new_name"].(string); ok {
-					newName = v
-				}
-			case map[string]string:
-				newName = data["new_name"]
-			}
-			if p.Session != "" && newName != "" {
-				deps.BrowserHub.BroadcastJSON(map[string]interface{}{
-					"type":    "session-renamed",
-					"host":    peerID,
-					"session": p.Session,
-					"data": map[string]string{
-						"new_name": newName,
-					},
-				})
-			}
-		}
-		deps.Manager.UpdatePeerSessions(peerID, getPeerSessions(deps.Manager, peerID))
-
 	case MsgActivityUpdate:
 		var p ActivityUpdatePayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
@@ -86,21 +47,6 @@ func handleStateMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 		}
 		deps.Manager.UpdatePeerStats(peerID, p.Stats)
 
-	case MsgPeerState:
-		var p PeerStatePayload
-		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			return
-		}
-		for _, host := range p.Hosts {
-			if deps.Manager.IsLocal(host.ID) {
-				continue
-			}
-			deps.Manager.UpdatePeerSessions(host.ID, host.Sessions)
-			if host.Online && !deps.Manager.HasHost(host.ID) {
-				deps.Manager.RegisterPeer(host.ID, host.Name, "", nil)
-			}
-		}
-
 	case MsgPeerConnected:
 		var p PeerNotifyPayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
@@ -114,27 +60,10 @@ func handleStateMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 			return
 		}
 		deps.Manager.UnregisterPeer(p.ID)
-
-	case MsgRequestState:
-		// No legacy session state exists to reply with (v2 peers exchange
-		// catalog/workspace snapshots instead); drop silently.
 	}
 }
 
-func getPeerSessions(m *Manager, peerID string) []*model.Session {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if h, ok := m.hosts[peerID]; ok {
-		out := make([]*model.Session, len(h.Sessions))
-		for i, s := range h.Sessions {
-			out[i] = copySession(s)
-		}
-		return out
-	}
-	return nil
-}
-
-func sendInitialV2Catalog(pc *PeerConnection, deps SessionDeps) {
+func sendInitialCatalog(pc *PeerConnection, deps SessionDeps) {
 	if deps.Manager == nil {
 		return
 	}
@@ -143,20 +72,20 @@ func sendInitialV2Catalog(pc *PeerConnection, deps SessionDeps) {
 		return
 	}
 	snap := catalog.LocalCatalogSnapshot()
-	payload := V2CatalogSnapshotPayload{
+	payload := CatalogSnapshotPayload{
 		Owner:    snap.Owner,
 		Revision: snap.Revision,
 		Sessions: snap.Sessions,
 		Layouts:  snap.Layouts,
 	}
-	msg, err := NewMessage(MsgV2CatalogSnapshot, payload)
+	msg, err := NewMessage(MsgCatalogSnapshot, payload)
 	if err != nil {
 		return
 	}
-	pc.EnqueueV2CatalogSnapshot(msg)
+	pc.EnqueueCatalogSnapshot(msg)
 }
 
-func sendInitialV2Workspace(pc *PeerConnection, deps SessionDeps) {
+func sendInitialWorkspace(pc *PeerConnection, deps SessionDeps) {
 	if deps.Manager == nil {
 		return
 	}
@@ -175,7 +104,7 @@ func sendInitialV2Workspace(pc *PeerConnection, deps SessionDeps) {
 	if err != nil {
 		return
 	}
-	msg, err := NewMessage(MsgV2WorkspaceSnapshot, V2WorkspaceSnapshotPayload{
+	msg, err := NewMessage(MsgWorkspaceSnapshot, WorkspaceSnapshotPayload{
 		Owner:     snap.Record.Owner,
 		Revision:  snap.Record.Revision,
 		Workspace: snap.Record,
@@ -183,14 +112,14 @@ func sendInitialV2Workspace(pc *PeerConnection, deps SessionDeps) {
 	if err != nil {
 		return
 	}
-	pc.EnqueueV2WorkspaceSnapshot(msg)
+	pc.EnqueueWorkspaceSnapshot(msg)
 }
 
-// handleV2Message routes v2 catalog, workspace, and command messages.
-func handleV2Message(peerID string, msg *Message, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
+// handleCommandMessage routes v2 catalog, workspace, and command messages.
+func handleCommandMessage(peerID string, msg *Message, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
 	switch msg.Type {
-	case MsgV2CatalogSnapshot:
-		var p V2CatalogSnapshotPayload
+	case MsgCatalogSnapshot:
+		var p CatalogSnapshotPayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
 			log.WithError(err).Debug("invalid v2 catalog snapshot")
 			return
@@ -202,24 +131,24 @@ func handleV2Message(peerID string, msg *Message, pc *PeerConnection, deps Sessi
 			Layouts:  p.Layouts,
 		})
 
-	case MsgV2WorkspaceSnapshot:
-		var p V2WorkspaceSnapshotPayload
+	case MsgWorkspaceSnapshot:
+		var p WorkspaceSnapshotPayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
 			log.WithError(err).Debug("invalid v2 workspace snapshot")
 			return
 		}
 		deps.Manager.UpdateRemoteWorkspace(peerID, pc, p.Workspace)
 
-	case MsgV2CommandRequest:
-		var p V2CommandRequestPayload
+	case MsgCommandRequest:
+		var p CommandRequestPayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
 			log.WithError(err).Debug("invalid v2 command request")
 			return
 		}
-		handleV2CommandRequest(peerID, p, pc, deps, log)
+		handleCommandRequest(peerID, p, pc, deps, log)
 
-	case MsgV2CommandReply:
-		var p V2CommandReplyPayload
+	case MsgCommandReply:
+		var p CommandReplyPayload
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
 			log.WithError(err).Debug("invalid v2 command reply")
 			return
@@ -228,28 +157,28 @@ func handleV2Message(peerID string, msg *Message, pc *PeerConnection, deps Sessi
 	}
 }
 
-func handleV2CommandRequest(peerID string, req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
-	reply := V2CommandReplyPayload{ID: req.ID}
+func handleCommandRequest(peerID string, req CommandRequestPayload, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
+	reply := CommandReplyPayload{ID: req.ID}
 	switch req.Kind {
-	case V2CommandKindSession:
-		handleV2SessionCommandRequest(peerID, req, pc, deps, &reply)
-	case V2CommandKindWorkspace:
-		handleV2WorkspaceCommandRequest(peerID, req, pc, deps, &reply)
-	case V2CommandKindRemoteCreate:
-		handleV2RemoteCreateRequest(peerID, req, pc, deps, &reply)
+	case CommandKindSession:
+		handleSessionCommandRequest(peerID, req, pc, deps, &reply)
+	case CommandKindWorkspace:
+		handleWorkspaceCommandRequest(peerID, req, pc, deps, &reply)
+	case CommandKindRemoteCreate:
+		handleRemoteCreateRequest(peerID, req, pc, deps, &reply)
 	default:
 		reply.Error = fmt.Sprintf("unknown command kind %q", req.Kind)
 	}
-	sendV2CommandReply(pc, reply)
+	sendCommandReply(pc, reply)
 }
 
-// handleV2SessionCommandRequest executes a session command received from an
+// handleSessionCommandRequest executes a session command received from an
 // authenticated peer connection. peerID (the sender's authenticated
 // identity) is threaded into ExecuteSessionCommandFromPeer so the command's
 // Ref.Owner is verified against this node's own catalog owner before any
 // mutation; a forged/mismatched owner is rejected, never silently ignored.
-func handleV2SessionCommandRequest(peerID string, req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
-	if deps.V2CommandSvc == nil {
+func handleSessionCommandRequest(peerID string, req CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *CommandReplyPayload) {
+	if deps.CommandSvc == nil {
 		reply.Error = "v2 command service unavailable"
 		return
 	}
@@ -258,7 +187,7 @@ func handleV2SessionCommandRequest(peerID string, req V2CommandRequestPayload, p
 		reply.Error = "malformed command"
 		return
 	}
-	res, err := deps.V2CommandSvc.ExecuteSessionCommandFromPeer(context.Background(), cmd, peerID)
+	res, err := deps.CommandSvc.ExecuteSessionCommandFromPeer(context.Background(), cmd, peerID)
 	if err != nil {
 		setReplyError(reply, err)
 		return
@@ -272,13 +201,13 @@ func handleV2SessionCommandRequest(peerID string, req V2CommandRequestPayload, p
 	reply.Result = data
 }
 
-// handleV2WorkspaceCommandRequest executes a workspace command received from
+// handleWorkspaceCommandRequest executes a workspace command received from
 // an authenticated peer connection. peerID is threaded into
 // ApplyWorkspaceCommandFromPeer so every SessionRef embedded in the command's
 // params is verified against this node's own catalog owner before any
 // mutation; a forged/foreign ref is rejected, never silently ignored.
-func handleV2WorkspaceCommandRequest(peerID string, req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
-	cat := deps.V2Catalog
+func handleWorkspaceCommandRequest(peerID string, req CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *CommandReplyPayload) {
+	cat := deps.Catalog
 	if cat == nil {
 		reply.Error = "v2 catalog not enabled"
 		return
@@ -295,12 +224,12 @@ func handleV2WorkspaceCommandRequest(peerID string, req V2CommandRequestPayload,
 	reply.Handled = true
 }
 
-// handleV2RemoteCreateRequest executes a remote-create request received from
+// handleRemoteCreateRequest executes a remote-create request received from
 // an authenticated peer connection. peerID is threaded into
 // ExecuteRemoteCreateFromPeer so the request's Requester is verified against
 // the authenticated sender before any mutation; a spoofed Requester is
 // rejected, never silently ignored.
-func handleV2RemoteCreateRequest(peerID string, req V2CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *V2CommandReplyPayload) {
+func handleRemoteCreateRequest(peerID string, req CommandRequestPayload, pc *PeerConnection, deps SessionDeps, reply *CommandReplyPayload) {
 	if deps.RemoteCreateCoordinator == nil {
 		reply.Error = "remote create coordinator unavailable"
 		return
@@ -324,8 +253,8 @@ func handleV2RemoteCreateRequest(peerID string, req V2CommandRequestPayload, pc 
 	reply.Result = data
 }
 
-func sendV2CommandReply(pc *PeerConnection, reply V2CommandReplyPayload) {
-	msg, err := NewMessage(MsgV2CommandReply, reply)
+func sendCommandReply(pc *PeerConnection, reply CommandReplyPayload) {
+	msg, err := NewMessage(MsgCommandReply, reply)
 	if err != nil {
 		return
 	}

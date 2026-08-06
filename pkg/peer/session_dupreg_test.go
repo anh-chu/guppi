@@ -14,9 +14,9 @@ import (
 // leave an orphaned subscription enqueuing snapshots into a PeerConnection
 // nobody will ever drain.
 func TestRunSession_RejectedDuplicateLeavesNoDanglingWorkspaceSubscription(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	cat := state.NewCatalog("owner-a", nil)
-	mgr.SetV2Catalog(cat)
+	mgr.SetCatalog(cat)
 
 	remoteID, err := identity.Generate("remote")
 	if err != nil {

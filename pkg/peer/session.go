@@ -28,46 +28,6 @@ const (
 	RoleListener
 )
 
-// SessionAttrsSink is the slice of pkg/sessionattrs the session loop needs in
-// order to merge shared session-attribute updates received from paired peers.
-// Kept narrow so pkg/peer doesn't pull pkg/sessionattrs directly.
-type SessionAttrsSink interface {
-	// ApplyRemoteDelta merges a single-key delta via per-key LWW. accepted=false
-	// means the local copy was newer-or-equal and the delta was dropped.
-	ApplyRemoteDelta(key string, background, hidden bool, scheduleID string, updatedAt time.Time) (accepted bool, err error)
-	// ApplyRemoteSnapshot merges a full peer snapshot via per-key LWW, returning
-	// the keys that changed locally.
-	ApplyRemoteSnapshot(attrs map[string]SessionAttr) (changed []string, err error)
-	// SnapshotAttrs returns the full local attribute map to seed a fresh peer.
-	SnapshotAttrs() map[string]SessionAttr
-	// SetScheduleID records the owning schedule for a session this node spawned
-	// locally on behalf of a remote peer's scheduler, keyed by the local session
-	// key, so the run groups in this node's own UI.
-	SetScheduleID(key, scheduleID string) error
-}
-
-// SessionOrderSink is the narrow slice of session-order storage the peer loop
-// needs.
-type SessionOrderSink interface {
-	ApplyRemoteDelta(key, rank string, updatedAt time.Time) (accepted bool, err error)
-	ApplyRemoteSnapshot(orders map[string]SessionOrder) (changed []string, err error)
-	SnapshotOrders() map[string]SessionOrder
-}
-
-// GroupSink is the narrow slice of group storage the peer loop needs.
-type GroupSink interface {
-	ApplyRemoteDelta(id string, group Group) (accepted bool, err error)
-	ApplyRemoteSnapshot(groups map[string]Group) (changed []string, err error)
-	SnapshotGroups() map[string]Group
-}
-
-// BrowserBroadcaster pushes a JSON message to every connected browser. Used
-// to forward session-attrs-updated events to the local UI after we accept a
-// remote update from a paired peer.
-type BrowserBroadcaster interface {
-	BroadcastJSON(v interface{})
-}
-
 // DaemonRegistry is the interface for daemon session operations.
 type DaemonRegistry interface {
 	Create(name, shell, cwd string, cols, rows uint16) error
@@ -81,9 +41,9 @@ type DaemonRegistry interface {
 // SessionDeps groups the runtime dependencies needed by a peer session.
 type SessionDeps struct {
 	Manager *Manager
-	// V2Catalog is this node's own v2 catalog, non-nil exactly when this node
-	// runs in v2 mode.
-	V2Catalog               *state.Catalog
+	// Catalog is this node's own canonical catalog. Always non-nil in a
+	// running node -- the canonical state graph is the only runtime.
+	Catalog                 *state.Catalog
 	Identity                *identity.Identity
 	ActTracker              *activity.Tracker
 	ToolTracker             *toolevents.Tracker
@@ -92,12 +52,8 @@ type SessionDeps struct {
 	StreamReg               *StreamRegistry
 	CaptureReg              *CaptureRegistry
 	FileReadReg             *FileReadRegistry
-	AttrsSink               SessionAttrsSink
 	Launch                  *sessionlaunch.Service
-	OrderSink               SessionOrderSink
-	GroupSink               GroupSink
-	BrowserHub              BrowserBroadcaster
-	V2CommandSvc            *state.SessionCommandService
+	CommandSvc              *state.SessionCommandService
 	RemoteCreateCoordinator *state.RemoteCreateCoordinator
 }
 
@@ -144,7 +100,7 @@ func runSession(
 	pc := NewPeerConnection(peerID, 64)
 	pc.Role = role
 	pc.Caps = append([]string(nil), caps...)
-	pc.initV2Lazy()
+	pc.initSlotsLazy()
 
 	if !deps.Manager.TryRegisterPeer(peerID, peerInfo.Name, peerInfo.PublicKey, address, pc) {
 		return fmt.Errorf("peer already connected")
@@ -157,32 +113,32 @@ func runSession(
 	// so remote peers see the whole layout, never intermediate steps.
 	if cat := deps.Manager.v2Catalog; cat != nil {
 		unsubWorkspace = cat.SubscribeWorkspace(func(layout state.LayoutID, rec state.WorkspaceRecord) {
-			payload := V2WorkspaceSnapshotPayload{Owner: rec.Owner, Revision: rec.Revision, Workspace: rec}
-			msg, err := NewMessage(MsgV2WorkspaceSnapshot, payload)
+			payload := WorkspaceSnapshotPayload{Owner: rec.Owner, Revision: rec.Revision, Workspace: rec}
+			msg, err := NewMessage(MsgWorkspaceSnapshot, payload)
 			if err != nil {
 				return
 			}
-			pc.EnqueueV2WorkspaceSnapshot(msg)
+			pc.EnqueueWorkspaceSnapshot(msg)
 		})
 
 		// Subscribe to complete catalog snapshots after each local mutation
 		// (session created/renamed/removed, etc.) so a connected peer's
 		// remote-catalog cache stays live, not just seeded once at connect
-		// time by sendInitialV2Catalog above. Without this, any local
+		// time by sendInitialCatalog above. Without this, any local
 		// change made after pairing completes is never pushed to already-
 		// connected peers.
 		unsubCatalog = cat.SubscribeCatalog(func(snap state.OwnerCatalogSnapshot) {
-			payload := V2CatalogSnapshotPayload{
+			payload := CatalogSnapshotPayload{
 				Owner:    snap.Owner,
 				Revision: snap.Revision,
 				Sessions: snap.Sessions,
 				Layouts:  snap.Layouts,
 			}
-			msg, err := NewMessage(MsgV2CatalogSnapshot, payload)
+			msg, err := NewMessage(MsgCatalogSnapshot, payload)
 			if err != nil {
 				return
 			}
-			pc.EnqueueV2CatalogSnapshot(msg)
+			pc.EnqueueCatalogSnapshot(msg)
 		})
 	}
 
@@ -288,19 +244,17 @@ func runSession(
 		}
 	}()
 
-	// Initial pushes — both sides advertise themselves. The v2 catalog/
-	// workspace snapshot pushes below are the real state sync for this node.
-	sendInitialSessionAttrs(pc, deps)
-	sendInitialSessionOrder(pc, deps)
-	sendInitialGroups(pc, deps)
-	if pc.HasV2() {
-		sendInitialV2Catalog(pc, deps)
-		sendInitialV2Workspace(pc, deps)
-	}
+	// Initial pushes — the catalog/workspace snapshot pushes are the real
+	// state sync for this node, sent unconditionally: both peers must have
+	// advertised (and had verified) CapCatalogV1/CapCommandV1 to complete the
+	// handshake at all (see requiresCanonicalCaps), so pc.HasCanonicalCaps()
+	// is always true for a live session.
+	sendInitialCatalog(pc, deps)
+	sendInitialWorkspace(pc, deps)
 
 	go func() {
 		defer close(v2WritersDone)
-		runV2Writers(sessionCtx, pc, log)
+		runCommandWriters(sessionCtx, pc, log)
 	}()
 
 	// Background loops.
@@ -431,27 +385,11 @@ func forwardToolEvents(ctx context.Context, pc *PeerConnection, deps SessionDeps
 // handleSessionMessage dispatches messages received from the remote peer.
 func handleSessionMessage(peerID string, msg *Message, pc *PeerConnection, deps SessionDeps, log *logrus.Entry) {
 	switch msg.Type {
-	case MsgStateUpdate,
-		MsgStateEvent,
-		MsgPeerState,
-		MsgRequestState:
-		// These carry legacy session/state.Manager data. A v2-only node must
-		// never process them -- a peer sending one is either a bug or a
-		// downgrade attempt. Log and drop instead of dispatching to the
-		// legacy handler.
-		if deps.V2CommandSvc != nil {
-			log.WithField("type", msg.Type).Debug("dropping legacy state message: node is v2-only")
-			return
-		}
-		handleStateMessage(peerID, msg, pc, deps, log)
-
 	case MsgActivityUpdate,
 		MsgStats,
 		MsgPeerConnected,
 		MsgPeerDisconnected,
 		MsgToolEvent:
-		// Activity/stats/host-registration/tool-event messages are not legacy
-		// session state and must keep working regardless of v2 mode.
 		handleStateMessage(peerID, msg, pc, deps, log)
 
 	case MsgOpenTerminal,
@@ -462,30 +400,11 @@ func handleSessionMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 		MsgFileReadResult:
 		handleStreamMessage(peerID, msg, pc, deps, log)
 
-	case MsgSessionAttrsSnapshot,
-		MsgSessionAttrsDelta,
-		MsgSessionOrderSnapshot,
-		MsgSessionOrderDelta,
-		MsgGroupSnapshot,
-		MsgGroupDelta:
-		handleAttrsMessage(peerID, msg, pc, deps, log)
-
-	case MsgSessionAction:
-		// Legacy session-action messages (kill/rename/etc dispatched to the
-		// legacy manager). A v2-only node should reject these rather than
-		// silently mutate a shim manager -- v2 peers exchange session
-		// commands via MsgV2CommandRequest/MsgV2CommandReply instead.
-		if deps.V2CommandSvc != nil {
-			log.WithField("type", msg.Type).Debug("dropping legacy session-action message: node is v2-only")
-			return
-		}
-		handleActionMessage(msg, pc, deps, log)
-
-	case MsgV2CatalogSnapshot,
-		MsgV2WorkspaceSnapshot,
-		MsgV2CommandRequest,
-		MsgV2CommandReply:
-		handleV2Message(peerID, msg, pc, deps, log)
+	case MsgCatalogSnapshot,
+		MsgWorkspaceSnapshot,
+		MsgCommandRequest,
+		MsgCommandReply:
+		handleCommandMessage(peerID, msg, pc, deps, log)
 
 	default:
 		log.WithField("type", msg.Type).Debug("unknown session message")

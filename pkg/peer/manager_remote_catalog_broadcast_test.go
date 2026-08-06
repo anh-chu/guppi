@@ -13,7 +13,7 @@ import (
 // is the piece that was previously never read outside of peer.Manager
 // itself.
 func TestAllRemoteCatalogSnapshots_ReturnsEveryCachedOwner(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 
 	ownerA := state.OwnerIDFromFingerprint("peera")
 	connA := NewPeerConnection("peera", 64)
@@ -58,7 +58,7 @@ func TestAllRemoteCatalogSnapshots_ReturnsEveryCachedOwner(t *testing.T) {
 // removals (peer forgotten), not merely able to poll -- removal must be a
 // signal, not inferred from silence, for a live subscriber.
 func TestSubscribeRemoteCatalogs_NotifiesUpdateAndRemoval(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 
 	type event struct {
 		owner   state.OwnerID
@@ -111,7 +111,7 @@ func TestSubscribeRemoteCatalogs_NotifiesUpdateAndRemoval(t *testing.T) {
 // UnregisterPeer/RemovePeer flows) also emits an explicit removal signal per
 // forgotten owner, not just the direct ForgetRemoteCatalog call.
 func TestForgetRemoteCatalogsForPeer_NotifiesRemovalPerOwner(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 
 	owner := state.OwnerIDFromFingerprint("peerd")
 	conn := NewPeerConnection("peerd", 64)

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/anh-chu/termyard/pkg/identity"
-	"github.com/anh-chu/termyard/pkg/model"
 )
 
 func testManager(t *testing.T) (*Manager, *identity.Identity) {
@@ -21,42 +20,6 @@ func testManager(t *testing.T) (*Manager, *identity.Identity) {
 		t.Fatalf("peer store: %v", err)
 	}
 	return NewManager(id, peerStore), id
-}
-
-// TestGetAllSessions_PointerMutation documents the current failing semantics:
-// GetAllSessions mutates the shared session pointers in-place, so a caller
-// that modifies a returned Session leaks that mutation back into the manager.
-// A v2 redesign must return defensive copies.
-func TestGetAllSessions_PointerMutation(t *testing.T) {
-	mgr, _ := testManager(t)
-
-	// Add a remote peer with one session.
-	remoteID, err := identity.Generate("remote")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fp := remoteID.Fingerprint()
-	conn := NewPeerConnection(fp, 64)
-	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, conn)
-	mgr.UpdatePeerSessions(fp, []*model.Session{{Name: "remote-s1"}})
-
-	all1 := mgr.GetAllSessions()
-	if len(all1) != 1 {
-		t.Fatalf("expected 1 remote session, got %d", len(all1))
-	}
-
-	// Mutate the returned slice — this is a consumer bug, but the manager
-	// currently allows it to propagate.  Host is overwritten on every call,
-	// so mutate a field that is not restamped.
-	origName := all1[0].Name
-	all1[0].Name = "mutated-name"
-
-	all2 := mgr.GetAllSessions()
-	if all2[0].Name == "mutated-name" {
-		t.Logf("documented failing semantics: GetAllSessions shares pointers (%q -> %q)", origName, all2[0].Name)
-	} else {
-		t.Log("GetAllSessions returned defensive copies — semantics changed from current baseline")
-	}
 }
 
 // TestUnregisterPeer_Stale documents the current behavior when UnregisterPeer

@@ -26,7 +26,6 @@ func BuildRouter(ctx context.Context, opts *Options) (chi.Router, *ws.Hub, error
 	if opts.Launch != nil {
 		opts.Launch.Hub = opts.Hub
 	}
-	wireBrowserHub(opts, hub)
 
 	r := chi.NewRouter()
 	r.Use(chimiddleware.Recoverer)

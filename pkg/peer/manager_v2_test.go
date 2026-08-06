@@ -2,35 +2,17 @@ package peer
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/anh-chu/termyard/pkg/identity"
-	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/state"
 )
 
-func makeV2Manager(t *testing.T) *Manager {
-	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	_ = os.MkdirAll(filepath.Join(t.TempDir(), ".config", "termyard"), 0o700)
-	id, err := identity.Generate("test-node")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ps, err := identity.NewPeerStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return NewManager(id, ps)
-}
-
 func TestUnregisterPeerConn_StaleCannotReplaceLive(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	remoteID, err := identity.Generate("remote")
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +44,7 @@ func TestUnregisterPeerConn_StaleCannotReplaceLive(t *testing.T) {
 }
 
 func TestRemoteCatalog_ReplaceNotMerge(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "remotea"
 	owner := state.OwnerIDFromFingerprint(peerID) // owner must match the authenticated peer
 	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
@@ -94,7 +76,7 @@ func TestRemoteCatalog_ReplaceNotMerge(t *testing.T) {
 }
 
 func TestRemoteCatalog_PreservedThroughReconnect(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	remoteID, err := identity.Generate("remote")
 	if err != nil {
 		t.Fatal(err)
@@ -145,72 +127,35 @@ func TestRemoteCatalog_PreservedThroughReconnect(t *testing.T) {
 	}
 }
 
-func TestGetAllSessions_DefensiveCopy(t *testing.T) {
-	mgr := makeV2Manager(t)
+func TestGetHosts_TwoHostsAfterRegister(t *testing.T) {
+	mgr := makeTestManager(t)
 	remoteID, err := identity.Generate("remote")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fp := remoteID.Fingerprint()
 	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, NewPeerConnection(fp, 64))
-	mgr.UpdatePeerSessions(fp, []*model.Session{{Name: "alpha"}})
-
-	all := mgr.GetAllSessions()
-	if len(all) != 1 {
-		t.Fatalf("expected 1 session, got %d", len(all))
-	}
-	all[0].Name = "mutated"
-
-	all2 := mgr.GetAllSessions()
-	if all2[0].Name != "alpha" {
-		t.Fatalf("mutation leaked into manager: got %q", all2[0].Name)
-	}
-}
-
-func TestGetHosts_DefensiveCopy(t *testing.T) {
-	mgr := makeV2Manager(t)
-	remoteID, err := identity.Generate("remote")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fp := remoteID.Fingerprint()
-	mgr.RegisterPeer(fp, "remote", remoteID.PublicKey, NewPeerConnection(fp, 64))
-	mgr.UpdatePeerSessions(fp, []*model.Session{{Name: "alpha"}})
 
 	hosts := mgr.GetHosts()
 	if len(hosts) != 2 { // local + remote
 		t.Fatalf("expected 2 hosts, got %d", len(hosts))
 	}
-	for i := range hosts {
-		if hosts[i].ID == fp && len(hosts[i].Sessions) > 0 {
-			hosts[i].Sessions[0].Name = "mutated"
-		}
-	}
-
-	hosts2 := mgr.GetHosts()
-	for _, h := range hosts2 {
-		if h.ID == fp && len(h.Sessions) > 0 {
-			if h.Sessions[0].Name != "alpha" {
-				t.Fatalf("GetHosts session mutation leaked: %q", h.Sessions[0].Name)
-			}
-		}
-	}
 }
 
-func TestHandleV2CatalogSnapshot_UpdatesCache(t *testing.T) {
-	mgr := makeV2Manager(t)
+func TestHandleCatalogSnapshot_UpdatesCache(t *testing.T) {
+	mgr := makeTestManager(t)
 	peerID := "remotea"
 	// Owner must equal the authenticated peer identity (peerID).
 	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
 	s1 := state.LocalSessionRecord{ID: sessionID, Owner: owner, Ref: state.SessionRef{Owner: owner, Session: sessionID}}
 
-	payload := V2CatalogSnapshotPayload{
+	payload := CatalogSnapshotPayload{
 		Owner:    owner,
 		Revision: 1,
 		Sessions: []state.LocalSessionRecord{s1},
 	}
-	msg, err := NewMessage(MsgV2CatalogSnapshot, payload)
+	msg, err := NewMessage(MsgCatalogSnapshot, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +164,7 @@ func TestHandleV2CatalogSnapshot_UpdatesCache(t *testing.T) {
 	deps := SessionDeps{Manager: mgr}
 
 	// DEBUG: verify payload marshals/unmarshals correctly
-	var p V2CatalogSnapshotPayload
+	var p CatalogSnapshotPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		t.Fatalf("payload unmarshal failed: %v", err)
 	}
@@ -227,7 +172,7 @@ func TestHandleV2CatalogSnapshot_UpdatesCache(t *testing.T) {
 		t.Fatalf("payload mismatch after unmarshal: owner=%v, sessions=%+v", p.Owner, p.Sessions)
 	}
 
-	handleV2Message(peerID, msg, pc, deps, testLogger(t))
+	handleCommandMessage(peerID, msg, pc, deps, testLogger(t))
 
 	snap, ok := mgr.RemoteCatalogSnapshot(owner)
 	if !ok {
@@ -238,14 +183,14 @@ func TestHandleV2CatalogSnapshot_UpdatesCache(t *testing.T) {
 	}
 }
 
-func TestHandleV2CommandReply_DeliversToWaiter(t *testing.T) {
-	mgr := makeV2Manager(t)
+func TestHandleCommandReply_DeliversToWaiter(t *testing.T) {
+	mgr := makeTestManager(t)
 	peerID := "peer-a"
 	pc := NewPeerConnection(peerID, 8)
 	done := make(chan commandResult, 1)
 	mgr.registerCommandWaiter("cmd-1", peerID, pc, done)
 
-	mgr.deliverCommandReply(peerID, pc, V2CommandReplyPayload{ID: "cmd-1", Handled: true})
+	mgr.deliverCommandReply(peerID, pc, CommandReplyPayload{ID: "cmd-1", Handled: true})
 
 	select {
 	case res := <-done:
@@ -257,13 +202,13 @@ func TestHandleV2CommandReply_DeliversToWaiter(t *testing.T) {
 	}
 }
 
-// TestHandleV2CommandReply_WrongPeerRejected proves that a reply arriving
+// TestHandleCommandReply_WrongPeerRejected proves that a reply arriving
 // from a different authenticated peer (or a different connection for the
 // same peer, e.g. a stale/superseded connection) cannot satisfy another
 // peer's in-flight command waiter, even if it guesses/replays the exact
 // CommandID.
-func TestHandleV2CommandReply_WrongPeerRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+func TestHandleCommandReply_WrongPeerRejected(t *testing.T) {
+	mgr := makeTestManager(t)
 	victimPeer := "peer-victim"
 	victimConn := NewPeerConnection(victimPeer, 8)
 	done := make(chan commandResult, 1)
@@ -272,14 +217,14 @@ func TestHandleV2CommandReply_WrongPeerRejected(t *testing.T) {
 	// A different authenticated peer attempts to satisfy the victim's waiter.
 	attackerPeer := "peer-attacker"
 	attackerConn := NewPeerConnection(attackerPeer, 8)
-	if delivered := mgr.deliverCommandReply(attackerPeer, attackerConn, V2CommandReplyPayload{ID: "cmd-shared", Handled: true}); delivered {
+	if delivered := mgr.deliverCommandReply(attackerPeer, attackerConn, CommandReplyPayload{ID: "cmd-shared", Handled: true}); delivered {
 		t.Fatal("expected reply from a different peer to be rejected")
 	}
 
 	// The same peer identity but a different (stale/superseded) connection
 	// must also be rejected.
 	staleConn := NewPeerConnection(victimPeer, 8)
-	if delivered := mgr.deliverCommandReply(victimPeer, staleConn, V2CommandReplyPayload{ID: "cmd-shared", Handled: true}); delivered {
+	if delivered := mgr.deliverCommandReply(victimPeer, staleConn, CommandReplyPayload{ID: "cmd-shared", Handled: true}); delivered {
 		t.Fatal("expected reply from a stale connection of the same peer to be rejected")
 	}
 
@@ -290,7 +235,7 @@ func TestHandleV2CommandReply_WrongPeerRejected(t *testing.T) {
 	}
 
 	// The legitimate reply from the correct peer/connection still works.
-	if delivered := mgr.deliverCommandReply(victimPeer, victimConn, V2CommandReplyPayload{ID: "cmd-shared", Handled: true}); !delivered {
+	if delivered := mgr.deliverCommandReply(victimPeer, victimConn, CommandReplyPayload{ID: "cmd-shared", Handled: true}); !delivered {
 		t.Fatal("expected reply from the correct peer/connection to be delivered")
 	}
 	select {
@@ -303,29 +248,13 @@ func TestHandleV2CommandReply_WrongPeerRejected(t *testing.T) {
 	}
 }
 
-func TestLocalCapabilities_IncludesV2(t *testing.T) {
-	deps := SessionDeps{V2CommandSvc: &state.SessionCommandService{}}
-	for _, c := range capabilitiesFor(deps) {
-		if c == CapV2Catalog {
-			return
-		}
-	}
-	t.Fatal("expected CapV2Catalog in capabilitiesFor when v2 command service is set")
-}
+// Capability advertisement is covered by TestLocalCapabilities_AlwaysAdvertisesCanonicalCaps
+// and TestPeerCapsSatisfyCanonical in capability_gate_test.go.
 
-func TestLocalCapabilities_ExcludesV2WhenDisabled(t *testing.T) {
-	deps := SessionDeps{}
-	for _, c := range capabilitiesFor(deps) {
-		if c == CapV2Catalog || c == CapV2Command {
-			t.Fatalf("expected no v2 capabilities when V2CommandSvc is nil, got %q", c)
-		}
-	}
-}
-
-// TestLegacyPeer_NoV2CatalogFrame proves a peer that never advertises v2
+// TestLegacyPeer_NoCatalogFrame proves a peer that never advertises v2
 // capabilities gets no v2 catalog slot frame.
-func TestLegacyPeer_NoV2CatalogFrame(t *testing.T) {
-	mgr := makeV2Manager(t)
+func TestLegacyPeer_NoCatalogFrame(t *testing.T) {
+	mgr := makeTestManager(t)
 	peerID := "legacya"
 	pc := NewPeerConnection(peerID, 8)
 	pc.Caps = []string{CapPerStream, CapUpload} // no v2 caps
@@ -334,7 +263,7 @@ func TestLegacyPeer_NoV2CatalogFrame(t *testing.T) {
 	deps := SessionDeps{Manager: mgr}
 
 	// No v2 catalog slot frame should be produced for legacy peers.
-	sendInitialV2Catalog(pc, deps)
+	sendInitialCatalog(pc, deps)
 	select {
 	case <-pc.LoLane():
 		t.Fatal("unexpected v2 catalog frame for legacy peer")
@@ -350,7 +279,7 @@ func testLogger(t *testing.T) *logrus.Entry {
 // exactly one owner and no two peers may share an owner: a peer switching
 // owners or a second peer claiming a bound owner is dropped.
 func TestRemoteSnapshot_OwnerBindingEnforced(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	idA, err := identity.Generate("peer-a")
 	if err != nil {
 		t.Fatal(err)
@@ -415,7 +344,7 @@ func TestRemoteSnapshot_OwnerBindingEnforced(t *testing.T) {
 }
 
 func TestRemoteCatalog_StaleRevisionRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	s1 := state.LocalSessionRecord{ID: "s1", Owner: owner, Ref: state.SessionRef{Owner: owner, Session: "s1"}}
@@ -452,7 +381,7 @@ func TestRemoteCatalog_StaleRevisionRejected(t *testing.T) {
 }
 
 func TestRemoteWorkspace_StaleRevisionRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	leafA := state.Leaf(state.SessionRef{Owner: owner, Session: "s1"})
@@ -486,7 +415,7 @@ func TestRemoteWorkspace_StaleRevisionRejected(t *testing.T) {
 }
 
 func TestRemoveHost_ForgetsRemoteCatalogPersists(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	dir := t.TempDir()
 	store, err := state.OpenStore(dir, mgr.localID, state.StoreOptions{})
 	if err != nil {
@@ -528,7 +457,7 @@ func TestRemoveHost_ForgetsRemoteCatalogPersists(t *testing.T) {
 // TestRemoteSnapshot_SpoofedSessionOwnerRejected proves that a snapshot
 // containing a session with embedded owner != snap.Owner is rejected.
 func TestRemoteSnapshot_SpoofedSessionOwnerRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
@@ -558,7 +487,7 @@ func TestRemoteSnapshot_SpoofedSessionOwnerRejected(t *testing.T) {
 // TestRemoteSnapshot_SpoofedLayoutOwnerRejected proves that a snapshot
 // containing a layout with embedded owner != snap.Owner is rejected.
 func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
@@ -591,7 +520,7 @@ func TestRemoteSnapshot_SpoofedLayoutOwnerRejected(t *testing.T) {
 // Ref.Owner is a different (foreign) owner is rejected. The leaf's owner must
 // be bound to the snapshot owner, not just its session ID.
 func TestRemoteSnapshot_LayoutLeafForeignOwnerRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
@@ -631,7 +560,7 @@ func TestRemoteSnapshot_LayoutLeafForeignOwnerRejected(t *testing.T) {
 // record whose Owner matches snap.Owner but whose embedded Ref.Owner is a
 // different owner is rejected.
 func TestRemoteSnapshot_SessionRefOwnerMismatchRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
@@ -662,7 +591,7 @@ func TestRemoteSnapshot_SessionRefOwnerMismatchRejected(t *testing.T) {
 // mismatches (session Owner, session Ref.Owner, layout leaf Ref.Owner all
 // bound to snap.Owner) is still accepted, guarding against false positives.
 func TestRemoteSnapshot_WellFormedAccepted(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	sessionID := state.NewSessionID()
@@ -702,7 +631,7 @@ func TestRemoteSnapshot_WellFormedAccepted(t *testing.T) {
 // TestRemoteWorkspace_SpoofedLeafOwnerRejected proves that a workspace
 // containing a leaf SessionRef with embedded owner != rec.Owner is rejected.
 func TestRemoteWorkspace_SpoofedLeafOwnerRejected(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 	ownerSpoof := state.OwnerID("ownerx")
@@ -729,7 +658,7 @@ func TestRemoteWorkspace_SpoofedLeafOwnerRejected(t *testing.T) {
 // out of order within one connection (10, 8, 11) result in 11 being accepted
 // as authoritative, never regressing to 8.
 func TestRemoteSnapshot_OutOfOrderDelivery(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "peera"
 	owner := state.OwnerIDFromFingerprint(peerID)
 
@@ -777,7 +706,7 @@ func TestRemoteSnapshot_OutOfOrderDelivery(t *testing.T) {
 // connection (generation) allows the same revision counter to be re-accepted,
 // and even lower revisions if they are authoritative from a fresh connection.
 func TestRemoteSnapshot_NewGenerationAcceptsLowerRevision(t *testing.T) {
-	mgr := makeV2Manager(t)
+	mgr := makeTestManager(t)
 	remoteID, err := identity.Generate("remote")
 	if err != nil {
 		t.Fatal(err)

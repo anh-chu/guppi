@@ -32,7 +32,6 @@ type HostState struct {
 	Version    string
 	PublicKey  string
 	Address    string // network address (empty for local)
-	Sessions   []*model.Session
 	Stats      map[string]interface{}
 	Activity   []*activity.Snapshot
 	ToolEvents []*toolevents.Event
@@ -92,9 +91,9 @@ func NewPeerConnection(hostID string, bufSize int) *PeerConnection {
 	}
 }
 
-// initV2Lazy lazily initializes v2 slots/queue. It is safe to call multiple
+// initSlotsLazy lazily initializes v2 slots/queue. It is safe to call multiple
 // times because a real PeerConnection is created once per connection.
-func (pc *PeerConnection) initV2Lazy() {
+func (pc *PeerConnection) initSlotsLazy() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	if pc.catalogSlot == nil {
@@ -183,7 +182,7 @@ type Manager struct {
 	identity  *identity.Identity
 	peerStore *identity.PeerStore
 	// v2Catalog is this node's own v2 catalog, wired explicitly via
-	// SetV2Catalog.
+	// SetCatalog.
 	v2Catalog *state.Catalog
 
 	// Subscribers for peer connect/disconnect and rename notifications.
@@ -310,10 +309,10 @@ func NewManager(id *identity.Identity, peerStore *identity.PeerStore) *Manager {
 	return m
 }
 
-// SetV2Catalog wires this node's own v2 catalog. It is decoupled from
+// SetCatalog wires this node's own v2 catalog. It is decoupled from
 // localMgr: v2 mode never constructs a legacy state.Manager, so this is the
 // only way Manager learns whether v2 is active and what its local catalog is.
-func (m *Manager) SetV2Catalog(cat *state.Catalog) {
+func (m *Manager) SetCatalog(cat *state.Catalog) {
 	m.v2Catalog = cat
 }
 
@@ -389,26 +388,6 @@ func (m *Manager) broadcast(evt StateEvent) {
 	}
 }
 
-// GetAllSessions returns sessions from all hosts, with host fields stamped.
-// The returned slice and session values are copies so callers cannot mutate
-// internal manager state.
-func (m *Manager) GetAllSessions() []*model.Session {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var all []*model.Session
-	for _, h := range m.hosts {
-		for _, s := range h.Sessions {
-			copyS := copySession(s)
-			copyS.Host = h.ID
-			copyS.HostName = h.Name
-			copyS.HostOnline = h.Connected
-			all = append(all, copyS)
-		}
-	}
-	return all
-}
-
 func copySession(s *model.Session) *model.Session {
 	if s == nil {
 		return nil
@@ -447,10 +426,6 @@ func (m *Manager) GetHosts() []HostInfo {
 
 	hosts := make([]HostInfo, 0, len(m.hosts))
 	for _, h := range m.hosts {
-		sessions := make([]*model.Session, len(h.Sessions))
-		for i, s := range h.Sessions {
-			sessions[i] = copySession(s)
-		}
 		owner, _ := m.ownerIDForPeerLocked(h.ID)
 		hosts = append(hosts, HostInfo{
 			ID:       h.ID,
@@ -460,7 +435,7 @@ func (m *Manager) GetHosts() []HostInfo {
 			Local:    h.ID == m.localID,
 			Online:   h.Connected,
 			Address:  h.Address,
-			Sessions: sessions,
+			Sessions: []*model.Session{},
 			Activity: h.Activity,
 			Stats:    h.Stats,
 			LastSeen: h.LastSeen,
@@ -488,7 +463,7 @@ func (m *Manager) GetHostsForPeer(remotePeerID string) []HostInfo {
 		Local:    true,
 		Online:   h.Connected,
 		Address:  h.Address,
-		Sessions: h.Sessions,
+		Sessions: []*model.Session{},
 		Activity: h.Activity,
 		Stats:    h.Stats,
 		LastSeen: h.LastSeen,
@@ -1249,7 +1224,7 @@ func (m *Manager) IsWorkspaceOwnerOnline(owner state.OwnerID) bool {
 		return false
 	}
 	pc := m.GetPeerConnection(peerID)
-	return pc != nil && pc.HasV2()
+	return pc != nil && pc.HasCanonicalCaps()
 }
 
 // ProxyWorkspaceCommand routes a workspace command to the layout's owner.
@@ -1271,7 +1246,7 @@ func (m *Manager) ProxyWorkspaceCommand(ctx context.Context, cmd state.Workspace
 	if pc == nil {
 		return state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "owner", Detail: fmt.Sprintf("workspace owner %q is offline", owner)}
 	}
-	if !pc.HasV2() {
+	if !pc.HasCanonicalCaps() {
 		return state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %q does not support v2 workspace commands", peerID)}
 	}
 	return m.SendWorkspaceCommand(ctx, peerID, cmd)
@@ -1295,7 +1270,7 @@ func (m *Manager) RequestRemoteCreate(ctx context.Context, owner state.OwnerID, 
 	if pc == nil {
 		return state.RemoteCreateResult{}, state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "owner", Detail: fmt.Sprintf("workspace owner %q is offline", owner)}
 	}
-	if !pc.HasV2() {
+	if !pc.HasCanonicalCaps() {
 		return state.RemoteCreateResult{}, state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %q does not support v2 remote creates", peerID)}
 	}
 	return m.SendRemoteCreate(ctx, peerID, req)
@@ -1311,7 +1286,7 @@ func (m *Manager) peerIDForOwner(owner state.OwnerID) string {
 }
 
 // PeerIDForOwner is the exported form of peerIDForOwner, used by route
-// handlers outside this package (e.g. handleV2SessionCommand) to resolve
+// handlers outside this package (e.g. routes_sessions.go rename/kill handlers) to resolve
 // which live peer connection currently owns a given remote catalog owner,
 // so a v2 session command targeting that owner can be forwarded via
 // SendCommand instead of executed locally. Returns "" if no peer is
@@ -1442,25 +1417,6 @@ func cloneOwnerCatalogSnapshot(s state.OwnerCatalogSnapshot) state.OwnerCatalogS
 		Revision: s.Revision,
 		Sessions: sessions,
 		Layouts:  layouts,
-	}
-}
-
-// UpdatePeerSessions updates a peer's session list
-func (m *Manager) UpdatePeerSessions(id string, sessions []*model.Session) {
-	m.mu.Lock()
-	h, ok := m.hosts[id]
-	if ok {
-		h.Sessions = sessions
-		h.LastSeen = time.Now()
-	}
-	m.mu.Unlock()
-
-	if ok {
-		m.broadcast(StateEvent{
-			Type:     "sessions-changed",
-			Host:     id,
-			HostName: h.Name,
-		})
 	}
 }
 

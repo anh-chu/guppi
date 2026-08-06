@@ -52,7 +52,7 @@ type commandWaiter struct {
 }
 
 type commandResult struct {
-	payload V2CommandReplyPayload
+	payload CommandReplyPayload
 	err     error
 }
 
@@ -62,17 +62,17 @@ type commandResult struct {
 type reliableCommandQueue struct {
 	mu     sync.Mutex
 	closed bool
-	ch     chan *V2CommandRequestPayload
+	ch     chan *CommandRequestPayload
 }
 
 func newReliableCommandQueue(depth int) *reliableCommandQueue {
 	if depth < 0 {
 		depth = 32
 	}
-	return &reliableCommandQueue{ch: make(chan *V2CommandRequestPayload, depth)}
+	return &reliableCommandQueue{ch: make(chan *CommandRequestPayload, depth)}
 }
 
-func (q *reliableCommandQueue) enqueue(req *V2CommandRequestPayload) bool {
+func (q *reliableCommandQueue) enqueue(req *CommandRequestPayload) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
@@ -96,51 +96,51 @@ func (q *reliableCommandQueue) close() {
 	close(q.ch)
 }
 
-// V2CommandSender is the subset of PeerConnection needed to send v2 commands.
+// CommandSender is the subset of PeerConnection needed to send v2 commands.
 // mailto:it exists so tests can stub the transport.
-type V2CommandSender interface {
+type CommandSender interface {
 	HostID() string
-	enqueueCommand(req *V2CommandRequestPayload) bool
+	enqueueCommand(req *CommandRequestPayload) bool
 }
 
 // PeerConnection v2 extensions.
 
-func (pc *PeerConnection) initV2() {
+func (pc *PeerConnection) initSlots() {
 	pc.catalogSlot = newSnapshotSlot()
 	pc.workspaceSlot = newSnapshotSlot()
 	pc.cmdQueue = newReliableCommandQueue(32)
 }
 
-func (pc *PeerConnection) enqueueCommand(req *V2CommandRequestPayload) bool {
+func (pc *PeerConnection) enqueueCommand(req *CommandRequestPayload) bool {
 	return pc.cmdQueue.enqueue(req)
 }
 
-// EnqueueV2CatalogSnapshot queues the latest catalog snapshot into the
+// EnqueueCatalogSnapshot queues the latest catalog snapshot into the
 // coalescing snapshot slot. It returns false if the connection is closed.
-func (pc *PeerConnection) EnqueueV2CatalogSnapshot(msg *Message) bool {
+func (pc *PeerConnection) EnqueueCatalogSnapshot(msg *Message) bool {
 	if pc.catalogSlot == nil {
 		return false
 	}
 	return pc.catalogSlot.swap(msg)
 }
 
-// EnqueueV2WorkspaceSnapshot queues the latest workspace snapshot into the
+// EnqueueWorkspaceSnapshot queues the latest workspace snapshot into the
 // coalescing snapshot slot.
-func (pc *PeerConnection) EnqueueV2WorkspaceSnapshot(msg *Message) bool {
+func (pc *PeerConnection) EnqueueWorkspaceSnapshot(msg *Message) bool {
 	if pc.workspaceSlot == nil {
 		return false
 	}
 	return pc.workspaceSlot.swap(msg)
 }
 
-// HasV2 reports whether the peer advertised v2 catalog/command capabilities.
-func (pc *PeerConnection) HasV2() bool {
-	return pc.HasCapability(CapV2Catalog) && pc.HasCapability(CapV2Command)
+// HasCanonicalCaps reports whether the peer advertised v2 catalog/command capabilities.
+func (pc *PeerConnection) HasCanonicalCaps() bool {
+	return pc.HasCapability(CapCatalogV1) && pc.HasCapability(CapCommandV1)
 }
 
-// runV2Writers starts the snapshot emitters and command sender for this
+// runCommandWriters starts the snapshot emitters and command sender for this
 // connection. It returns when all writers exit.
-func runV2Writers(ctx context.Context, pc *PeerConnection, log *logrus.Entry) {
+func runCommandWriters(ctx context.Context, pc *PeerConnection, log *logrus.Entry) {
 	var wg sync.WaitGroup
 
 	if pc.catalogSlot != nil {
@@ -184,7 +184,7 @@ func runCommandSender(ctx context.Context, pc *PeerConnection, log *logrus.Entry
 			if !ok {
 				return
 			}
-			msg, err := NewMessage(MsgV2CommandRequest, req)
+			msg, err := NewMessage(MsgCommandRequest, req)
 			if err != nil {
 				log.WithError(err).Debug("failed to marshal v2 command request")
 				continue
@@ -208,7 +208,7 @@ func runCommandSender(ctx context.Context, pc *PeerConnection, log *logrus.Entry
 // ErrCommandQueueFull immediately.
 func (m *Manager) SendCommand(ctx context.Context, peerID string, cmd state.SessionCommand) (state.CommandResult, error) {
 	var result state.CommandResult
-	reqPayload, err := buildV2CommandRequest(cmd)
+	reqPayload, err := buildCommandRequest(cmd)
 	if err != nil {
 		return result, err
 	}
@@ -219,7 +219,7 @@ func (m *Manager) SendCommand(ctx context.Context, peerID string, cmd state.Sess
 	if pc == nil {
 		return result, fmt.Errorf("peer %s: %w", peerID, errors.New("no live connection"))
 	}
-	if !pc.HasV2() {
+	if !pc.HasCanonicalCaps() {
 		return result, fmt.Errorf("peer %s: %w", peerID, errors.New("v2 command not supported"))
 	}
 
@@ -262,7 +262,7 @@ func (m *Manager) SendCommand(ctx context.Context, peerID string, cmd state.Sess
 // is) a state.StateError, its Code/Field/Detail are preserved alongside the
 // plain message so the receiving side can reconstruct the real typed error
 // (see replyError) instead of losing it to an opaque string over the wire.
-func setReplyError(reply *V2CommandReplyPayload, err error) {
+func setReplyError(reply *CommandReplyPayload, err error) {
 	reply.Error = err.Error()
 	var se state.StateError
 	if errors.As(err, &se) {
@@ -280,7 +280,7 @@ func setReplyError(reply *V2CommandReplyPayload, err error) {
 // error crossed a peer RPC boundary. Falls back to a plain error for
 // non-StateError failures or replies without a structured code (e.g. from
 // an older peer).
-func replyError(reply V2CommandReplyPayload) error {
+func replyError(reply CommandReplyPayload) error {
 	if reply.Error == "" {
 		return nil
 	}
@@ -290,14 +290,14 @@ func replyError(reply V2CommandReplyPayload) error {
 	return errors.New(reply.Error)
 }
 
-func buildV2CommandRequest(cmd state.SessionCommand) (*V2CommandRequestPayload, error) {
+func buildCommandRequest(cmd state.SessionCommand) (*CommandRequestPayload, error) {
 	data, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, err
 	}
-	return &V2CommandRequestPayload{
+	return &CommandRequestPayload{
 		ID:      string(cmd.ID),
-		Kind:    V2CommandKindSession,
+		Kind:    CommandKindSession,
 		Command: data,
 	}, nil
 }
@@ -305,7 +305,7 @@ func buildV2CommandRequest(cmd state.SessionCommand) (*V2CommandRequestPayload, 
 // SendWorkspaceCommand executes a reliable workspace-command RPC to peerID.
 // It returns a typed error on rejection or transport failure.
 func (m *Manager) SendWorkspaceCommand(ctx context.Context, peerID string, cmd state.WorkspaceCommand) error {
-	reqPayload, err := buildV2WorkspaceCommandRequest(cmd)
+	reqPayload, err := buildWorkspaceCommandRequest(cmd)
 	if err != nil {
 		return err
 	}
@@ -316,7 +316,7 @@ func (m *Manager) SendWorkspaceCommand(ctx context.Context, peerID string, cmd s
 	if pc == nil {
 		return state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "peer_id", Detail: fmt.Sprintf("peer %s is offline", peerID)}
 	}
-	if !pc.HasV2() {
+	if !pc.HasCanonicalCaps() {
 		return state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %s does not support v2 workspace commands", peerID)}
 	}
 
@@ -348,14 +348,14 @@ func (m *Manager) SendWorkspaceCommand(ctx context.Context, peerID string, cmd s
 	}
 }
 
-func buildV2WorkspaceCommandRequest(cmd state.WorkspaceCommand) (*V2CommandRequestPayload, error) {
+func buildWorkspaceCommandRequest(cmd state.WorkspaceCommand) (*CommandRequestPayload, error) {
 	data, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, err
 	}
-	return &V2CommandRequestPayload{
+	return &CommandRequestPayload{
 		ID:      string(cmd.ID),
-		Kind:    V2CommandKindWorkspace,
+		Kind:    CommandKindWorkspace,
 		Command: data,
 	}, nil
 }
@@ -363,7 +363,7 @@ func buildV2WorkspaceCommandRequest(cmd state.WorkspaceCommand) (*V2CommandReque
 // SendRemoteCreate executes a reliable remote-create RPC to peerID.
 func (m *Manager) SendRemoteCreate(ctx context.Context, peerID string, req state.RemoteCreateRequest) (state.RemoteCreateResult, error) {
 	var result state.RemoteCreateResult
-	reqPayload, err := buildV2RemoteCreateRequest(req)
+	reqPayload, err := buildRemoteCreateRequest(req)
 	if err != nil {
 		return result, err
 	}
@@ -374,7 +374,7 @@ func (m *Manager) SendRemoteCreate(ctx context.Context, peerID string, req state
 	if pc == nil {
 		return result, state.StateError{Code: state.ErrWorkspaceOwnerOffline, Field: "peer_id", Detail: fmt.Sprintf("peer %s is offline", peerID)}
 	}
-	if !pc.HasV2() {
+	if !pc.HasCanonicalCaps() {
 		return result, state.StateError{Code: state.ErrLegacyPeerUnsupported, Field: "peer_id", Detail: fmt.Sprintf("peer %s does not support v2 remote creates", peerID)}
 	}
 
@@ -409,14 +409,14 @@ func (m *Manager) SendRemoteCreate(ctx context.Context, peerID string, req state
 	}
 }
 
-func buildV2RemoteCreateRequest(req state.RemoteCreateRequest) (*V2CommandRequestPayload, error) {
+func buildRemoteCreateRequest(req state.RemoteCreateRequest) (*CommandRequestPayload, error) {
 	data, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-	return &V2CommandRequestPayload{
+	return &CommandRequestPayload{
 		ID:      string(req.IntentID),
-		Kind:    V2CommandKindRemoteCreate,
+		Kind:    CommandKindRemoteCreate,
 		Command: data,
 	}, nil
 }
@@ -488,7 +488,7 @@ func (m *Manager) unregisterCommandWaiter(id, peerID string, conn *PeerConnectio
 // (the leader and any joiners for the exact same key) receives an
 // identical copy of the reply. It returns true if a waiter was found and
 // the reply was delivered to at least one subscriber.
-func (m *Manager) deliverCommandReply(peerID string, conn *PeerConnection, reply V2CommandReplyPayload) bool {
+func (m *Manager) deliverCommandReply(peerID string, conn *PeerConnection, reply CommandReplyPayload) bool {
 	w := m.takeCommandWaiter(peerID, conn, reply.ID)
 	if w == nil {
 		logrus.WithFields(logrus.Fields{

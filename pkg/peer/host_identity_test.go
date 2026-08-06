@@ -18,13 +18,13 @@ import (
 // recognized as local and was misrouted to handleRemoteSession with no live
 // peer connection to satisfy it.
 func TestResolveHostParam_LocalOwnerID(t *testing.T) {
-	mgr := makeTestV2Manager(t)
+	mgr := makeTestManager(t)
 	owner := state.NewOwnerID()
 	cat := state.NewCatalog(owner, nil)
 	if err := cat.Load(); err != nil {
 		t.Fatal(err)
 	}
-	mgr.SetV2Catalog(cat)
+	mgr.SetCatalog(cat)
 
 	peerID, isLocal := mgr.ResolveHostParam(string(owner))
 	if !isLocal || peerID != "" {
@@ -42,9 +42,9 @@ func TestResolveHostParam_LocalOwnerID(t *testing.T) {
 // routes compared the OwnerID directly against fingerprints via IsLocal /
 // GetPeerConnection, which never matched.
 func TestResolveHostParam_RemoteOwnerResolvesToLivePeerConnection(t *testing.T) {
-	mgr := makeTestV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "remote-node-b"
-	pc := newV2PeerConnection(peerID)
+	pc := newPeerConnectionWithCaps(peerID)
 	mgr.RegisterPeer(peerID, "node-b", "", pc)
 
 	owner := state.OwnerIDFromFingerprint(peerID)
@@ -70,9 +70,9 @@ func TestResolveHostParam_RemoteOwnerResolvesToLivePeerConnection(t *testing.T) 
 // keep working unchanged: when host does not resolve as any known OwnerID,
 // ResolveHostParam falls back to the legacy fingerprint interpretation.
 func TestResolveHostParam_LegacyFingerprintFallback(t *testing.T) {
-	mgr := makeTestV2Manager(t)
+	mgr := makeTestManager(t)
 	peerID := "legacy-peer"
-	pc := newV2PeerConnection(peerID)
+	pc := newPeerConnectionWithCaps(peerID)
 	mgr.RegisterPeer(peerID, "legacy", "", pc)
 
 	resolvedPeerID, isLocal := mgr.ResolveHostParam(peerID)
@@ -89,13 +89,13 @@ func TestResolveHostParam_LegacyFingerprintFallback(t *testing.T) {
 // OwnerID is the node's own v2 catalog owner, and a remote peer's OwnerID is
 // the canonical deterministic conversion of its fingerprint.
 func TestOwnerIDForPeer_ForwardMapping(t *testing.T) {
-	mgr := makeTestV2Manager(t)
+	mgr := makeTestManager(t)
 	owner := state.NewOwnerID()
 	cat := state.NewCatalog(owner, nil)
 	if err := cat.Load(); err != nil {
 		t.Fatal(err)
 	}
-	mgr.SetV2Catalog(cat)
+	mgr.SetCatalog(cat)
 
 	if got, ok := mgr.OwnerIDForPeer(mgr.LocalID()); !ok || got != owner {
 		t.Fatalf("OwnerIDForPeer(local) = (%q, %v), want (%q, true)", got, ok, owner)
@@ -114,13 +114,13 @@ func TestOwnerIDForPeer_ForwardMapping(t *testing.T) {
 // identity domain for target_owner / terminal-attach host params instead of
 // conflating the two.
 func TestGetHosts_IncludesOwnerID(t *testing.T) {
-	mgr := makeTestV2Manager(t)
+	mgr := makeTestManager(t)
 	owner := state.NewOwnerID()
 	cat := state.NewCatalog(owner, nil)
 	if err := cat.Load(); err != nil {
 		t.Fatal(err)
 	}
-	mgr.SetV2Catalog(cat)
+	mgr.SetCatalog(cat)
 
 	hosts := mgr.GetHosts()
 	var found bool

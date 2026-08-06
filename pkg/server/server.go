@@ -47,18 +47,6 @@ func setupHub(opts *Options) *ws.Hub {
 	return hub
 }
 
-// wireBrowserHub connects the peer subsystem's browser-facing broadcasts to
-// the WebSocket hub. There is no legacy session-attrs/order/group sync to
-// wire here -- that surface does not exist in the canonical architecture.
-func wireBrowserHub(opts *Options, hub *ws.Hub) {
-	if opts.LinkSupervisor != nil {
-		opts.LinkSupervisor.SetBrowserHub(hub)
-	}
-	if opts.PeerHandler != nil {
-		opts.PeerHandler.SetBrowserHub(hub)
-	}
-}
-
 func serveAndWait(ctx context.Context, opts *Options, logger *logrus.Entry, handler http.Handler) error {
 	srv := &http.Server{
 		Handler:           handler,

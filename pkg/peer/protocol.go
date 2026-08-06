@@ -14,10 +14,6 @@ import (
 const (
 	// MsgAuth is the challenge-response auth message
 	MsgAuth = "auth"
-	// MsgStateUpdate is a full session state snapshot
-	MsgStateUpdate = "state-update"
-	// MsgStateEvent is an incremental state change
-	MsgStateEvent = "state-event"
 	// MsgToolEvent forwards a local tool event
 	MsgToolEvent = "tool-event"
 	// MsgActivityUpdate sends periodic activity data
@@ -36,46 +32,21 @@ const (
 	MsgAuthOK = "auth-ok"
 	// MsgAuthFail indicates failed authentication
 	MsgAuthFail = "auth-fail"
-	// MsgPeerState is aggregated state from all other peers
-	MsgPeerState = "peer-state"
 	// MsgPeerConnected notifies that a new peer joined
 	MsgPeerConnected = "peer-connected"
 	// MsgPeerDisconnected notifies that a peer left
 	MsgPeerDisconnected = "peer-disconnected"
-	// MsgSessionAction forwards an API action to the peer
-	MsgSessionAction = "session-action"
-	// MsgRequestState asks the peer for a full state refresh
-	MsgRequestState = "request-state"
-	// MsgV2CatalogSnapshot carries a full v2 owner catalog snapshot.
-	MsgV2CatalogSnapshot = "v2-catalog-snapshot"
-	// MsgV2WorkspaceSnapshot carries a full v2 owner workspace snapshot.
-	MsgV2WorkspaceSnapshot = "v2-workspace-snapshot"
-	// MsgV2CommandRequest is a reliable command RPC request.
-	MsgV2CommandRequest = "v2-command-request"
-	// MsgV2CommandReply is a reliable command RPC reply.
-	MsgV2CommandReply = "v2-command-reply"
+	// MsgCatalogSnapshot carries a full owner catalog snapshot.
+	MsgCatalogSnapshot = "catalog-snapshot"
+	// MsgWorkspaceSnapshot carries a full owner workspace snapshot.
+	MsgWorkspaceSnapshot = "workspace-snapshot"
+	// MsgCommandRequest is a reliable command RPC request.
+	MsgCommandRequest = "command-request"
+	// MsgCommandReply is a reliable command RPC reply.
+	MsgCommandReply = "command-reply"
 	// MsgForget notifies the receiver that the sender is forgetting them.
 	// Receiver should remove sender from its peer store and close the link.
 	MsgForget = "forget"
-	// MsgSessionAttrsSnapshot carries the full shared session-attribute map
-	// (background/hidden per session key) to a freshly-connected peer for
-	// per-key last-write-wins reconciliation.
-	MsgSessionAttrsSnapshot = "session-attrs-snapshot"
-	// MsgSessionAttrsDelta carries a single-key shared session-attribute
-	// update across paired peers. Per-key LWW by UpdatedAt.
-	MsgSessionAttrsDelta = "session-attrs-delta"
-	// MsgSessionOrderSnapshot carries the full shared session-order map
-	// (rank per session key) to a freshly-connected peer for per-key LWW
-	// reconciliation.
-	MsgSessionOrderSnapshot = "session-order-snapshot"
-	// MsgSessionOrderDelta carries a single-key shared session-order update
-	// across paired peers. Per-key LWW by UpdatedAt.
-	MsgSessionOrderDelta = "session-order-delta"
-	// MsgGroupSnapshot carries the full shared group map to a freshly-connected
-	// peer for field-level LWW reconciliation.
-	MsgGroupSnapshot = "group-snapshot"
-	// MsgGroupDelta carries a single group update across paired peers.
-	MsgGroupDelta = "group-delta"
 	// MsgCapturePane asks a peer to capture its primary pane's visible buffer.
 	MsgCapturePane = "capture-pane"
 )
@@ -111,27 +82,23 @@ const CapPerStream = "per-stream"
 // CapUpload advertises dedicated /ws/peer-stream file-upload connections.
 const CapUpload = "upload"
 
-// CapV2Catalog advertises v2 owner-catalog snapshot exchange.
-const CapV2Catalog = "v2-catalog"
+// CapCatalogV1 advertises owner-catalog snapshot exchange (v1 of the wire
+// contract).
+const CapCatalogV1 = "catalog-v1"
 
-// CapV2Command advertises the reliable v2 command RPC path.
-const CapV2Command = "v2-command"
+// CapCommandV1 advertises the reliable command RPC path (v1 of the wire
+// contract).
+const CapCommandV1 = "command-v1"
 
-// localCapabilities is what this build advertises in the hello.
-var localCapabilities = []string{CapPerStream, CapUpload}
+// localCapabilities is what this build always advertises in the hello: the
+// canonical state graph (catalog + command service) is the only runtime, so
+// CapCatalogV1/CapCommandV1 are unconditional, not deps-gated.
+var localCapabilities = []string{CapPerStream, CapUpload, CapCatalogV1, CapCommandV1}
 
-// capabilitiesFor returns the capability list to advertise for a given
-// SessionDeps. CapV2Catalog/CapV2Command are only included when the
-// command service was actually constructed and wired into deps -- the
-// canonical state graph is always constructed by the runtime, so in
-// practice this is unconditional, but the check stays narrow (deps-based,
-// not environment-based) since SessionDeps is also built by hand in tests.
+// capabilitiesFor returns the capability list to advertise. Every connected
+// node advertises the full canonical set unconditionally.
 func capabilitiesFor(deps SessionDeps) []string {
-	caps := append([]string(nil), localCapabilities...)
-	if deps.V2CommandSvc != nil {
-		caps = append(caps, CapV2Catalog, CapV2Command)
-	}
-	return caps
+	return append([]string(nil), localCapabilities...)
 }
 
 // hasCap reports whether caps contains the given capability string.
@@ -144,27 +111,19 @@ func hasCap(caps []string, cap string) bool {
 	return false
 }
 
-// requiresV2Peer reports whether this node is v2-only, meaning it must
-// reject peers that do not advertise both v2 capabilities: a v2-only node
-// has no legacy per-field state.Manager path left to fall back to for
-// catalog/workspace sync (see runtime.go's v2Mode gating), so a peer
-// without CapV2Catalog/CapV2Command cannot be synchronized with at all.
-func requiresV2Peer(deps SessionDeps) bool {
-	return deps.V2CommandSvc != nil
+// peerCapsSatisfyCanonical reports whether a remote peer's advertised
+// capabilities satisfy this node's mandatory requirement of both the
+// catalog and command RPC caps. Every connected peer must satisfy this --
+// there is no legacy fallback to degrade to.
+func peerCapsSatisfyCanonical(caps []string) bool {
+	return hasCap(caps, CapCatalogV1) && hasCap(caps, CapCommandV1)
 }
 
-// peerCapsSatisfyV2 reports whether a remote peer's advertised capabilities
-// satisfy this node's v2 requirement (both catalog and command RPC caps
-// present). Only meaningful when requiresV2Peer(deps) is true.
-func peerCapsSatisfyV2(caps []string) bool {
-	return hasCap(caps, CapV2Catalog) && hasCap(caps, CapV2Command)
-}
-
-// V2 command kinds carried by V2CommandRequestPayload.
+// Command kinds carried by CommandRequestPayload.
 const (
-	V2CommandKindSession      = "session"
-	V2CommandKindWorkspace    = "workspace"
-	V2CommandKindRemoteCreate = "remote_create"
+	CommandKindSession      = "session"
+	CommandKindWorkspace    = "workspace"
+	CommandKindRemoteCreate = "remote_create"
 )
 
 // Message is the envelope for all control WebSocket messages
@@ -190,19 +149,6 @@ type AuthOKPayload struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
-// StateUpdatePayload carries a full session snapshot from a peer
-type StateUpdatePayload struct {
-	Sessions []*model.Session `json:"sessions"`
-	Version  string           `json:"version,omitempty"`
-}
-
-// StateEventPayload carries an incremental state change
-type StateEventPayload struct {
-	EventType string `json:"event_type"` // session-added, session-removed, session-renamed, sessions-changed
-	Session   string `json:"session,omitempty"`
-	Data      any    `json:"data,omitempty"`
-}
-
 // ToolEventPayload wraps a tool event from a peer
 type ToolEventPayload struct {
 	Event *toolevents.Event `json:"event"`
@@ -218,25 +164,17 @@ type StatsPayload struct {
 	Stats map[string]interface{} `json:"stats"`
 }
 
-// PeerStatePayload is the aggregated state sent from hub to peers
-type PeerStatePayload struct {
-	Hosts []HostInfo `json:"hosts"`
-}
-
 // HostInfo represents a peer's state as seen by the hub.
 //
 // ID is the peer's transport identity (public key fingerprint) -- the key
-// used for peer-connection lookups (IsLocal, GetPeerConnection) and legacy
-// (pre-v2) model.Session.Host values. OwnerID is the v2 catalog authority
-// identity for this host (state.OwnerID) -- what v2 SessionRef.Owner values
-// and the target_owner wire field actually carry. The two are related but
-// NOT interchangeable: OwnerID is a different string encoding of a peer's
-// identity than its fingerprint (see state.OwnerIDFromFingerprint), so a
-// caller that needs to route a v2 command or terminal attach to this host
-// must use OwnerID, never ID, and vice versa for legacy/transport lookups.
-// OwnerID is empty when this node has no v2 catalog wired for that peer
-// (legacy-only mode, or a remote peer whose v2 catalog owner isn't known
-// yet).
+// used for peer-connection lookups (IsLocal, GetPeerConnection). OwnerID is
+// the canonical catalog authority identity for this host (state.OwnerID) --
+// what SessionRef.Owner values and the target_owner wire field actually
+// carry. The two are related but NOT interchangeable: OwnerID is a different
+// string encoding of a peer's identity than its fingerprint (see
+// state.OwnerIDFromFingerprint), so a caller that needs to route a command
+// or terminal attach to this host must use OwnerID, never ID, and vice versa
+// for transport-level lookups.
 type HostInfo struct {
 	ID       string                 `json:"id"` // public key fingerprint
 	OwnerID  string                 `json:"owner_id,omitempty"`
@@ -305,103 +243,30 @@ type FileReadResultPayload struct {
 	Error       string `json:"error,omitempty"`
 }
 
-// SessionAttr is the shared attribute set for one global session key. Mirrors
-// sessionattrs.Attr without importing that package into pkg/peer.
-type SessionAttr struct {
-	Background bool      `json:"background"`
-	Hidden     bool      `json:"hidden"`
-	ScheduleID string    `json:"schedule_id,omitempty"`
-	UpdatedAt  time.Time `json:"updated_at"`
-}
-
-// SessionAttrsSnapshotPayload carries the full attribute map to a peer.
-type SessionAttrsSnapshotPayload struct {
-	Origin string                 `json:"origin"` // node fingerprint that produced the change
-	Attrs  map[string]SessionAttr `json:"attrs"`
-}
-
-// SessionAttrsDeltaPayload carries a single-key attribute update.
-type SessionAttrsDeltaPayload struct {
-	Origin string      `json:"origin"`
-	Key    string      `json:"key"`
-	Attr   SessionAttr `json:"attr"`
-}
-
-// SessionOrder is the shared rank set for one global session key.
-type SessionOrder struct {
-	Rank      string    `json:"rank"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// SessionOrderSnapshotPayload carries the full order map to a peer.
-type SessionOrderSnapshotPayload struct {
-	Origin string                  `json:"origin"`
-	Orders map[string]SessionOrder `json:"orders"`
-}
-
-// SessionOrderDeltaPayload carries a single-key order update.
-type SessionOrderDeltaPayload struct {
-	Origin string       `json:"origin"`
-	Key    string       `json:"key"`
-	Order  SessionOrder `json:"order"`
-}
-
-// Group is the wire form for one synced group record.
-type Group struct {
-	Tree              json.RawMessage `json:"tree"`
-	TreeUpdatedAt     time.Time       `json:"tree_updated_at"`
-	Name              string          `json:"name"`
-	NameUpdatedAt     time.Time       `json:"name_updated_at"`
-	NameMode          string          `json:"name_mode,omitempty"`
-	NameModeUpdatedAt time.Time       `json:"name_mode_updated_at,omitempty"`
-	Rank              string          `json:"rank"`
-	RankUpdatedAt     time.Time       `json:"rank_updated_at"`
-	DeletedAt         time.Time       `json:"deleted_at"`
-}
-
-// GroupSnapshotPayload carries the full group map to a peer.
-type GroupSnapshotPayload struct {
-	Origin string           `json:"origin"`
-	Groups map[string]Group `json:"groups"`
-}
-
-// GroupDeltaPayload carries a single group update.
-type GroupDeltaPayload struct {
-	Origin string `json:"origin"`
-	ID     string `json:"id"`
-	Group  Group  `json:"group"`
-}
-
-// SessionActionPayload forwards a session API action to a peer
-type SessionActionPayload struct {
-	Action string          `json:"action"` // new, rename, select-window
-	Params json.RawMessage `json:"params"`
-}
-
-// V2CatalogSnapshotPayload is the v2 wire form of state.OwnerCatalogSnapshot.
-type V2CatalogSnapshotPayload struct {
+// CatalogSnapshotPayload is the wire form of state.OwnerCatalogSnapshot.
+type CatalogSnapshotPayload struct {
 	Owner    state.OwnerID              `json:"owner"`
 	Revision int64                      `json:"revision"`
 	Sessions []state.LocalSessionRecord `json:"sessions"`
 	Layouts  []state.LayoutRecord       `json:"layouts,omitempty"`
 }
 
-// V2WorkspaceSnapshotPayload is the v2 wire form of a workspace snapshot.
-type V2WorkspaceSnapshotPayload struct {
+// WorkspaceSnapshotPayload is the wire form of a workspace snapshot.
+type WorkspaceSnapshotPayload struct {
 	Owner     state.OwnerID         `json:"owner"`
 	Revision  int64                 `json:"revision"`
 	Workspace state.WorkspaceRecord `json:"workspace"`
 }
 
-// V2CommandRequestPayload carries a reliable command RPC request.
+// CommandRequestPayload carries a reliable command RPC request.
 // ID is chosen by the caller and must be unique across retries.
-type V2CommandRequestPayload struct {
+type CommandRequestPayload struct {
 	ID      string          `json:"id"`
 	Kind    string          `json:"kind"` // "session" | "workspace"
 	Command json.RawMessage `json:"command"`
 }
 
-// V2CommandReplyPayload carries a reliable command RPC reply.
+// CommandReplyPayload carries a reliable command RPC reply.
 //
 // Error carries a human-readable message for logging/legacy compatibility.
 // When the failure originated from a state.StateError, ErrorCode/ErrorField/
@@ -411,7 +276,7 @@ type V2CommandRequestPayload struct {
 // even when the error crossed a peer RPC boundary. ErrorCode is empty for
 // non-StateError failures (and for replies from older peers), in which case
 // the receiving side falls back to a generic error.
-type V2CommandReplyPayload struct {
+type CommandReplyPayload struct {
 	ID          string          `json:"id"`
 	Result      json.RawMessage `json:"result,omitempty"`
 	Error       string          `json:"error,omitempty"`
