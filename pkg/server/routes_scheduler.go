@@ -140,9 +140,21 @@ func registerSchedulerRoutes(r chi.Router, opts *Options) {
 		if job.MaxConcurrency > 0 {
 			EnforceScheduleCap(opts, job.ID, job.MaxConcurrency-1)
 		}
+		// job.TargetOwner is an OwnerID (or, on a legacy-only node, a raw peer
+		// fingerprint -- see Job.TargetOwner's doc); sessionlaunch.Request.Host
+		// must carry a peer transport fingerprint (or "" for local), so resolve
+		// through the same ResolveHostParam accessor every other v2/legacy host
+		// param goes through (see routes_sessions.go's identical pattern).
+		targetHost := ""
+		if job.TargetOwner != "" && opts.PeerMgr != nil {
+			resolvedPeerID, isLocal := opts.PeerMgr.ResolveHostParam(string(job.TargetOwner))
+			if !isLocal {
+				targetHost = resolvedPeerID
+			}
+		}
 		res, err := opts.Launch.Create(r.Context(), sessionlaunch.Request{
 			Name:           name,
-			Host:           job.Host,
+			Host:           targetHost,
 			Path:           job.Path,
 			Command:        job.Command,
 			AgentType:      job.AgentType,

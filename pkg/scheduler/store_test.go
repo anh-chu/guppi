@@ -1,7 +1,9 @@
 package scheduler
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -119,5 +121,25 @@ func TestStoreMarkRan(t *testing.T) {
 	}
 	if updated.RunCount != 1 || !updated.LastRun.Equal(time.Unix(200, 0)) || !updated.NextRun.Equal(next) {
 		t.Fatalf("updated = %#v", updated)
+	}
+}
+
+// TestStoreLoadRejectsLegacyHostField proves a pre-rewrite schedules.json
+// record still carrying the old bare "host" fingerprint field is rejected
+// with a clear error at load time rather than silently reinterpreted as an
+// OwnerID (TargetOwner) or migrated automatically.
+func TestStoreLoadRejectsLegacyHostField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "schedules.json")
+	legacy := `[{"id":"job1","cron_spec":"* * * * *","host":"fp-remote","enabled":true}]`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &Store{path: path, jobs: map[string]Job{}}
+	err := s.load()
+	if err == nil {
+		t.Fatal("expected load to fail closed on legacy 'host' field")
+	}
+	if !strings.Contains(err.Error(), "legacy") || !strings.Contains(err.Error(), "job1") {
+		t.Fatalf("expected error to name the legacy field and job id, got: %v", err)
 	}
 }

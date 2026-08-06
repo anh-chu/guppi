@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"sort"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/anh-chu/termyard/pkg/peer"
 	"github.com/anh-chu/termyard/pkg/sessionattrs"
 	"github.com/anh-chu/termyard/pkg/sessionorder"
+	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/ws"
 )
 
@@ -249,8 +251,27 @@ func fanoutGroupDeltaToPeers(opts *Options, id string, g groupsync.Group) {
 // keep remain, killing oldest first (by creation time). For a pre-spawn
 // call pass max-1 to leave room for the incoming run; for an update-time prune
 // pass max. A negative keep is treated as unlimited and is a no-op.
+//
+// When the canonical v2 catalog/command service is wired (opts.V2Catalog /
+// opts.V2CommandSvc), enforcement queries the catalog directly by
+// ScheduleID (state.Catalog.SessionsByScheduleID) and kills excess sessions
+// by their stable SessionRef through the ordinary canonical kill command --
+// never by display name, and never through a separate attrs-store lookup.
+// This is the ONLY path in v2 mode: opts.AttrsStore is nil there (legacy
+// stores are not constructed in v2 mode), so the legacy branch below is a
+// no-op automatically and is kept solely for legacy-mode nodes, which have
+// no v2 catalog to query.
 func EnforceScheduleCap(opts *Options, scheduleID string, keep int) {
-	if opts == nil || opts.AttrsStore == nil || keep < 0 || scheduleID == "" {
+	if opts == nil || keep < 0 || scheduleID == "" {
+		return
+	}
+
+	if opts.V2Catalog != nil && opts.V2CommandSvc != nil {
+		enforceScheduleCapV2(opts, scheduleID, keep)
+		return
+	}
+
+	if opts.AttrsStore == nil {
 		return
 	}
 	keys := map[string]bool{}
@@ -289,6 +310,26 @@ func EnforceScheduleCap(opts *Options, scheduleID string, keep int) {
 		tagged = tagged[1:]
 		if err := opts.DaemonReg.Kill(victim.Name); err != nil {
 			logrus.WithError(err).WithField("session", victim.Name).Warn("schedule cap: kill daemon failed")
+		}
+	}
+}
+
+// enforceScheduleCapV2 is EnforceScheduleCap's canonical-catalog path: it
+// finds every local session tagged with scheduleID (ordered oldest-first)
+// and issues ordinary ActionKill commands against the oldest excess ones
+// through opts.V2CommandSvc, by SessionRef.
+func enforceScheduleCapV2(opts *Options, scheduleID string, keep int) {
+	tagged := opts.V2Catalog.SessionsByScheduleID(scheduleID)
+	for len(tagged) > keep {
+		victim := tagged[0]
+		tagged = tagged[1:]
+		_, err := opts.V2CommandSvc.ExecuteSessionCommand(context.Background(), state.SessionCommand{
+			ID:     state.NewCommandID(),
+			Ref:    victim.Ref,
+			Action: state.ActionKill,
+		})
+		if err != nil {
+			logrus.WithError(err).WithField("session", victim.Ref.MapKey()).Warn("schedule cap: v2 kill failed")
 		}
 	}
 }

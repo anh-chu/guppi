@@ -80,6 +80,20 @@ type LocalSessionRecord struct {
 	// Generation is the daemon generation identity used for stable binding and
 	// exact-generation termination/adoption (see reconciler.go).
 	Generation string `json:"generation,omitempty"`
+
+	// Hidden/Background are mutable presentation flags set via
+	// ActionSetPresentation (see session_commands.go). They carry the same
+	// semantics as the legacy sessionattrs.Attr fields of the same name, but
+	// live directly on the canonical record instead of a separate store.
+	Hidden     bool `json:"hidden,omitempty"`
+	Background bool `json:"background,omitempty"`
+
+	// ScheduleID, when non-empty, is the identity of the scheduler job that
+	// created this session (carried over from PendingCreateRecord.ScheduleID
+	// when the create completes). It lets schedule-cap enforcement query the
+	// canonical catalog directly by SessionRef instead of a separate
+	// display-name-keyed attribute store.
+	ScheduleID string `json:"schedule_id,omitempty"`
 }
 
 // WorkspaceRecord is the active workspace layout for an owner.
@@ -330,15 +344,15 @@ type CommandReceiptError struct {
 // MaxPendingCommands (see pruneReceipts in store.go), so idempotent replay is
 // only guaranteed within that window, not forever.
 type CommandReceipt struct {
-	ID       CommandID             `json:"id"`
-	IntentID CommandID             `json:"intent_id"`
-	Seq      int64                 `json:"seq"`
-	Created  time.Time             `json:"created_at"`
-	Kind     string                `json:"kind,omitempty"`
-	Target   string                `json:"target,omitempty"`
-	Status   string                `json:"status,omitempty"`
-	Result   json.RawMessage       `json:"result,omitempty"`
-	Error    *CommandReceiptError  `json:"error,omitempty"`
+	ID       CommandID            `json:"id"`
+	IntentID CommandID            `json:"intent_id"`
+	Seq      int64                `json:"seq"`
+	Created  time.Time            `json:"created_at"`
+	Kind     string               `json:"kind,omitempty"`
+	Target   string               `json:"target,omitempty"`
+	Status   string               `json:"status,omitempty"`
+	Result   json.RawMessage      `json:"result,omitempty"`
+	Error    *CommandReceiptError `json:"error,omitempty"`
 }
 
 // DecodeResult unmarshals the receipt's stored success payload into out. It
@@ -404,5 +418,3 @@ type WorkspaceCommand struct {
 	Action string          `json:"action"`
 	Params json.RawMessage `json:"params,omitempty"`
 }
-
-

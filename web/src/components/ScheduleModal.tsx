@@ -72,6 +72,17 @@ export function ScheduleModal({ onClose }: Props) {
   const localHost = useMemo(() => onlineHosts.find(host => host.local), [onlineHosts])
   const preferredHostId = localHost ? '' : (onlineHosts[0]?.id || '')
   const hostLabelById = useMemo(() => new Map(onlineHosts.map(host => [host.id, host.name])), [onlineHosts])
+  // The wire (Schedule.host / ScheduleForm.host, sent as target_owner --
+  // see useSchedules.ts's toWire/normalizeSchedule) carries a v2 catalog
+  // OwnerID when the target host has one, falling back to its raw peer
+  // fingerprint on a legacy-only node (state.OwnerID and the transport
+  // fingerprint are different, non-invertible identifier spaces -- see
+  // Host.owner_id's doc). hostId (component state, and every HostSelect
+  // option value) is always the fingerprint (`host.id`), so these maps
+  // translate between the two identity spaces at the wire boundary only.
+  const ownerIdByHostId = useMemo(() => new Map(onlineHosts.map(host => [host.id, host.owner_id || host.id])), [onlineHosts])
+  const hostIdByOwnerId = useMemo(() => new Map(onlineHosts.map(host => [host.owner_id || host.id, host.id])), [onlineHosts])
+  const hostLabelByOwnerId = useMemo(() => new Map(onlineHosts.map(host => [host.owner_id || host.id, host.name])), [onlineHosts])
 
   const defaultCommand = useMemo(() => {
     return agentPresets.find(option => option.id === (prefs.default_agent || 'claude'))?.command || prefs.default_agent || 'claude'
@@ -111,7 +122,7 @@ export function ScheduleModal({ onClose }: Props) {
     setWorktreeBranch(next.worktreeBranch || '')
     setMaxConcurrency(next.maxConcurrency || 0)
     setEnabled(next.enabled)
-    setHostId(next.host || '')
+    setHostId(next.host ? (hostIdByOwnerId.get(next.host) || next.host) : '')
     setError(null)
   }, [selectedId, schedules])
 
@@ -161,7 +172,7 @@ export function ScheduleModal({ onClose }: Props) {
     command: command.trim(),
     path: path.trim() || '~',
     agentType: preset || prefs.default_agent || 'claude',
-    host: hostId || '',
+    host: hostId ? (ownerIdByHostId.get(hostId) || hostId) : '',
     worktreeBranch: worktreeMode ? worktreeBranch.trim() : '',
     maxConcurrency: Number.isFinite(maxConcurrency) && maxConcurrency > 0 ? Math.floor(maxConcurrency) : 0,
     enabled,
@@ -327,7 +338,7 @@ export function ScheduleModal({ onClose }: Props) {
                           {schedule.host && (
                             <>
                               <span>·</span>
-                              <span>{hostLabelById.get(schedule.host) || schedule.host}</span>
+                              <span>{hostLabelByOwnerId.get(schedule.host) || schedule.host}</span>
                             </>
                           )}
                         </div>

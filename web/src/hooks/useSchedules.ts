@@ -57,7 +57,11 @@ function normalizeSchedule(raw: ScheduleWire): Schedule {
     command: text(raw.command ?? raw.Command),
     path: text(raw.path ?? raw.Path),
     agentType: text(raw.agentType ?? raw.agent_type ?? raw.AgentType),
-    host: text(raw.host ?? raw.Host),
+    // Wire key is target_owner (pkg/scheduler.Job.TargetOwner); it carries a
+    // v2 catalog OwnerID or, on a legacy-only node, a raw peer fingerprint.
+    // `host` is accepted too for backward compatibility with any
+    // still-cached response shape, but the server no longer emits it.
+    host: text(raw.target_owner ?? raw.TargetOwner ?? raw.host ?? raw.Host),
     sessionNamePrefix: text(raw.sessionNamePrefix ?? raw.session_name_prefix ?? raw.SessionNamePrefix) || undefined,
     worktreeBranch: text(raw.worktreeBranch ?? raw.worktree_branch ?? raw.WorktreeBranch) || undefined,
     maxConcurrency: num(raw.maxConcurrency ?? raw.max_concurrency ?? raw.MaxConcurrency),
@@ -83,7 +87,7 @@ function toWire(form: ScheduleForm) {
     command: form.command,
     path: form.path,
     agent_type: form.agentType,
-    host: form.host,
+    target_owner: form.host,
     worktree_branch: form.worktreeBranch,
     max_concurrency: form.maxConcurrency,
     enabled: form.enabled,

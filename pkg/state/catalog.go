@@ -103,6 +103,33 @@ func (c *Catalog) Sessions() []LocalSessionRecord {
 	return c.sortedSessionsLocked()
 }
 
+// SessionsByScheduleID returns every session record tagged with scheduleID
+// (LocalSessionRecord.ScheduleID), ordered oldest-Created-first. It is the
+// canonical, SessionRef-keyed replacement for the legacy display-name-keyed
+// sessionattrs lookup: callers enforcing a schedule's MaxConcurrency use this
+// to find the oldest excess sessions and kill them by stable SessionRef,
+// never by display name.
+func (c *Catalog) SessionsByScheduleID(scheduleID string) []LocalSessionRecord {
+	if scheduleID == "" {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []LocalSessionRecord
+	for _, s := range c.sessions {
+		if s.ScheduleID == scheduleID {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Created.Equal(out[j].Created) {
+			return out[i].Created.Before(out[j].Created)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
 // Layout returns a copy of one layout record.
 func (c *Catalog) Layout(id LayoutID) (LayoutRecord, bool) {
 	c.mu.RLock()

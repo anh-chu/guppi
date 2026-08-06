@@ -22,12 +22,13 @@ import (
 
 // Session command actions.
 const (
-	ActionCreate  = "create"
-	ActionKill    = "kill"
-	ActionLabel   = "label"
-	ActionRecover = "recover"
-	ActionDismiss = "dismiss"
-	ActionRetry   = "retry"
+	ActionCreate          = "create"
+	ActionKill            = "kill"
+	ActionLabel           = "label"
+	ActionRecover         = "recover"
+	ActionDismiss         = "dismiss"
+	ActionRetry           = "retry"
+	ActionSetPresentation = "set_presentation"
 )
 
 // CrashPoint labels the exact phases where tests may inject a fault. They are
@@ -87,6 +88,29 @@ type CreateParams struct {
 type RecoverParams struct {
 	Shell string `json:"shell,omitempty"`
 	Cwd   string `json:"cwd,omitempty"`
+}
+
+// PresentationParams updates the mutable Hidden/Background display flags for
+// a session. Both are pointers so a caller can change just one without
+// clobbering the other -- an omitted (nil) field leaves the existing stored
+// value untouched, mirroring the optional-field convention CreateParams.Target
+// already uses for the same JSON-omitempty-on-structs reason (a plain bool
+// can't distinguish "explicitly false" from "not sent").
+type PresentationParams struct {
+	Hidden     *bool `json:"hidden,omitempty"`
+	Background *bool `json:"background,omitempty"`
+}
+
+// KillParams optionally extends a kill command with worktree cleanup.
+type KillParams struct {
+	// RemoveWorktree, when true, removes the session's worktree (via `git
+	// worktree remove`, falling back to directory removal) as part of this
+	// same kill command instead of a separate, later, non-atomic step. The
+	// canonical CWD is captured from the catalog record BEFORE the daemon
+	// termination side effect runs, and the removal itself only runs once per
+	// command ID (replay of an already-committed kill returns the stored
+	// receipt and never re-attempts removal).
+	RemoveWorktree bool `json:"remove_worktree,omitempty"`
 }
 
 // LabelParams updates the mutable display label for a session.
@@ -211,6 +235,8 @@ func (s *SessionCommandService) ExecuteSessionCommand(ctx context.Context, cmd S
 			return s.executeDismiss(ctx, cmd)
 		case ActionRetry:
 			return s.executeRetry(ctx, cmd)
+		case ActionSetPresentation:
+			return s.executeSetPresentation(ctx, cmd)
 		default:
 			return CommandResult{}, StateError{Code: ErrMalformedSplit, Field: "action", Detail: fmt.Sprintf("unknown session action %q", cmd.Action)}
 		}
@@ -577,6 +603,7 @@ func (s *SessionCommandService) executePendingCreate(ctx context.Context, p Pend
 			Rows:       p.Rows,
 			DaemonPID:  info.DaemonPID,
 			Generation: info.Generation,
+			ScheduleID: p.ScheduleID,
 		}
 		found := false
 		for i := range doc.Sessions {
@@ -663,16 +690,30 @@ func (s *SessionCommandService) executeKill(ctx context.Context, cmd SessionComm
 		return CommandResult{}, StateError{Code: ErrInvalidIdentity, Field: "ref.session", Detail: err.Error()}
 	}
 
+	var params KillParams
+	if len(cmd.Params) > 0 {
+		if err := json.Unmarshal(cmd.Params, &params); err != nil {
+			return CommandResult{}, StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
+		}
+	}
+
 	// Idempotent replay: return the original outcome before re-issuing
-	// termination or touching catalog state.
+	// termination, worktree removal, or touching catalog state.
 	if result, ok, err := s.peekReceipt(cmd.ID); ok {
 		return result, err
 	}
 
 	if rec, ok := s.catalog.Session(ref.Session); ok {
 		if rec.Phase == SessionPhaseCleanlyEnded || rec.Phase == SessionPhaseDismissed {
+			if params.RemoveWorktree {
+				s.removeWorktreeForCwd(rec.Cwd)
+			}
 			return s.commitSessionReceipt(cmd, "session:"+ActionKill, ref, CommandResult{ID: cmd.ID, Ref: ref, Accepted: true})
 		}
+		// Capture the canonical CWD BEFORE the daemon termination side effect so
+		// worktree removal always targets the session's real working directory,
+		// not one re-derived after the record may have changed.
+		cwd := rec.Cwd
 		// Persist stop intent before issuing exact-generation termination.
 		rec.Desired = DesiredStop
 		if err := s.catalog.PutSession(rec); err != nil {
@@ -686,6 +727,9 @@ func (s *SessionCommandService) executeKill(ctx context.Context, cmd SessionComm
 			"generation": rec.Generation,
 			"outcome":    outcome,
 		}).Info("session kill issued")
+		if params.RemoveWorktree {
+			s.removeWorktreeForCwd(cwd)
+		}
 		return s.commitSessionReceipt(cmd, "session:"+ActionKill, ref, CommandResult{ID: cmd.ID, Ref: ref, Accepted: true})
 	}
 
@@ -698,7 +742,65 @@ func (s *SessionCommandService) executeKill(ctx context.Context, cmd SessionComm
 		if pending.WorktreeBranch != "" {
 			s.cleanupWorktree(pending.Cwd, pending.WorktreeBranch)
 		}
+		if params.RemoveWorktree {
+			s.removeWorktreeForCwd(pending.Cwd)
+		}
 		return s.commitSessionReceipt(cmd, "session:"+ActionKill, ref, CommandResult{ID: cmd.ID, Ref: ref, Accepted: true})
+	}
+
+	return CommandResult{}, StateError{Code: ErrUnknownLayout, Field: "ref.session", Detail: fmt.Sprintf("session %q not found", ref.Session)}
+}
+
+// removeWorktreeForCwd removes the git worktree at cwd itself (the session's
+// own working directory), as opposed to cleanupWorktree, which removes a
+// branch-derived `.worktrees/<branch>` child directory beneath a create's
+// base cwd. KillParams.RemoveWorktree targets an already-running session's
+// existing cwd directly, so no branch/base-path derivation applies. Best
+// effort: failures are logged, never returned, so a kill is never blocked or
+// reported as failed by a worktree that is already gone or dirty.
+func (s *SessionCommandService) removeWorktreeForCwd(cwd string) {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return
+	}
+	cwd = expandPath(cwd)
+	if _, err := os.Stat(cwd); os.IsNotExist(err) {
+		return
+	}
+	repoRoot := filepath.Dir(filepath.Dir(cwd)) // strip "<repo>/.worktrees/<branch>" -> "<repo>", best-effort
+	if err := runGitWorktreeRemove(repoRoot, cwd); err != nil {
+		logrus.WithError(err).WithField("path", cwd).Debug("git worktree remove failed, falling back to directory removal")
+	}
+	if err := os.RemoveAll(cwd); err != nil {
+		logrus.WithError(err).WithField("path", cwd).Warn("failed to remove worktree directory on kill")
+	}
+}
+
+func (s *SessionCommandService) executeSetPresentation(ctx context.Context, cmd SessionCommand) (CommandResult, error) {
+	var params PresentationParams
+	if err := json.Unmarshal(cmd.Params, &params); err != nil {
+		return CommandResult{}, StateError{Code: ErrMalformedSplit, Field: "params", Detail: err.Error()}
+	}
+	ref := cmd.Ref
+	if err := ref.Session.Validate(); err != nil {
+		return CommandResult{}, StateError{Code: ErrInvalidIdentity, Field: "ref.session", Detail: err.Error()}
+	}
+
+	if result, ok, err := s.peekReceipt(cmd.ID); ok {
+		return result, err
+	}
+
+	if rec, ok := s.catalog.Session(ref.Session); ok {
+		if params.Hidden != nil {
+			rec.Hidden = *params.Hidden
+		}
+		if params.Background != nil {
+			rec.Background = *params.Background
+		}
+		if err := s.catalog.PutSession(rec); err != nil {
+			return CommandResult{}, err
+		}
+		return s.commitSessionReceipt(cmd, "session:"+ActionSetPresentation, ref, CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Name, Accepted: true})
 	}
 
 	return CommandResult{}, StateError{Code: ErrUnknownLayout, Field: "ref.session", Detail: fmt.Sprintf("session %q not found", ref.Session)}

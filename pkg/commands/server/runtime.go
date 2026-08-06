@@ -542,7 +542,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	}
 
 	if schedulerStore != nil {
-		rt.schedulerRunner = scheduler.NewRunner(schedulerStore, rt.stateMgr, rt.peerMgr, func(req scheduler.CreateSessionReq) error {
+		rt.schedulerRunner = scheduler.NewRunner(schedulerStore, rt.peerMgr, func(req scheduler.CreateSessionReq) error {
 			_, err := launchSvc.Create(rt.ctx, sessionlaunch.Request{
 				Name:           req.Name,
 				Host:           req.Host,
@@ -562,7 +562,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 			server.EnforceScheduleCap(rt.opts, job.ID, job.MaxConcurrency-1)
 		})
 		if rt.v2Catalog != nil {
-			rt.schedulerRunner.Owner = rt.v2Catalog.Owner().String()
+			rt.schedulerRunner.Owner = rt.v2Catalog.Owner()
 		}
 		rt.opts.SchedulerRunner = rt.schedulerRunner
 	}

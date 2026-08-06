@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/anh-chu/termyard/pkg/peer"
+	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/sirupsen/logrus"
 )
 
@@ -14,8 +15,11 @@ type stubPeers struct {
 	conn       *peer.PeerConnection
 }
 
-func (s stubPeers) IsLocal(hostID string) bool {
-	return hostID == "" || s.localHosts[hostID]
+func (s stubPeers) ResolveHostParam(host string) (string, bool) {
+	if host == "" || s.localHosts[host] {
+		return "", true
+	}
+	return host, false
 }
 
 func (s stubPeers) GetPeerConnection(id string) *peer.PeerConnection {
@@ -110,10 +114,10 @@ func TestRunnerSkipsOfflinePeerAndAdvancesNextRun(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Unix(1_700_000_000, 0)
 	job, err := s.Add(Job{
-		Name:     "remote",
-		CronSpec: "* * * * *",
-		Host:     "fp-remote",
-		Enabled:  false,
+		Name:        "remote",
+		CronSpec:    "* * * * *",
+		TargetOwner: state.OwnerID("fp-remote"),
+		Enabled:     false,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -11,26 +11,34 @@ import (
 	"time"
 
 	"github.com/anh-chu/termyard/pkg/config"
+	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/robfig/cron/v3"
 )
 
 // Job is one scheduled command.
 type Job struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name,omitempty"`
-	CronSpec          string    `json:"cron_spec"`
-	Command           string    `json:"command,omitempty"`
-	Path              string    `json:"path,omitempty"`
-	AgentType         string    `json:"agent_type,omitempty"`
-	Host              string    `json:"host,omitempty"`
-	SessionNamePrefix string    `json:"session_name_prefix,omitempty"`
-	WorktreeBranch    string    `json:"worktree_branch,omitempty"`
-	MaxConcurrency    int       `json:"max_concurrency,omitempty"`
-	Enabled           bool      `json:"enabled"`
-	LastRun           time.Time `json:"last_run,omitempty"`
-	NextRun           time.Time `json:"next_run,omitempty"`
-	RunCount          int       `json:"run_count,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	CronSpec  string `json:"cron_spec"`
+	Command   string `json:"command,omitempty"`
+	Path      string `json:"path,omitempty"`
+	AgentType string `json:"agent_type,omitempty"`
+	// TargetOwner identifies which node's catalog this job's sessions belong
+	// to: empty means local, otherwise a v2 catalog OwnerID (see
+	// state.OwnerIDFromFingerprint) -- OR, for a node running in legacy-only
+	// mode (no v2 catalog, so no OwnerID exists at all), a raw peer transport
+	// fingerprint. peer.Manager.ResolveHostParam already accepts either form
+	// (see its doc), so callers should pass this value straight through to it
+	// rather than re-deriving one representation from the other.
+	TargetOwner       state.OwnerID `json:"target_owner,omitempty"`
+	SessionNamePrefix string        `json:"session_name_prefix,omitempty"`
+	WorktreeBranch    string        `json:"worktree_branch,omitempty"`
+	MaxConcurrency    int           `json:"max_concurrency,omitempty"`
+	Enabled           bool          `json:"enabled"`
+	LastRun           time.Time     `json:"last_run,omitempty"`
+	NextRun           time.Time     `json:"next_run,omitempty"`
+	RunCount          int           `json:"run_count,omitempty"`
+	CreatedAt         time.Time     `json:"created_at"`
 }
 
 // Store persists schedules to ~/.config/termyard/schedules.json.
@@ -58,14 +66,42 @@ func NewStore() (*Store, error) {
 	return s, nil
 }
 
+// legacyJobProbe detects a pre-rewrite schedule record that still carries the
+// old, bare "host" fingerprint field (the field this Job.TargetOwner
+// replaced). Such a record must never be silently reinterpreted as a v2
+// OwnerID -- the two identifier spaces are not interchangeable (see
+// state.OwnerIDFromFingerprint) -- so load fails closed instead of migrating
+// it automatically.
+type legacyJobProbe struct {
+	ID   string  `json:"id"`
+	Host *string `json:"host,omitempty"`
+}
+
 func (s *Store) load() error {
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
 		return err
 	}
-	var jobs []Job
-	if err := json.Unmarshal(raw, &jobs); err != nil {
+	var rawJobs []json.RawMessage
+	if err := json.Unmarshal(raw, &rawJobs); err != nil {
 		return err
+	}
+	jobs := make([]Job, 0, len(rawJobs))
+	for _, r := range rawJobs {
+		var probe legacyJobProbe
+		if err := json.Unmarshal(r, &probe); err != nil {
+			return err
+		}
+		if probe.Host != nil {
+			return fmt.Errorf("schedule store: job %q carries a legacy 'host' fingerprint field; "+
+				"this is no longer a supported schedule target -- remove or manually rewrite it to "+
+				"'target_owner' before this store can be loaded (no automatic migration is performed)", probe.ID)
+		}
+		var job Job
+		if err := json.Unmarshal(r, &job); err != nil {
+			return err
+		}
+		jobs = append(jobs, job)
 	}
 	s.jobs = map[string]Job{}
 	for _, job := range jobs {

@@ -27,21 +27,25 @@ type CreateSessionReq struct {
 // CreateSessionFunc spawns one session.
 type CreateSessionFunc func(CreateSessionReq) error
 
+// PeerLookup resolves a job's TargetOwner (an OwnerID, or -- for legacy-only
+// nodes with no v2 catalog -- a raw peer fingerprint; see Job.TargetOwner's
+// doc) to a live peer connection. ResolveHostParam already accepts either
+// form (see peer.Manager.ResolveHostParam's doc); *peer.Manager satisfies
+// this interface directly.
 type PeerLookup interface {
-	IsLocal(hostID string) bool
+	ResolveHostParam(host string) (peerID string, isLocal bool)
 	GetPeerConnection(id string) *peer.PeerConnection
 }
 
 // Runner fires due jobs on a 1s tick.
 type Runner struct {
 	store    *Store
-	stateMgr *state.Manager
 	peerMgr  PeerLookup
 	createFn CreateSessionFunc
 	capFn    func(job Job)
 	log      *logrus.Entry
 	nowFn    func() time.Time
-	Owner    string // v2 owner id used to derive stable command IDs
+	Owner    state.OwnerID // v2 owner id used to derive stable command IDs
 }
 
 // SetCapEnforcer installs an optional pre-spawn hook that prunes a schedule's
@@ -53,13 +57,12 @@ func (r *Runner) SetCapEnforcer(fn func(job Job)) {
 	r.capFn = fn
 }
 
-func NewRunner(store *Store, stateMgr *state.Manager, peerMgr PeerLookup, createFn CreateSessionFunc, log *logrus.Entry) *Runner {
+func NewRunner(store *Store, peerMgr PeerLookup, createFn CreateSessionFunc, log *logrus.Entry) *Runner {
 	if log == nil {
 		log = logrus.NewEntry(logrus.StandardLogger())
 	}
 	return &Runner{
 		store:    store,
-		stateMgr: stateMgr,
 		peerMgr:  peerMgr,
 		createFn: createFn,
 		log:      log,
@@ -113,17 +116,27 @@ func (r *Runner) runOnce(now time.Time) {
 
 		cmdID := ""
 		if r.Owner != "" {
-			cmdID = string(state.NewCommandIDFromSchedule(state.OwnerID(r.Owner), job.ID, now))
+			cmdID = string(state.NewCommandIDFromSchedule(r.Owner, job.ID, now))
 		}
 
-		if job.Host != "" && r.peerMgr != nil && !r.peerMgr.IsLocal(job.Host) {
-			if r.peerMgr.GetPeerConnection(job.Host) == nil {
-				r.log.WithField("job_id", job.ID).WithField("host", job.Host).Warn("scheduler peer offline, skipping fire")
-				job.NextRun = next
-				if _, updErr := r.store.Update(job); updErr != nil {
-					r.log.WithError(updErr).WithField("job_id", job.ID).Warn("scheduler next-run update failed")
+		// targetPeerID is the resolved live peer connection id for a remote
+		// job's TargetOwner ('' and isLocal=true for a local job). Resolved
+		// once here and reused both for the offline-peer skip check and for
+		// CreateSessionReq.Host below, so both places agree on the exact same
+		// resolution.
+		targetPeerID := ""
+		if job.TargetOwner != "" && r.peerMgr != nil {
+			peerID, isLocal := r.peerMgr.ResolveHostParam(string(job.TargetOwner))
+			if !isLocal {
+				if peerID == "" || r.peerMgr.GetPeerConnection(peerID) == nil {
+					r.log.WithField("job_id", job.ID).WithField("target_owner", job.TargetOwner).Warn("scheduler peer offline, skipping fire")
+					job.NextRun = next
+					if _, updErr := r.store.Update(job); updErr != nil {
+						r.log.WithError(updErr).WithField("job_id", job.ID).Warn("scheduler next-run update failed")
+					}
+					continue
 				}
-				continue
+				targetPeerID = peerID
 			}
 		}
 
@@ -136,7 +149,7 @@ func (r *Runner) runOnce(now time.Time) {
 		}
 		req := CreateSessionReq{
 			Name:           fmt.Sprintf("%s-%d", name, now.Unix()),
-			Host:           job.Host,
+			Host:           targetPeerID,
 			Path:           job.Path,
 			Command:        job.Command,
 			AgentType:      job.AgentType,

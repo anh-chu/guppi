@@ -1029,3 +1029,292 @@ func TestConcurrentDuplicateRecoverStartsBackendOnlyOnce(t *testing.T) {
 			"with no catalog record pointing at it", got)
 	}
 }
+
+// TestSetPresentationUpdatesHiddenAndBackground proves ActionSetPresentation
+// is an ordinary durable, receipt-backed session command (same shape as
+// ActionLabel): it mutates only the Hidden/Background fields of the target
+// session record and leaves everything else (including a field left nil in
+// the request) untouched.
+func TestSetPresentationUpdatesHiddenAndBackground(t *testing.T) {
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("presentme"), "gen-pr")
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	hidden := true
+	params, _ := json.Marshal(PresentationParams{Hidden: &hidden})
+	res, err := svc.ExecuteSessionCommand(context.Background(), SessionCommand{
+		ID: NewCommandID(), Ref: rec.Ref, Action: ActionSetPresentation, Params: params,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Accepted {
+		t.Fatal("expected set_presentation accepted")
+	}
+	got, ok := catalog.Session(rec.ID)
+	if !ok {
+		t.Fatal("session missing after set_presentation")
+	}
+	if !got.Hidden {
+		t.Fatal("expected Hidden = true")
+	}
+	if got.Background {
+		t.Fatal("expected Background left false (not sent)")
+	}
+
+	background := true
+	params2, _ := json.Marshal(PresentationParams{Background: &background})
+	if _, err := svc.ExecuteSessionCommand(context.Background(), SessionCommand{
+		ID: NewCommandID(), Ref: rec.Ref, Action: ActionSetPresentation, Params: params2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got2, _ := catalog.Session(rec.ID)
+	if !got2.Hidden {
+		t.Fatal("expected Hidden to remain true after a Background-only update")
+	}
+	if !got2.Background {
+		t.Fatal("expected Background = true")
+	}
+}
+
+// TestSetPresentationIdempotentReplay proves a retried set_presentation
+// (same command ID) returns the original result and does not require the
+// target session to still exist in the same shape.
+func TestSetPresentationIdempotentReplay(t *testing.T) {
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("presentreplay"), "gen-prr")
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	hidden := true
+	params, _ := json.Marshal(PresentationParams{Hidden: &hidden})
+	cmd := SessionCommand{ID: NewCommandID(), Ref: rec.Ref, Action: ActionSetPresentation, Params: params}
+	res1, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1 != res2 {
+		t.Fatalf("replayed set_presentation returned different result: %+v vs %+v", res1, res2)
+	}
+}
+
+// TestSetPresentationConcurrentDuplicateCommandIDSharesOneResult proves two
+// truly concurrent callers presenting the same command ID for
+// ActionSetPresentation are serialized by runSingleFlight and return the
+// exact same result, matching the guarantee ActionRecover already has.
+func TestSetPresentationConcurrentDuplicateCommandIDSharesOneResult(t *testing.T) {
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("presentconcurrent"), "gen-prc")
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	hidden := true
+	params, _ := json.Marshal(PresentationParams{Hidden: &hidden})
+	cmd := SessionCommand{ID: NewCommandID(), Ref: rec.Ref, Action: ActionSetPresentation, Params: params}
+
+	var wg sync.WaitGroup
+	results := make([]CommandResult, 2)
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = svc.ExecuteSessionCommand(context.Background(), cmd)
+		}()
+	}
+	wg.Wait()
+
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("unexpected errors: %v, %v", errs[0], errs[1])
+	}
+	if results[0] != results[1] {
+		t.Fatalf("concurrent duplicate-ID set_presentation returned different results: %+v vs %+v", results[0], results[1])
+	}
+}
+
+// TestKillRemoveWorktreeCleansUpWorktreeDirectory proves KillParams.RemoveWorktree
+// removes the session's own cwd worktree as part of the same kill command.
+func TestKillRemoveWorktreeCleansUpWorktreeDirectory(t *testing.T) {
+	repo := initGitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+
+	worktreesDir := filepath.Join(repo, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktreePath := filepath.Join(worktreesDir, "feature")
+	cmdInit := exec.Command("git", "-C", repo, "worktree", "add", "-b", "feature", worktreePath)
+	if out, err := cmdInit.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add failed: %v: %s", err, out)
+	}
+
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("killworktree"), "gen-kw")
+	rec.Cwd = worktreePath
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	params, _ := json.Marshal(KillParams{RemoveWorktree: true})
+	res, err := svc.ExecuteSessionCommand(context.Background(), SessionCommand{
+		ID: NewCommandID(), Ref: rec.Ref, Action: ActionKill, Params: params,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Accepted {
+		t.Fatal("expected kill accepted")
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree directory removed, stat err = %v", err)
+	}
+}
+
+// TestKillRemoveWorktreeReplayDoesNotDoubleRun proves a retried kill (same
+// command ID) with RemoveWorktree does not attempt a second removal -- the
+// idempotent-replay receipt short-circuits before removeWorktreeForCwd runs
+// again.
+func TestKillRemoveWorktreeReplayDoesNotDoubleRun(t *testing.T) {
+	repo := initGitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+
+	worktreesDir := filepath.Join(repo, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktreePath := filepath.Join(worktreesDir, "feature")
+	cmdInit := exec.Command("git", "-C", repo, "worktree", "add", "-b", "feature", worktreePath)
+	if out, err := cmdInit.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add failed: %v: %s", err, out)
+	}
+
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("killworktreereplay"), "gen-kwr")
+	rec.Cwd = worktreePath
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	params, _ := json.Marshal(KillParams{RemoveWorktree: true})
+	cmd := SessionCommand{ID: NewCommandID(), Ref: rec.Ref, Action: ActionKill, Params: params}
+	res1, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Replay must not error even though the worktree directory (and its git
+	// registration) is already gone.
+	res2, err := svc.ExecuteSessionCommand(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1 != res2 {
+		t.Fatalf("replayed kill returned different result: %+v vs %+v", res1, res2)
+	}
+}
+
+// TestScheduleIDCarriesThroughToLocalSessionRecord proves CreateParams.ScheduleID
+// survives from the pending create all the way to the materialized
+// LocalSessionRecord, so schedule-cap enforcement can query the canonical
+// catalog by ScheduleID instead of a separate attribute store.
+func TestScheduleIDCarriesThroughToLocalSessionRecord(t *testing.T) {
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startWorker(ctx, t, svc)
+
+	params, _ := json.Marshal(CreateParams{
+		Name:       "scheduled",
+		Shell:      "/bin/bash",
+		Cwd:        "/tmp",
+		ScheduleID: "sched-123",
+	})
+	res, err := svc.ExecuteSessionCommand(ctx, SessionCommand{ID: NewCommandID(), Action: ActionCreate, Params: params})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var rec LocalSessionRecord
+	var ok bool
+	for start := time.Now(); time.Since(start) < 2*time.Second; {
+		if rec, ok = catalog.Session(res.Ref.Session); ok && rec.Phase == SessionPhaseActive {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ok || rec.Phase != SessionPhaseActive {
+		t.Fatalf("session did not become active: %+v", rec)
+	}
+	if rec.ScheduleID != "sched-123" {
+		t.Fatalf("expected ScheduleID carried through, got %q", rec.ScheduleID)
+	}
+
+	byID := catalog.SessionsByScheduleID("sched-123")
+	if len(byID) != 1 || byID[0].ID != rec.ID {
+		t.Fatalf("SessionsByScheduleID = %+v; want [%v]", byID, rec.ID)
+	}
+	if len(catalog.SessionsByScheduleID("nope")) != 0 {
+		t.Fatal("expected no sessions for unrelated schedule id")
+	}
+}
+
+// TestSnapshotProjectionIncludesPresentationAndScheduleFields proves the
+// canonical LocalCatalogSnapshot carries the new Hidden/Background/ScheduleID
+// fields verbatim, so downstream browser/peer projections have a single
+// source of truth instead of a separate attrs store.
+func TestSnapshotProjectionIncludesPresentationAndScheduleFields(t *testing.T) {
+	svc, catalog, _, _, cleanup := newTestCommandService(t)
+	defer cleanup()
+
+	rec := activeRecord(SessionID("snapme"), "gen-sn")
+	rec.ScheduleID = "sched-snap"
+	if err := catalog.PutSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	hidden := true
+	params, _ := json.Marshal(PresentationParams{Hidden: &hidden})
+	if _, err := svc.ExecuteSessionCommand(context.Background(), SessionCommand{
+		ID: NewCommandID(), Ref: rec.Ref, Action: ActionSetPresentation, Params: params,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := catalog.LocalCatalogSnapshot()
+	var found *LocalSessionRecord
+	for i := range snap.Sessions {
+		if snap.Sessions[i].ID == rec.ID {
+			found = &snap.Sessions[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("session missing from snapshot")
+	}
+	if !found.Hidden {
+		t.Fatal("expected snapshot Hidden = true")
+	}
+	if found.ScheduleID != "sched-snap" {
+		t.Fatalf("expected snapshot ScheduleID = sched-snap, got %q", found.ScheduleID)
+	}
+}
