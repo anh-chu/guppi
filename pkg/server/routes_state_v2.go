@@ -75,7 +75,7 @@ func registerStateV2Routes(r chi.Router, opts *Options) {
 }
 
 func handleV2Bootstrap(w http.ResponseWriter, r *http.Request, opts *Options) {
-	if opts.V2Catalog == nil {
+	if opts.Catalog == nil {
 		writeV2Error(w, http.StatusServiceUnavailable, "not_found", "", "v2 state is not enabled on this server")
 		return
 	}
@@ -84,14 +84,14 @@ func handleV2Bootstrap(w http.ResponseWriter, r *http.Request, opts *Options) {
 	if opts.PeerMgr != nil {
 		remoteSource = opts.PeerMgr
 	}
-	agg := state.AggregateCatalog(opts.V2Catalog, remoteSource)
+	agg := state.AggregateCatalog(opts.Catalog, remoteSource)
 	resp := v2BootstrapResponse{
 		Owner:         agg.Local.Owner,
 		Revision:      agg.Local.Revision,
 		Local:         agg.Local,
 		Remote:        agg.Remote,
-		Pending:       opts.V2Catalog.PendingCreates(),
-		PendingRemote: opts.V2Catalog.PendingRemoteCreates(),
+		Pending:       opts.Catalog.PendingCreates(),
+		PendingRemote: opts.Catalog.PendingRemoteCreates(),
 	}
 	if opts.PeerMgr != nil {
 		resp.Hosts = opts.PeerMgr.GetHosts()
@@ -99,7 +99,7 @@ func handleV2Bootstrap(w http.ResponseWriter, r *http.Request, opts *Options) {
 		resp.Hosts = []interface{}{}
 	}
 	if len(agg.Local.Layouts) > 0 {
-		if wsRes, err := opts.V2Catalog.WorkspaceSnapshot(agg.Local.Layouts[0].ID); err == nil {
+		if wsRes, err := opts.Catalog.WorkspaceSnapshot(agg.Local.Layouts[0].ID); err == nil {
 			ws := wsRes.Record
 			resp.Workspace = &ws
 			resp.Presentations = wsRes.Presentations
@@ -134,7 +134,7 @@ type v2SessionCommandRequest struct {
 }
 
 func handleV2SessionCommand(w http.ResponseWriter, r *http.Request, opts *Options) {
-	if opts.V2CommandSvc == nil || opts.V2Catalog == nil {
+	if opts.CommandSvc == nil || opts.Catalog == nil {
 		writeV2Error(w, http.StatusServiceUnavailable, "not_found", "", "v2 session commands are not enabled on this server")
 		return
 	}
@@ -174,7 +174,7 @@ func handleV2SessionCommand(w http.ResponseWriter, r *http.Request, opts *Option
 	// browser believes it asked for TargetOwner. Without this branch,
 	// TargetOwner was accepted from the wire but never consulted, so every
 	// remote-host create silently fell back to local.
-	if req.Action == state.ActionCreate && req.TargetOwner != "" && req.TargetOwner != opts.V2CommandSvc.Owner() {
+	if req.Action == state.ActionCreate && req.TargetOwner != "" && req.TargetOwner != opts.CommandSvc.Owner() {
 		if opts.PeerMgr == nil {
 			writeV2Error(w, http.StatusServiceUnavailable, "peer_offline", "target_owner", "this node has no peer manager configured; cannot reach remote owner")
 			return
@@ -188,7 +188,7 @@ func handleV2SessionCommand(w http.ResponseWriter, r *http.Request, opts *Option
 		}
 		remoteReq := state.RemoteCreateRequest{
 			IntentID:       id,
-			Requester:      opts.V2CommandSvc.Owner(),
+			Requester:      opts.CommandSvc.Owner(),
 			Name:           params.Name,
 			Shell:          params.Shell,
 			Cwd:            params.Cwd,
@@ -230,7 +230,7 @@ func handleV2SessionCommand(w http.ResponseWriter, r *http.Request, opts *Option
 	// mutated (or 404'd against) the WRONG node's catalog -- the local one --
 	// even though the session was already visibly attached and usable in the
 	// browser.
-	if req.Ref.Owner != "" && req.Ref.Owner != opts.V2CommandSvc.Owner() {
+	if req.Ref.Owner != "" && req.Ref.Owner != opts.CommandSvc.Owner() {
 		if opts.PeerMgr == nil {
 			writeV2Error(w, http.StatusServiceUnavailable, "peer_offline", "ref.owner", "this node has no peer manager configured; cannot reach remote owner")
 			return
@@ -262,7 +262,7 @@ func handleV2SessionCommand(w http.ResponseWriter, r *http.Request, opts *Option
 		return
 	}
 
-	result, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), cmd)
+	result, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), cmd)
 	if err != nil {
 		writeV2CommandError(w, err)
 		return
@@ -292,7 +292,7 @@ type v2WorkspaceCommandResult struct {
 }
 
 func handleV2WorkspaceCommand(w http.ResponseWriter, r *http.Request, opts *Options) {
-	if opts.V2Catalog == nil {
+	if opts.Catalog == nil {
 		writeV2Error(w, http.StatusServiceUnavailable, "not_found", "", "v2 workspace commands are not enabled on this server")
 		return
 	}
@@ -323,7 +323,7 @@ func handleV2WorkspaceCommand(w http.ResponseWriter, r *http.Request, opts *Opti
 		Action: req.Action,
 		Params: req.Params,
 	}
-	if err := opts.V2Catalog.ApplyWorkspaceCommand(cmd); err != nil {
+	if err := opts.Catalog.ApplyWorkspaceCommand(cmd); err != nil {
 		writeV2CommandError(w, err)
 		return
 	}

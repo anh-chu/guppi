@@ -348,50 +348,11 @@ for (const run of [1, 2] as const) {
 }
 
 // ---------------------------------------------------------------------------
-// Case 6: a v2-only node must reject a legacy-mode peer's control connection
-// before any state/command participation. Uses its own small v2/legacy pair
-// (not the main A/B v2/v2 cluster above) since B above must stay v2 for
-// cases 1-5.
+// Case 6 (legacy-mode-peer handshake rejection) is removed: legacy mode no
+// longer exists as a runtime option (see refactor!: make canonical state
+// the only runtime and UI). Every node the binary can start is canonical;
+// there is no legacy-mode peer to reject any more.
 // ---------------------------------------------------------------------------
-
-test('case 6: v2 node rejects a legacy-mode peer at handshake, before state/command participation', async ({}, testInfo) => {
-  test.setTimeout(90_000)
-  const binaryPath = await getReviewedBinary()
-  const rootDir = testInfo.outputPath('cluster-case6')
-
-  const v2Node = await ClusterNode.start({ name: 'V2', rootDir: `${rootDir}/v2`, binaryPath, v2: true })
-  const legacyNode = await ClusterNode.start({ name: 'LEGACY', rootDir: `${rootDir}/legacy`, binaryPath, v2: false })
-  try {
-    await v2Node.authSetup(SHARED_TEST_PASSWORD)
-    await legacyNode.authSetup(SHARED_TEST_PASSWORD)
-
-    // Confirm the legacy node really is legacy-mode: its own v2 bootstrap
-    // endpoint must be unavailable.
-    const legacyBootRes = await legacyNode.api('/api/v2/bootstrap')
-    expect(legacyBootRes.status, 'legacy node unexpectedly has v2 state enabled').toBe(503)
-
-    await pairNodes(v2Node, legacyNode, SHARED_TEST_PASSWORD)
-
-    const legacySelf = await legacyNode.refreshSelf()
-    const statusesSeen = await assertPeerNeverConnects(v2Node, legacySelf.fingerprint, 8_000)
-    expect(statusesSeen).not.toContain('connected')
-
-    // Rejection must happen before any state/command participation: the
-    // legacy node must never appear as an online host or a remote catalog
-    // source on the v2 node.
-    const hosts = await v2Node.hosts()
-    const legacyHost = hosts.find((h: any) => h.id === legacySelf.fingerprint)
-    if (legacyHost) {
-      expect(legacyHost.online ?? legacyHost.Online).toBe(false)
-    }
-    const boot = await v2Node.bootstrap()
-    expect((boot.remote || []).some((snap: any) => snap.owner && legacyHost && snap.owner === legacyHost.owner_id)).toBe(false)
-  } finally {
-    await Promise.all([v2Node.stop({ killDaemons: true }), legacyNode.stop({ killDaemons: true })])
-    v2Node.disposeSessionDir()
-    legacyNode.disposeSessionDir()
-  }
-})
 
 // ---------------------------------------------------------------------------
 // Finding 3 regression proof: after a full cluster start + real session
@@ -616,12 +577,6 @@ async function installV2Bootstrap(page: Page, bootstrapRaw: unknown) {
   })
 }
 
-async function enableV2Flag(page: Page) {
-  await page.addInitScript(() => {
-    window.localStorage.setItem('termyard.v2State', '1')
-  })
-}
-
 type V2SocketHandle = {
   connectionCount: () => number
   closeCurrent: () => Promise<void>
@@ -672,7 +627,6 @@ test('browser command retry with same CommandID does not double-execute (determi
   const sessionId = 'sess-retry'
   const generation = 'gen-1'
 
-  await enableV2Flag(page)
   await installBaseStubs(page)
   await installV2Bootstrap(page, makeBootstrapRaw(sessionId, generation))
 

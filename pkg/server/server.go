@@ -28,11 +28,11 @@ func Run(ctx context.Context, opts *Options) error {
 	return serveAndWait(ctx, opts, logger, r)
 }
 func setupHub(opts *Options) *ws.Hub {
-	// Use a hub assembled by the runtime when available, otherwise build one
-	// here to preserve legacy callers.
+	// The runtime always assembles a hub before BuildRouter runs; there is no
+	// legacy state source to build a fallback one from.
 	hub := opts.Hub
 	if hub == nil {
-		hub = ws.NewHub(ws.AsStateSource(opts.StateMgr), opts.Tracker)
+		hub = ws.NewHub(nil, opts.Tracker)
 		opts.Hub = hub
 	}
 	var peerActivity ws.ActivitySource
@@ -47,91 +47,15 @@ func setupHub(opts *Options) *ws.Hub {
 	return hub
 }
 
-func wireSessionAttrsSync(opts *Options, hub *ws.Hub) {
-	// Wire cross-machine sync. Peer subsystem applies inbound snapshots/deltas to
-	// server-authoritative stores and bounces browser events through hub.
-	if opts.StateMgr != nil {
-		localHost := ""
-		if opts.Identity != nil {
-			localHost = opts.Identity.Fingerprint()
-		}
-		opts.StateMgr.SetRenameHook(func(oldName, newName string) {
-			if opts.AttrsStore != nil {
-				migrated, err := opts.AttrsStore.MigrateKey(localHost, oldName, newName)
-				if err != nil {
-					logrus.WithError(err).WithField("session", newName).Warn("failed to persist migrated session attrs")
-				}
-				for _, key := range migrated {
-					attr := opts.AttrsStore.Get(key)
-					fanoutAttrsDeltaToPeers(opts, key, attr)
-					if hub != nil {
-						hub.BroadcastJSON(map[string]interface{}{"type": "session-attrs-updated", "key": key})
-					}
-				}
-			}
-			if opts.OrderStore != nil {
-				migrated, err := opts.OrderStore.MigrateKey(localHost, oldName, newName)
-				if err != nil {
-					logrus.WithError(err).WithField("session", newName).Warn("failed to persist migrated session order")
-				}
-				for _, key := range migrated {
-					order := opts.OrderStore.Get(key)
-					fanoutOrderDeltaToPeers(opts, key, order)
-					if hub != nil {
-						hub.BroadcastJSON(map[string]interface{}{"type": "session-order-updated", "key": key})
-					}
-				}
-			}
-			if opts.GroupStore != nil {
-				changed, err := opts.GroupStore.MigrateKey(localHost, oldName, newName)
-				if err != nil {
-					logrus.WithError(err).WithField("session", newName).Warn("failed to persist migrated groups")
-				}
-				for _, id := range changed {
-					group, ok := opts.GroupStore.Get(id)
-					if !ok {
-						continue
-					}
-					fanoutGroupDeltaToPeers(opts, id, group)
-					if hub != nil {
-						hub.BroadcastJSON(map[string]interface{}{"type": "groups-updated", "id": id})
-					}
-				}
-			}
-		})
-	}
-	if opts.AttrsStore != nil {
-		sink := attrsStoreAdapter{store: opts.AttrsStore}
-		if opts.LinkSupervisor != nil {
-			opts.LinkSupervisor.SetAttrsSink(sink)
-		}
-		if opts.PeerHandler != nil {
-			opts.PeerHandler.SetAttrsSink(sink)
-		}
-	}
+// wireBrowserHub connects the peer subsystem's browser-facing broadcasts to
+// the WebSocket hub. There is no legacy session-attrs/order/group sync to
+// wire here -- that surface does not exist in the canonical architecture.
+func wireBrowserHub(opts *Options, hub *ws.Hub) {
 	if opts.LinkSupervisor != nil {
 		opts.LinkSupervisor.SetBrowserHub(hub)
 	}
 	if opts.PeerHandler != nil {
 		opts.PeerHandler.SetBrowserHub(hub)
-	}
-	if opts.OrderStore != nil {
-		sink := sessionOrderStoreAdapter{store: opts.OrderStore}
-		if opts.LinkSupervisor != nil {
-			opts.LinkSupervisor.SetOrderSink(sink)
-		}
-		if opts.PeerHandler != nil {
-			opts.PeerHandler.SetOrderSink(sink)
-		}
-	}
-	if opts.GroupStore != nil {
-		sink := groupStoreAdapter{store: opts.GroupStore}
-		if opts.LinkSupervisor != nil {
-			opts.LinkSupervisor.SetGroupSink(sink)
-		}
-		if opts.PeerHandler != nil {
-			opts.PeerHandler.SetGroupSink(sink)
-		}
 	}
 }
 

@@ -32,7 +32,7 @@ func TestHandleDaemonSessionStableRejectsStaleGeneration(t *testing.T) {
 	reg := pty.NewRegistry(t.TempDir())
 	reg.SetLifecycleStore(store)
 
-	opts := &Options{V2Catalog: catalog, DaemonReg: reg}
+	opts := &Options{Catalog: catalog, DaemonReg: reg}
 
 	cases := []struct {
 		name       string
@@ -87,7 +87,7 @@ func TestHandleDaemonSessionStableNotReadyForPendingPhase(t *testing.T) {
 
 	reg := pty.NewRegistry(t.TempDir())
 
-	opts := &Options{V2Catalog: catalog, DaemonReg: reg}
+	opts := &Options{Catalog: catalog, DaemonReg: reg}
 	req := httptest.NewRequest(http.MethodGet, "/ws/daemon-session?sessionID="+string(sid)+"&generation=any", nil)
 	rr := httptest.NewRecorder()
 	handleDaemonSession(rr, req, opts)
@@ -125,7 +125,7 @@ func TestHandleDaemonSessionStableRejectsCrashedWithGeneration(t *testing.T) {
 
 	reg := pty.NewRegistry(t.TempDir())
 
-	opts := &Options{V2Catalog: catalog, DaemonReg: reg}
+	opts := &Options{Catalog: catalog, DaemonReg: reg}
 	req := httptest.NewRequest(http.MethodGet, "/ws/daemon-session?sessionID="+string(sid)+"&generation=gen-stale", nil)
 	rr := httptest.NewRecorder()
 	handleDaemonSession(rr, req, opts)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/anh-chu/termyard/pkg/activity"
+	"github.com/anh-chu/termyard/pkg/config"
 	"github.com/anh-chu/termyard/pkg/peer"
 	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/state"
@@ -122,17 +124,19 @@ func TestExecuteReturnsAssemblyError(t *testing.T) {
 	}
 }
 
-// TestRefreshDaemonState_ClassifiesBeforePublishing verifies that crash
-// classification/cleanup runs before the live state snapshot is published.
-// A crashed session must not appear as live in the same refresh cycle.
-func TestRefreshDaemonState_ClassifiesBeforePublishing(t *testing.T) {
+// TestRefreshDaemonState_ClassifiesBeforeAdapterRefresh verifies that crash
+// classification/cleanup runs before the daemon adapter snapshot is
+// refreshed, so a crashed session cannot be observed as live by the
+// canonical reconciler in the same cycle.
+func TestRefreshDaemonState_ClassifiesBeforeAdapterRefresh(t *testing.T) {
 	var order []string
 	reg := &fakeRegistry{sessions: []pty.SessionInfo{{ID: "live"}}}
 	adapter := &daemonAdapter{reg: reg}
 
+	enricher := &runtimeEnricher{adapter: adapter}
 	rt := &Runtime{
 		adapter:  adapter,
-		stateMgr: state.NewManager(),
+		enricher: enricher,
 		detectCrashesFn: func() []pty.LifecycleRecord {
 			order = append(order, "classify")
 			return []pty.LifecycleRecord{{ID: "crashed"}}
@@ -148,63 +152,27 @@ func TestRefreshDaemonState_ClassifiesBeforePublishing(t *testing.T) {
 		t.Fatalf("expected adapter.List after classify, listCalls=%d", reg.listCalls)
 	}
 
-	sessions := rt.stateMgr.GetSessions()
-	if len(sessions) != 1 || sessions[0].Name != "live" {
-		t.Fatalf("expected only live session in state, got %+v", sessions)
+	list := adapter.List()
+	if len(list) != 1 || list[0].ID != "live" {
+		t.Fatalf("expected only live session in adapter snapshot, got %+v", list)
 	}
 }
 
-// TestRefreshSessionsFunc_V2ModeSkipsLegacyWrite proves the shadow-write fix:
-// refreshSessionsFunc (wired into opts.RefreshSessions / launchSvc.Refresh and
-// called unconditionally by several v2-mode code paths -- local v2 create,
-// crashed-session recovery, WS teardown, rename) must not write into the
-// legacy state.Manager when the runtime is in v2 mode.
-func TestRefreshSessionsFunc_V2ModeSkipsLegacyWrite(t *testing.T) {
-	reg := &fakeRegistry{sessions: []pty.SessionInfo{{ID: "live"}}}
-	adapter := &daemonAdapter{reg: reg}
-	adapter.refresh()
-
-	rt := &Runtime{
-		adapter:  adapter,
-		stateMgr: state.NewManager(),
-		v2Mode:   true,
-	}
-
+// TestRefreshSessionsFunc_IsSafeNoOp proves refreshSessionsFunc (wired into
+// opts.RefreshSessions / launchSvc.Refresh and called unconditionally by
+// several code paths -- create, crashed-session recovery, WS teardown,
+// rename) never touches a legacy state manager: there is none any more. It
+// must be callable on a zero-value Runtime without panicking.
+func TestRefreshSessionsFunc_IsSafeNoOp(t *testing.T) {
+	rt := &Runtime{}
 	rt.refreshSessionsFunc()
-
-	sessions := rt.stateMgr.GetSessions()
-	if len(sessions) != 0 {
-		t.Fatalf("expected legacy state.Manager to remain empty in v2 mode, got %+v", sessions)
-	}
-}
-
-// TestRefreshSessionsFunc_LegacyModeUnaffected proves legacy mode (v2Mode
-// false) behaves exactly as before: refreshSessionsFunc still publishes the
-// daemon snapshot into the legacy state.Manager.
-func TestRefreshSessionsFunc_LegacyModeUnaffected(t *testing.T) {
-	reg := &fakeRegistry{sessions: []pty.SessionInfo{{ID: "live"}}}
-	adapter := &daemonAdapter{reg: reg}
-	adapter.refresh()
-
-	rt := &Runtime{
-		adapter:  adapter,
-		stateMgr: state.NewManager(),
-		v2Mode:   false,
-	}
-
-	rt.refreshSessionsFunc()
-
-	sessions := rt.stateMgr.GetSessions()
-	if len(sessions) != 1 || sessions[0].Name != "live" {
-		t.Fatalf("expected legacy state.Manager to be populated in legacy mode, got %+v", sessions)
-	}
 }
 
 // TestV2RuntimeEnricherPreviewReturnsImmediately verifies that previewFor returns
 // cached values immediately without blocking on PTY captures. The enricher must
 // not delay catalog snapshot publication by waiting for capture operations.
 func TestV2RuntimeEnricherPreviewReturnsImmediately(t *testing.T) {
-	denricher := &v2RuntimeEnricher{
+	denricher := &runtimeEnricher{
 		adapter:    &daemonAdapter{reg: &fakeRegistry{sessions: []pty.SessionInfo{{ID: "s1", Pid: 100, ShellPid: 101}}}},
 		actTracker: nil,
 	}
@@ -248,7 +216,7 @@ func TestV2RuntimeEnricherLastActivityFromTracker(t *testing.T) {
 		Pane:    0,
 	}
 
-	enricher := &v2RuntimeEnricher{
+	enricher := &runtimeEnricher{
 		adapter:    &daemonAdapter{reg: &fakeRegistry{sessions: []pty.SessionInfo{{ID: "s1", Pid: 100, ShellPid: 101}}}},
 		actTracker: tracker,
 	}
@@ -297,7 +265,7 @@ func TestV2RuntimeEnricherLastActivityNotBumpedByReEnrichment(t *testing.T) {
 		Pane:    0,
 	}
 
-	enricher := &v2RuntimeEnricher{
+	enricher := &runtimeEnricher{
 		adapter:    &daemonAdapter{reg: &fakeRegistry{sessions: []pty.SessionInfo{{ID: "stale", Pid: 100, ShellPid: 101}}}},
 		actTracker: tracker,
 	}
@@ -336,137 +304,153 @@ func TestV2RuntimeEnricherLastActivityNotBumpedByReEnrichment(t *testing.T) {
 	}
 }
 
-// TestNewRuntimeV2ModeSkipsLegacyStores verifies that when TERMYARD_V2_STATE=1,
-// the legacy state stores (AttrsStore, OrderStore, GroupStore) are not constructed
-// and remain nil in the server options.
-func TestNewRuntimeV2ModeSkipsLegacyStores(t *testing.T) {
-	t.Setenv("TERMYARD_V2_STATE", "1")
+// TestNewRuntimeAlwaysConstructsCanonicalState verifies that the canonical
+// state authority (store/catalog/command service/state stream) is always
+// constructed unconditionally, regardless of environment.
+func TestNewRuntimeAlwaysConstructsCanonicalState(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", "")
 
 	rt, err := newRuntime(&cli.Command{})
 	if err != nil {
-		t.Fatalf("newRuntime in v2 mode: %v", err)
+		t.Fatalf("newRuntime: %v", err)
 	}
 	defer rt.Stop()
 
-	// Legacy stores must be nil in v2 mode.
-	if rt.opts.AttrsStore != nil {
-		t.Fatal("AttrsStore should be nil in v2 mode")
+	if rt.store == nil {
+		t.Fatal("store should always be constructed")
 	}
-	if rt.opts.OrderStore != nil {
-		t.Fatal("OrderStore should be nil in v2 mode")
+	if rt.catalog == nil {
+		t.Fatal("catalog should always be constructed")
 	}
-	if rt.opts.GroupStore != nil {
-		t.Fatal("GroupStore should be nil in v2 mode")
+	if rt.commandSvc == nil {
+		t.Fatal("commandSvc should always be constructed")
 	}
-
-	// V2 components must be non-nil.
-	if rt.v2Catalog == nil {
-		t.Fatal("v2Catalog should not be nil in v2 mode")
+	if rt.stateStream == nil {
+		t.Fatal("stateStream should always be constructed")
 	}
-	if rt.v2CommandSvc == nil {
-		t.Fatal("v2CommandSvc should not be nil in v2 mode")
-	}
-	if rt.v2StateStream == nil {
-		t.Fatal("v2StateStream should not be nil in v2 mode")
+	if rt.remoteCreate == nil {
+		t.Fatal("remoteCreate should always be constructed")
 	}
 
-	// Verify v2 components wired into opts.
-	if rt.opts.V2Catalog == nil {
-		t.Fatal("opts.V2Catalog should be set in v2 mode")
+	if rt.opts.Catalog == nil {
+		t.Fatal("opts.Catalog should always be set")
 	}
-	if rt.opts.V2CommandSvc == nil {
-		t.Fatal("opts.V2CommandSvc should be set in v2 mode")
+	if rt.opts.CommandSvc == nil {
+		t.Fatal("opts.CommandSvc should always be set")
 	}
-	if rt.opts.V2StateStream == nil {
-		t.Fatal("opts.V2StateStream should be set in v2 mode")
+	if rt.opts.StateStream == nil {
+		t.Fatal("opts.StateStream should always be set")
 	}
 }
 
-// TestNewRuntimeLegacyModeConstructsLegacyStores verifies that with
-// TERMYARD_V2_STATE unset (default), legacy stores are constructed and v2
-// components remain nil.
-func TestNewRuntimeLegacyModeConstructsLegacyStores(t *testing.T) {
-	// Ensure env var is NOT set.
+// TestNewRuntimeEnvVarCannotSelectAlternatePath proves that TERMYARD_V2_STATE
+// (the old runtime-mode switch) has no effect any more: with or without it
+// set, newRuntime constructs the identical canonical state graph rooted at
+// the same directory (<data-dir>/state). There is no environment variable
+// that can select a different state path.
+func TestNewRuntimeEnvVarCannotSelectAlternatePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	t.Setenv("TERMYARD_V2_STATE", "1")
+	rtWithFlag, err := newRuntime(&cli.Command{})
+	if err != nil {
+		t.Fatalf("newRuntime with TERMYARD_V2_STATE=1: %v", err)
+	}
+	ownerWithFlag := rtWithFlag.catalog.Owner()
+	rtWithFlag.Stop()
+
 	t.Setenv("TERMYARD_V2_STATE", "")
-	t.Setenv("HOME", t.TempDir())
+	rtWithoutFlag, err := newRuntime(&cli.Command{})
+	if err != nil {
+		t.Fatalf("newRuntime with TERMYARD_V2_STATE unset: %v", err)
+	}
+	ownerWithoutFlag := rtWithoutFlag.catalog.Owner()
+	rtWithoutFlag.Stop()
+
+	if ownerWithFlag != ownerWithoutFlag {
+		t.Fatalf("catalog owner differed by TERMYARD_V2_STATE: with=%q without=%q -- the env var must have zero effect on the state path", ownerWithFlag, ownerWithoutFlag)
+	}
+
+	stateDir, err := config.StateDir()
+	if err != nil {
+		t.Fatalf("config.StateDir: %v", err)
+	}
+	if _, err := os.Stat(stateDir); err != nil {
+		t.Fatalf("canonical state directory was not created at %s: %v", stateDir, err)
+	}
+
+	// No legacy "v2" subdirectory should ever be created -- that was the old
+	// dormant/shadow store path and no longer exists.
+	dataDir, err := config.DataDir()
+	if err != nil {
+		t.Fatalf("config.DataDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "v2")); err == nil {
+		t.Fatal("legacy v2 state directory should never be created")
+	}
+}
+
+// TestNewRuntimeNoLegacyFilesOnFreshStartup verifies that a fresh startup
+// creates no legacy per-feature store files (session-attrs, session-order,
+// groups) under the config directory -- those stores no longer exist.
+func TestNewRuntimeNoLegacyFilesOnFreshStartup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
 
 	rt, err := newRuntime(&cli.Command{})
 	if err != nil {
-		t.Fatalf("newRuntime in legacy mode: %v", err)
+		t.Fatalf("newRuntime: %v", err)
 	}
 	defer rt.Stop()
 
-	// In legacy mode, v2 components must be nil.
-	if rt.v2Catalog != nil {
-		t.Fatal("v2Catalog should be nil in legacy mode")
+	configDir, err := config.Dir()
+	if err != nil {
+		t.Fatalf("config.Dir: %v", err)
 	}
-	if rt.v2CommandSvc != nil {
-		t.Fatal("v2CommandSvc should be nil in legacy mode")
-	}
-	if rt.v2StateStream != nil {
-		t.Fatal("v2StateStream should be nil in legacy mode")
-	}
-
-	// opts should not have v2 services wired.
-	if rt.opts.V2Catalog != nil {
-		t.Fatal("opts.V2Catalog should be nil in legacy mode")
-	}
-	if rt.opts.V2CommandSvc != nil {
-		t.Fatal("opts.V2CommandSvc should be nil in legacy mode")
-	}
-	if rt.opts.V2StateStream != nil {
-		t.Fatal("opts.V2StateStream should be nil in legacy mode")
-	}
-
-	// Legacy stores MAY be nil if their constructors fail (which is OK),
-	// but they should at least be attempted. We just verify the runtime
-	// doesn't explode with a nil opts.StateMgr.
-	if rt.opts.StateMgr == nil {
-		t.Fatal("opts.StateMgr should always be set")
+	for _, legacyFile := range []string{"session-attrs.json", "session-order.json", "groups.json"} {
+		if _, err := os.Stat(filepath.Join(configDir, legacyFile)); err == nil {
+			t.Fatalf("legacy file %s should never be created", legacyFile)
+		}
 	}
 }
 
-// TestNewRuntimeV2InitFailureReturnsFatalError verifies that if v2 store
-// initialization fails in v2 mode, newRuntime returns an error (not a fallback).
-func TestNewRuntimeV2InitFailureReturnsFatalError(t *testing.T) {
-	t.Setenv("TERMYARD_V2_STATE", "1")
-
+// TestNewRuntimeStateInitFailureReturnsFatalError verifies that if canonical
+// state store initialization fails, newRuntime returns an error rather than
+// falling back to any alternate path.
+func TestNewRuntimeStateInitFailureReturnsFatalError(t *testing.T) {
 	// Create a temporary directory and place a FILE at the location where
-	// the v2 state directory should be created. This will cause os.MkdirAll
-	// in state.OpenStore to fail.
+	// the state directory should be created. This will cause os.MkdirAll in
+	// state.OpenStore to fail.
 	tempHome := t.TempDir()
-	dataDir := fmt.Sprintf("%s/.local/share/termyard/v2", tempHome)
+	dataDir := fmt.Sprintf("%s/.local/share/termyard/state", tempHome)
 	// Create all parent dirs
 	if err := os.MkdirAll(fmt.Sprintf("%s/.local/share/termyard", tempHome), 0700); err != nil {
 		t.Fatalf("setup: failed to create parent dirs: %v", err)
 	}
-	// Create a FILE where the v2 directory should go, blocking directory creation.
+	// Create a FILE where the state directory should go, blocking directory creation.
 	if err := os.WriteFile(dataDir, []byte("blocking-file"), 0o600); err != nil {
 		t.Fatalf("setup: failed to create blocking file: %v", err)
 	}
 
-	// Redirect HOME so the v2 state dir calculation will point to our blocking file.
+	// Redirect HOME so the state dir calculation will point to our blocking file.
 	t.Setenv("HOME", tempHome)
 	t.Setenv("XDG_DATA_HOME", "") // Ensure we use HOME-based path
 
-	// In v2 mode with a blocking file, newRuntime should fail with a fatal error,
-	// not silently continue with legacy mode.
 	rt, err := newRuntime(&cli.Command{})
 
 	if err == nil {
 		if rt != nil {
 			rt.Stop()
 		}
-		t.Fatal("expected newRuntime to return error in v2 mode when v2 dir cannot be created")
+		t.Fatal("expected newRuntime to return error when the state dir cannot be created")
 	}
 
-	// Error should mention either "v2" or "state" to be clear it's
-	// a v2 initialization failure, not a generic startup problem.
-	if !strings.Contains(err.Error(), "v2") && !strings.Contains(err.Error(), "state") {
-		t.Logf("Warning: error message may not be clear about v2 failure: %v", err)
+	if !strings.Contains(err.Error(), "state") {
+		t.Logf("Warning: error message may not be clear about the state failure: %v", err)
 	}
 }
 
@@ -492,7 +476,7 @@ func TestV2RuntimeEnricherEnrichIsPureCacheLookup(t *testing.T) {
 	}
 	defer func() { readProcCwd = origReadProcCwd }()
 
-	enricher := &v2RuntimeEnricher{adapter: adapter}
+	enricher := &runtimeEnricher{adapter: adapter}
 
 	// The one and only place readlink/list may run: the background refresh.
 	enricher.refreshRuntimeCache()
@@ -538,7 +522,7 @@ func TestV2RuntimeEnricherBackgroundRefreshUpdatesCache(t *testing.T) {
 	readProcCwd = func(pid int) (string, error) { return cwd, nil }
 	defer func() { readProcCwd = origReadProcCwd }()
 
-	enricher := &v2RuntimeEnricher{adapter: adapter}
+	enricher := &runtimeEnricher{adapter: adapter}
 	ref := state.SessionRef{Owner: state.OwnerID("o"), Session: state.SessionID("s1")}
 	rec := state.LocalSessionRecord{ID: ref.Session, Owner: ref.Owner, Ref: ref}
 

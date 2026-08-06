@@ -8,9 +8,8 @@
  * the store via the store's own generation/revision acceptance rule -- this
  * hook does no additional staleness bookkeeping of its own.
  *
- * Disabled by default; only constructed/mounted when the v2 feature flag is
- * on (see src/lib/featureFlags.ts). Callers should not mount this hook
- * unconditionally in a component that is also active on the legacy path.
+ * This is the only state path; it is mounted unconditionally from
+ * SessionApp.
  */
 
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
@@ -22,10 +21,6 @@ import { decodeBootstrapResponse } from '../state/v2/wireCodec'
 import type { SessionRef, LayoutID, SplitDirection } from '../state/v2/types'
 import type { CommandResult, V2BootstrapResponse } from '../state/v2/wireTypes'
 import type { PaneTree } from '../lib/paneTree'
-
-export type UseV2StateOptions = {
-  enabled: boolean
-}
 
 export type UseV2StateResult = {
   state: V2StoreState
@@ -67,7 +62,7 @@ function wsURL(path: string): string {
   return `${protocol}//${window.location.host}${path}`
 }
 
-export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
+export function useV2State(): UseV2StateResult {
   const storeRef = useRef<V2Store | null>(null)
   if (storeRef.current === null) storeRef.current = new V2Store()
   const store = storeRef.current
@@ -82,7 +77,6 @@ export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
   const bootstrappedRef = useRef(false)
 
   useEffect(() => {
-    if (!enabled) return
     let disposed = false
     const generation = store.bumpConnectionGeneration()
 
@@ -136,7 +130,7 @@ export function useV2State({ enabled }: UseV2StateOptions): UseV2StateResult {
       disposed = true
       client.dispose()
     }
-  }, [enabled, store])
+  }, [store])
 
   const createSession = useMemo(
     () =>

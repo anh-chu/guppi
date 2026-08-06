@@ -19,11 +19,11 @@ import { encodeSessionRef } from './state/v2/types'
 // Track which code path was taken
 let codePathTaken: 'appv2' | 'applegacy' | 'none' = 'none'
 
-// Feature flag
+// There is no feature flag any more: App.tsx unconditionally renders
+// SessionApp (the former AppV2). v2Enabled is kept as a harmless no-op local
+// so the many existing `v2Enabled = true` assignments below (predating the
+// hard cutover) remain valid without touching every call site.
 let v2Enabled = false
-vi.mock('./lib/featureFlags', () => ({
-  isV2StateEnabled: () => v2Enabled,
-}))
 
 // Mock hooks that are needed by App
 vi.mock('./hooks/useAuth', () => ({
@@ -232,18 +232,7 @@ describe('App: mode-splitting', () => {
   })
 
   describe('branch point', () => {
-    it('app with v2 disabled calls useWorkspace (AppLegacy path)', async () => {
-      v2Enabled = false
-      const { render } = await import('@testing-library/react')
-      const App = (await import('./App')).default
-
-      render(<App />)
-
-      expect(codePathTaken).toBe('applegacy')
-    })
-
-    it('app with v2 enabled calls useV2State (AppV2 path)', async () => {
-      v2Enabled = true
+    it('App always renders SessionApp (calls useV2State), unconditionally -- there is no mode switch any more', async () => {
       const { render } = await import('@testing-library/react')
       const App = (await import('./App')).default
 

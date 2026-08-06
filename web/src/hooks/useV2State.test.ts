@@ -47,7 +47,7 @@ describe('useV2State', () => {
   })
 
   it('does not mutate the normalized catalog/workspace when creating a session', async () => {
-    const { result } = renderHook(() => useV2State({ enabled: true }))
+    const { result } = renderHook(() => useV2State())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
 
     const catalogBefore = result.current.state.catalog
@@ -69,7 +69,7 @@ describe('useV2State', () => {
   })
 
   it('replaces the catalog only when a catalog_snapshot arrives on the stream, preserving unrelated session identities', async () => {
-    const { result } = renderHook(() => useV2State({ enabled: true }))
+    const { result } = renderHook(() => useV2State())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
     const socket = FakeSocket.instances[0]
 
@@ -104,7 +104,7 @@ describe('useV2State', () => {
   })
 
   it('threads hostId through to the top-level target_owner wire field on create, as a v2 OwnerID -- never a peer fingerprint', async () => {
-    const { result } = renderHook(() => useV2State({ enabled: true }))
+    const { result } = renderHook(() => useV2State())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
 
     // hostId must already be the target host's v2 OwnerID (HostInfo.OwnerID
@@ -133,7 +133,7 @@ describe('useV2State', () => {
   })
 
   it('omits target_owner entirely when no hostId is given (local create, unchanged default)', async () => {
-    const { result } = renderHook(() => useV2State({ enabled: true }))
+    const { result } = renderHook(() => useV2State())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
 
     vi.mocked(fetch).mockResolvedValueOnce(okResponse({ Ref: { owner: 'me', session: 'new-1' }, Accepted: true }))
@@ -147,7 +147,7 @@ describe('useV2State', () => {
   })
 
   it('does not mutate the normalized workspace/catalog when moving a pane (layout mutation)', async () => {
-    const { result } = renderHook(() => useV2State({ enabled: true }))
+    const { result } = renderHook(() => useV2State())
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1))
     const socket = FakeSocket.instances[0]
 
@@ -222,7 +222,7 @@ describe('useV2State', () => {
       }),
     )
 
-    const { result } = renderHook(() => useV2State({ enabled: true }))
+    const { result } = renderHook(() => useV2State())
     await waitFor(() => expect(result.current.state.catalog.sessionsByRef.size).toBe(2))
 
     // Bootstrap surfaced both the local and the remote peer's session, each

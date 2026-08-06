@@ -26,9 +26,7 @@ func BuildRouter(ctx context.Context, opts *Options) (chi.Router, *ws.Hub, error
 	if opts.Launch != nil {
 		opts.Launch.Hub = opts.Hub
 	}
-	wireSessionAttrsSync(opts, hub)
-
-	coordinator := newGroupNamingCoordinator(ctx, opts, hub)
+	wireBrowserHub(opts, hub)
 
 	r := chi.NewRouter()
 	r.Use(chimiddleware.Recoverer)
@@ -62,7 +60,7 @@ func BuildRouter(ctx context.Context, opts *Options) (chi.Router, *ws.Hub, error
 	go hub.Run(ctx)
 	go runUpdateChecker(opts)
 
-	registerAPIRoutes(r, opts, hub, coordinator)
+	registerAPIRoutes(r, opts, hub)
 	registerWSRoutes(r, opts, hub)
 	registerPeerWSRoutes(r, opts)
 	registerProxyFileRoutes(r, opts)

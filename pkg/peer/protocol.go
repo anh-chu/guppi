@@ -121,10 +121,11 @@ const CapV2Command = "v2-command"
 var localCapabilities = []string{CapPerStream, CapUpload}
 
 // capabilitiesFor returns the capability list to advertise for a given
-// SessionDeps. CapV2Catalog/CapV2Command are only included when the v2
-// command service was actually constructed (i.e. TERMYARD_V2_STATE=1 and
-// the v2 store/catalog initialized successfully), not merely when an env
-// var is set.
+// SessionDeps. CapV2Catalog/CapV2Command are only included when the
+// command service was actually constructed and wired into deps -- the
+// canonical state graph is always constructed by the runtime, so in
+// practice this is unconditional, but the check stays narrow (deps-based,
+// not environment-based) since SessionDeps is also built by hand in tests.
 func capabilitiesFor(deps SessionDeps) []string {
 	caps := append([]string(nil), localCapabilities...)
 	if deps.V2CommandSvc != nil {

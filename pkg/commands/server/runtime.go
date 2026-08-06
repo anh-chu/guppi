@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -15,19 +14,15 @@ import (
 	"github.com/anh-chu/termyard/pkg/activity"
 	"github.com/anh-chu/termyard/pkg/auth"
 	"github.com/anh-chu/termyard/pkg/config"
-	"github.com/anh-chu/termyard/pkg/groupsync"
 	"github.com/anh-chu/termyard/pkg/identity"
 	"github.com/anh-chu/termyard/pkg/model"
-	"github.com/anh-chu/termyard/pkg/namer"
 	"github.com/anh-chu/termyard/pkg/peer"
 	"github.com/anh-chu/termyard/pkg/portforward"
 	"github.com/anh-chu/termyard/pkg/preferences"
 	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/scheduler"
 	"github.com/anh-chu/termyard/pkg/server"
-	"github.com/anh-chu/termyard/pkg/sessionattrs"
 	"github.com/anh-chu/termyard/pkg/sessionlaunch"
-	"github.com/anh-chu/termyard/pkg/sessionorder"
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 	"github.com/anh-chu/termyard/pkg/webpush"
@@ -39,21 +34,17 @@ import (
 // Start/Ready/Stop lifecycle control. It owns the goroutines that used to be
 // launched inline in Execute, so startup order, readiness, and cancellation are
 // all visible in one place.
+//
+// There is exactly one state authority: the canonical store/catalog/command
+// service graph below is always constructed, unconditionally. There is no
+// runtime mode switch and no environment variable that selects an alternate
+// state path.
 type Runtime struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	ready  chan struct{}
+	opts   *server.Options
 
-	// v2Mode is resolved once in newRuntime (TERMYARD_V2_STATE=1) and never
-	// changes for the lifetime of the runtime. It gates every legacy-only
-	// background loop and write path so the two authorities never run
-	// concurrently.
-	v2Mode bool
-
-	ready chan struct{}
-	opts  *server.Options
-
-	// Core stores / registries
-	stateMgr   *state.Manager
 	tracker    *toolevents.Tracker
 	actTracker *activity.Tracker
 	daemonReg  *pty.Registry
@@ -63,6 +54,20 @@ type Runtime struct {
 	reconciler     *toolevents.Reconciler
 	detector       *toolevents.Detector
 	silenceMonitor *toolevents.SilenceMonitor
+
+	// Canonical state graph -- the single source of truth for sessions.
+	store           *state.Store
+	catalog         *state.Catalog
+	stateReconciler *state.Reconciler
+	commandSvc      *state.SessionCommandService
+	remoteCreate    *state.RemoteCreateCoordinator
+	stateStream     *ws.StateStreamHub
+
+	// enricher supplies runtime metadata (cwd, pid, prompt preview, activity)
+	// for catalog projection. Its /proc-derived fields are refreshed on the
+	// same cadence as the daemon adapter snapshot (see refreshDaemonState) so
+	// catalog enrichment itself never performs blocking I/O.
+	enricher *runtimeEnricher
 
 	// Identity / peers
 	peerMgr    *peer.Manager
@@ -79,29 +84,6 @@ type Runtime struct {
 	fgProvider ForegroundProvider
 	hub        *ws.Hub
 
-	// Dormant v2 store (Task 3). It is opened here but not wired into the
-	// active session/workspace source of truth yet.
-	v2store *state.Store
-
-	// Task 5 v2 catalog and reconciler (shadow mode behind TERMYARD_V2_STATE).
-	v2Catalog    *state.Catalog
-	v2Reconciler *state.Reconciler
-
-	// Task 7 v2 local command service.
-	v2CommandSvc *state.SessionCommandService
-
-	// Task 9 v2 remote create coordinator.
-	v2RemoteCreate *state.RemoteCreateCoordinator
-
-	// Task 10 durable v2 browser state stream.
-	v2StateStream *ws.StateStreamHub
-
-	// v2Enricher supplies runtime metadata (cwd, pid, prompt preview, activity)
-	// for catalog projection. Its /proc-derived fields are refreshed on the
-	// same cadence as the daemon adapter snapshot (see refreshDaemonState) so
-	// catalog enrichment itself never performs blocking I/O.
-	v2Enricher *v2RuntimeEnricher
-
 	// Test hook: if set, overrides DetectAndCleanupCrashes in runDaemonRefresh.
 	detectCrashesFn func() []pty.LifecycleRecord
 }
@@ -109,26 +91,11 @@ type Runtime struct {
 // newRuntime builds the dependency graph without starting any monitors. All
 // construction-time errors are returned synchronously.
 func newRuntime(c *cli.Command) (*Runtime, error) {
-	// Resolve the runtime mode BEFORE constructing dependencies. In v2 mode,
-	// legacy state stores are not constructed; in legacy mode, v2 is not constructed.
-	// This ensures single authority: either v2 or legacy, never both.
-	v2Mode := os.Getenv("TERMYARD_V2_STATE") == "1"
-
 	rt := &Runtime{
-		v2Mode:     v2Mode,
 		tracker:    toolevents.NewTracker(),
 		actTracker: activity.NewTracker(),
 		ready:      make(chan struct{}),
 		fgProvider: newForegroundProvider(),
-	}
-	// The legacy state.Manager is the single-authority boundary: it must not
-	// be constructed at all in v2 mode, not merely constructed-and-gated. Every
-	// consumer below (peer.Manager, ws.Hub, sessionlaunch.Service, server
-	// options, SessionDeps) is either nil-safe for rt.stateMgr or takes a
-	// narrower interface that a nil *state.Manager still satisfies safely via
-	// explicit nil checks at the conversion boundary (see ws.AsStateSource).
-	if !v2Mode {
-		rt.stateMgr = state.NewManager()
 	}
 	rt.tracker.EnablePersistence()
 
@@ -143,39 +110,10 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	}
 
 	rt.adapter = &daemonAdapter{reg: rt.daemonReg}
-	if rt.stateMgr != nil {
-		rt.stateMgr.SetDaemonRegistry(rt.adapter)
-	}
 
 	rt.reconciler = toolevents.NewReconciler(rt.tracker, rt.lookupPane, 3*time.Second)
 	rt.detector = toolevents.NewDetector(rt.tracker, rt.listPanes, 5*time.Second)
 	rt.silenceMonitor = toolevents.NewSilenceMonitor(rt.tracker, rt.detector, rt.adapter)
-
-	// Legacy state stores: only constructed in legacy mode.
-	var attrsStore *sessionattrs.Store
-	var orderStore *sessionorder.Store
-	var groupStore *groupsync.Store
-
-	if !v2Mode {
-		var err error
-		attrsStore, err = sessionattrs.NewStore()
-		if err != nil {
-			logrus.WithError(err).Warn("failed to load session-attrs store, sync disabled")
-			attrsStore = nil
-		}
-
-		orderStore, err = sessionorder.NewStore()
-		if err != nil {
-			logrus.WithError(err).Warn("failed to load session-order store, sync disabled")
-			orderStore = nil
-		}
-
-		groupStore, err = groupsync.NewStore()
-		if err != nil {
-			logrus.WithError(err).Warn("failed to load groups store, sync disabled")
-			groupStore = nil
-		}
-	}
 
 	prefStore, err := preferences.NewStore()
 	if err != nil {
@@ -183,19 +121,10 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		prefStore = nil
 	}
 
-	applyNamerFromPrefs := func(p *preferences.Preferences) {
-		if rt.stateMgr == nil {
-			return
-		}
-		cfg := namer.Configure(p.AINaming.Enabled, p.AINaming.Endpoint, p.AINaming.APIKey, p.AINaming.Model)
-		n := namer.New(cfg)
-		rt.stateMgr.SetNamer(n)
-		if n.Enabled() {
-			logrus.Info("AI session namer enabled")
-		} else {
-			logrus.Debug("AI session namer disabled")
-		}
-	}
+	// applyNamerFromPrefs is retained as an OnPrefsChanged hook but is
+	// currently a no-op: AI naming against the canonical catalog is not yet
+	// wired (see docs -- deferred, tracked separately from this cutover).
+	applyNamerFromPrefs := func(p *preferences.Preferences) {}
 	if prefStore != nil {
 		applyNamerFromPrefs(prefStore.Get())
 	}
@@ -240,184 +169,96 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	logrus.WithField("name", nodeIdentity.Name).WithField("fingerprint", nodeIdentity.Fingerprint()).Info("node identity loaded")
 	rt.identity = nodeIdentity
 
-	// v2 mode: initialize v2 store, catalog, and services. All failures are FATAL.
-	if v2Mode {
-		v2Dir, err := config.V2StateDir()
-		if err != nil {
-			return nil, fmt.Errorf("failed to determine v2 state directory: %w", err)
-		}
-
-		// This node's own v2 catalog Owner MUST be its own authenticated
-		// identity, converted through the single canonical
-		// state.OwnerIDFromFingerprint function -- the same function peer
-		// validation (pkg/peer/manager.go) uses on the receiving end. Without
-		// this, a fresh store would generate an unrelated random OwnerID that
-		// no peer could ever authenticate against.
-		selfOwner := state.OwnerIDFromFingerprint(nodeIdentity.Fingerprint())
-		rt.v2store, err = state.OpenStore(v2Dir, nodeIdentity.Fingerprint(), state.StoreOptions{Owner: selfOwner})
-		if err != nil {
-			return nil, fmt.Errorf("failed to open v2 state store: %w", err)
-		}
-
-		rt.v2Catalog = state.NewCatalog(rt.v2store.Owner(), rt.v2store)
-		if err := rt.v2Catalog.Load(); err != nil {
-			return nil, fmt.Errorf("failed to load v2 catalog: %w", err)
-		}
-
-		enricher := &v2RuntimeEnricher{adapter: rt.adapter, actTracker: rt.actTracker}
-		rt.v2Enricher = enricher
-		rt.v2Reconciler = state.NewReconciler(rt.v2Catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
-		rt.v2CommandSvc = state.NewSessionCommandService(rt.v2Catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.v2Catalog.Owner()})
-		rt.v2RemoteCreate = state.NewRemoteCreateCoordinator(rt.v2Catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.v2Catalog.Owner()})
-		rt.v2StateStream = ws.NewStateStreamHub(rt.v2Catalog, nil)
-		logrus.WithField("owner", rt.v2Catalog.Owner()).Info("v2 mode enabled (legacy stores disabled)")
+	// Canonical state graph: store, catalog, and services are always
+	// constructed. There is no environment variable or flag that selects an
+	// alternate state path -- all failures here are FATAL to startup.
+	stateDir, err := config.StateDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine state directory: %w", err)
 	}
+
+	// This node's own catalog Owner MUST be its own authenticated identity,
+	// converted through the single canonical state.OwnerIDFromFingerprint
+	// function -- the same function peer validation (pkg/peer/manager.go)
+	// uses on the receiving end. Without this, a fresh store would generate
+	// an unrelated random OwnerID that no peer could ever authenticate
+	// against.
+	selfOwner := state.OwnerIDFromFingerprint(nodeIdentity.Fingerprint())
+	rt.store, err = state.OpenStore(stateDir, nodeIdentity.Fingerprint(), state.StoreOptions{Owner: selfOwner})
+	if err != nil {
+		return nil, fmt.Errorf("failed to open state store: %w", err)
+	}
+
+	rt.catalog = state.NewCatalog(rt.store.Owner(), rt.store)
+	if err := rt.catalog.Load(); err != nil {
+		return nil, fmt.Errorf("failed to load catalog: %w", err)
+	}
+
+	enricher := &runtimeEnricher{adapter: rt.adapter, actTracker: rt.actTracker}
+	rt.enricher = enricher
+	rt.stateReconciler = state.NewReconciler(rt.catalog, rt.daemonReg, enricher, state.ReconcilerOptions{DisablePendingCreates: true})
+	rt.commandSvc = state.NewSessionCommandService(rt.catalog, rt.daemonReg, enricher, state.SessionCommandServiceOptions{Owner: rt.catalog.Owner()})
+	rt.remoteCreate = state.NewRemoteCreateCoordinator(rt.catalog, rt.daemonReg, state.RemoteCreateCoordinatorOptions{Owner: rt.catalog.Owner()})
+	rt.stateStream = ws.NewStateStreamHub(rt.catalog, nil)
+	logrus.WithField("owner", rt.catalog.Owner()).Info("canonical state store opened")
 
 	peerStore, err := identity.NewPeerStore()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load peer store: %w", err)
 	}
 
-	// peer.Manager takes the narrow LocalSessionSource interface, not a
-	// concrete *state.Manager. In v2 mode rt.stateMgr is nil (no legacy
-	// manager constructed at all), so localSrc must be assigned through this
-	// explicit nil check -- passing rt.stateMgr directly would wrap a typed
-	// nil pointer in a non-nil interface value, which peer.Manager's
-	// `!= nil` checks would then fail to catch.
-	var localSrc peer.LocalSessionSource
-	if rt.stateMgr != nil {
-		localSrc = rt.stateMgr
+	// peer.Manager's third argument is the narrow legacy LocalSessionSource
+	// interface; no legacy local source is ever constructed, so this is
+	// always nil. The catalog is wired separately via SetV2Catalog below.
+	rt.peerMgr = peer.NewManager(nodeIdentity, peerStore, nil)
+	rt.peerMgr.SetV2Catalog(rt.catalog)
+	rt.peerMgr.SetRemoteCreateCoordinator(rt.remoteCreate)
+	rt.peerMgr.SetRemoteStore(rt.store)
+	if err := rt.peerMgr.LoadRemoteCatalogCache(); err != nil {
+		logrus.WithError(err).Warn("failed to load remote catalog cache")
 	}
-	rt.peerMgr = peer.NewManager(nodeIdentity, peerStore, localSrc)
-	if rt.v2Catalog != nil {
-		// Wired explicitly and independently of rt.stateMgr's presence: v2 mode
-		// never constructs a legacy manager to carry this.
-		rt.peerMgr.SetV2Catalog(rt.v2Catalog)
-	}
-	if rt.v2RemoteCreate != nil {
-		rt.peerMgr.SetRemoteCreateCoordinator(rt.v2RemoteCreate)
-	}
-	if rt.v2store != nil {
-		rt.peerMgr.SetRemoteStore(rt.v2store)
-		if err := rt.peerMgr.LoadRemoteCatalogCache(); err != nil {
-			logrus.WithError(err).Warn("failed to load remote catalog cache")
-		}
-	}
-	if rt.v2StateStream != nil {
-		// Multi-node: stream cached remote-owner catalogs (peer.Manager's
-		// already-validated remoteCatalogs cache) to the browser alongside
-		// this node's own local catalog.
-		rt.v2StateStream.AttachRemoteCatalogSource(rt.peerMgr)
-	}
+	// Multi-node: stream cached remote-owner catalogs (peer.Manager's
+	// already-validated remoteCatalogs cache) to the browser alongside this
+	// node's own local catalog.
+	rt.stateStream.AttachRemoteCatalogSource(rt.peerMgr)
 	rt.detector.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.silenceMonitor.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 	rt.reconciler.SetHost(rt.peerMgr.LocalID(), rt.peerMgr.LocalName())
 
-	// Legacy fire-and-forget remote launcher: only constructed in legacy
-	// mode. In v2 mode, remote creates must go through the reliable v2
-	// remote-create coordinator (v2RemoteLauncher below); constructing this
-	// path anyway would let v2-only nodes silently fall back to a launcher
-	// that reports success once a frame is merely enqueued, not once the
-	// remote session actually exists.
-	var legacyRemoteLauncher sessionlaunch.RemoteLauncher
-	if !v2Mode {
-		legacyRemoteLauncher = func(ctx context.Context, req sessionlaunch.Request) (sessionlaunch.Result, error) {
-			peerConn := rt.peerMgr.GetPeerConnection(req.Host)
-			if peerConn == nil {
-				return sessionlaunch.Result{}, sessionlaunch.ErrPeerUnavailable
-			}
-			params, _ := json.Marshal(map[string]string{
-				"name":            req.Name,
-				"path":            req.Path,
-				"command":         req.Command,
-				"worktree_branch": req.WorktreeBranch,
-				"schedule_id":     req.ScheduleID,
-			})
-			msg, _ := peer.NewMessage(peer.MsgSessionAction, peer.SessionActionPayload{
-				Action: "new",
-				Params: params,
-			})
-			if !peerConn.Enqueue(msg) {
-				return sessionlaunch.Result{}, sessionlaunch.ErrPeerQueueFull
-			}
-			return sessionlaunch.Result{Name: req.Name, Host: req.Host}, nil
-		}
-	}
-
-	// v2 remote launcher: routes through RemoteCreateCoordinator on the
-	// remote owner via the reliable command RPC (pkg/peer's
+	// Remote launcher: routes through RemoteCreateCoordinator on the remote
+	// owner via the reliable command RPC (pkg/peer's
 	// Manager.SendRemoteCreate), which blocks for a genuine ack/nack instead
-	// of merely enqueuing a frame. Only constructed in v2 mode.
-	var v2RemoteLauncher sessionlaunch.RemoteLauncher
-	if v2Mode {
-		v2RemoteLauncher = func(ctx context.Context, req sessionlaunch.Request) (sessionlaunch.Result, error) {
-			cmdID := state.CommandID(req.CommandID)
-			if cmdID == "" {
-				cmdID = state.NewCommandID()
-			}
-			rreq := state.RemoteCreateRequest{
-				IntentID:       cmdID,
-				Requester:      rt.v2Catalog.Owner(),
-				Name:           req.Name,
-				Shell:          req.Command,
-				Cwd:            req.Path,
-				WorktreeBranch: req.WorktreeBranch,
-				Cols:           req.Cols,
-				Rows:           req.Rows,
-				AgentType:      req.AgentType,
-				ScheduleID:     req.ScheduleID,
-			}
-			res, err := rt.peerMgr.SendRemoteCreate(ctx, req.Host, rreq)
-			if err != nil {
-				return sessionlaunch.Result{}, err
-			}
-			return sessionlaunch.Result{Name: res.DisplayName, Host: req.Host, Path: res.Path, Remote: true}, nil
+	// of merely enqueuing a frame. This is the only remote-create path; there
+	// is no legacy fire-and-forget fallback.
+	remoteLauncher := func(ctx context.Context, req sessionlaunch.Request) (sessionlaunch.Result, error) {
+		cmdID := state.CommandID(req.CommandID)
+		if cmdID == "" {
+			cmdID = state.NewCommandID()
 		}
+		rreq := state.RemoteCreateRequest{
+			IntentID:       cmdID,
+			Requester:      rt.catalog.Owner(),
+			Name:           req.Name,
+			Shell:          req.Command,
+			Cwd:            req.Path,
+			WorktreeBranch: req.WorktreeBranch,
+			Cols:           req.Cols,
+			Rows:           req.Rows,
+			AgentType:      req.AgentType,
+			ScheduleID:     req.ScheduleID,
+		}
+		res, err := rt.peerMgr.SendRemoteCreate(ctx, req.Host, rreq)
+		if err != nil {
+			return sessionlaunch.Result{}, err
+		}
+		return sessionlaunch.Result{Name: res.DisplayName, Host: req.Host, Path: res.Path, Remote: true}, nil
 	}
 
 	launchSvc := &sessionlaunch.Service{
 		DaemonReg: rt.daemonReg,
-		StateMgr:  rt.stateMgr,
-		Attrs: sessionlaunch.AttrStoreFunc(func(key, scheduleID string) (sessionlaunch.ScheduleAttr, error) {
-			if attrsStore == nil {
-				return sessionlaunch.ScheduleAttr{}, fmt.Errorf("session attrs store not available")
-			}
-			attr, err := attrsStore.SetScheduleID(key, scheduleID)
-			if err != nil {
-				return sessionlaunch.ScheduleAttr{}, err
-			}
-			return sessionlaunch.ScheduleAttr{
-				Background: attr.Background,
-				Hidden:     attr.Hidden,
-				ScheduleID: attr.ScheduleID,
-				UpdatedAt:  attr.UpdatedAt,
-			}, nil
-		}),
-		Identity: nodeIdentity,
-		Refresh:  rt.refreshSessionsFunc,
-		Remote:   legacyRemoteLauncher,
-		V2Remote: v2RemoteLauncher,
-		Fanout: func(key string, attr sessionlaunch.ScheduleAttr) {
-			if rt.peerMgr == nil || nodeIdentity == nil {
-				return
-			}
-			msg, err := peer.NewMessage(peer.MsgSessionAttrsDelta, peer.SessionAttrsDeltaPayload{
-				Origin: nodeIdentity.Fingerprint(),
-				Key:    key,
-				Attr: peer.SessionAttr{
-					Background: attr.Background,
-					Hidden:     attr.Hidden,
-					ScheduleID: attr.ScheduleID,
-					UpdatedAt:  attr.UpdatedAt,
-				},
-			})
-			if err != nil {
-				return
-			}
-			for _, pc := range rt.peerMgr.ConnectedPeers() {
-				pc.Enqueue(msg)
-			}
-		},
+		Identity:  nodeIdentity,
+		Refresh:   rt.refreshSessionsFunc,
+		V2Remote:  remoteLauncher,
 		Names: func(host string) []string {
 			if host != "" && rt.peerMgr != nil && !rt.peerMgr.IsLocal(host) {
 				sessions := rt.peerMgr.GetAllSessions()
@@ -429,17 +270,14 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 				}
 				return names
 			}
-			if rt.stateMgr != nil {
-				sessions := rt.stateMgr.GetSessions()
-				names := make([]string, 0, len(sessions))
-				for _, s := range sessions {
-					if s != nil {
-						names = append(names, s.Name)
-					}
+			recs := rt.catalog.Sessions()
+			names := make([]string, 0, len(recs))
+			for _, rec := range recs {
+				if rec.Name != "" {
+					names = append(names, rec.Name)
 				}
-				return names
 			}
-			return nil
+			return names
 		},
 	}
 
@@ -449,8 +287,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 
 	deps := peer.SessionDeps{
 		Manager:                 rt.peerMgr,
-		LocalMgr:                rt.stateMgr,
-		V2Catalog:               rt.v2Catalog,
+		V2Catalog:               rt.catalog,
 		Identity:                nodeIdentity,
 		ActTracker:              rt.actTracker,
 		ToolTracker:             rt.tracker,
@@ -460,8 +297,8 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		StreamReg:               streamReg,
 		CaptureReg:              captureReg,
 		FileReadReg:             fileReadReg,
-		V2CommandSvc:            rt.v2CommandSvc,
-		RemoteCreateCoordinator: rt.v2RemoteCreate,
+		V2CommandSvc:            rt.commandSvc,
+		RemoteCreateCoordinator: rt.remoteCreate,
 	}
 
 	peerHandler := peer.NewHandler(deps, streamReg)
@@ -470,11 +307,8 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 
 	rt.wikiSup = wikilite.NewSupervisor()
 
-	// ws.Hub takes the narrow StateSource interface. AsStateSource converts
-	// a possibly-nil rt.stateMgr into a genuine nil interface value (v2 mode
-	// constructs no legacy manager at all) instead of a non-nil interface
-	// wrapping a nil pointer.
-	rt.hub = ws.NewHub(ws.AsStateSource(rt.stateMgr), rt.tracker)
+	// ws.Hub no longer takes a legacy state source: there is none to give it.
+	rt.hub = ws.NewHub(nil, rt.tracker)
 	rt.hub.SetActivityTracker(rt.actTracker, rt.peerMgr, rt.peerMgr.LocalID(), false)
 
 	var (
@@ -496,15 +330,14 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		TLSCert:          c.String("tls-cert"),
 		TLSKey:           c.String("tls-key"),
 		TLSAuto:          c.Bool("tls"),
-		StateMgr:         rt.stateMgr,
+		Catalog:          rt.catalog,
+		CommandSvc:       rt.commandSvc,
+		StateStream:      rt.stateStream,
 		Tracker:          rt.tracker,
 		ActivityTracker:  rt.actTracker,
 		PushKeys:         pushKeys,
 		PushStore:        pushStore,
 		PrefStore:        prefStore,
-		AttrsStore:       attrsStore,
-		OrderStore:       orderStore,
-		GroupStore:       groupStore,
 		AuthEnabled:      authEnabled,
 		DebugPprof:       c.Bool("debug-pprof"),
 		PasswordStore:    passwordStore,
@@ -534,12 +367,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		Hub:            rt.hub,
 	}
 	launchSvc.Hub = rt.hub
-	if rt.v2CommandSvc != nil {
-		rt.opts.V2CommandSvc = rt.v2CommandSvc
-		rt.opts.V2Catalog = rt.v2Catalog
-		rt.opts.V2StateStream = rt.v2StateStream
-		launchSvc.V2Commander = rt.v2CommandSvc
-	}
+	launchSvc.V2Commander = rt.commandSvc
 
 	if schedulerStore != nil {
 		rt.schedulerRunner = scheduler.NewRunner(schedulerStore, rt.peerMgr, func(req scheduler.CreateSessionReq) error {
@@ -561,9 +389,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		rt.schedulerRunner.SetCapEnforcer(func(job scheduler.Job) {
 			server.EnforceScheduleCap(rt.opts, job.ID, job.MaxConcurrency-1)
 		})
-		if rt.v2Catalog != nil {
-			rt.schedulerRunner.Owner = rt.v2Catalog.Owner()
-		}
+		rt.schedulerRunner.Owner = rt.catalog.Owner()
 		rt.opts.SchedulerRunner = rt.schedulerRunner
 	}
 
@@ -610,23 +436,15 @@ func (rt *Runtime) Start(parent context.Context) error {
 	go rt.reconciler.Run(rt.ctx)
 	go rt.detector.Run(rt.ctx)
 	go rt.silenceMonitor.Run(rt.ctx)
-	if !rt.v2Mode {
-		// AI session naming only writes to the legacy state.Manager; v2 has its
-		// own naming path via SessionCommandService's create flow.
-		go runShellNameWatcher(rt.ctx, rt.stateMgr, rt.adapter, rt.fgProvider)
-	}
+	// AI session naming (runShellNameWatcher) only ever wrote to the legacy
+	// state.Manager, which no longer exists; naming now flows through
+	// SessionCommandService's create path instead.
 
 	go rt.runDaemonRefresh(rt.ctx)
 
-	if rt.v2Reconciler != nil {
-		go rt.v2Reconciler.Run(rt.ctx)
-	}
-	if rt.v2CommandSvc != nil {
-		go rt.v2CommandSvc.Run(rt.ctx)
-	}
-	if rt.v2RemoteCreate != nil {
-		go rt.v2RemoteCreate.Run(rt.ctx)
-	}
+	go rt.stateReconciler.Run(rt.ctx)
+	go rt.commandSvc.Run(rt.ctx)
+	go rt.remoteCreate.Run(rt.ctx)
 
 	if rt.schedulerRunner != nil {
 		go rt.schedulerRunner.Run(rt.ctx)
@@ -647,8 +465,8 @@ func (rt *Runtime) Stop() {
 	if rt.cancel != nil {
 		rt.cancel()
 	}
-	if rt.v2StateStream != nil {
-		rt.v2StateStream.Close()
+	if rt.stateStream != nil {
+		rt.stateStream.Close()
 	}
 }
 
@@ -657,48 +475,13 @@ func (rt *Runtime) Options() *server.Options {
 	return rt.opts
 }
 
-// refreshSessionsFunc builds a model.Session snapshot from daemon metadata and
-// pushes it to the state manager. It is a narrow helper for the launch service
-// and recovery callbacks.
-func (rt *Runtime) refreshSessionsFunc() {
-	// In v2 mode, writing session snapshots into the legacy state.Manager is a
-	// shadow write: v2 mode has its own reconciler/catalog as the single
-	// source of truth. Callers (sessionlaunch.Service.Refresh, WS teardown
-	// paths, recover/rename handlers) invoke this unconditionally today, so
-	// the no-op guard must live here, not just at the periodic-refresh call
-	// site (refreshDaemonState).
-	if rt.v2Mode {
-		return
-	}
-	rt.refreshSessions(rt.adapter.List())
-}
-
-func (rt *Runtime) refreshSessions(infos []pty.SessionInfo) {
-	sessions := make([]*model.Session, 0, len(infos))
-	for _, d := range infos {
-		var created time.Time
-		if t, err := time.Parse(time.RFC3339, d.Created); err == nil {
-			created = t
-		}
-		sessions = append(sessions, &model.Session{
-			Name:        d.ID,
-			Created:     created,
-			Backend:     "daemon",
-			ProjectPath: d.Cwd,
-			Windows: []*model.Window{{
-				ID:     "daemon-" + d.ID,
-				Name:   "shell",
-				Active: true,
-				Panes: []*model.Pane{{
-					ID:          model.SessionRef{Session: d.ID, Window: 0, Pane: 0}.PaneID(),
-					Active:      true,
-					CurrentPath: d.Cwd,
-				}},
-			}},
-		})
-	}
-	rt.stateMgr.UpdateSessions(sessions)
-}
+// refreshSessionsFunc is a narrow hook for the launch service and
+// recover/rename/WS-teardown callers to request a prompt session-state
+// refresh. The canonical catalog/reconciler is the single source of truth
+// and already republishes on its own cadence (see runDaemonRefresh), so this
+// is currently a no-op; it is kept as a call site so callers do not need to
+// change if an explicit fast-path refresh is added later.
+func (rt *Runtime) refreshSessionsFunc() {}
 
 // classifyAndCleanupCrashes is the crash-detection half of the refresh cycle.
 // It uses the test hook if present, otherwise the real lifecycle store.
@@ -714,28 +497,19 @@ func (rt *Runtime) classifyAndCleanupCrashes() {
 	}
 }
 
-// refreshDaemonState runs one classify-then-publish cycle.  Crash detection
+// refreshDaemonState runs one classify-then-publish cycle. Crash detection
 // happens first so a crashed session is never broadcast as live in the same
-// cycle.
-//
-// In v2 mode, crash detection still runs (the v2 reconciler and daemon
-// registry need it), but the legacy publish step (refreshSessions, which
-// writes into the legacy state.Manager) is skipped: v2 mode has its own
-// classify-before-publish reconciler (pkg/state.Reconciler) driven off the
-// same daemon registry, so publishing through both would be a dual-write.
+// cycle. Publishing itself is owned entirely by the canonical reconciler
+// (pkg/state.Reconciler), driven off the same daemon registry -- there is no
+// second, legacy publish path.
 func (rt *Runtime) refreshDaemonState() {
 	rt.classifyAndCleanupCrashes()
-	infos := rt.adapter.refresh()
-	if !rt.v2Mode {
-		rt.refreshSessions(infos)
-	}
-	// Refresh the v2 enricher's runtime metadata cache (cwd, pid, command) on
-	// the same cadence as the daemon adapter snapshot. This is the only place
+	rt.adapter.refresh()
+	// Refresh the enricher's runtime metadata cache (cwd, pid, command) on the
+	// same cadence as the daemon adapter snapshot. This is the only place
 	// that performs the blocking /proc/<pid>/cwd read; Enrich itself only does
 	// an in-memory map lookup, keeping catalog projection off the I/O path.
-	if rt.v2Enricher != nil {
-		rt.v2Enricher.refreshRuntimeCache()
-	}
+	rt.enricher.refreshRuntimeCache()
 }
 
 // runDaemonRefresh keeps an up-to-date snapshot of daemon sessions and runs
@@ -991,26 +765,26 @@ func defaultSessionDir() string {
 	return fmt.Sprintf("/tmp/termyard-sessions-%s", uid)
 }
 
-// v2RuntimeEnricher supplies live runtime fields for v2 catalog records
+// runtimeEnricher supplies live runtime fields for v2 catalog records
 // without mutating persisted state.
-type v2RuntimeEnricher struct {
+type runtimeEnricher struct {
 	adapter    *daemonAdapter
 	actTracker *activity.Tracker
 
 	previewMu    sync.Mutex
-	previewCache map[string]*v2PreviewCacheEntry
+	previewCache map[string]*previewCacheEntry
 
 	runtimeMu    sync.RWMutex
-	runtimeCache map[string]v2RuntimeCacheEntry
+	runtimeCache map[string]runtimeCacheEntry
 }
 
-// v2RuntimeCacheEntry holds the process-derived fields for one session
+// runtimeCacheEntry holds the process-derived fields for one session
 // (daemon adapter snapshot fields plus the live /proc/<pid>/cwd read) as of
 // the last background refresh. Consumers of this cache may see values that
-// are up to v2RuntimeCacheInterval stale; this mirrors the accepted staleness
+// are up to runtimeCacheInterval stale; this mirrors the accepted staleness
 // of the throttled prompt-preview cache above and is a deliberate trade for
 // keeping catalog projection free of blocking I/O.
-type v2RuntimeCacheEntry struct {
+type runtimeCacheEntry struct {
 	daemonPID      int
 	shellPID       int
 	currentCommand string
@@ -1024,38 +798,38 @@ var readProcCwd = func(pid int) (string, error) {
 	return os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
 }
 
-// v2PreviewCacheEntry holds a throttled prompt-preview snapshot for a single
+// previewCacheEntry holds a throttled prompt-preview snapshot for a single
 // session so the (up to) 64KiB PTY capture only runs periodically instead of
 // on every catalog enrichment call. This mirrors the throttle pattern used by
 // state.Manager's legacy preview cache (see pkg/state/preview.go).
-type v2PreviewCacheEntry struct {
+type previewCacheEntry struct {
 	preview     string
 	lastAttempt time.Time
 	inFlight    bool
 }
 
-// v2PromptPreviewInterval throttles prompt-preview PTY captures during v2
+// promptPreviewInterval throttles prompt-preview PTY captures during v2
 // catalog enrichment. Matches the legacy manager's promptPreviewInterval.
-const v2PromptPreviewInterval = 30 * time.Second
+const promptPreviewInterval = 30 * time.Second
 
 // previewFor returns the cached prompt preview for a session immediately,
 // without blocking the catalog projection path. When the cached preview is
-// stale (older than v2PromptPreviewInterval) and no refresh is already in
+// stale (older than promptPreviewInterval) and no refresh is already in
 // flight for this session, it kicks off exactly one asynchronous PTY capture
 // to refresh the cache for subsequent calls. This keeps catalog snapshot
 // publication off the PTY I/O path entirely.
-func (e *v2RuntimeEnricher) previewFor(sessionID string) string {
+func (e *runtimeEnricher) previewFor(sessionID string) string {
 	e.previewMu.Lock()
 	if e.previewCache == nil {
-		e.previewCache = make(map[string]*v2PreviewCacheEntry)
+		e.previewCache = make(map[string]*previewCacheEntry)
 	}
 	entry := e.previewCache[sessionID]
 	if entry == nil {
-		entry = &v2PreviewCacheEntry{}
+		entry = &previewCacheEntry{}
 		e.previewCache[sessionID] = entry
 	}
 	cached := entry.preview
-	due := time.Since(entry.lastAttempt) >= v2PromptPreviewInterval
+	due := time.Since(entry.lastAttempt) >= promptPreviewInterval
 	shouldRefresh := due && !entry.inFlight
 	if shouldRefresh {
 		entry.inFlight = true
@@ -1073,7 +847,7 @@ func (e *v2RuntimeEnricher) previewFor(sessionID string) string {
 // refreshPreview performs the actual (potentially slow) PTY capture off the
 // synchronous enrichment path and stores the result for the next previewFor
 // call to observe.
-func (e *v2RuntimeEnricher) refreshPreview(sessionID string) {
+func (e *runtimeEnricher) refreshPreview(sessionID string) {
 	defer func() {
 		e.previewMu.Lock()
 		if entry := e.previewCache[sessionID]; entry != nil {
@@ -1102,11 +876,11 @@ func (e *v2RuntimeEnricher) refreshPreview(sessionID string) {
 // periodic background loop (see Runtime.refreshDaemonState), never from
 // Enrich / catalog projection. Building a whole new map and swapping it in
 // under the lock keeps readers lock-free of any in-progress refresh.
-func (e *v2RuntimeEnricher) refreshRuntimeCache() {
+func (e *runtimeEnricher) refreshRuntimeCache() {
 	infos := e.adapter.List()
-	next := make(map[string]v2RuntimeCacheEntry, len(infos))
+	next := make(map[string]runtimeCacheEntry, len(infos))
 	for _, d := range infos {
-		entry := v2RuntimeCacheEntry{
+		entry := runtimeCacheEntry{
 			daemonPID:      d.Pid,
 			shellPID:       d.ShellPid,
 			currentCommand: d.Shell,
@@ -1133,7 +907,7 @@ func (e *v2RuntimeEnricher) refreshRuntimeCache() {
 // cachedRuntime returns the last background-refreshed metadata for a session
 // ID. It is a pure in-memory map lookup: no /proc reads, no daemon adapter
 // calls.
-func (e *v2RuntimeEnricher) cachedRuntime(id string) (v2RuntimeCacheEntry, bool) {
+func (e *runtimeEnricher) cachedRuntime(id string) (runtimeCacheEntry, bool) {
 	e.runtimeMu.RLock()
 	defer e.runtimeMu.RUnlock()
 	entry, ok := e.runtimeCache[id]
@@ -1150,7 +924,7 @@ func (e *v2RuntimeEnricher) cachedRuntime(id string) (v2RuntimeCacheEntry, bool)
 // path entirely; enriched fields may lag reality by up to one background
 // refresh interval, which mirrors the accepted staleness of the prompt
 // preview cache.
-func (e *v2RuntimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionRecord) state.SessionRuntime {
+func (e *runtimeEnricher) Enrich(ref state.SessionRef, rec state.LocalSessionRecord) state.SessionRuntime {
 	var rt state.SessionRuntime
 	id := string(ref.Session)
 

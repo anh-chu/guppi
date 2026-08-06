@@ -18,7 +18,7 @@ import (
 // (remote-command-forwarding gap): handleV2SessionCommand must never
 // silently execute a command against its OWN local catalog when the
 // request's Ref.Owner names a different (remote) node's catalog. Before this
-// fix, the handler unconditionally called opts.V2CommandSvc.ExecuteSessionCommand
+// fix, the handler unconditionally called opts.CommandSvc.ExecuteSessionCommand
 // regardless of Ref.Owner -- a kill/label/etc against an already-visible,
 // already-attached remote session would either mutate the wrong (local)
 // catalog or 404 there, even though the real target session was reachable
@@ -58,7 +58,7 @@ func TestV2SessionCommand_RemoteRefRouting(t *testing.T) {
 	}
 
 	t.Run("no PeerMgr configured: remote ref must not silently run locally", func(t *testing.T) {
-		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+		opts := &Options{Catalog: catalog, CommandSvc: svc}
 		r := newV2TestRouter(opts)
 		w := post(r, body(remoteOwner))
 		if w.Code != http.StatusServiceUnavailable {
@@ -89,7 +89,7 @@ func TestV2SessionCommand_RemoteRefRouting(t *testing.T) {
 			t.Fatal(err)
 		}
 		peerMgr := peer.NewManager(localID, peerStore, state.NewManager())
-		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc, PeerMgr: peerMgr}
+		opts := &Options{Catalog: catalog, CommandSvc: svc, PeerMgr: peerMgr}
 		r := newV2TestRouter(opts)
 		w := post(r, body(remoteOwner))
 		if w.Code != http.StatusServiceUnavailable {
@@ -113,7 +113,7 @@ func TestV2SessionCommand_RemoteRefRouting(t *testing.T) {
 			t.Fatalf("local create: %v", err)
 		}
 
-		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+		opts := &Options{Catalog: catalog, CommandSvc: svc}
 		r := newV2TestRouter(opts)
 		b, _ := json.Marshal(map[string]any{
 			"ref":    created.Ref,
@@ -165,7 +165,7 @@ func TestV2SessionCommand_CreateTargetOwnerRouting(t *testing.T) {
 	}
 
 	t.Run("no PeerMgr configured: remote target_owner must not silently create locally", func(t *testing.T) {
-		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+		opts := &Options{Catalog: catalog, CommandSvc: svc}
 		r := newV2TestRouter(opts)
 		w := post(r, createBody(remoteOwner))
 		if w.Code != http.StatusServiceUnavailable {
@@ -197,7 +197,7 @@ func TestV2SessionCommand_CreateTargetOwnerRouting(t *testing.T) {
 			t.Fatal(err)
 		}
 		peerMgr := peer.NewManager(localID, peerStore, state.NewManager())
-		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc, PeerMgr: peerMgr}
+		opts := &Options{Catalog: catalog, CommandSvc: svc, PeerMgr: peerMgr}
 		r := newV2TestRouter(opts)
 		w := post(r, createBody(remoteOwner))
 		if w.Code != http.StatusServiceUnavailable {
@@ -212,7 +212,7 @@ func TestV2SessionCommand_CreateTargetOwnerRouting(t *testing.T) {
 	})
 
 	t.Run("target_owner matches this node's own owner: executes locally as before", func(t *testing.T) {
-		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+		opts := &Options{Catalog: catalog, CommandSvc: svc}
 		r := newV2TestRouter(opts)
 		w := post(r, createBody(localOwner))
 		if w.Code != http.StatusOK {
@@ -228,7 +228,7 @@ func TestV2SessionCommand_CreateTargetOwnerRouting(t *testing.T) {
 	})
 
 	t.Run("no target_owner at all: executes locally as before (unchanged default)", func(t *testing.T) {
-		opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+		opts := &Options{Catalog: catalog, CommandSvc: svc}
 		r := newV2TestRouter(opts)
 		b, _ := json.Marshal(map[string]any{
 			"action": state.ActionCreate,

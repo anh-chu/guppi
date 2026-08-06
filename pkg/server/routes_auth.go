@@ -20,7 +20,7 @@ import (
 
 // registerAPIRoutes mounts the /api tree, including public auth/version/tool
 // endpoints, the protected session/peer/scheduler group, and portforwards.
-func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *groupNamingCoordinator) {
+func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 	r.Route("/api", func(r chi.Router) {
 		// Public auth endpoints (no middleware)
 		r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasswordStore))
@@ -108,9 +108,9 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *gr
 				evt.HostName = opts.PeerMgr.LocalName()
 			}
 
-			// Stamp durable session identity (v2) when available
-			if opts.V2CommandSvc != nil && evt.SessionID == "" {
-				if ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(evt.Session); ok {
+			// Stamp durable session identity when available
+			if opts.CommandSvc != nil && evt.SessionID == "" {
+				if ref, ok := opts.CommandSvc.LookupRefByDisplayName(evt.Session); ok {
 					evt.SessionID = string(ref.Session)
 				}
 			}
@@ -131,12 +131,8 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *gr
 			}).Debug("received tool event via API")
 
 			opts.Tracker.Record(&evt)
-			// In v2 mode, session metadata enrichment happens via the v2
-			// runtime enricher (v2RuntimeEnricher); writing into the legacy
-			// StateMgr here would be a shadow write.
-			if opts.StateMgr != nil && opts.V2CommandSvc == nil {
-				opts.StateMgr.UpdateSessionMetadataFromEvent(&evt)
-			}
+			// Session metadata enrichment happens via the canonical runtime
+			// enricher; there is no legacy state manager to shadow-write into.
 			w.WriteHeader(http.StatusNoContent)
 		})
 
@@ -146,7 +142,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *gr
 				r.Use(auth.Middleware(opts.SessionMgr))
 			}
 
-			registerSessionsRoutes(r, opts, hub, coordinator)
+			registerSessionsRoutes(r, opts, hub)
 			registerSchedulerRoutes(r, opts)
 			registerPeerRoutes(r, opts)
 			registerStateV2Routes(r, opts)

@@ -28,9 +28,9 @@ func setIsolatedHome(t *testing.T, dir string) {
 }
 
 // newV2TestRuntime constructs one real, fully-wired Runtime (via the actual
-// production newRuntime path -- not a hand-built fake) with v2 mode enabled
-// and an isolated HOME, so its identity, v2 store, and v2 catalog are all
-// real, independent instances.
+// production newRuntime path -- not a hand-built fake) with an isolated
+// HOME, so its identity, store, and catalog are all real, independent
+// instances.
 func newV2TestRuntime(t *testing.T, homeDir string) *Runtime {
 	t.Helper()
 	setIsolatedHome(t, homeDir)
@@ -38,17 +38,17 @@ func newV2TestRuntime(t *testing.T, homeDir string) *Runtime {
 	if err != nil {
 		t.Fatalf("newRuntime: %v", err)
 	}
-	if rt.v2Catalog == nil {
-		t.Fatal("expected v2 catalog to be constructed in v2 mode")
+	if rt.catalog == nil {
+		t.Fatal("expected catalog to be constructed")
 	}
 	return rt
 }
 
 // TestTwoRuntimes_RemoteSnapshotAcceptedUnderRealFingerprintConversion is the
 // critical proof for the fresh-node peer-authentication fix: two real,
-// independently-constructed Runtimes (each opening its own v2 store via the
-// actual production newRuntime path, TERMYARD_V2_STATE=1) are paired as
-// peers, and node A's real, wired v2Catalog.Owner() (produced by opening its
+// independently-constructed Runtimes (each opening its own canonical store
+// via the actual production newRuntime path) are paired as
+// peers, and node A's real, wired catalog.Owner() (produced by opening its
 // store with StoreOptions.Owner = state.OwnerIDFromFingerprint(A's own
 // identity.Fingerprint())) is published to node B's real peer.Manager via
 // UpdateRemoteCatalog using A's actual, authenticated identity.Fingerprint()
@@ -61,17 +61,15 @@ func newV2TestRuntime(t *testing.T, homeDir string) *Runtime {
 // now that both sides use the single canonical
 // state.OwnerIDFromFingerprint conversion.
 func TestTwoRuntimes_RemoteSnapshotAcceptedUnderRealFingerprintConversion(t *testing.T) {
-	t.Setenv("TERMYARD_V2_STATE", "1")
-
 	rtA := newV2TestRuntime(t, t.TempDir())
 	fpA := rtA.identity.Fingerprint()
-	ownerA := rtA.v2Catalog.Owner()
+	ownerA := rtA.catalog.Owner()
 
 	// Sanity: A's own catalog owner must be exactly the conversion of its own
 	// fingerprint. If this ever regresses, the rest of the test's assertion
 	// (acceptance) would be meaningless, so pin it explicitly.
 	if want := state.OwnerIDFromFingerprint(fpA); ownerA != want {
-		t.Fatalf("node A's own v2Catalog.Owner() = %q, want %q (OwnerIDFromFingerprint(own fingerprint))", ownerA, want)
+		t.Fatalf("node A's own catalog.Owner() = %q, want %q (OwnerIDFromFingerprint(own fingerprint))", ownerA, want)
 	}
 
 	// Node A's own real (empty) local catalog snapshot, exactly as produced
@@ -82,7 +80,7 @@ func TestTwoRuntimes_RemoteSnapshotAcceptedUnderRealFingerprintConversion(t *tes
 	// snapshots purely on their Owner field, before any session/layout
 	// content is even inspected, so an empty-but-real snapshot is a complete
 	// and non-flaky reproduction.
-	snapshotFromA := rtA.v2Catalog.LocalCatalogSnapshot()
+	snapshotFromA := rtA.catalog.LocalCatalogSnapshot()
 	if snapshotFromA.Owner != ownerA {
 		t.Fatalf("snapshot owner %q != catalog owner %q", snapshotFromA.Owner, ownerA)
 	}
@@ -114,43 +112,16 @@ func TestTwoRuntimes_RemoteSnapshotAcceptedUnderRealFingerprintConversion(t *tes
 	}
 }
 
-// TestV2Mode_NoLegacyStateManagerConstructed is the structural proof for
-// Finding 8: in v2 mode, newRuntime must not construct a legacy
-// *state.Manager at all -- not merely construct one and gate every call site.
-// rt.stateMgr is a concrete *state.Manager field; this asserts it is a
-// genuine nil pointer (never assigned) whenever v2 mode is active, and
-// (as a control) non-nil in legacy mode, so a future regression that starts
-// constructing it unconditionally again is caught here directly rather than
-// by some downstream symptom.
-func TestV2Mode_NoLegacyStateManagerConstructed(t *testing.T) {
-	t.Run("v2 mode", func(t *testing.T) {
-		t.Setenv("TERMYARD_V2_STATE", "1")
-		rt := newV2TestRuntime(t, t.TempDir())
-		if rt.stateMgr != nil {
-			t.Fatal("expected rt.stateMgr to be nil in v2 mode (no legacy state.Manager may be constructed)")
-		}
-		// The narrow interfaces/fields that replace it must still be wired
-		// from the real v2 catalog, not left as a nil-derived no-op.
-		if rt.peerMgr == nil {
-			t.Fatal("expected peerMgr to be constructed")
-		}
-		if rt.hub == nil {
-			t.Fatal("expected hub to be constructed")
-		}
-	})
-
-	t.Run("legacy mode control", func(t *testing.T) {
-		t.Setenv("TERMYARD_V2_STATE", "0")
-		setIsolatedHome(t, t.TempDir())
-		rt, err := newRuntime(&cli.Command{})
-		if err != nil {
-			t.Fatalf("newRuntime: %v", err)
-		}
-		if rt.stateMgr == nil {
-			t.Fatal("expected rt.stateMgr to be constructed in legacy mode")
-		}
-		if rt.v2Catalog != nil {
-			t.Fatal("expected no v2 catalog in legacy mode")
-		}
-	})
+// TestNoLegacyStateManagerField is the structural proof that there is no
+// legacy *state.Manager field at all any more (it was removed from Runtime
+// entirely, not merely left nil-and-gated). The canonical peer/hub graph
+// must still be fully wired from the real catalog.
+func TestNoLegacyStateManagerField(t *testing.T) {
+	rt := newV2TestRuntime(t, t.TempDir())
+	if rt.peerMgr == nil {
+		t.Fatal("expected peerMgr to be constructed")
+	}
+	if rt.hub == nil {
+		t.Fatal("expected hub to be constructed")
+	}
 }

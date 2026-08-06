@@ -15,11 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/anh-chu/termyard/pkg/auth"
-	"github.com/anh-chu/termyard/pkg/groupsync"
 	"github.com/anh-chu/termyard/pkg/portforward"
-	"github.com/anh-chu/termyard/pkg/sessionattrs"
-	"github.com/anh-chu/termyard/pkg/sessionorder"
-	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 	"github.com/anh-chu/termyard/pkg/ws"
 )
@@ -41,22 +37,7 @@ func TestRouteTableSnapshot(t *testing.T) {
 	}
 	sm := auth.NewSessionManager(time.Hour)
 	tracker := toolevents.NewTracker()
-
-	// Legacy mode: legacy stores are constructed, so legacy-only routes
-	// (session-attrs, session-order, groups) must be present in the golden
-	// route table below.
-	attrsStore, err := sessionattrs.NewStore()
-	if err != nil {
-		t.Fatalf("sessionattrs.NewStore: %v", err)
-	}
-	orderStore, err := sessionorder.NewStore()
-	if err != nil {
-		t.Fatalf("sessionorder.NewStore: %v", err)
-	}
-	groupStore, err := groupsync.NewStore()
-	if err != nil {
-		t.Fatalf("groupsync.NewStore: %v", err)
-	}
+	catalog, svc := newV2TestCatalog(t)
 
 	opts := &Options{
 		AuthEnabled:      true,
@@ -66,10 +47,10 @@ func TestRouteTableSnapshot(t *testing.T) {
 		AuthLimiter:      auth.NewLimiter(),
 		NotifyToken:      "notify-token-test",
 		Tracker:          tracker,
-		Hub:              ws.NewHub(state.NewManager(), tracker),
-		AttrsStore:       attrsStore,
-		OrderStore:       orderStore,
-		GroupStore:       groupStore,
+		Hub:              ws.NewHub(nil, tracker),
+		Catalog:          catalog,
+		CommandSvc:       svc,
+		StateStream:      ws.NewStateStreamHub(catalog, nil),
 		PortForwardStore: portforward.NewStore(),
 	}
 
@@ -106,7 +87,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"GET /api/auth/check",
 		"GET /api/auth/status",
 		"GET /api/crashed-sessions",
-		"GET /api/groups",
 		"GET /api/hosts",
 		"GET /api/pane-capture",
 		"GET /api/peers",
@@ -115,8 +95,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"GET /api/pty-benchmark",
 		"GET /api/push/vapid-key",
 		"GET /api/schedules",
-		"GET /api/session-attrs",
-		"GET /api/session-order",
 		"GET /api/sessions",
 		"GET /api/stats",
 		"GET /api/tool-events",
@@ -132,6 +110,7 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"GET /ws/direct-session",
 		"GET /ws/events",
 		"GET /ws/session",
+		"GET /ws/v2/state",
 		"PATCH /api/peers/{fp}",
 		"PATCH /proxy/{port}",
 		"PATCH /proxy/{port}/*",
@@ -139,8 +118,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"POST /api/auth/logout",
 		"POST /api/auth/setup",
 		"POST /api/crashed-sessions/{id}/recover",
-		"POST /api/group/name",
-		"POST /api/groups",
 		"POST /api/peers",
 		"POST /api/peers/{fp}/reconnect",
 		"POST /api/peers/bootstrap",
@@ -155,8 +132,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"POST /api/session/regenerate-name",
 		"POST /api/session/rename",
 		"POST /api/session/select-window",
-		"POST /api/session-attrs",
-		"POST /api/session-order",
 		"POST /api/tool-event",
 		"POST /api/update/apply",
 		"POST /api/update/check",
@@ -314,24 +289,27 @@ func TestProxyHTMLRewriteCap(t *testing.T) {
 	}
 }
 
-// TestLegacyStoreRoutesNotRegisteredWhenNil verifies that legacy-only routes
-// (session-attrs, session-order, groups) are not registered at all -- and so
-// return 404, not merely 503 -- when their backing stores are nil, which is
-// the case in v2 mode (direct-cutover: no legacy route surface exists).
-func TestLegacyStoreRoutesNotRegisteredWhenNil(t *testing.T) {
+// TestLegacyStoreRoutesNeverExist verifies that the legacy session-attrs,
+// session-order, and groups sync routes -- which only ever existed to serve
+// AppLegacy -- are not registered at all in the canonical-only architecture,
+// regardless of options. There is no store to gate them on any more; they
+// must return 404 unconditionally.
+func TestLegacyStoreRoutesNeverExist(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 
 	tracker := toolevents.NewTracker()
-	hub := ws.NewHub(state.NewManager(), tracker)
+	hub := ws.NewHub(nil, tracker)
+	catalog, svc := newV2TestCatalog(t)
 
-	// Create options with nil legacy stores (simulating v2 mode).
 	opts := &Options{
 		Port:             7654,
 		Tracker:          tracker,
 		Hub:              hub,
+		Catalog:          catalog,
+		CommandSvc:       svc,
+		StateStream:      ws.NewStateStreamHub(catalog, nil),
 		PortForwardStore: portforward.NewStore(),
-		// AttrsStore, OrderStore, GroupStore all remain nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -356,6 +334,7 @@ func TestLegacyStoreRoutesNotRegisteredWhenNil(t *testing.T) {
 		{"POST /api/session-order", http.MethodPost, "/api/session-order"},
 		{"GET /api/groups", http.MethodGet, "/api/groups"},
 		{"POST /api/groups", http.MethodPost, "/api/groups"},
+		{"POST /api/group/name", http.MethodPost, "/api/group/name"},
 	}
 
 	for _, tt := range tests {
@@ -374,75 +353,6 @@ func TestLegacyStoreRoutesNotRegisteredWhenNil(t *testing.T) {
 			if resp.StatusCode != http.StatusNotFound {
 				t.Errorf("%s returned %d, want %d (Not Found -- route must not be registered)",
 					tt.name, resp.StatusCode, http.StatusNotFound)
-			}
-		})
-	}
-}
-
-// TestLegacyStoreRoutesWorkWhenPresent verifies that in legacy mode (stores
-// constructed and non-nil), session-attrs/session-order/groups routes are
-// registered and functional, so gating registration on nil does not regress
-// legacy-mode behavior.
-func TestLegacyStoreRoutesWorkWhenPresent(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-
-	tracker := toolevents.NewTracker()
-	hub := ws.NewHub(state.NewManager(), tracker)
-
-	attrsStore, err := sessionattrs.NewStore()
-	if err != nil {
-		t.Fatalf("sessionattrs.NewStore: %v", err)
-	}
-	orderStore, err := sessionorder.NewStore()
-	if err != nil {
-		t.Fatalf("sessionorder.NewStore: %v", err)
-	}
-	groupStore, err := groupsync.NewStore()
-	if err != nil {
-		t.Fatalf("groupsync.NewStore: %v", err)
-	}
-
-	opts := &Options{
-		Port:             7654,
-		Tracker:          tracker,
-		Hub:              hub,
-		PortForwardStore: portforward.NewStore(),
-		AttrsStore:       attrsStore,
-		OrderStore:       orderStore,
-		GroupStore:       groupStore,
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	r, _, err := BuildRouter(ctx, opts)
-	if err != nil {
-		t.Fatalf("BuildRouter: %v", err)
-	}
-
-	srv := httptest.NewServer(r)
-	defer srv.Close()
-
-	tests := []struct {
-		name   string
-		method string
-		path   string
-	}{
-		{"GET /api/session-attrs", http.MethodGet, "/api/session-attrs"},
-		{"GET /api/session-order", http.MethodGet, "/api/session-order"},
-		{"GET /api/groups", http.MethodGet, "/api/groups"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp, err := http.Get(srv.URL + tt.path)
-			if err != nil {
-				t.Fatalf("request: %v", err)
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("%s returned %d, want 200", tt.name, resp.StatusCode)
 			}
 		})
 	}

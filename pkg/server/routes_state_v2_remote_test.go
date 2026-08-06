@@ -95,7 +95,7 @@ func TestV2BootstrapIncludesRemoteOwnerCatalog(t *testing.T) {
 		},
 	})
 
-	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc, PeerMgr: peerMgr}
+	opts := &Options{Catalog: catalog, CommandSvc: svc, PeerMgr: peerMgr}
 	r := chi.NewRouter()
 	registerStateV2Routes(r, opts)
 

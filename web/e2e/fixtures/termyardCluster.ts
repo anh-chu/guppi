@@ -123,8 +123,6 @@ export interface ClusterNodeOptions {
   rootDir: string
   /** Binary to spawn. */
   binaryPath: string
-  /** When false, TERMYARD_V2_STATE is left unset (legacy-only mode). */
-  v2?: boolean
 }
 
 export class ClusterNode {
@@ -135,7 +133,6 @@ export class ClusterNode {
   readonly sessionDir: string
   readonly socketPath: string
   readonly rootDir: string
-  readonly v2: boolean
   readonly binaryPath: string
 
   proc: ChildProcess | null = null
@@ -154,7 +151,6 @@ export class ClusterNode {
     this.baseURL = `http://127.0.0.1:${opts.port}`
     this.rootDir = opts.rootDir
     this.homeDir = path.join(opts.rootDir, 'home')
-    this.v2 = opts.v2 !== false
     this.binaryPath = opts.binaryPath
 
     // Unix domain socket paths are capped by the kernel's sun_path buffer
@@ -207,9 +203,6 @@ export class ClusterNode {
       TERMYARD_PORT: String(this.port),
       TERMYARD_SOCKET: this.socketPath,
       TERMYARD_SESSION_DIR: this.sessionDir,
-    }
-    if (this.v2) {
-      env.TERMYARD_V2_STATE = '1'
     }
 
     this.proc = spawn(this.binaryPath, ['server'], {
@@ -706,10 +699,10 @@ export async function assertDistinctIdentities(a: ClusterNode, b: ClusterNode): 
     throw new Error('nodes A and B resolve to one real daemon socket directory -- PTY registries not isolated')
   }
 
-  const v2StateDirA = path.join(a.homeDir, '.local-share', 'termyard', 'v2')
-  const v2StateDirB = path.join(b.homeDir, '.local-share', 'termyard', 'v2')
-  if (path.resolve(v2StateDirA) === path.resolve(v2StateDirB)) {
-    throw new Error('nodes A and B share one v2 state document directory -- state not isolated')
+  const stateDirA = path.join(a.homeDir, '.local-share', 'termyard', 'state')
+  const stateDirB = path.join(b.homeDir, '.local-share', 'termyard', 'state')
+  if (path.resolve(stateDirA) === path.resolve(stateDirB)) {
+    throw new Error('nodes A and B share one state document directory -- state not isolated')
   }
 }
 
@@ -726,10 +719,6 @@ export interface Cluster {
 
 export interface StartClusterOptions {
   rootDir: string
-  /** Whether node B starts in legacy (non-v2) mode. Default true (v2). */
-  bV2?: boolean
-  /** Whether node A starts in legacy (non-v2) mode. Default true (v2). */
-  aV2?: boolean
 }
 
 export async function startCluster(opts: StartClusterOptions): Promise<Cluster> {
@@ -742,8 +731,8 @@ export async function startCluster(opts: StartClusterOptions): Promise<Cluster> 
   // tear it down). allSettled lets us inspect both outcomes and tear down
   // whichever node(s) did start before propagating the failure.
   const results = await Promise.allSettled([
-    ClusterNode.start({ name: 'A', rootDir: path.join(opts.rootDir, 'node-a'), binaryPath, v2: opts.aV2 }),
-    ClusterNode.start({ name: 'B', rootDir: path.join(opts.rootDir, 'node-b'), binaryPath, v2: opts.bV2 }),
+    ClusterNode.start({ name: 'A', rootDir: path.join(opts.rootDir, 'node-a'), binaryPath }),
+    ClusterNode.start({ name: 'B', rootDir: path.join(opts.rootDir, 'node-b'), binaryPath }),
   ])
 
   const started: ClusterNode[] = []
@@ -820,9 +809,6 @@ export async function loginBrowserContext(context: BrowserContext, node: Cluster
       url: node.baseURL,
     },
   ])
-  await context.addInitScript(() => {
-    window.localStorage.setItem('termyard.v2State', '1')
-  })
 }
 
 export { SHARED_TEST_PASSWORD }

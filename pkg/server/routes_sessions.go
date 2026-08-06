@@ -19,10 +19,7 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/agentcheck"
 	"github.com/anh-chu/termyard/pkg/auth"
-	"github.com/anh-chu/termyard/pkg/git"
-	"github.com/anh-chu/termyard/pkg/groupsync"
 	"github.com/anh-chu/termyard/pkg/model"
-	"github.com/anh-chu/termyard/pkg/namer"
 	"github.com/anh-chu/termyard/pkg/peer"
 	"github.com/anh-chu/termyard/pkg/preferences"
 	"github.com/anh-chu/termyard/pkg/pty"
@@ -56,7 +53,7 @@ func lookupRemoteSessionRef(peerMgr *peer.Manager, peerID, name string) (state.S
 
 // registerSessionsRoutes mounts the protected session/activity/stats/sync
 // endpoints under /api. Callers must apply auth middleware separately.
-func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *groupNamingCoordinator) {
+func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 
 	// Agent status -- check which agents are installed/configured
 	r.Get("/agent-status", func(w http.ResponseWriter, r *http.Request) {
@@ -77,8 +74,6 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		var sessions []*model.Session
 		if opts.PeerMgr != nil {
 			sessions = opts.PeerMgr.GetAllSessions()
-		} else if opts.StateMgr != nil {
-			sessions = opts.StateMgr.GetSessions()
 		}
 		localHost := ""
 		if opts.PeerMgr != nil {
@@ -242,7 +237,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			// When this node is v2, route through the reliable v2 command RPC
 			// instead of a legacy peer message so the remote node's own v2
 			// catalog (its single source of truth) applies the label directly.
-			if opts.V2CommandSvc != nil {
+			if opts.CommandSvc != nil {
 				ref, ok := lookupRemoteSessionRef(opts.PeerMgr, req.Host, req.Session)
 				if !ok {
 					http.Error(w, "session not found", http.StatusNotFound)
@@ -293,8 +288,8 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			return
 		}
 
-		if opts.V2CommandSvc != nil && opts.V2Catalog != nil {
-			ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(req.Session)
+		if opts.CommandSvc != nil && opts.Catalog != nil {
+			ref, ok := opts.CommandSvc.LookupRefByDisplayName(req.Session)
 			if !ok {
 				http.Error(w, "session not found", http.StatusNotFound)
 				return
@@ -304,7 +299,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 				label = string(ref.Session)
 			}
 			params, _ := json.Marshal(state.LabelParams{Label: label})
-			if _, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+			if _, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
 				ID:     state.NewCommandID(),
 				Ref:    ref,
 				Action: state.ActionLabel,
@@ -317,13 +312,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			return
 		}
 
-		if opts.StateMgr == nil {
-			http.Error(w, "state manager unavailable", http.StatusInternalServerError)
-			return
-		}
-		// clear=true resets to AI/auto naming; otherwise mark user-set.
-		opts.StateMgr.SetDisplayName(req.Session, req.DisplayName, !req.Clear)
-		w.WriteHeader(http.StatusNoContent)
+		http.Error(w, "command service unavailable", http.StatusInternalServerError)
 	})
 
 	// Manually (re)generate an AI display name for a session on demand.
@@ -342,142 +331,14 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		// configured) and forward the chosen name to the peer to apply. The
 		// applied name propagates back via the peer's state update.
 		if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
-			// No v2 command equivalent exists for "regenerate name" (v2 naming
-			// flows through create/label commands only). Rather than silently
-			// sending a legacy MsgSessionAction a v2-only peer may reject or
-			// mishandle, return an explicit not-supported error.
-			if opts.V2CommandSvc != nil {
-				http.Error(w, "regenerate-name is not supported in v2 mode for remote sessions", http.StatusNotImplemented)
-				return
-			}
-
-			peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
-			if peerConn == nil {
-				http.Error(w, "peer not connected", http.StatusBadGateway)
-				return
-			}
-			if opts.StateMgr == nil {
-				http.Error(w, "state manager unavailable", http.StatusInternalServerError)
-				return
-			}
-
-			// Find the target session and its siblings on that host.
-			nc := namer.Context{Kind: namer.KindShell}
-			found := false
-			for _, s := range opts.PeerMgr.GetAllSessions() {
-				if s.Host != req.Host {
-					continue
-				}
-				if s.Name == req.Session {
-					found = true
-					nc.Workdir = s.ProjectPath
-					nc.Current = s.DisplayName
-					nc.Agent = s.AgentType
-					nc.UserPrompt = s.UserPrompt
-					nc.AgentMsg = s.LastAgentMessage
-					if s.AgentType != "" {
-						nc.Kind = namer.KindAgent
-					}
-				} else {
-					label := s.DisplayName
-					if label == "" {
-						label = s.Name
-					}
-					nc.Taken = append(nc.Taken, label)
-				}
-			}
-			if !found {
-				http.Error(w, "session not found on host", http.StatusNotFound)
-				return
-			}
-
-			ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-			name, err := opts.StateMgr.GenerateName(ctx, nc)
-			cancel()
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusServiceUnavailable)
-				return
-			}
-
-			params, _ := json.Marshal(map[string]string{"session": req.Session, "name": name})
-			msg, _ := peer.NewMessage(peer.MsgSessionAction, peer.SessionActionPayload{
-				Action: "regenerate-name",
-				Params: params,
-			})
-			if !peerConn.Enqueue(msg) {
-				http.Error(w, "peer send queue full", http.StatusBadGateway)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"name": name})
+			// No command equivalent exists for "regenerate name" (naming flows
+			// through create/label commands only). Return an explicit
+			// not-supported error instead of sending a legacy message a peer
+			// may reject or mishandle.
+			http.Error(w, "regenerate-name is not supported for remote sessions", http.StatusNotImplemented)
 			return
 		}
 
-		// v2 naming flows through create/label commands only; there is no v2
-		// "regenerate" equivalent yet. Return an honest not-supported response
-		// instead of falling back to a legacy StateMgr write.
-		if opts.V2CommandSvc != nil {
-			http.Error(w, "regenerate-name is not supported in v2 mode", http.StatusNotImplemented)
-			return
-		}
-
-		if opts.StateMgr == nil {
-			http.Error(w, "state manager unavailable", http.StatusInternalServerError)
-			return
-		}
-		name, err := opts.StateMgr.RegenerateName(req.Session)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"name": name})
-	})
-
-	// AI-name a layout group from its member session labels. Groups are
-	// a frontend-only concept, so this is stateless: it returns a name,
-	// the client persists it.
-	r.Post("/group/name", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			ID      string              `json:"id,omitempty"`
-			Members []namer.GroupMember `json:"members"`
-			Current string              `json:"current,omitempty"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		// Explicit force path: name a persisted group from its tree and persist
-		// the result server-side. Preferred by new clients.
-		if req.ID != "" && coordinator != nil {
-			group, err := coordinator.Force(r.Context(), req.ID)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"name": group.Name, "group": group})
-			return
-		}
-
-		// Legacy stateless path: clients send members and persist the name
-		// themselves. Kept for one release for older callers.
-		if len(req.Members) == 0 {
-			http.Error(w, "members is required", http.StatusBadRequest)
-			return
-		}
-		if opts.StateMgr == nil {
-			http.Error(w, "state manager unavailable", http.StatusInternalServerError)
-			return
-		}
-		name, err := opts.StateMgr.GenerateGroupName(req.Members, req.Current)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"name": name})
 	})
 
 	r.Post("/session/rename", func(w http.ResponseWriter, r *http.Request) {
@@ -499,7 +360,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
 			// When this node is v2, route through the reliable v2 command RPC
 			// instead of a legacy peer message.
-			if opts.V2CommandSvc != nil {
+			if opts.CommandSvc != nil {
 				ref, ok := lookupRemoteSessionRef(opts.PeerMgr, req.Host, req.OldName)
 				if !ok {
 					http.Error(w, "session not found", http.StatusNotFound)
@@ -544,14 +405,14 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		}
 
 		// Local v2 path: route through V2CommandSvc (matches /session/display-name).
-		if opts.V2CommandSvc != nil && opts.V2Catalog != nil {
-			ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(req.OldName)
+		if opts.CommandSvc != nil && opts.Catalog != nil {
+			ref, ok := opts.CommandSvc.LookupRefByDisplayName(req.OldName)
 			if !ok {
 				http.Error(w, "session not found", http.StatusNotFound)
 				return
 			}
 			params, _ := json.Marshal(state.LabelParams{Label: req.NewName})
-			if _, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+			if _, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
 				ID:     state.NewCommandID(),
 				Ref:    ref,
 				Action: state.ActionLabel,
@@ -564,12 +425,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			return
 		}
 
-		// Daemon sessions can't be renamed at the OS level; update display name only.
-		opts.StateMgr.SetDisplayName(req.OldName, req.NewName, true)
-		if opts.RefreshSessions != nil {
-			opts.RefreshSessions()
-		}
-		w.WriteHeader(http.StatusNoContent)
+		http.Error(w, "command service unavailable", http.StatusInternalServerError)
 	})
 
 	r.Post("/session/select-window", func(w http.ResponseWriter, r *http.Request) {
@@ -590,7 +446,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			// sessions are single-window/single-pane; this is a legacy tmux-era
 			// concept). Return an explicit not-supported error instead of
 			// silently sending a legacy message a v2-only peer may mishandle.
-			if opts.V2CommandSvc != nil {
+			if opts.CommandSvc != nil {
 				http.Error(w, "select-window is not supported in v2 mode for remote sessions", http.StatusNotImplemented)
 				return
 			}
@@ -637,7 +493,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
 			// When this node is v2, route through the reliable v2 command RPC
 			// instead of a legacy peer message.
-			if opts.V2CommandSvc != nil {
+			if opts.CommandSvc != nil {
 				ref, ok := lookupRemoteSessionRef(opts.PeerMgr, req.Host, req.Name)
 				if !ok {
 					http.Error(w, "session not found", http.StatusNotFound)
@@ -677,13 +533,13 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		}
 
 		// v2 local command path.
-		if opts.V2CommandSvc != nil && opts.V2Catalog != nil {
-			ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(req.Name)
+		if opts.CommandSvc != nil && opts.Catalog != nil {
+			ref, ok := opts.CommandSvc.LookupRefByDisplayName(req.Name)
 			if !ok {
 				http.Error(w, "session not found", http.StatusNotFound)
 				return
 			}
-			if _, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+			if _, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
 				ID:     state.NewCommandID(),
 				Ref:    ref,
 				Action: state.ActionKill,
@@ -695,44 +551,14 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			return
 		}
 
-		// Legacy local session kill.
-		// Capture worktree path before state is cleared.
-		var worktreePath string
-		if req.RemoveWorktree && opts.StateMgr != nil {
-			worktreePath = opts.StateMgr.GetSessionProjectPath(req.Name)
-		}
-
-		// Transition lifecycle state before killing so the daemon
-		// records this as an intentional termination, not a crash.
-		if opts.DaemonReg != nil && opts.DaemonReg.LifecycleStore() != nil {
-			_ = opts.DaemonReg.LifecycleStore().Transition(req.Name, "active", "termination_requested")
-		}
-		// Kill daemon session.
-		if opts.DaemonReg != nil {
-			if err := opts.DaemonReg.Kill(req.Name); err != nil {
-				logrus.WithError(err).WithField("session", req.Name).Warn("daemon kill failed")
-			}
-		}
-		if opts.StateMgr != nil {
-			opts.StateMgr.RemoveSession(req.Name)
-		}
-
-		// Remove the linked worktree if requested. Non-fatal -- session is
-		// already gone; log and continue.
-		if req.RemoveWorktree && worktreePath != "" {
-			if err := git.RemoveWorktree(worktreePath); err != nil {
-				logrus.WithError(err).WithField("path", worktreePath).Warn("git worktree remove failed")
-			}
-		}
-
-		w.WriteHeader(http.StatusNoContent)
+		http.Error(w, "command service unavailable", http.StatusInternalServerError)
 	})
 
 	// Crashed sessions recovery endpoints
 	r.Get("/crashed-sessions", func(w http.ResponseWriter, r *http.Request) {
-		if opts.V2Catalog != nil {
+		if opts.Catalog != nil {
 			var out []map[string]string
-			for _, rec := range opts.V2Catalog.Sessions() {
+			for _, rec := range opts.Catalog.Sessions() {
 				if rec.Phase != state.SessionPhaseCrashed {
 					continue
 				}
@@ -775,14 +601,14 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			// Empty body is fine; use crashed-record defaults.
 		}
 
-		if opts.V2CommandSvc != nil && opts.V2Catalog != nil {
-			ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(id)
+		if opts.CommandSvc != nil && opts.Catalog != nil {
+			ref, ok := opts.CommandSvc.LookupRefByDisplayName(id)
 			if !ok {
 				http.Error(w, "session not found", http.StatusNotFound)
 				return
 			}
 			params, _ := json.Marshal(state.RecoverParams{Shell: body.Shell, Cwd: body.Cwd})
-			if _, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+			if _, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
 				ID:     state.NewCommandID(),
 				Ref:    ref,
 				Action: state.ActionRecover,
@@ -821,13 +647,13 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			return
 		}
 
-		if opts.V2CommandSvc != nil && opts.V2Catalog != nil {
-			ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(id)
+		if opts.CommandSvc != nil && opts.Catalog != nil {
+			ref, ok := opts.CommandSvc.LookupRefByDisplayName(id)
 			if !ok {
 				http.Error(w, "session not found", http.StatusNotFound)
 				return
 			}
-			if _, err := opts.V2CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
+			if _, err := opts.CommandSvc.ExecuteSessionCommand(r.Context(), state.SessionCommand{
 				ID:     state.NewCommandID(),
 				Ref:    ref,
 				Action: state.ActionDismiss,
@@ -905,8 +731,8 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 					evt.HostName = opts.PeerMgr.LocalName()
 				}
 				// Stamp durable session identity (v2) when available
-				if opts.V2CommandSvc != nil {
-					if ref, ok := opts.V2CommandSvc.LookupRefByDisplayName(info.Session); ok {
+				if opts.CommandSvc != nil {
+					if ref, ok := opts.CommandSvc.LookupRefByDisplayName(info.Session); ok {
 						evt.SessionID = string(ref.Session)
 					}
 				}
@@ -988,8 +814,15 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 	// Stats endpoint -- aggregate overview data
 	r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
 		var sessions []*model.Session
-		if opts.StateMgr != nil {
-			sessions = opts.StateMgr.GetSessions()
+		if opts.Catalog != nil {
+			for _, rec := range opts.Catalog.Sessions() {
+				sessions = append(sessions, &model.Session{
+					Name:     rec.Name,
+					Created:  rec.Created,
+					Backend:  "daemon",
+					Attached: rec.Phase == state.SessionPhaseActive,
+				})
+			}
 		}
 		// Enumerate panes from daemon registry.
 		var allPanes []*model.Pane
@@ -1242,172 +1075,10 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		json.NewEncoder(w).Encode(map[string]bool{"installing": true})
 	})
 
-	// Session-attribute endpoints -- server-authoritative, mesh-wide shared
-	// per-session UI bits (backgrounded / hidden). Keys are global and
-	// host-qualified ("<owner-fp>/<name>"), identical to the frontend's
-	// sessionKey(). No localStorage source of truth, no namespace
-	// translation, no whole-blob writes.
-	//
-	// These are legacy-only routes: registered only when AttrsStore is
-	// non-nil (legacy mode). In v2 mode AttrsStore is nil and these routes
-	// do not exist at all (404), not merely 503.
-	if opts.AttrsStore != nil {
-		r.Get("/session-attrs", func(w http.ResponseWriter, r *http.Request) {
-			// Opportunistically GC sessions that are genuinely gone (owner
-			// online but session absent) before returning the live sets.
-			pruneSessionAttrs(opts, hub)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(opts.AttrsStore.Sets())
-		})
-
-		r.Post("/session-attrs", func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Key        string `json:"key"`
-				Background bool   `json:"background"`
-				Hidden     bool   `json:"hidden"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
-				http.Error(w, "key is required", http.StatusBadRequest)
-				return
-			}
-			a, err := opts.AttrsStore.Set(body.Key, body.Background, body.Hidden)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			hub.BroadcastJSON(map[string]interface{}{
-				"type": "session-attrs-updated",
-				"key":  body.Key,
-			})
-			fanoutAttrsDeltaToPeers(opts, body.Key, a)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(opts.AttrsStore.Sets())
-		})
-	}
-
-	// Session-order endpoints -- server-authoritative, per-session rank map.
-	// Legacy-only: registered only when OrderStore is non-nil.
-	if opts.OrderStore != nil {
-		r.Get("/session-order", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(opts.OrderStore.Ranks())
-		})
-		r.Post("/session-order", func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Key  string `json:"key"`
-				Rank string `json:"rank"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
-				http.Error(w, "key is required", http.StatusBadRequest)
-				return
-			}
-			order, err := opts.OrderStore.Set(body.Key, body.Rank)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if hub != nil {
-				hub.BroadcastJSON(map[string]interface{}{"type": "session-order-updated", "key": body.Key})
-			}
-			fanoutOrderDeltaToPeers(opts, body.Key, order)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(opts.OrderStore.Ranks())
-		})
-	}
-
-	// Group endpoints -- server-authoritative, durable field-LWW records.
-	// Legacy-only: registered only when GroupStore is non-nil.
-	if opts.GroupStore != nil {
-		r.Get("/groups", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(opts.GroupStore.Live())
-		})
-		r.Post("/groups", func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				ID   string          `json:"id"`
-				Op   string          `json:"op"`
-				Tree json.RawMessage `json:"tree,omitempty"`
-				Name string          `json:"name,omitempty"`
-				Mode string          `json:"mode,omitempty"`
-				Rank string          `json:"rank,omitempty"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" || body.Op == "" {
-				http.Error(w, "id and op are required", http.StatusBadRequest)
-				return
-			}
-			var (
-				group groupsync.Group
-				err   error
-			)
-			switch body.Op {
-			case "tree":
-				if len(body.Tree) == 0 {
-					http.Error(w, "tree is required", http.StatusBadRequest)
-					return
-				}
-				before, _ := opts.GroupStore.Get(body.ID)
-				group, err = opts.GroupStore.SetTree(body.ID, body.Tree)
-				if err == nil && coordinator != nil {
-					coordinator.ObserveTreeMutation(body.ID, before, group)
-				}
-			case "name":
-				mode := groupsync.NameModeManual
-				if body.Mode != "" {
-					switch body.Mode {
-					case string(groupsync.NameModeAuto), string(groupsync.NameModeManual):
-						mode = groupsync.NameMode(body.Mode)
-					default:
-						http.Error(w, "invalid mode", http.StatusBadRequest)
-						return
-					}
-				}
-				group, err = opts.GroupStore.SetName(body.ID, body.Name, mode)
-			case "ai-name":
-				if coordinator == nil {
-					http.Error(w, "group naming unavailable", http.StatusServiceUnavailable)
-					return
-				}
-				group, err = coordinator.Force(r.Context(), body.ID)
-				if err != nil {
-					code := http.StatusInternalServerError
-					msg := err.Error()
-					switch {
-					case strings.Contains(msg, "not found"):
-						code = http.StatusNotFound
-					case strings.Contains(msg, "needs at least 2 members"),
-						strings.Contains(msg, "is deleted"),
-						strings.Contains(msg, "malformed tree"),
-						strings.Contains(msg, "membership changed during naming"),
-						strings.Contains(msg, "disappeared during naming"):
-						code = http.StatusUnprocessableEntity
-					case strings.Contains(msg, "state manager unavailable"),
-						strings.Contains(msg, "generation failed"),
-						strings.Contains(msg, "persist group name"):
-						code = http.StatusServiceUnavailable
-					}
-					http.Error(w, msg, code)
-					return
-				}
-			case "rank":
-				group, err = opts.GroupStore.SetRank(body.ID, body.Rank)
-			case "delete":
-				group, err = opts.GroupStore.Delete(body.ID)
-			default:
-				http.Error(w, "invalid op", http.StatusBadRequest)
-				return
-			}
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if hub != nil {
-				hub.BroadcastJSON(map[string]interface{}{"type": "groups-updated", "id": body.ID, "op": body.Op})
-			}
-			fanoutGroupDeltaToPeers(opts, body.ID, groupsync.Group(group))
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(opts.GroupStore.Live())
-		})
-	}
+	// Legacy session-attrs/session-order/groups sync routes do not exist in
+	// the canonical architecture: there is no backing store to register them
+	// against. AppLegacy, the only client that ever called them, is
+	// unreachable from production.
 }
 
 func registerWSRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
@@ -1437,16 +1108,16 @@ func registerWSRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 		r.With(authMw).Get("/ws/session", daemonWS)
 		r.With(authMw).Get("/ws/direct-session", ptyHandler.HandleDirectSession)
 		r.With(authMw).Get("/ws/daemon-session", daemonWS)
-		if opts.V2StateStream != nil {
-			r.With(authMw).Get("/ws/v2/state", opts.V2StateStream.HandleState)
+		if opts.StateStream != nil {
+			r.With(authMw).Get("/ws/v2/state", opts.StateStream.HandleState)
 		}
 	} else {
 		r.Get("/ws/events", hub.HandleEvents)
 		r.Get("/ws/session", daemonWS)
 		r.Get("/ws/direct-session", ptyHandler.HandleDirectSession)
 		r.Get("/ws/daemon-session", daemonWS)
-		if opts.V2StateStream != nil {
-			r.Get("/ws/v2/state", opts.V2StateStream.HandleState)
+		if opts.StateStream != nil {
+			r.Get("/ws/v2/state", opts.StateStream.HandleState)
 		}
 	}
 }
@@ -1669,8 +1340,8 @@ func handleDaemonSessionStable(w http.ResponseWriter, r *http.Request, opts *Opt
 	// daemon registry via its lifecycle record.
 	currentGen := ""
 	phaseOK := true
-	if opts.V2Catalog != nil {
-		if rec, ok := opts.V2Catalog.Session(sid); ok {
+	if opts.Catalog != nil {
+		if rec, ok := opts.Catalog.Session(sid); ok {
 			currentGen = rec.Generation
 			phaseOK = rec.Phase == state.SessionPhaseActive || rec.Phase == state.SessionPhaseStarting
 		}

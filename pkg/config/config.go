@@ -30,14 +30,14 @@ func DataDir() (string, error) {
 	return filepath.Join(home, ".local", "share", "termyard"), nil
 }
 
-// V2StateDir returns the directory for the v2 atomic state store. The v2 store
-// is dormant by default; callers open it only when they are ready to use it.
-func V2StateDir() (string, error) {
+// StateDir returns the directory for the canonical atomic state store -- the
+// only state authority the runtime ever constructs.
+func StateDir() (string, error) {
 	dataDir, err := DataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataDir, "v2"), nil
+	return filepath.Join(dataDir, "state"), nil
 }
 
 // WriteJSON marshals v with indentation and writes it to path with perm.

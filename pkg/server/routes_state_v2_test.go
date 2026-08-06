@@ -36,7 +36,7 @@ func newV2TestRouter(opts *Options) chi.Router {
 
 func TestV2BootstrapReturnsOneCompleteSnapshot(t *testing.T) {
 	catalog, svc := newV2TestCatalog(t)
-	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	opts := &Options{Catalog: catalog, CommandSvc: svc}
 	r := newV2TestRouter(opts)
 
 	params, _ := json.Marshal(state.CreateParams{Name: "alpha"})
@@ -83,7 +83,7 @@ func TestV2BootstrapUnavailableWithoutCatalog(t *testing.T) {
 
 func TestV2SessionCommandCreateAndTypedErrors(t *testing.T) {
 	catalog, svc := newV2TestCatalog(t)
-	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	opts := &Options{Catalog: catalog, CommandSvc: svc}
 	r := newV2TestRouter(opts)
 
 	body, _ := json.Marshal(map[string]any{
@@ -146,7 +146,7 @@ func TestV2SessionCommandCreateAndTypedErrors(t *testing.T) {
 
 func TestV2WorkspaceCommandRevisionConflict(t *testing.T) {
 	catalog, svc := newV2TestCatalog(t)
-	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	opts := &Options{Catalog: catalog, CommandSvc: svc}
 	r := newV2TestRouter(opts)
 
 	params, _ := json.Marshal(state.CreateParams{Name: "gamma"})
@@ -217,7 +217,7 @@ func TestV2BootstrapIncludesPerSessionDaemonGeneration(t *testing.T) {
 	// generation (from Generation), NOT the websocket connection generation.
 	// This is critical for terminal attachment identity resolution.
 	catalog, svc := newV2TestCatalog(t)
-	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	opts := &Options{Catalog: catalog, CommandSvc: svc}
 	r := newV2TestRouter(opts)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -282,7 +282,7 @@ func TestV2BootstrapIncludesPerSessionDaemonGeneration(t *testing.T) {
 // this fix addresses), this test would fail with invalid_input.
 func TestV2CommandBodyAsBrowserWouldProduceIt(t *testing.T) {
 	catalog, svc := newV2TestCatalog(t)
-	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	opts := &Options{Catalog: catalog, CommandSvc: svc}
 	r := newV2TestRouter(opts)
 
 	// 1. Seed a real session/layout via the service directly (create's own
@@ -360,7 +360,7 @@ func TestV2CommandBodyAsBrowserWouldProduceIt(t *testing.T) {
 // with "missing session id" (invalid_input) -- breaking browser session create.
 func TestV2CreateCommandBodyAsBrowserWouldProduceIt(t *testing.T) {
 	catalog, svc := newV2TestCatalog(t)
-	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	opts := &Options{Catalog: catalog, CommandSvc: svc}
 	r := newV2TestRouter(opts)
 
 	// Exact shape V2CommandClient.createSession produces. Crucially there is
@@ -456,7 +456,7 @@ func TestCommandResultWireMatchesFixture(t *testing.T) {
 		t.Fatalf("catalog.Load: %v", err)
 	}
 	svc := state.NewSessionCommandService(catalog, noopBackend{}, nil, state.SessionCommandServiceOptions{Owner: owner})
-	opts := &Options{V2Catalog: catalog, V2CommandSvc: svc}
+	opts := &Options{Catalog: catalog, CommandSvc: svc}
 	r := newV2TestRouter(opts)
 
 	body, err := json.Marshal(fixture.Request)
