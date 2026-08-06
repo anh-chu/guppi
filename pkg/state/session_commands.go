@@ -782,6 +782,15 @@ func (s *SessionCommandService) removeWorktreeForCwd(cwd string) {
 	}
 }
 
+// executeSetPresentation flips the Hidden/Background flags directly on the
+// canonical session record. When Background transitions false->true
+// (backgrounding), the session is ALSO removed from the sole layout's pane
+// tree, in the same catalog.apply transaction as the flag flip -- never as a
+// second, separately-committed mutation -- so a store/persistence failure
+// can never leave one change visible without the other. Foregrounding
+// (background=false) never re-inserts the session into a layout; the user
+// opens/selects it explicitly afterward via a separate workspace command.
+// Hidden-only changes never touch layout membership either way.
 func (s *SessionCommandService) executeSetPresentation(ctx context.Context, cmd SessionCommand) (CommandResult, error) {
 	var params PresentationParams
 	if err := json.Unmarshal(cmd.Params, &params); err != nil {
@@ -796,20 +805,37 @@ func (s *SessionCommandService) executeSetPresentation(ctx context.Context, cmd 
 		return result, err
 	}
 
-	if rec, ok := s.catalog.Session(ref.Session); ok {
+	var displayName string
+	err := s.catalog.apply("session/"+ActionSetPresentation, func(doc *AppDocument) error {
+		idx := -1
+		for i := range doc.Sessions {
+			if doc.Sessions[i].ID == ref.Session {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 {
+			return StateError{Code: ErrUnknownLayout, Field: "ref.session", Detail: fmt.Sprintf("session %q not found", ref.Session)}
+		}
+		rec := &doc.Sessions[idx]
+		backgrounding := params.Background != nil && *params.Background && !rec.Background
 		if params.Hidden != nil {
 			rec.Hidden = *params.Hidden
 		}
 		if params.Background != nil {
 			rec.Background = *params.Background
 		}
-		if err := s.catalog.PutSession(rec); err != nil {
-			return CommandResult{}, err
+		displayName = rec.Name
+		if backgrounding {
+			return removeSessionFromWorkspacesLocked(doc, rec.Ref)
 		}
-		return s.commitSessionReceipt(cmd, "session:"+ActionSetPresentation, ref, CommandResult{ID: cmd.ID, Ref: ref, DisplayName: rec.Name, Accepted: true})
+		return nil
+	})
+	if err != nil {
+		return CommandResult{}, err
 	}
 
-	return CommandResult{}, StateError{Code: ErrUnknownLayout, Field: "ref.session", Detail: fmt.Sprintf("session %q not found", ref.Session)}
+	return s.commitSessionReceipt(cmd, "session:"+ActionSetPresentation, ref, CommandResult{ID: cmd.ID, Ref: ref, DisplayName: displayName, Accepted: true})
 }
 
 func (s *SessionCommandService) executeLabel(ctx context.Context, cmd SessionCommand) (CommandResult, error) {
