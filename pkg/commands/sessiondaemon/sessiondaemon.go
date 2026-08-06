@@ -1,3 +1,12 @@
+// Package sessiondaemon implements the standalone `termyard session
+// create/list/kill/capture` CLI and the hidden `session-daemon` process it
+// spawns. This is a low-level debug tool that talks directly to the PTY
+// daemon registry (pkg/pty); it does NOT go through the canonical
+// state.Catalog/SessionCommandService. Sessions created this way have no
+// stable owner/session identity and will NOT appear in the browser UI,
+// will NOT sync across peers, and are not part of the supported
+// session-creation path (use the browser UI or /api/state/session-commands
+// for that). This is intentional, not a bug.
 package sessiondaemon
 
 import (
@@ -16,7 +25,12 @@ import (
 )
 
 // defaultSessionDir returns the per-user socket directory for session daemons.
+// Honors TERMYARD_SESSION_DIR to stay in parity with the server's own
+// defaultSessionDir (see pkg/commands/server/runtime.go).
 func defaultSessionDir() string {
+	if dir := os.Getenv("TERMYARD_SESSION_DIR"); dir != "" {
+		return dir
+	}
 	uid := fmt.Sprintf("%d", os.Getuid())
 	return filepath.Join("/tmp", "termyard-sessions-"+uid)
 }

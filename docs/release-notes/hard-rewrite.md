@@ -88,7 +88,15 @@ non-historical-doc) code is one of:
   **separate, undecided scope question** -- it was not part of the
   browser-state legacy this rewrite targeted, and deleting or changing a
   live CLI feature was not authorized here. Flagged for a follow-up
-  decision, not silently resolved.
+  decision, not silently resolved. To be explicit about scope: `termyard
+  session create/list/kill/capture` is a low-level debug tool that talks
+  directly to the daemon registry (`pty.Registry`); it does NOT go
+  through the canonical `state.Catalog`/`SessionCommandService`.
+  Sessions created this way have no stable owner/session identity and
+  will NOT appear in the browser UI, will NOT sync across peers, and
+  are not part of the supported session-creation path (use the browser
+  UI or `/api/state/session-commands` for that). This is intentional,
+  not a bug.
 - one stale doc-only route-name reference (`testdata/command_result_fixture.json`'s
   `description` field said `/api/v2/session-commands`; fixed in this
   pass to `/api/state/session-commands`) and one stale comment
