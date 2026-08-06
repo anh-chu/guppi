@@ -78,7 +78,7 @@ async function openAuthedPage(browser: import('@playwright/test').Browser, node:
 }
 
 /** Creates a session through the real New Session modal. Session name is the auto-suggested basename of `pathValue`. */
-async function createSessionViaUI(page: Page, opts: { pathValue: string; hostFingerprint?: string }): Promise<void> {
+async function createSessionViaUI(page: Page, opts: { pathValue: string; hostOwnerId?: string }): Promise<void> {
   // The real PTY backend needs an existing working directory (this harness
   // runs both nodes on one machine, so a plain mkdir on the test process's
   // own filesystem is sufficient and real -- not a mock).
@@ -86,8 +86,11 @@ async function createSessionViaUI(page: Page, opts: { pathValue: string; hostFin
   await page.getByTitle('New session (drag onto a pane to split)').click()
   await expect(page.getByText('New Session', { exact: true })).toBeVisible()
   await page.locator('input[placeholder="~"]').fill(opts.pathValue)
-  if (opts.hostFingerprint) {
-    await page.locator('select').selectOption({ value: opts.hostFingerprint })
+  if (opts.hostOwnerId) {
+    // NewSessionModal.tsx's HostSelect option values are canonical OwnerIDs
+    // (selectableHosts.map(h => ({ value: h.owner_id, ... }))), never the
+    // peer fingerprint -- see the module doc comment there.
+    await page.locator('select').selectOption({ value: opts.hostOwnerId })
   }
   await page.getByRole('button', { name: 'Create' }).click()
 }
@@ -134,26 +137,16 @@ for (const run of [1, 2] as const) {
 
     // NOTE on ordering: "case 1" (create a session on B through A's browser
     // host selector) is declared LAST in this describe block, not first.
-    // Driving it revealed a real, reproducible production defect (reported
-    // in full by this task's worker; see the Task 2 report): the
-    // pkg/state/remote_create.go's RemoteCreateRequest.Target field is a
-    // non-pointer state.SessionRef with an `omitempty` tag that Go's
-    // encoding/json never honors for struct types, so every cross-node
-    // remote-create request serializes a zero-value Target as the string
-    // ":0.0" via SessionRef's own custom MarshalJSON -- which SessionRef's
-    // own UnmarshalJSON then rejects ("missing session id in \":0.0\"") on
-    // the receiving peer, inside pkg/peer/session_state.go's remote-create
-    // request handler. This breaks 100% of remote creates issued through the
-    // New Session modal's host selector (the server's TargetOwner branch),
-    // not only split-into-existing-pane ones. It is
-    // left FAILING here (never `.skip`/`.fixme`) as the demonstrated failing
-    // invariant this task's review boundary calls for; cases 2-5 below seed
-    // their sessions via a real *local* create on B
-    // (ClusterNode.createLocalSession -- a different, unaffected code path,
-    // see its doc comment in fixtures/termyardCluster.ts) precisely so this
-    // known-broken path does not block proving the rest of the mandatory
-    // matrix, and declaring it last means its failure does not
-    // serial-mode-skip the tests before it.
+    // It shares this cluster's beforeAll/afterAll with cases 2-9, and it
+    // depends on b.ownerId already being populated by a prior
+    // b.bootstrap() call (see the test body) -- keeping it last means it
+    // always runs after at least one of those earlier cases has bootstrapped
+    // B, instead of adding a redundant bootstrap-before-first-use path here.
+    // (pkg/state/remote_create.go's RemoteCreateRequest.Target is already
+    // a pointer *SessionRef with omitempty, so it round-trips a nil Target
+    // correctly on the wire; there is no reproducible remote-create defect
+    // on this path -- see CreateIntent.Target's doc comment for the
+    // still-dormant sibling field this was once confused with.)
 
     test('case 2: attach from A to B terminal, write a unique marker, read it back through the real remote stream', async ({ browser }) => {
       test.setTimeout(60_000)
@@ -165,7 +158,7 @@ for (const run of [1, 2] as const) {
       // readinessTimeout comment for the modest safety margin baked in.
       await expect.poll(async () => {
         const boot = await a.bootstrap()
-        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name))
+        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s.name === name))
       }, { timeout: 20_000, message: 'seeded session on B never replicated to A remote catalog' }).toBe(true)
 
       const marker = `E2E-MARKER-${run}-${Date.now()}`
@@ -210,7 +203,7 @@ for (const run of [1, 2] as const) {
       await b.createLocalSession(name, path)
       await expect.poll(async () => {
         const boot = await a.bootstrap()
-        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name))
+        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s.name === name))
       }, { timeout: 20_000, message: 'seeded session on B never replicated to A remote catalog' }).toBe(true)
 
       const page = await openAuthedPage(browser, a)
@@ -231,7 +224,7 @@ for (const run of [1, 2] as const) {
       // B's authoritative catalog must reflect both the rename and the kill.
       await expect.poll(async () => {
         const boot = await b.bootstrap()
-        return (boot.local?.sessions || []).some((s: any) => s._compat?.name === name || s._compat?.name === renamedName)
+        return (boot.local?.sessions || []).some((s: any) => s.name === name || s.name === renamedName)
       }, { timeout: 15_000, message: 'B still authoritatively lists the killed session' }).toBe(false)
 
       // A's projection (its cached remote snapshot of B) must converge to
@@ -240,11 +233,11 @@ for (const run of [1, 2] as const) {
         const boot = await a.bootstrap()
         const bSnap = (boot.remote || []).find((snap: any) => snap.owner === b.ownerId)
         const sessions = bSnap ? bSnap.sessions || [] : []
-        return sessions.some((s: any) => s._compat?.name === name || s._compat?.name === renamedName)
+        return sessions.some((s: any) => s.name === name || s.name === renamedName)
       }, { timeout: 15_000, message: "A's projection of B did not converge with B's kill" }).toBe(false)
     })
 
-    test('case 4: stop B; A retains last-confirmed sessions as offline; restart B; verify reconnect/snapshot convergence', async () => {
+    test('case 4: stop B; A retains last-confirmed sessions as offline; restart B; verify reconnect/snapshot convergence', async ({ browser }) => {
       test.setTimeout(90_000)
       const path2 = `/tmp/e2e-r${run}-offline-${Date.now()}`
       const name2 = basename(path2)
@@ -252,7 +245,7 @@ for (const run of [1, 2] as const) {
 
       await expect.poll(async () => {
         const boot = await a.bootstrap()
-        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name2))
+        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s.name === name2))
       }, { timeout: 20_000 }).toBe(true)
 
       const lastKnownRemote = await a.bootstrap()
@@ -270,7 +263,19 @@ for (const run of [1, 2] as const) {
       const bootWhileDown = await a.bootstrap()
       const remoteSnapWhileDown = (bootWhileDown.remote || []).find((snap: any) => snap.owner === b.ownerId)
       expect(remoteSnapWhileDown, "A discarded B's last-confirmed catalog instead of retaining it while offline").toBeTruthy()
-      expect((remoteSnapWhileDown.sessions || []).some((s: any) => s._compat?.name === name2)).toBe(true)
+      expect((remoteSnapWhileDown.sessions || []).some((s: any) => s.name === name2)).toBe(true)
+
+      // The retained session must not just be present in the API response
+      // while B is down -- it must actually RENDER marked offline in the UI
+      // (Sidebar.tsx: signal.state === 'offline' -> activityDisplay 'Offline').
+      const pageWhileDown = await openAuthedPage(browser, a)
+      try {
+        const row = pageWhileDown.locator('[data-session-key]').filter({ hasText: name2 })
+        await expect(row).toBeVisible({ timeout: 15_000 })
+        await expect(row).toContainText('Offline')
+      } finally {
+        await pageWhileDown.close()
+      }
 
       await b.restart()
       await b.login(cluster.password)
@@ -281,7 +286,7 @@ for (const run of [1, 2] as const) {
       await expect.poll(async () => {
         const boot = await a.bootstrap()
         const snap = (boot.remote || []).find((s: any) => s.owner === b.ownerId)
-        return snap ? (snap.sessions || []).some((s: any) => s._compat?.name === name2) : false
+        return snap ? (snap.sessions || []).some((s: any) => s.name === name2) : false
       }, { timeout: 20_000, message: "A's remote snapshot of B did not reconverge after B restarted" }).toBe(true)
     })
 
@@ -303,10 +308,107 @@ for (const run of [1, 2] as const) {
       await expect.poll(async () => {
         const boot = await a.bootstrap()
         const snap = (boot.remote || []).find((s: any) => s.owner === b.ownerId)
-        return snap ? (snap.sessions || []).some((s: any) => s._compat?.name === name3) : false
+        return snap ? (snap.sessions || []).some((s: any) => s.name === name3) : false
       }, { timeout: 20_000, message: 'A did not restore an owner->peer(B) route after restarting' }).toBe(true)
     })
 
+    test('case 7: a schedule-fired session renders inside its schedule group by schedule_id, not the main list', async ({ browser }) => {
+      test.setTimeout(60_000)
+      const scheduleName = `e2e-r${run}-sched-${Date.now()}`
+      const path = `/tmp/e2e-r${run}-sched-${Date.now()}`
+      fs.mkdirSync(path, { recursive: true })
+
+      const created = await a.api('/api/schedules', {
+        method: 'POST',
+        body: JSON.stringify({ name: scheduleName, cron_spec: '0 0 1 1 *', path, agent_type: 'claude', enabled: false }),
+      })
+      expect(created.ok, 'creating the schedule failed').toBe(true)
+      const job = await created.json()
+
+      // Fires the SAME createFn the scheduler's own ticker uses (see
+      // routes_scheduler.go's "/schedules/{id}/run" handler) -- a real
+      // session creation, not a fabricated schedule_id.
+      const ran = await a.api(`/api/schedules/${job.id}/run`, { method: 'POST' })
+      expect(ran.ok, 'running the schedule failed').toBe(true)
+
+      await expect.poll(async () => {
+        const boot = await a.bootstrap()
+        return (boot.local?.sessions || []).some((s: any) => s.schedule_id === job.id)
+      }, { timeout: 15_000, message: 'schedule run never produced a session tagged with its schedule_id' }).toBe(true)
+
+      const page = await openAuthedPage(browser, a)
+      try {
+        await expect(page.locator(`[data-schedule-id="${job.id}"]`)).toBeVisible({ timeout: 15_000 })
+      } finally {
+        await page.close()
+      }
+    })
+
+    test('case 8: backgrounding a tiled local session removes its pane atomically and lists it under Background', async ({ browser }) => {
+      test.setTimeout(60_000)
+      const path = `/tmp/e2e-r${run}-bg-${Date.now()}`
+      const name = basename(path)
+      await a.createLocalSession(name, path)
+
+      const page = await openAuthedPage(browser, a)
+      try {
+        await page.getByText(name, { exact: true }).first().click()
+        await expect(page.locator('[data-pane-key]').filter({ hasText: '' }).first()).toBeVisible({ timeout: 15_000 })
+
+        await contextMenuAction(page, name, 'Background')
+
+        await expect(page.getByText('Background', { exact: true })).toBeVisible({ timeout: 15_000 })
+        await expect(page.getByText(name, { exact: true }).first()).toBeVisible()
+      } finally {
+        await page.close()
+      }
+
+      // The server removes the leaf from the sole layout atomically with the
+      // Background flag flip (commit 0e5eeff) -- confirm both landed.
+      await expect.poll(async () => {
+        const boot = await a.bootstrap()
+        const rec = (boot.local?.sessions || []).find((s: any) => s.name === name)
+        return rec?.background === true
+      }, { timeout: 15_000, message: 'session was never marked background on the server' }).toBe(true)
+    })
+
+    test('case 9: renaming a session and immediately re-selecting it keeps selection stable through the rename', async ({ browser }) => {
+      test.setTimeout(60_000)
+      const path = `/tmp/e2e-r${run}-renameclick-${Date.now()}`
+      const name = basename(path)
+      const renamedName = `${name}-renamed-fast`
+      await a.createLocalSession(name, path)
+
+      const page = await openAuthedPage(browser, a)
+      try {
+        await page.getByText(name, { exact: true }).first().click()
+        await expect(page.locator('[data-pane-key]').first()).toBeVisible({ timeout: 15_000 })
+        const urlBeforeRename = page.url()
+
+        await contextMenuAction(page, name, 'Rename')
+        const renameInput = page.locator('input:focus')
+        await renameInput.fill(renamedName)
+        await renameInput.press('Enter')
+        // Re-select the row immediately, before waiting for the rename to
+        // visibly settle -- selection must key off the SessionID, never the
+        // in-flight display label, so this must not lose or duplicate the pane.
+        await page.getByText(renamedName, { exact: true }).first().click()
+
+        await expect(page.getByText(renamedName, { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+        expect(page.url(), 'the URL (SessionID-keyed) must not have changed across a same-session rename+reselect').toBe(urlBeforeRename)
+        // The rename+reselect race must not have produced a DUPLICATE pane
+        // (data-pane-key is keyed by the immutable SessionID, not the
+        // mutable display name -- see sessionRefToKey/paneNodeToPaneTree --
+        // so re-deriving this session's expected pane key from `name` isn't
+        // possible here; the cluster is also shared serially across this
+        // describe's other cases, so other sessions' panes may legitimately
+        // also be present). Assert no key appears more than once.
+        const paneKeys = await page.locator('[data-pane-key]').evaluateAll(els => els.map(e => e.getAttribute('data-pane-key')))
+        expect(new Set(paneKeys).size, `duplicate pane key(s) found: ${paneKeys.join(', ')}`).toBe(paneKeys.length)
+      } finally {
+        await page.close()
+      }
+    })
     test('case 1: create session on B through A browser host selection; B owns it, A sees it via remote catalog replication', async ({ browser }) => {
       test.setTimeout(60_000)
       const path = `/tmp/e2e-r${run}-remotecreate-${Date.now()}`
@@ -316,10 +418,15 @@ for (const run of [1, 2] as const) {
       // host choice -- this alone proves the real peer link, not a stub, is
       // what drives host visibility.
       await waitForHostOnline(a, b.fingerprint!, true)
+      // b.ownerId is populated as a side effect of any prior b.bootstrap()
+      // call in this serial describe block (cases 3/4/5/7/8/9 above all
+      // call it) -- the New Session modal's host selector option values are
+      // OwnerIDs, never peer fingerprints (see createSessionViaUI).
+      if (!b.ownerId) await b.bootstrap()
 
       const page = await openAuthedPage(browser, a)
       try {
-        await createSessionViaUI(page, { pathValue: path, hostFingerprint: b.fingerprint! })
+        await createSessionViaUI(page, { pathValue: path, hostOwnerId: b.ownerId! })
         await expect(page.getByText(name, { exact: true }).first()).toBeVisible({ timeout: 15_000 })
       } finally {
         await page.close()
@@ -329,7 +436,7 @@ for (const run of [1, 2] as const) {
       // local catalog, not A's.
       await expect.poll(async () => {
         const boot = await b.bootstrap()
-        return (boot.local?.sessions || []).some((s: any) => s._compat?.name === name)
+        return (boot.local?.sessions || []).some((s: any) => s.name === name)
       }, { timeout: 15_000, message: 'session never appeared in B local catalog' }).toBe(true)
 
       // A must see it only through remote catalog replication (a Remote
@@ -337,13 +444,14 @@ for (const run of [1, 2] as const) {
       // would mean the "remote" create actually executed locally.
       await expect.poll(async () => {
         const boot = await a.bootstrap()
-        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s._compat?.name === name))
+        return (boot.remote || []).some((snap: any) => (snap.sessions || []).some((s: any) => s.name === name))
       }, { timeout: 15_000, message: 'session never appeared in A remote catalog replication' }).toBe(true)
 
       const bootA = await a.bootstrap()
-      const localHasIt = (bootA.local?.sessions || []).some((s: any) => s._compat?.name === name)
+      const localHasIt = (bootA.local?.sessions || []).some((s: any) => s.name === name)
       expect(localHasIt, 'remote routing executed locally on A instead of on B').toBe(false)
     })
+
   })
 }
 
@@ -391,11 +499,11 @@ test('teardown leaves zero surviving session-daemon processes and zero surviving
     // until both seeded sessions are actually active before reading PIDs.
     await expect.poll(async () => {
       const boot = await a.bootstrap()
-      return (boot.local?.sessions || []).some((s: any) => s._compat?.name === name1 && s.phase === 'active')
+      return (boot.local?.sessions || []).some((s: any) => s.name === name1 && s.phase === 'active')
     }, { timeout: 20_000, message: 'seeded session on A never reached active phase' }).toBe(true)
     await expect.poll(async () => {
       const boot = await b.bootstrap()
-      return (boot.local?.sessions || []).some((s: any) => s._compat?.name === name2 && s.phase === 'active')
+      return (boot.local?.sessions || []).some((s: any) => s.name === name2 && s.phase === 'active')
     }, { timeout: 20_000, message: 'seeded session on B never reached active phase' }).toBe(true)
 
     // Real on-disk evidence, read BEFORE teardown: every lifecycle sidecar
@@ -460,8 +568,14 @@ test('teardown leaves zero surviving session-daemon processes and zero surviving
 })
 
 // ---------------------------------------------------------------------------
-// The one retained mock: a deterministic response-loss/retry condition that
-// real process/network timing cannot reliably reproduce.
+// Retained mocks: conditions that real process/network timing in this
+// harness cannot reliably or deterministically reproduce --
+//   1. a deterministic response-loss/retry condition (first attempt lost,
+//      byte-identical retry succeeds), and
+//   2. a remote session in a genuine "waiting on an agent tool call" state,
+//      which on a real cluster requires an actual agent CLI (e.g. Claude)
+//      running inside the PTY and calling a hook -- not available in this
+//      sandboxed test environment.
 // ---------------------------------------------------------------------------
 
 // Realistic base32-lowercase OwnerID fixture (from testdata/session_ref_fixtures.json).
@@ -476,12 +590,10 @@ function makeSessionRaw(id: string, generation: string, name = id) {
     desired: 'run',
     revision: 1,
     created_at: new Date().toISOString(),
-    _compat: {
-      name,
-      shell: '/bin/bash',
-      cwd: '/tmp/e2e',
-      generation,
-    },
+    name,
+    shell: '/bin/bash',
+    cwd: '/tmp/e2e',
+    generation,
   }
 }
 
@@ -682,4 +794,74 @@ test('browser command retry with same CommandID does not double-execute (determi
 
   await page.waitForTimeout(500)
   expect(seenBodies).toHaveLength(2)
+})
+
+
+test('clicking a remote waiting-on-agent alert navigates to and renders that remote session (deterministic mocked agent-hook case)', async ({ page }) => {
+  // A genuine "waiting on an agent tool call" state requires a real agent
+  // CLI running inside the PTY and calling its hook -- not available in
+  // this sandboxed harness (see the header comment above). This mocks only
+  // the tool-event snapshot and the remote catalog it must correlate
+  // against; the click, navigation, and render are all driven for real
+  // against the actual React app.
+  const REMOTE_OWNER = 'ownerremotefixture1234567b'
+  const REMOTE_FINGERPRINT = 'fp-remote-alert-node'
+  const sessionId = 'sess-remote-alert'
+
+  await installBaseStubs(page)
+  await page.route('**/api/hosts', async (route) => {
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        { id: 'fp-local', name: 'Local Machine', local: true, online: true, owner_id: OWNER, sessions: [], last_seen: new Date().toISOString() },
+        { id: REMOTE_FINGERPRINT, name: 'Remote Box', local: false, online: true, owner_id: REMOTE_OWNER, sessions: [], last_seen: new Date().toISOString() },
+      ]),
+    })
+  })
+  await page.route('**/api/tool-events', async (route) => {
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        tool: 'claude',
+        status: 'waiting',
+        host: REMOTE_FINGERPRINT,
+        host_name: 'Remote Box',
+        session: 'remote-waiting',
+        session_id: sessionId,
+        window: 0,
+        pane: '',
+        message: 'needs input',
+        timestamp: new Date().toISOString(),
+      }]),
+    })
+  })
+  await installBootstrap(page, {
+    owner: OWNER,
+    revision: 1,
+    local: { owner: OWNER, revision: 1, sessions: [], layouts: [] },
+    remote: [{
+      owner: REMOTE_OWNER,
+      revision: 1,
+      sessions: [{ ...makeSessionRaw(sessionId, 'gen-remote', 'remote-waiting'), owner: REMOTE_OWNER, ref: `${REMOTE_OWNER}/${sessionId}:0.0` }],
+    }],
+    hosts: [],
+    workspace: undefined,
+    pending: [],
+    pending_remote: [],
+  })
+  await installStateSocket(page, () => {})
+
+  await page.goto('/')
+  // useToolEvents re-normalizes an event's key once useHosts' hostIndex
+  // updates (see useToolEvents.ts) -- wait for the correlated "Waiting"
+  // alert rather than racing the initial render.
+  const alert = page.locator('header button', { hasText: 'Waiting' })
+  await expect(alert).toBeVisible({ timeout: 15_000 })
+  await expect(alert).toContainText('remote-waiting')
+  await alert.click()
+
+  await expect(page).toHaveURL(new RegExp(`session/${REMOTE_OWNER}/${sessionId}`))
+  await expect(page.locator(`[data-pane-key="${REMOTE_OWNER}/${sessionId}"]`)).toBeVisible({ timeout: 10_000 })
 })
