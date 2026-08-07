@@ -16,11 +16,11 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ## 1. Dashboard / Overview
 
-### 1.1 Layout modes (Grid vs Board)
+### 1.1 Layout (Board only)
 
-**Contract:** Toggle button at top-right switches between two layouts. **Board mode** shows four columns (Needs you / Working / Idle / Offline) with session cards, plus three collapsible rails below (Scheduled, Hidden, Backgrounded). **Grid mode** groups cards by hostname (if >1 host) or as single "Sessions" group. Both modes share identical card appearance; only layout differs. Default: Board mode. Persists to browser storage.
+**Status: Grid mode removed.** The Overview dashboard now has a single layout: **Board mode** — four columns (Needs you / Working / Idle / Offline) with session cards, plus three collapsible rails below (Scheduled, Hidden, Backgrounded). The layout toggle button and the `'grid' | 'board'` mode state have been deleted; there is nothing left to switch between. Grid mode's per-host grouping view no longer exists in any form.
 
-**Why it matters:** The board's column organization and rail structure are user-facing; collapsing/expanding an entire layout mode without replacement would prevent users from accessing sessions organized by state.
+**Why it matters:** Maintaining two full dashboard layout systems (Board's columns+rails+tiled-pane folding vs Grid's host-grouping) doubled UI maintenance surface for a toggle most users never touched. Board mode's column organization and rail structure remain fully intact and are still the user-facing contract to preserve.
 
 **Verification pointer:** `web/src/components/Overview.tsx`
 
@@ -32,15 +32,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 **Verification pointer:** `web/src/components/Overview.tsx`
 
-### 1.3 Grid mode structure
-
-**Contract:** Groups cards by hostname. If single host, one "Sessions" group. Multiple hosts: one group per `host_name`, alphabetical after Local. Group headers show host online/offline badge (when >1 host). Within each group, cards sorted by state rank (needs_you=0, working=1, idle=2, offline=3), then session name. Tool panes appear as standalone cards, not folded under agent cards.
-
-**Why it matters:** Grid mode's per-host grouping and lack of folding are explicit UI features; removing groups or re-folding tools would break the alternate view.
-
-**Verification pointer:** `web/src/components/Overview.tsx`
-
-### 1.4 Session cards (both modes)
+### 1.3 Session cards
 
 **Contract:** Displays session name, host name (when >1 host), project folder (truncated, full path in tooltip), uptime (e.g. "45m", "3h", "2d"), state dot (color per state: warning/success/mute), tool agent icon (hexagon, agent brand color when agent present), count of mate panes (⧉ badge). Click docked-view compatible terminal opens in right split (resizable, saved width); otherwise opens full-view. Right-click → context menu (Rename, AI rename, Hide, Background, Kill with two-step confirmation). Hover after 400ms delay → popover showing last 40 lines of terminal output (dismisses on pointer leave).
 
@@ -48,7 +40,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 **Verification pointer:** `web/src/components/Overview.tsx`, `web/src/components/SessionActionsMenu.tsx`
 
-### 1.5 System stats / Yard health
+### 1.4 System stats / Yard health
 
 **Contract:** Persistent open details section showing CPU %, Memory %, load average, memory used/total GB, uptime, CPU count + architecture. One card per host (when >1 host) or combined (single host). Color: >90% destructive, >70% warning, else default. Auto-fetches every 5s; errors silent. Collapsible; open by default.
 
@@ -56,9 +48,9 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 **Verification pointer:** `web/src/components/Overview.tsx`
 
-### 1.6 localStorage persistence (Overview)
+### 1.5 localStorage persistence (Overview)
 
-**Contract:** Stores layout mode choice (`overview_layout` = "grid" or "board", default "board"), docked terminal split width in pixels (`overview_split_width`, default 520px, clamped 360–1200px), and per-rail collapse state (`overview_rail_hidden`, `overview_rail_bg`, `overview_rail_scheduled` = "open"/"closed").
+**Contract:** Stores docked terminal split width in pixels (`overview_split_width`, default 520px, clamped 360–1200px), and per-rail collapse state (`overview_rail_hidden`, `overview_rail_bg`, `overview_rail_scheduled` = "open"/"closed"). The `overview_layout` key no longer exists — deleted along with Grid mode; there is only one layout to persist.
 
 **Why it matters:** Users' layout preferences and split widths must survive page reloads; losing this breaks the persistent experience.
 
