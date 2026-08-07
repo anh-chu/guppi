@@ -316,8 +316,6 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
   }, [])
-  const [layout, setLayout] = useState<'grid' | 'board'>(() => (localStorage.getItem('overview_layout') === 'grid' ? 'grid' : 'board'))
-  useEffect(() => { localStorage.setItem('overview_layout', layout) }, [layout])
   const [hiddenRailOpen, setHiddenRailOpen] = useState(() => localStorage.getItem('overview_rail_hidden') === 'open')
   const [bgRailOpen, setBgRailOpen] = useState(() => localStorage.getItem('overview_rail_bg') === 'open')
   const [scheduledRailOpen, setScheduledRailOpen] = useState(() => localStorage.getItem('overview_rail_scheduled') === 'open')
@@ -404,21 +402,6 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
     return out
   }, [sessions, scheduleIdFor, buildItem])
 
-  const grouped = useMemo(() => {
-    const groups = new Map<string, CardItem[]>()
-    for (const item of items) {
-      const groupLabel = hasMultipleHosts ? (item.session.host_name || 'Local') : 'Sessions'
-      if (!groups.has(groupLabel)) groups.set(groupLabel, [])
-      groups.get(groupLabel)!.push(item)
-    }
-    return Array.from(groups.entries())
-      .sort(([a], [b]) => (a === 'Local' || a === 'Sessions' ? -1 : b === 'Local' || b === 'Sessions' ? 1 : a.localeCompare(b)))
-      .map(([groupLabel, groupItems]) => ({
-        groupLabel,
-        items: groupItems.sort((a, b) => stateRank[a.signal.state] - stateRank[b.signal.state] || a.session.name.localeCompare(b.session.name)),
-      }))
-  }, [items, hasMultipleHosts])
-
   const byState = useMemo(() => COLUMN_ORDER.map(state => ({
     state,
     items: items
@@ -465,20 +448,6 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
   return (
     <div className="flex-1 flex min-h-0">
     <div className="flex-1 min-w-0 p-8 overflow-y-auto font-sans text-sm font-medium bg-canvas">
-      <div className="flex items-center justify-end mb-4">
-        <div className="inline-flex rounded-sm border border-hairline overflow-hidden text-[11px] font-bold">
-          {(['grid', 'board'] as const).map(l => (
-            <button
-              key={l}
-              onClick={() => setLayout(l)}
-              className={`px-3 py-1.5 transition-colors ${layout === l ? 'bg-surface-elevated text-ink' : 'text-mute/60 hover:text-ink'}`}
-            >
-              {l === 'grid' ? 'Grid' : 'Board'}
-            </button>
-          ))}
-        </div>
-      </div>
-
       {foregroundSessions.length === 0 && (
         <div className="mb-10">
           <div className="text-mute text-[13px] font-medium mb-4 ml-1">
@@ -491,42 +460,25 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
         </div>
       )}
 
-      {layout === 'board' ? (
-        <div className="flex gap-3 mb-10 items-start overflow-x-auto tex-yardgrid rounded-sm p-3">
-          {byState.filter(({ items: colItems }) => colItems.length > 0).map(({ state, items: colItems }) => (
-            <div key={state} className={`flex flex-col gap-2 ${colItems.length === 0 ? 'min-w-[160px]' : split ? 'min-w-[220px]' : 'min-w-[260px]'}`} style={{ flexGrow: Math.max(colItems.length, 0.5), flexBasis: 0 }}>
-              <h3 className="font-display text-[13px] font-bold text-ink mb-1 flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full" style={{ background: COLUMN_META[state].color }} />
-                {COLUMN_META[state].label}
-                <span className="text-mute/40 font-bold text-xs">({colItems.length})</span>
-              </h3>
-              <div className={split ? 'grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 items-start' : 'grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2 items-start'}>
-                {colItems.map(item => (
-                  <SessionCard key={item.key} item={item} hasMultipleHosts={hasMultipleHosts} getSessionEvents={getSessionEvents} onOpen={handleCardOpen} onJumpToSession={onJumpToSession} onDismissAlert={onDismissAlert} onContextMenu={openMenu} selected={selectedKey === item.key} glanceTrigger={glance.trigger} mates={matesByCard.get(item.key)} />
-                ))}
-              </div>
-            </div>
-          ))}
-          {renderRail('scheduled', 'Scheduled', scheduledItems, scheduledRailOpen, setScheduledRailOpen)}
-          {renderRail('hidden', 'Hidden', hiddenItems, hiddenRailOpen, setHiddenRailOpen)}
-          {renderRail('backgrounded', 'Backgrounded', bgItems, bgRailOpen, setBgRailOpen)}
-        </div>
-      ) : (
-        grouped.map(({ groupLabel, items: groupItems }) => (
-          <div key={groupLabel} className="mb-10">
-            <h3 className="font-display text-[13px] font-bold text-ink mb-4 flex items-center gap-2">
-              {groupLabel}
-              {hasMultipleHosts && <span className={`text-[10px] font-medium ${groupItems[0]?.session.host_online !== false ? 'text-success' : 'text-mute/50'}`}>{groupItems[0]?.session.host_online !== false ? 'online' : 'offline'}</span>}
-              <span className="text-mute/40 font-bold text-xs ml-1">({groupItems.length})</span>
+      <div className="flex gap-3 mb-10 items-start overflow-x-auto tex-yardgrid rounded-sm p-3">
+        {byState.filter(({ items: colItems }) => colItems.length > 0).map(({ state, items: colItems }) => (
+          <div key={state} className={`flex flex-col gap-2 ${colItems.length === 0 ? 'min-w-[160px]' : split ? 'min-w-[220px]' : 'min-w-[260px]'}`} style={{ flexGrow: Math.max(colItems.length, 0.5), flexBasis: 0 }}>
+            <h3 className="font-display text-[13px] font-bold text-ink mb-1 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: COLUMN_META[state].color }} />
+              {COLUMN_META[state].label}
+              <span className="text-mute/40 font-bold text-xs">({colItems.length})</span>
             </h3>
-            <div className={split ? 'grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2' : 'grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2'}>
-              {groupItems.map(item => (
-                <SessionCard key={item.key} item={item} hasMultipleHosts={hasMultipleHosts} getSessionEvents={getSessionEvents} onOpen={handleCardOpen} onJumpToSession={onJumpToSession} onDismissAlert={onDismissAlert} onContextMenu={openMenu} selected={selectedKey === item.key} glanceTrigger={glance.trigger} />
+            <div className={split ? 'grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 items-start' : 'grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2 items-start'}>
+              {colItems.map(item => (
+                <SessionCard key={item.key} item={item} hasMultipleHosts={hasMultipleHosts} getSessionEvents={getSessionEvents} onOpen={handleCardOpen} onJumpToSession={onJumpToSession} onDismissAlert={onDismissAlert} onContextMenu={openMenu} selected={selectedKey === item.key} glanceTrigger={glance.trigger} mates={matesByCard.get(item.key)} />
               ))}
             </div>
           </div>
-        ))
-      )}
+        ))}
+        {renderRail('scheduled', 'Scheduled', scheduledItems, scheduledRailOpen, setScheduledRailOpen)}
+        {renderRail('hidden', 'Hidden', hiddenItems, hiddenRailOpen, setHiddenRailOpen)}
+        {renderRail('backgrounded', 'Backgrounded', bgItems, bgRailOpen, setBgRailOpen)}
+      </div>
 
       <details open className="mt-4 rounded-md border border-hairline bg-surface tex-yardgrid overflow-hidden">
         <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between font-display text-[13px] text-ink">
