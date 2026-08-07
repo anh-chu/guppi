@@ -168,7 +168,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ## 8. Settings
 
-**Contract:** Opened via `$mod+,` (Ctrl/Cmd+Comma). Drawer with 4 buckets: Look (themes, terminal font family/size/scrollback/graphemes, fullscreen alerts toggle), Yard (default view, sidebar collapse mode, AI naming endpoint/key/model), Alerts (push notifications toggle, alert statuses multi-select, auto-dismiss seconds, agent setup status), System (peer list + connect/forget/reconnect buttons, wiki install button, security auto-lock timeout, sign-out button, about + version/update rows). All settings apply instantly (no Save button) with "SAVING…" feedback during PUT — **except AI Naming's endpoint/API key/model fields**, which are staged locally and require an explicit Save button (added because the previous PUT-per-keystroke had no debounce, no validation, and no rollback on failure). The AI Naming Save button validates a non-empty endpoint when enabled, shows its own "SAVING…" pulse during the request, and on failure reverts the staged fields to the last-known-good server values with an inline error message. The Predictive Echo toggle and the DOM/WebGL renderer select have been removed (see 9.6, 9.12).
+**Contract:** Opened via `$mod+,` (Ctrl/Cmd+Comma). Drawer with 4 buckets: Look (themes, terminal font family/size/scrollback/graphemes, fullscreen alerts toggle), Yard (default view, sidebar collapse mode, AI naming endpoint/key/model), Alerts (push notifications toggle, alert statuses multi-select, auto-dismiss seconds, agent setup status), System (peer list + connect/forget/reconnect buttons, wiki install button, security auto-lock timeout, sign-out button, about + version/update rows). All settings apply instantly (no Save button) with "SAVING…" feedback during PUT — **except AI Naming's endpoint/API key/model fields**, which are staged locally and require an explicit Save button (added because the previous PUT-per-keystroke had no debounce, no validation, and no rollback on failure). The AI Naming Save button intentionally allows an empty endpoint even when naming is enabled — the backend (pkg/namer) falls back to TERMYARD_NAMER_*/TERMYARD_OPENAI_* env vars in that case, so an empty endpoint is a valid, supported configuration, not an error. Save shows its own "SAVING…" pulse during the request, and on failure reverts the staged fields to the last-known-good server values with an inline error message. The Predictive Echo toggle and the DOM/WebGL renderer select have been removed (see 9.6, 9.12).
 
 **Why it matters:** Instant apply, the specific pref keys, and auto-lock timeout are all observable contracts.
 
@@ -752,5 +752,3 @@ All previously flagged gaps are now closed. Final trace confirmed both remaining
 No unverified areas remain in this document as of this pass.
 
 ---
-
-]

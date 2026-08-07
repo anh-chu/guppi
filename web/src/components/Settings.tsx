@@ -352,12 +352,6 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
                   <div className="flex flex-col gap-2">
                     <button
                       onClick={async () => {
-                        // Validate
-                        if (prefs.ai_naming.enabled && stagedAiNaming.endpoint.trim() === '') {
-                          setAiNamingError('Endpoint is required when AI naming is enabled')
-                          return
-                        }
-                        
                         setAiNamingError(null)
                         setAiNamingSaving(true)
                         try {
