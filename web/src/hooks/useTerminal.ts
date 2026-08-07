@@ -57,8 +57,7 @@ export function useTerminal(sessionName: string, hostId?: string, backend?: stri
     scrollback: prefs.terminal.scrollback,
     renderer: prefs.terminal.renderer,
     unicodeGraphemes: prefs.terminal.unicode_graphemes,
-    predictiveEcho: prefs.terminal.predictive_echo,
-  }), [prefs.theme, prefs.terminal.font_family, prefs.terminal.font_size, prefs.terminal.scrollback, prefs.terminal.renderer, prefs.terminal.unicode_graphemes, prefs.terminal.predictive_echo])
+  }), [prefs.theme, prefs.terminal.font_family, prefs.terminal.font_size, prefs.terminal.scrollback, prefs.terminal.renderer, prefs.terminal.unicode_graphemes])
 
   // Checkout into a container — called from Terminal.tsx layout effect
   const checkout = useCallback((container: HTMLElement) => {
@@ -164,7 +163,7 @@ export function useTerminal(sessionName: string, hostId?: string, backend?: stri
   }, [])
 
   // Preference reconfigure
-  const reconfigure = useCallback((_renderer: string, _graphemes: boolean, _predictiveEcho: boolean) => {
+  const reconfigure = useCallback(() => {
     // Global pref reconciliation — idempotent, iterates all entries
     terminalPool.applyGlobalPrefs(buildPrefs())
   }, [buildPrefs])

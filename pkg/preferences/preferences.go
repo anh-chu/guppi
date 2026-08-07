@@ -13,9 +13,9 @@ type Terminal struct {
 	FontSize         int    `json:"font_size"`
 	FontFamily       string `json:"font_family"`
 	Scrollback       int    `json:"scrollback"`
+	// Renderer is legacy/backward-compatible; no longer read meaningfully by frontend rendering logic but still accepted/persisted for old clients. Default: "webgl".
 	Renderer         string `json:"renderer"`
 	UnicodeGraphemes bool   `json:"unicode_graphemes"`
-	PredictiveEcho   bool   `json:"predictive_echo"`
 }
 
 type Sidebar struct {
@@ -71,9 +71,8 @@ func Default() *Preferences {
 			FontSize:         13,
 			FontFamily:       "Space Mono",
 			Scrollback:       5000,
-			Renderer:         "dom",
+			Renderer:         "webgl",
 			UnicodeGraphemes: false,
-			PredictiveEcho:   false,
 		},
 		Theme: "dark",
 		Sidebar: Sidebar{

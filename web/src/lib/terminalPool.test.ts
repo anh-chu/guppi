@@ -205,13 +205,6 @@ class FakeWebglAddon {
 }
 class FakeImageAddon { constructor() { addonCreateCount++ } dispose() { addonDisposeCount++ } }
 class FakeUnicodeGraphemesAddon { constructor() { addonCreateCount++ } dispose() { addonDisposeCount++ } }
-class FakePredictiveEcho {
-  constructor() { addonCreateCount++ }
-  canPredict(_data: string) { return false }
-  predict(_char: string) {}
-  clear() {}
-  dispose() { addonDisposeCount++ }
-}
 
 // ── Fake WebSocket ───────────────────────────────────────────────────
 
@@ -270,7 +263,6 @@ function createFakeFactory(): PoolFactory {
     createWebglAddon: () => new FakeWebglAddon() as unknown as any,
     createImageAddon: () => new FakeImageAddon() as unknown as any,
     createUnicodeGraphemesAddon: () => new FakeUnicodeGraphemesAddon() as unknown as any,
-    createPredictiveEcho: () => new FakePredictiveEcho() as unknown as any,
     createWebSocket: (url) => new FakeWebSocket(url) as unknown as WebSocket,
   }
 }
@@ -280,8 +272,8 @@ function createFakeFactory(): PoolFactory {
 function defPrefs(overrides?: Partial<TerminalPrefs>): TerminalPrefs {
   return {
     theme: 'dark', fontFamily: 'Space Mono', fontSize: 13,
-    scrollback: 50000, renderer: 'dom',
-    unicodeGraphemes: false, predictiveEcho: false,
+    scrollback: 50000, renderer: 'webgl',
+    unicodeGraphemes: false,
     ...overrides,
   }
 }
@@ -377,11 +369,13 @@ describe('TerminalPool', () => {
     expect(second).toBe(first)
   })
 
-  it('cold checkout loads WebGL when prefs specify webgl', () => {
+  it('cold checkout always attempts WebGL (independent of renderer pref)', () => {
     const container = fakeEl()
-    pool.checkout(defId('s1'), defPrefs({ renderer: 'webgl' }), container, noopCbs())
+    // WebGL is now unconditionally attempted on cold checkout, regardless of pref
+    pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
     expect(terminalCreateCount).toBe(1)
-    expect(addonCreateCount).toBeGreaterThanOrEqual(5)
+    // WebGL addon should be created if factory succeeds
+    expect(addonCreateCount).toBeGreaterThanOrEqual(4)
   })
 
   // ── Checkin keeps resources alive ──────────────────────────────────

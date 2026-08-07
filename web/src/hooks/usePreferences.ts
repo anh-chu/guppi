@@ -5,9 +5,11 @@ export interface Preferences {
     font_size: number
     font_family: string
     scrollback: number
+    // renderer field retained for backward-compat with persisted preferences and
+    // backend API contract, but is no longer consulted by rendering code.
+    // WebGL is now unconditionally attempted with automatic silent DOM fallback.
     renderer: string
     unicode_graphemes: boolean
-    predictive_echo: boolean
   }
   theme: string
   sidebar: {
@@ -39,9 +41,8 @@ export const defaultPreferences: Preferences = {
     font_size: 13,
     font_family: 'Space Mono',
     scrollback: 50000,
-    renderer: 'dom',
+    renderer: 'webgl',
     unicode_graphemes: false,
-    predictive_echo: false,
   },
   theme: 'dark',
   sidebar: {
@@ -69,14 +70,14 @@ export const defaultPreferences: Preferences = {
 
 interface PreferencesContextValue {
   prefs: Preferences
-  updatePrefs: (partial: Partial<Preferences>) => Promise<void>
+  updatePrefs: (partial: Partial<Preferences>, opts?: { optimistic?: boolean }) => Promise<boolean>
   loaded: boolean
   refetch: () => Promise<void>
 }
 
 export const PreferencesContext = createContext<PreferencesContextValue>({
   prefs: defaultPreferences,
-  updatePrefs: async () => {},
+  updatePrefs: async () => false,
   loaded: false,
   refetch: async () => {},
 })
@@ -112,9 +113,10 @@ export function usePreferencesProvider() {
     fetchPrefs()
   }, [fetchPrefs])
 
-  const updatePrefs = useCallback(async (partial: Partial<Preferences>) => {
+  const updatePrefs = useCallback(async (partial: Partial<Preferences>, opts?: { optimistic?: boolean }): Promise<boolean> => {
+    const optimistic = opts?.optimistic !== false
     const merged = { ...prefs, ...partial }
-    setPrefs(merged)
+    if (optimistic) setPrefs(merged)
     try {
       const res = await fetch('/api/preferences', {
         method: 'PUT',
@@ -124,9 +126,12 @@ export function usePreferencesProvider() {
       if (res.ok) {
         const saved = await res.json()
         setPrefs(saved)
+        return true
       }
+      return false
     } catch (err) {
       console.error('Failed to save preferences:', err)
+      return false
     }
   }, [prefs])
 

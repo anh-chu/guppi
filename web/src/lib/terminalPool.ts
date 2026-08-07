@@ -16,7 +16,7 @@ import { ClipboardAddon, type IClipboardProvider, type ClipboardSelectionType } 
 import { WebglAddon } from '@xterm/addon-webgl'
 import { ImageAddon } from '@xterm/addon-image'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
-import { PredictiveEcho } from './predictive-echo'
+
 import { getXtermTheme } from '../theme'
 import { ConnectionMachine } from './terminal/connectionMachine'
 import { ReplayBuffer } from './terminal/replayBuffer'
@@ -265,7 +265,6 @@ export interface TerminalPrefs {
   scrollback: number
   renderer: string
   unicodeGraphemes: boolean
-  predictiveEcho: boolean
 }
 
 /** Identity for a pool entry. */
@@ -284,7 +283,6 @@ export interface PoolFactory {
   createWebglAddon: () => WebglAddon | null
   createImageAddon: () => ImageAddon | null
   createUnicodeGraphemesAddon: () => UnicodeGraphemesAddon | null
-  createPredictiveEcho: (term: Terminal) => PredictiveEcho | null
   createWebSocket: (url: string) => WebSocket
 }
 
@@ -311,9 +309,6 @@ const defaultFactory: PoolFactory = {
   createUnicodeGraphemesAddon: () => {
     try { return new UnicodeGraphemesAddon() } catch { return null }
   },
-  createPredictiveEcho: (term) => {
-    try { return new PredictiveEcho(term) } catch { return null }
-  },
   createWebSocket: (url) => new WebSocket(url),
 }
 
@@ -331,8 +326,6 @@ interface PoolEntry {
   imageAddon: ImageAddon | null
   graphemesAddon: UnicodeGraphemesAddon | null
   graphemesLoaded: boolean
-  predictiveEcho: PredictiveEcho | null
-  predictiveEchoEnabled: boolean
 
   // Delegates
   connection: ConnectionMachine
@@ -680,20 +673,20 @@ export class TerminalPool {
     entry.terminal.options.fontFamily = fontFamily
     measureXtermCharSize(entry.terminal)
 
-    // Renderer
-    if (prefs.renderer === 'webgl' && !entry.webglAddon) {
+    // WebGL renderer (always attempted; silent fallback to DOM on failure/context loss)
+    if (!entry.webglAddon) {
       const wa = this.factory.createWebglAddon()
       if (wa) {
         wa.onContextLoss(() => {
           wa.dispose()
           entry.webglAddon = null
+          // xterm silently falls back to DOM rendering once WebGL addon is disposed
         })
         try { entry.terminal.loadAddon(wa) } catch { /* ignored */ }
         entry.webglAddon = wa as WebglAddon
       }
-    } else if (prefs.renderer === 'dom' && entry.webglAddon) {
-      entry.webglAddon.dispose()
-      entry.webglAddon = null
+      // If createWebglAddon returns null or loadAddon throws, terminal continues
+      // with xterm's default DOM renderer — no special error handling needed
     }
 
     // Unicode graphemes
@@ -710,14 +703,7 @@ export class TerminalPool {
       entry.graphemesLoaded = false
     }
 
-    // Predictive echo
-    if (prefs.predictiveEcho && !entry.predictiveEcho) {
-      entry.predictiveEcho = this.factory.createPredictiveEcho(entry.terminal)
-    } else if (!prefs.predictiveEcho && entry.predictiveEcho) {
-      entry.predictiveEcho.dispose()
-      entry.predictiveEcho = null
-    }
-    entry.predictiveEchoEnabled = prefs.predictiveEcho
+
 
     entry.appliedPrefs = { ...prefs }
   }
@@ -908,11 +894,6 @@ export class TerminalPool {
       }
     }
 
-    let predictiveEcho: PredictiveEcho | null = null
-    if (prefs.predictiveEcho) {
-      predictiveEcho = ef.createPredictiveEcho(term)
-    }
-
     const replayBuffer = new ReplayBuffer()
 
     // eslint-disable-next-line prefer-const
@@ -953,8 +934,6 @@ export class TerminalPool {
       imageAddon,
       graphemesAddon,
       graphemesLoaded,
-      predictiveEcho,
-      predictiveEchoEnabled: prefs.predictiveEcho,
 
       connection,
       replayBuffer,
@@ -1090,7 +1069,6 @@ export class TerminalPool {
 
   // Replay / non-control output: no latency measurement; just write and scroll.
   private writeRaw(entry: PoolEntry, data: Uint8Array | string): void {
-    entry.predictiveEcho?.clear()
     entry.terminal.write(data, () => {
       if (!entry.userScrolled) {
         try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
@@ -1167,7 +1145,6 @@ export class TerminalPool {
             out.length = 0
           }
           const all = concatU8Legacy(entry.syncBuffer)
-          entry.predictiveEcho?.clear()
           entry.terminal.write(all, () => {
             if (!entry.userScrolled) {
               try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
@@ -1197,7 +1174,6 @@ export class TerminalPool {
   }
 
   private writeLiveRaw(entry: PoolEntry, data: Uint8Array): void {
-    entry.predictiveEcho?.clear()
     const hadPending = entry.writePending
     entry.writePending = false
     entry.terminal.write(data, () => {
@@ -1439,18 +1415,6 @@ export class TerminalPool {
             }
           }
         }
-        let pe = entry.predictiveEcho
-        if (!pe && entry.predictiveEchoEnabled) {
-          pe = this.factory.createPredictiveEcho(entry.terminal)
-          entry.predictiveEcho = pe
-        }
-        if (pe && entry.predictiveEchoEnabled) {
-          if (pe.canPredict(data)) {
-            pe.predict(data)
-          } else {
-            pe.clear()
-          }
-        }
         ws.send(encoder.encode(payload))
       }
     })
@@ -1458,7 +1422,6 @@ export class TerminalPool {
     // onResize handler — only while checked out
     const onResizeDispose = term.onResize(({ cols, rows }) => {
       if (!entry.activeContainer) return
-      entry.predictiveEcho?.clear()
       const ws = entry.connection.socket
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols, rows }))
@@ -1499,7 +1462,6 @@ export class TerminalPool {
     if (entry.webglAddon) { entry.webglAddon.dispose(); entry.webglAddon = null }
     if (entry.imageAddon) { entry.imageAddon.dispose(); entry.imageAddon = null }
     if (entry.graphemesAddon) { entry.graphemesAddon.dispose(); entry.graphemesAddon = null }
-    if (entry.predictiveEcho) { entry.predictiveEcho.dispose(); entry.predictiveEcho = null }
 
     // Dispose terminal
     try { entry.terminal.dispose() } catch { /* ignored */ }

@@ -22,6 +22,11 @@ const terminalFontFamilies = [
   'monospace',
 ]
 
+const FONT_PRESET_OPTIONS = terminalFontFamilies.map(f => ({ value: f, label: f }))
+const FONT_CUSTOM_OPTION = { value: '__custom__', label: 'Custom…' }
+
+const isFontPreset = (fontFamily: string) => terminalFontFamilies.includes(fontFamily)
+
 
 const notifStatuses = [
   { value: 'waiting', label: 'Waiting' },
@@ -74,6 +79,29 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
   const [saving, setSaving] = useState(false)
   const [agentStatus, setAgentStatus] = useState<{ agents: { name: string; key: string; installed: boolean; configured: boolean }[]; setup_command: string } | null>(null)
   const [agentLoading, setAgentLoading] = useState(false)
+
+  // AI Naming staged state
+  const [stagedAiNaming, setStagedAiNaming] = useState({ endpoint: prefs.ai_naming.endpoint, api_key: prefs.ai_naming.api_key, model: prefs.ai_naming.model })
+  const [aiNamingDirty, setAiNamingDirty] = useState(false)
+  const [aiNamingSaving, setAiNamingSaving] = useState(false)
+  const [aiNamingError, setAiNamingError] = useState<string | null>(null)
+
+  // Font family custom mode
+  const [fontFamilyCustomSelected, setFontFamilyCustomSelected] = useState(false)
+
+  // Sync staged state when prefs changes externally
+  useEffect(() => {
+    if (!aiNamingDirty) {
+      setStagedAiNaming({ endpoint: prefs.ai_naming.endpoint, api_key: prefs.ai_naming.api_key, model: prefs.ai_naming.model })
+    }
+  }, [prefs.ai_naming, aiNamingDirty])
+
+  // Sync font family custom mode when pref changes
+  useEffect(() => {
+    if (isFontPreset(prefs.terminal.font_family)) {
+      setFontFamilyCustomSelected(false)
+    }
+  }, [prefs.terminal.font_family])
 
   const fetchAgentStatus = useCallback(async () => {
     setAgentLoading(true)
@@ -181,11 +209,31 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
           {/* ── Terminal ── */}
           <Section hidden={!showSection('terminal')} id="terminal" title="Terminal" description="Font, scrollback, and fullscreen behavior">
             <Row label="Font Family" description="Monospace font for the terminal">
-              <SelectInput
-                value={prefs.terminal.font_family}
-                onChange={(v) => updateNested('terminal', { font_family: v })}
-                options={terminalFontFamilies.map(f => ({ value: f, label: f }))}
-              />
+              <div className="flex flex-col gap-3 w-full sm:w-auto">
+                <SelectInput
+                  value={fontFamilyCustomSelected || !isFontPreset(prefs.terminal.font_family) ? '__custom__' : prefs.terminal.font_family}
+                  onChange={(v) => {
+                    if (v === '__custom__') {
+                      setFontFamilyCustomSelected(true)
+                    } else {
+                      setFontFamilyCustomSelected(false)
+                      updateNested('terminal', { font_family: v })
+                    }
+                  }}
+                  options={[...FONT_PRESET_OPTIONS, FONT_CUSTOM_OPTION]}
+                />
+                {(fontFamilyCustomSelected || !isFontPreset(prefs.terminal.font_family)) && (
+                  <TextInput
+                    value={prefs.terminal.font_family}
+                    onChange={(v) => updateNested('terminal', { font_family: v })}
+                    placeholder="e.g. Cascadia Code, Berkeley Mono, monospace"
+                    wide
+                  />
+                )}
+                <span style={{ fontFamily: prefs.terminal.font_family }} className="text-xs text-mute/60 font-medium">
+                  The quick brown fox 0123
+                </span>
+              </div>
             </Row>
             <Row label="Font Size" description="Terminal text size in pixels">
               <NumberInput
@@ -205,28 +253,11 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
               />
             </Row>
             <Divider />
-            <Row label="Renderer" description="Terminal renderer backend (WebGL uses GPU acceleration)">
-              <SelectInput
-                value={prefs.terminal.renderer || 'dom'}
-                onChange={(v) => updateNested('terminal', { renderer: v })}
-                options={[
-                  { value: 'dom', label: 'DOM (default)' },
-                  { value: 'webgl', label: 'WebGL' },
-                ]}
-              />
-            </Row>
             <Row label="Unicode Graphemes" description="Experimental: proper rendering of ZWJ emoji, CJK, and combining marks">
               <Toggle
                 checked={prefs.terminal.unicode_graphemes}
                 onChange={(v) => updateNested('terminal', { unicode_graphemes: v })}
                 label={prefs.terminal.unicode_graphemes ? 'EXPERIMENTAL · ON' : 'EXPERIMENTAL · OFF'}
-              />
-            </Row>
-            <Row label="Predictive Echo" description="Experimental: show keystrokes immediately while awaiting server confirmation. Only safe printable ASCII in normal mode.">
-              <Toggle
-                checked={prefs.terminal.predictive_echo}
-                onChange={(v) => updateNested('terminal', { predictive_echo: v })}
-                label={prefs.terminal.predictive_echo ? 'EXPERIMENTAL · ON' : 'EXPERIMENTAL · OFF'}
               />
             </Row>
             <Divider />
@@ -283,8 +314,12 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
                 <Divider />
                 <Row label="Endpoint" description="Base URL, e.g. https://api.openai.com/v1 (falls back to TERMYARD_NAMER_ENDPOINT)">
                   <TextInput
-                    value={prefs.ai_naming.endpoint}
-                    onChange={(v) => updateNested('ai_naming', { endpoint: v })}
+                    value={stagedAiNaming.endpoint}
+                    onChange={(v) => {
+                      setStagedAiNaming(prev => ({ ...prev, endpoint: v }))
+                      setAiNamingDirty(true)
+                      setAiNamingError(null)
+                    }}
                     placeholder="https://api.openai.com/v1"
                     wide
                   />
@@ -292,18 +327,65 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
                 <Row label="API Key" description="Bearer token (optional for local endpoints; falls back to env)">
                   <TextInput
                     type="password"
-                    value={prefs.ai_naming.api_key}
-                    onChange={(v) => updateNested('ai_naming', { api_key: v })}
+                    value={stagedAiNaming.api_key}
+                    onChange={(v) => {
+                      setStagedAiNaming(prev => ({ ...prev, api_key: v }))
+                      setAiNamingDirty(true)
+                      setAiNamingError(null)
+                    }}
                     placeholder="sk-…"
                     wide
                   />
                 </Row>
                 <Row label="Model" description="Chat completion model name">
                   <TextInput
-                    value={prefs.ai_naming.model}
-                    onChange={(v) => updateNested('ai_naming', { model: v })}
+                    value={stagedAiNaming.model}
+                    onChange={(v) => {
+                      setStagedAiNaming(prev => ({ ...prev, model: v }))
+                      setAiNamingDirty(true)
+                      setAiNamingError(null)
+                    }}
                     placeholder="gpt-4o-mini"
                   />
+                </Row>
+                <Row label="" description="">
+                  <div className="flex flex-col gap-2">
+                    <button
+                      onClick={async () => {
+                        // Validate
+                        if (prefs.ai_naming.enabled && stagedAiNaming.endpoint.trim() === '') {
+                          setAiNamingError('Endpoint is required when AI naming is enabled')
+                          return
+                        }
+                        
+                        setAiNamingError(null)
+                        setAiNamingSaving(true)
+                        try {
+                          const result = await updatePrefs(
+                            { ai_naming: { enabled: prefs.ai_naming.enabled, endpoint: stagedAiNaming.endpoint, api_key: stagedAiNaming.api_key, model: stagedAiNaming.model } },
+                            { optimistic: false }
+                          )
+                          if (result) {
+                            setAiNamingDirty(false)
+                            setAiNamingError(null)
+                          } else {
+                            // Reset to last-known-good
+                            setStagedAiNaming({ endpoint: prefs.ai_naming.endpoint, api_key: prefs.ai_naming.api_key, model: prefs.ai_naming.model })
+                            setAiNamingDirty(false)
+                            setAiNamingError('Failed to save — changes were not applied and have been reverted.')
+                          }
+                        } finally {
+                          setAiNamingSaving(false)
+                        }
+                      }}
+                      disabled={!aiNamingDirty || aiNamingSaving}
+                      className="px-4 py-2 rounded-sm text-xs font-bold uppercase tracking-widest border border-hairline bg-surface text-ink hover:bg-surface-elevated transition-all disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                    {aiNamingSaving && <span className="text-xs font-bold text-primary animate-pulse">SAVING…</span>}
+                    {aiNamingError && <span className="text-xs font-medium text-destructive">{aiNamingError}</span>}
+                  </div>
                 </Row>
               </>
             )}

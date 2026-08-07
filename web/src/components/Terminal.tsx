@@ -207,14 +207,13 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionName, hostId, backend])
 
-  // Reconfigure the live terminal when renderer, grapheme, or predictive-echo
-  // prefs change, without tearing down the WebSocket connection.
+  // Reconfigure the live terminal when prefs change (scrollback triggers rebuild;
+  // other changes are applied live), without tearing down the WebSocket connection.
   useEffect(() => {
     if (!prefs) return
-    reconfigure(prefs.terminal.renderer, prefs.terminal.unicode_graphemes, prefs.terminal.predictive_echo)
-  }, [prefs.terminal.renderer, prefs.terminal.unicode_graphemes, prefs.terminal.predictive_echo,
-      prefs.terminal.scrollback, prefs.terminal.font_size, prefs.terminal.font_family,
-      prefs.theme, reconfigure])
+    reconfigure()
+  }, [prefs.terminal.scrollback, prefs.terminal.font_size, prefs.terminal.font_family,
+      prefs.terminal.unicode_graphemes, prefs.theme, reconfigure])
 
   // Auto-focus on mount only for the active pane — the inactive pane's
   // auto-focus would steal focus from the intended target.

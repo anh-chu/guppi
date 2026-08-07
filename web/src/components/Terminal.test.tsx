@@ -136,9 +136,8 @@ describe('Terminal', () => {
   const defaultPrefs = {
     theme: 'dark',
     terminal: {
-      renderer: 'dom',
+      renderer: 'webgl',
       unicode_graphemes: true,
-      predictive_echo: true,
       scrollback: 10000,
       font_size: 13,
       font_family: 'mono',
