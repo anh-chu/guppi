@@ -19,21 +19,6 @@ func TestNormalizeAgentType(t *testing.T) {
 	}
 }
 
-func TestResolveProjectPathPrefersActivePane(t *testing.T) {
-	windows := []*Window{
-		{
-			Active: true,
-			Panes: []*Pane{
-				{Active: false, CurrentPath: "/tmp/other"},
-				{Active: true, CurrentPath: "/tmp/project"},
-			},
-		},
-	}
-	if got := ResolveProjectPath(windows, ""); got != "/tmp/project" {
-		t.Fatalf("ResolveProjectPath() = %q, want %q", got, "/tmp/project")
-	}
-}
-
 func TestExtractPromptPreview(t *testing.T) {
 	content := "output\n❯ first prompt\nok\n❯ second prompt\n"
 	if got := ExtractPromptPreview(content); got != "second prompt" {

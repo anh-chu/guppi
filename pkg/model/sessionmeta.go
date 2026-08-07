@@ -5,20 +5,6 @@ import (
 	"strings"
 )
 
-var shellCommands = map[string]bool{
-	"":      true,
-	"bash":  true,
-	"csh":   true,
-	"dash":  true,
-	"fish":  true,
-	"ksh":   true,
-	"login": true,
-	"sh":    true,
-	"tcsh":  true,
-	"tmux":  true,
-	"zsh":   true,
-}
-
 var promptPrefixes = []string{"❯ ", "> ", "$ ", "# ", "% "}
 
 var questionLine = regexp.MustCompile(`^[A-Z0-9].{0,180}\?$`)
@@ -41,67 +27,6 @@ func NormalizeAgentType(command string) string {
 	default:
 		return ""
 	}
-}
-
-func IsShellCommand(command string) bool {
-	return shellCommands[strings.TrimSpace(strings.ToLower(command))]
-}
-
-func PrimaryPane(windows []*Window) *Pane {
-	for _, win := range windows {
-		if !win.Active {
-			continue
-		}
-		for _, pane := range win.Panes {
-			if pane.Active {
-				return pane
-			}
-		}
-		if len(win.Panes) > 0 {
-			return win.Panes[0]
-		}
-	}
-	for _, win := range windows {
-		for _, pane := range win.Panes {
-			if pane.Active {
-				return pane
-			}
-		}
-		if len(win.Panes) > 0 {
-			return win.Panes[0]
-		}
-	}
-	return nil
-}
-
-func InferAgentType(windows []*Window, fallback string) string {
-	if pane := PrimaryPane(windows); pane != nil {
-		if inferred := NormalizeAgentType(pane.CurrentCommand); inferred != "" {
-			return inferred
-		}
-	}
-	for _, win := range windows {
-		for _, pane := range win.Panes {
-			if inferred := NormalizeAgentType(pane.CurrentCommand); inferred != "" {
-				return inferred
-			}
-		}
-	}
-	return NormalizeAgentType(fallback)
-}
-
-func ResolveProjectPath(windows []*Window, fallback string) string {
-	if pane := PrimaryPane(windows); pane != nil && strings.TrimSpace(pane.CurrentPath) != "" {
-		return strings.TrimSpace(pane.CurrentPath)
-	}
-	for _, win := range windows {
-		for _, pane := range win.Panes {
-			if strings.TrimSpace(pane.CurrentPath) != "" {
-				return strings.TrimSpace(pane.CurrentPath)
-			}
-		}
-	}
-	return strings.TrimSpace(fallback)
 }
 
 func ExtractPromptPreview(content string) string {

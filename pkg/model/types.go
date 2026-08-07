@@ -38,15 +38,6 @@ type Window struct {
 	Panes     []*Pane `json:"panes"`
 }
 
-// PaneDetailed contains resolved session name and window index for a pane,
-// avoiding extra queries. Used by the agent detector.
-type PaneDetailed struct {
-	ID      string `json:"id"`
-	Session string `json:"session"` // session name (not ID)
-	Window  int    `json:"window"`  // window index
-	PID     int    `json:"pid"`
-}
-
 // Pane represents a terminal pane
 type Pane struct {
 	ID             string `json:"id"`

@@ -5,13 +5,6 @@ import (
 	"strings"
 )
 
-// SessionForeground describes the foreground command of a session's active pane.
-type SessionForeground struct {
-	Session string
-	Command string
-	PID     int
-}
-
 // ValidateSessionName returns an error if name contains characters that have
 // special meaning and would prevent reliable targeting and would prevent reliable targeting.
 func ValidateSessionName(name string) error {
