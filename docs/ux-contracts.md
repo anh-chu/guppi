@@ -649,9 +649,9 @@ Bidirectional; browser→server (ping, PTY bytes, resize, paste-image, paste-fil
 
 Peer→hub: `auth`, `state-update`, `state-event`, `tool-event`, `activity-update` (5s), `stats` (30s), `capture-pane-result`.
 
-Hub→peer: `challenge`, `auth-ok`/`auth-fail`, `peer-state`, `session-action`, `request-state`, `forget`, `session-attrs-snapshot`/`delta`, `session-order-snapshot`/`delta`, `group-snapshot`/`delta`, `capture-pane`, `open-terminal`.
+Hub→peer: `challenge`, `auth-ok`/`auth-fail`, `peer-state`, `session-action`, `forget`, `session-attrs-snapshot`/`delta`, `session-order-snapshot`/`delta`, `group-snapshot`/`delta`, `capture-pane`, `open-terminal`.
 
-**Note:** `MsgRequestState`, `MsgPeerConnected`, `MsgPeerDisconnected` are handled in code but **nothing sends them** — dead protocol surface (reserved for future use).
+**Note:** `MsgRequestState`, `MsgPeerConnected`, `MsgPeerDisconnected` were dead protocol surface — handled in code but never sent anywhere in the repo (leftovers from a superseded asymmetric hub/listener protocol design, per `docs/plans/archive/symmetric-peering.md`). Deleted; `request-state` removed from the Hub→peer list above accordingly.
 
 ### Upload data (`/ws/peer-stream`, upload role)
 
@@ -747,7 +747,7 @@ All previously flagged gaps are now closed. Final trace confirmed both remaining
 
 1. **Frontend host-param wiring** — confirmed matching. `web/src/lib/terminalPool.ts` builds `/ws/session` and `/ws/daemon-session` URLs with `&host=<hostId>` when connecting to a remote peer's session, empty when local. `web/src/hooks/useTerminal.ts` threads `hostId` through via `poolKey`/`identity`. Backend `pkg/server/routes_sessions.go` (`daemonWS`) dispatches on the same `host` query param: empty → local, non-empty and non-local → remote per-stream relay. `/ws/direct-session` never carries `host` (always local PTY), matching the frontend which never sends one for `direct-pty:` sessions. Contract holds end to end.
 
-2. **`peer-connected`/`peer-disconnected` browser-hub path — confirmed DEAD.** The browser hub (`/ws/events`) only bridges `state.Manager` and `toolevents.Tracker` events (`pkg/ws/hub.go`); it never subscribes to `peer.Manager`, which is the sole producer of `peer-connected`/`peer-disconnected`. Those events only ever reach `peer.Manager`'s own subscriber (`forwardPeerStateChanges`), which forwards them over the peer-to-peer wire protocol to a *remote* peer — never to the local browser. `web/src/App.tsx`'s `if (['peer-connected','peer-disconnected'].includes(evt.type))` branch is therefore unreachable dead code. Peer join/leave still visibly updates the UI, but through a different path: remote sessions merging in trigger ordinary `session-added`/`sessions-changed` events, which the hub does broadcast. Recommendation for a future cleanup: either wire `peer.Manager` into the hub so these events become real, or delete the dead frontend branch — but do not delete without noting that peer-refresh still works today via the `sessions-changed` fallback path.
+2. **`peer-connected`/`peer-disconnected` browser-hub path — was confirmed DEAD, now removed.** The browser hub (`/ws/events`) only ever bridged `state.Manager` and `toolevents.Tracker` events (`pkg/ws/hub.go`); it never subscribed to `peer.Manager`, which was the sole producer of `peer-connected`/`peer-disconnected`. Those events only ever reached `peer.Manager`'s own subscriber (`forwardPeerStateChanges`), which forwards them over the peer-to-peer wire protocol to a *remote* peer — never to the local browser. The dead `web/src/App.tsx` branch handling these two message types has been deleted. Peer join/leave still visibly updates the UI through the path that was always doing the real work: remote sessions merging in trigger ordinary `session-added`/`sessions-changed` events, which the hub does broadcast. `forwardPeerStateChanges` and the peer-to-peer wire forwarding it does are untouched and still live.
 
 No unverified areas remain in this document as of this pass.
 
