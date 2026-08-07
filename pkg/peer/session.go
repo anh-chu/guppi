@@ -430,10 +430,7 @@ func handleSessionMessage(peerID string, msg *Message, pc *PeerConnection, deps 
 		MsgStateEvent,
 		MsgActivityUpdate,
 		MsgStats,
-		MsgPeerState,
-		MsgPeerConnected,
-		MsgPeerDisconnected,
-		MsgRequestState:
+		MsgPeerState:
 		handleStateMessage(peerID, msg, pc, deps, log)
 
 	case MsgOpenTerminal,

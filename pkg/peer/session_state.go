@@ -103,22 +103,6 @@ func handleStateMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 			}
 		}
 
-	case MsgPeerConnected:
-		var p PeerNotifyPayload
-		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			return
-		}
-		deps.Manager.RegisterPeer(p.ID, p.Name, "", nil)
-
-	case MsgPeerDisconnected:
-		var p PeerNotifyPayload
-		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			return
-		}
-		deps.Manager.UnregisterPeer(p.ID)
-
-	case MsgRequestState:
-		sendStateUpdate(pc, deps)
 	}
 }
 

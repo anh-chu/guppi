@@ -634,10 +634,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       refreshGroups()
       return
     }
-    if (['peer-connected', 'peer-disconnected'].includes(evt.type)) {
-      refresh()
-      refreshHosts()
-    }
     if (evt.type === 'update-status') {
       setBinaryUpdate(evt)
       return
@@ -648,7 +644,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (evt.type === 'sessions-crashed') {
       crashedHook.refresh()
     }
-  }, [refresh, refreshHosts, handleToolEvent, processToolEvent, handleActivityEvent, refreshSessionAttrs, refreshSessionOrder, refreshGroups, workspaceActions, crashedHook.refresh])
+  }, [refresh, handleToolEvent, processToolEvent, handleActivityEvent, refreshSessionAttrs, refreshSessionOrder, refreshGroups, workspaceActions, crashedHook.refresh])
 
   const { connected } = useWebSocket('/ws/events', onEvent)
 

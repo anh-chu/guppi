@@ -96,30 +96,3 @@ func TestHandleStateMessageUpdate(t *testing.T) {
 		t.Fatalf("expected remote session, got %+v", got)
 	}
 }
-
-func TestHandleStateMessageRequestState(t *testing.T) {
-	mgr := makeTestManager(t)
-	pc := NewPeerConnection("peer", 1)
-	deps := SessionDeps{Manager: mgr, LocalMgr: mgr.localMgr}
-	log := logrus.NewEntry(logrus.New())
-
-	msg, err := NewMessage(MsgRequestState, struct{}{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	handleStateMessage("peer-a", msg, pc, deps, log)
-
-	select {
-	case f := <-pc.LoLane():
-		var msg Message
-		if err := json.Unmarshal(f.data, &msg); err != nil {
-			t.Fatal(err)
-		}
-		if msg.Type != MsgStateUpdate {
-			t.Fatalf("expected %s, got %s", MsgStateUpdate, msg.Type)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for state-update")
-	}
-}
