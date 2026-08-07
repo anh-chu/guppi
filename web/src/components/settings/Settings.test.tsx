@@ -129,9 +129,10 @@ test('AI Naming: Save button disabled when not dirty', async () => {
   expect(saveButton.disabled).toBe(true)
 })
 
-test('AI Naming: validation error on empty endpoint with enabled=true', async () => {
+test('AI Naming: empty endpoint is accepted and saved (env-var fallback is valid config)', async () => {
   mockPrefs.prefs = { ...mockPrefs.prefs, ai_naming: { ...mockPrefs.prefs.ai_naming, enabled: true, endpoint: 'https://example.com' } }
   mockPrefs.updatePrefs.mockClear()
+  mockPrefs.updatePrefs.mockResolvedValue(true)
 
   render(
     <Settings
@@ -150,8 +151,8 @@ test('AI Naming: validation error on empty endpoint with enabled=true', async ()
   const saveButton = screen.getByRole('button', { name: /Save/i })
   fireEvent.click(saveButton)
 
-  await waitFor(() => expect(screen.getByText(/Endpoint is required/i)).toBeTruthy())
-  expect(mockPrefs.updatePrefs).not.toHaveBeenCalled()
+  await waitFor(() => expect(mockPrefs.updatePrefs).toHaveBeenCalled())
+  expect(screen.queryByText(/Endpoint is required/i)).toBeNull()
 })
 
 test('AI Naming: Save button present and initially disabled', async () => {
