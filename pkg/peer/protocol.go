@@ -37,14 +37,8 @@ const (
 	MsgAuthFail = "auth-fail"
 	// MsgPeerState is aggregated state from all other peers
 	MsgPeerState = "peer-state"
-	// MsgPeerConnected notifies that a new peer joined
-	MsgPeerConnected = "peer-connected"
-	// MsgPeerDisconnected notifies that a peer left
-	MsgPeerDisconnected = "peer-disconnected"
 	// MsgSessionAction forwards an API action to the peer
 	MsgSessionAction = "session-action"
-	// MsgRequestState asks the peer for a full state refresh
-	MsgRequestState = "request-state"
 	// MsgForget notifies the receiver that the sender is forgetting them.
 	// Receiver should remove sender from its peer store and close the link.
 	MsgForget = "forget"
@@ -131,7 +125,7 @@ type AuthOKPayload struct {
 // StateUpdatePayload carries a full session snapshot from a peer
 type StateUpdatePayload struct {
 	Sessions []*model.Session `json:"sessions"`
-	Version  string          `json:"version,omitempty"`
+	Version  string           `json:"version,omitempty"`
 }
 
 // StateEventPayload carries an incremental state change
@@ -169,16 +163,10 @@ type HostInfo struct {
 	Local    bool                   `json:"local,omitempty"`
 	Online   bool                   `json:"online"`
 	Address  string                 `json:"address,omitempty"`
-	Sessions []*model.Session        `json:"sessions"`
+	Sessions []*model.Session       `json:"sessions"`
 	Activity []*activity.Snapshot   `json:"activity,omitempty"`
 	Stats    map[string]interface{} `json:"stats,omitempty"`
 	LastSeen time.Time              `json:"last_seen"`
-}
-
-// PeerNotifyPayload is sent when a peer connects or disconnects
-type PeerNotifyPayload struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
 }
 
 // OpenTerminalPayload asks a peer to prepare a dedicated PTY data connection.

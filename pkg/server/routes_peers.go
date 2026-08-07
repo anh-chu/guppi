@@ -1,44 +1,10 @@
 package server
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-
-	"github.com/anh-chu/termyard/pkg/auth"
 )
-
-// registerPeerBootstrapRoute mounts the public, password-protected peer
-// bootstrap endpoint at /api/peers/bootstrap.
-func registerPeerBootstrapRoute(r chi.Router, opts *Options) {
-	bootstrapLimit := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if opts.AuthLimiter == nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-			if ok, retry := opts.AuthLimiter.Allow("bootstrap", auth.ClientIP(r)); !ok {
-				seconds := int(retry.Seconds())
-				if seconds < 1 {
-					seconds = 1
-				}
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
-				w.WriteHeader(http.StatusTooManyRequests)
-				fmt.Fprintf(w, `{"error":"rate limit","retry_after":%d}`, seconds)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	// Peer bootstrap endpoint -- password-authenticated (no session cookie).
-	// Lets two nodes establish mutual trust via the dashboard password.
-	r.With(bootstrapLimit).Post("/peers/bootstrap", func(w http.ResponseWriter, r *http.Request) {
-		handlePeersBootstrap(w, r, opts)
-	})
-}
 
 // registerPeerRoutes mounts protected peer management endpoints under /api.
 // Callers must apply auth middleware separately.
