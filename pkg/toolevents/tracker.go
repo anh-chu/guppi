@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -199,6 +200,11 @@ func (t *Tracker) load() {
 	}
 	for k, arts := range st.Artifacts {
 		if len(arts) == 0 {
+			continue
+		}
+		// Skip legacy artifact keys without the "host\x00session" separator.
+		// They represent old state from before cross-host scoping was fixed.
+		if !strings.Contains(k, "\x00") {
 			continue
 		}
 		dup := make([]*FileArtifact, 0, len(arts))
@@ -515,13 +521,11 @@ func (t *Tracker) ClearAll() {
 	t.mu.Unlock()
 }
 
-// artifactSessionKey intentionally ignores host, matching GetForSession's
-// precedent: callers (the frontend, notify clients) key off session name
-// alone, and requiring an exact host match caused artifacts to silently
-// vanish whenever the caller didn't know the internal host fingerprint
-// (e.g. a plain GET /api/artifacts?session=... with no host param).
-func artifactSessionKey(_, session string) string {
-	return session
+// artifactSessionKey scopes artifacts per host+session so same-named
+// sessions on different hosts never see each other's files. Matches the
+// sessionMeta key format ("host\x00session"); empty host = local.
+func artifactSessionKey(host, session string) string {
+	return host + "\x00" + session
 }
 
 func (t *Tracker) storeArtifacts(host, session string, arts []*FileArtifact) {

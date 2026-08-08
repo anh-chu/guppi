@@ -166,3 +166,56 @@ func TestEnrichArtifactRequiresExistingFile(t *testing.T) {
 		t.Fatalf("bad artifact: %#v", got)
 	}
 }
+
+// TestArtifactsScopedByHost verifies that artifacts stored for same-named
+// sessions on different hosts remain isolated and do not leak into each other.
+func TestArtifactsScopedByHost(t *testing.T) {
+	tr := NewTracker()
+
+	// Store artifacts for session "main" on three different scopes:
+	// hostA, hostB, and local (empty host).
+	artifactA := &FileArtifact{
+		Path:   "/hostA/output.txt",
+		Name:   "output.txt",
+		Tool:   ToolPi,
+		Source: "hook",
+	}
+	artifactB := &FileArtifact{
+		Path:   "/hostB/result.log",
+		Name:   "result.log",
+		Tool:   ToolClaude,
+		Source: "hook",
+	}
+	artifactLocal := &FileArtifact{
+		Path:   "/local/main.go",
+		Name:   "main.go",
+		Tool:   ToolPi,
+		Source: "regex",
+	}
+
+	tr.storeArtifacts("hostA", "main", []*FileArtifact{artifactA})
+	tr.storeArtifacts("hostB", "main", []*FileArtifact{artifactB})
+	tr.storeArtifacts("", "main", []*FileArtifact{artifactLocal})
+
+	// Assert each host sees only its own artifacts.
+	gotA := tr.GetArtifacts("hostA", "main")
+	if len(gotA) != 1 || gotA[0].Path != artifactA.Path {
+		t.Errorf("hostA: got %v, want 1 artifact with path %q", gotA, artifactA.Path)
+	}
+
+	gotB := tr.GetArtifacts("hostB", "main")
+	if len(gotB) != 1 || gotB[0].Path != artifactB.Path {
+		t.Errorf("hostB: got %v, want 1 artifact with path %q", gotB, artifactB.Path)
+	}
+
+	gotLocal := tr.GetArtifacts("", "main")
+	if len(gotLocal) != 1 || gotLocal[0].Path != artifactLocal.Path {
+		t.Errorf("local: got %v, want 1 artifact with path %q", gotLocal, artifactLocal.Path)
+	}
+
+	// Assert unrelated host sees nothing.
+	gotUnrelated := tr.GetArtifacts("hostC", "main")
+	if len(gotUnrelated) != 0 {
+		t.Errorf("hostC: got %v, want nil/empty", gotUnrelated)
+	}
+}
