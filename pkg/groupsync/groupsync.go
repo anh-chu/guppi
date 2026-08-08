@@ -121,10 +121,11 @@ func (s *Store) SetTree(id string, tree json.RawMessage) (Group, error) {
 	// re-created id stays invisible because Live() filters non-zero DeletedAt.
 	g.DeletedAt = time.Time{}
 	s.groups[id] = g
+	s.dedupeLiveGroups(g.TreeUpdatedAt)
 	if err := s.save(); err != nil {
 		return Group{}, err
 	}
-	return g, nil
+	return s.groups[id], nil
 }
 
 // SetName applies a local name update.
@@ -207,10 +208,11 @@ func (s *Store) ApplyRemote(id string, in Group) (Group, bool, error) {
 		return cur, false, nil
 	}
 	s.groups[id] = merged
+	s.dedupeLiveGroups(time.Now())
 	if err := s.save(); err != nil {
 		return Group{}, false, err
 	}
-	return merged, true, nil
+	return s.groups[id], true, nil
 }
 
 // ApplySnapshot merges a remote snapshot using field-level LWW.
@@ -255,6 +257,17 @@ func (s *Store) ApplySnapshot(snap map[string]Group) ([]string, error) {
 	}
 	if len(changed) == 0 {
 		return nil, nil
+	}
+	if tombstoned := s.dedupeLiveGroups(time.Now()); len(tombstoned) > 0 {
+		seen := make(map[string]struct{}, len(changed))
+		for _, id := range changed {
+			seen[id] = struct{}{}
+		}
+		for _, id := range tombstoned {
+			if _, ok := seen[id]; !ok {
+				changed = append(changed, id)
+			}
+		}
 	}
 	sort.Strings(changed)
 	if err := s.save(); err != nil {
@@ -304,11 +317,69 @@ func (s *Store) MigrateKey(localHost, oldName, newName string) ([]string, error)
 	if len(changed) == 0 {
 		return nil, nil
 	}
+	if tombstoned := s.dedupeLiveGroups(time.Now()); len(tombstoned) > 0 {
+		seen := make(map[string]struct{}, len(changed))
+		for _, id := range changed {
+			seen[id] = struct{}{}
+		}
+		for _, id := range tombstoned {
+			if _, ok := seen[id]; !ok {
+				changed = append(changed, id)
+			}
+		}
+	}
 	sort.Strings(changed)
 	if err := s.save(); err != nil {
 		return changed, err
 	}
 	return changed, nil
+}
+
+// dedupeLiveGroups heals duplicate-content group records: when two live
+// (non-tombstoned) groups share the exact same set of session leaves (same
+// MembershipFingerprint, ignoring split direction/order/ratios), only the one
+// with the most recently updated tree is kept and the rest are tombstoned.
+//
+// Two independent clients (browser tabs, hosts, or a racing peer sync) can
+// each mint their own random group id for what is actually the same set of
+// sessions. Without this pass both records linger forever, each may get its
+// own AI-generated name, and the sidebar shows the same sessions twice under
+// two different names. Callers must hold s.mu.
+func (s *Store) dedupeLiveGroups(now time.Time) []string {
+	byFingerprint := make(map[string][]string)
+	for id, g := range s.groups {
+		if !g.DeletedAt.IsZero() {
+			continue
+		}
+		fp, keys, err := MembershipFingerprint(g.Tree)
+		if err != nil || len(keys) == 0 {
+			continue
+		}
+		byFingerprint[fp] = append(byFingerprint[fp], id)
+	}
+
+	var tombstoned []string
+	for _, ids := range byFingerprint {
+		if len(ids) < 2 {
+			continue
+		}
+		keep := ids[0]
+		for _, id := range ids[1:] {
+			if s.groups[id].TreeUpdatedAt.After(s.groups[keep].TreeUpdatedAt) {
+				keep = id
+			}
+		}
+		for _, id := range ids {
+			if id == keep {
+				continue
+			}
+			g := s.groups[id]
+			g.DeletedAt = now
+			s.groups[id] = g
+			tombstoned = append(tombstoned, id)
+		}
+	}
+	return tombstoned
 }
 
 func replaceStrings(v any, olds, news []string) (any, bool) {
