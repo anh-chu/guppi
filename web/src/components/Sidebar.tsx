@@ -872,8 +872,7 @@ export function Sidebar({
             'relative flex flex-col w-full p-2.5 rounded-sm transition-all duration-200 text-ink',
             'hover:bg-white/[0.05]',
             isSelected && 'bg-white/[0.08] !text-primary border border-white/20',
-            needsAttention && !isSelected && 'border-l border-warning bg-warning/5',
-            !isSelected && !needsAttention && 'border border-transparent',
+            !isSelected && 'border border-transparent',
             (isHiddenSection || isOffline) && 'opacity-60',
             isRenaming && 'cursor-default',
             draggingKey === sk && 'opacity-75 cursor-grab',
@@ -889,6 +888,13 @@ export function Sidebar({
           )}
           <div className="flex items-center gap-2 w-full">
             {!collapsed && <AgentMark agentType={agentPresent ? agentType : undefined} className="h-3.5 w-3.5 shrink-0" />}
+            {!collapsed && needsAttention && (
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-warning shrink-0 pointer-events-none"
+                title="Needs attention"
+                aria-label="Needs attention"
+              />
+            )}
             {!collapsed && stripeColor && !inHostGroup && (
               <span
                 className="w-2 h-2 rounded-full shrink-0 pointer-events-none"
