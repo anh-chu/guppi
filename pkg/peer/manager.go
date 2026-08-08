@@ -385,7 +385,14 @@ func (m *Manager) RegisterPeer(id, name, publicKey string, conn *PeerConnection)
 // RegisterPeerWithAddress registers a newly connected peer with its address.
 func (m *Manager) RegisterPeerWithAddress(id, name, publicKey, address string, conn *PeerConnection) {
 	m.mu.Lock()
-	m.hosts[id] = &HostState{
+
+	// Preserve accumulated state from previous HostState if it exists
+	var prevState *HostState
+	if h, ok := m.hosts[id]; ok {
+		prevState = h
+	}
+
+	newState := &HostState{
 		ID:        id,
 		Name:      name,
 		PublicKey: publicKey,
@@ -394,6 +401,17 @@ func (m *Manager) RegisterPeerWithAddress(id, name, publicKey, address string, c
 		LastSeen:  time.Now(),
 		Conn:      conn,
 	}
+
+	// Carry forward accumulated state from previous connection
+	if prevState != nil {
+		newState.Sessions = prevState.Sessions
+		newState.Stats = prevState.Stats
+		newState.Activity = prevState.Activity
+		newState.ToolEvents = prevState.ToolEvents
+		newState.Version = prevState.Version
+	}
+
+	m.hosts[id] = newState
 	m.mu.Unlock()
 
 	m.broadcast(state.StateEvent{
@@ -417,7 +435,14 @@ func (m *Manager) TryRegisterPeer(id, name, publicKey, address string, conn *Pee
 		m.mu.Unlock()
 		return false
 	}
-	m.hosts[id] = &HostState{
+
+	// Preserve accumulated state from previous HostState if it exists
+	var prevState *HostState
+	if h, ok := m.hosts[id]; ok {
+		prevState = h
+	}
+
+	newState := &HostState{
 		ID:        id,
 		Name:      name,
 		PublicKey: publicKey,
@@ -426,6 +451,17 @@ func (m *Manager) TryRegisterPeer(id, name, publicKey, address string, conn *Pee
 		LastSeen:  time.Now(),
 		Conn:      conn,
 	}
+
+	// Carry forward accumulated state from previous connection
+	if prevState != nil {
+		newState.Sessions = prevState.Sessions
+		newState.Stats = prevState.Stats
+		newState.Activity = prevState.Activity
+		newState.ToolEvents = prevState.ToolEvents
+		newState.Version = prevState.Version
+	}
+
+	m.hosts[id] = newState
 	m.mu.Unlock()
 
 	m.broadcast(state.StateEvent{
