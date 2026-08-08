@@ -73,7 +73,20 @@ function initState(): WorkspaceStateWithStreaks {
   try {
     activeGroupId = window.localStorage.getItem('termyard:active-group-id') || ''
   } catch {}
-  if (!activeGroupId) activeGroupId = Math.random().toString(36).slice(2)
+  if (!activeGroupId) {
+    activeGroupId = Math.random().toString(36).slice(2)
+    // Persist synchronously, before any render or effect runs. Without this,
+    // a second tab opened moments later (fresh profile, storage cleared,
+    // session-restore reopening several tabs at once) would also see an
+    // empty key here and mint its OWN random id, then both tabs seed a group
+    // from the same current session layout under two different ids -- a
+    // duplicate group with identical sessions. Writing it back immediately
+    // shrinks that race window from "until the next effect flush" to
+    // "this synchronous statement".
+    try {
+      window.localStorage.setItem('termyard:active-group-id', activeGroupId)
+    } catch {}
+  }
   const urlKey = getUrlSessionKey()
   const view = loadInitialView(urlKey, activeGroupId)
   let wikiPersisted: { target?: WikiTarget | null; history?: WikiTarget[] } | null = null
