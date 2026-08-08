@@ -718,9 +718,12 @@ export function Sidebar({
     const promptPreview = session.prompt_preview?.trim()
     const lastAgentMessage = session.last_agent_message?.trim()
     const userPrompt = session.user_prompt?.trim()
-    // Live activity label from the active tool event (e.g. "reading files", "running commands")
+    // Live activity label from the active tool event (e.g. "reading files", "running commands"),
+    // or from a waiting event's message (the actual question the agent is blocked on) —
+    // without this, "waiting" status fell through to a stale lastAgentMessage/userPrompt.
     const activeEvent = events.find(e => e.status === 'active' && !e.auto_detected)
-    const activityLabel = activeEvent?.message
+    const waitingEvent = events.find(e => e.status === 'waiting')
+    const activityLabel = activeEvent?.message || waitingEvent?.message
     const projectName = pathLeaf(session.project_path)
     const worktreeParent = session.is_worktree ? pathLeaf(session.worktree_parent) : ''
     const agentType = session.agent_type || events[0]?.tool
