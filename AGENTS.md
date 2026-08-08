@@ -24,11 +24,16 @@ When in doubt: write the dumbest version that correctly solves the actual proble
 ## UX Contracts
 
 `docs/ux-contracts.md` is the canonical, ground-truth inventory of every user-facing
-feature, trigger, edge case, and keyboard shortcut in the app.
+feature, trigger, edge case, and keyboard shortcut in the app. It has a Table of
+Contents at the top for fast routing to the relevant section.
 
-- **Before removing, renaming, or restructuring any user-facing behavior**, check that
-  file first. It exists specifically to stop refactors from silently deleting or morphing
-  features nobody remembers deciding on.
-- **Before adding a new feature**, add its entry there in the same change.
-- If code and the doc disagree, code is ground truth — fix the doc as part of the change,
-  not later.
+- **Always read the relevant section(s) before implementing anything user-facing** —
+  additions, removals, renames, or restructuring. It exists specifically to stop
+  refactors from silently deleting or morphing features nobody remembers deciding on.
+- **Always update the doc after implementing**, in the same change, not later: add new
+  entries for new behavior, correct or delete entries for removed/changed behavior.
+- If code and the doc disagree, code is ground truth — fix the doc as part of the change.
+- Read the file in full before editing it; a partial/truncated read-modify-write has
+  corrupted this file before. If your read tool truncates on a large file, read it in
+  chunks (offset/limit) or edit via a targeted, verified string replacement instead of a
+  full rewrite.
