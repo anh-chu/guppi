@@ -47,7 +47,7 @@ interface SystemStats {
 }
 
 interface Stats {
-  sessions: { total: number; attached: number; detached: number }
+  sessions: { total: number }
   windows: number
   panes: number
   agent_panes: number

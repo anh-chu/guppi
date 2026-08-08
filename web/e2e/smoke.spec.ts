@@ -19,8 +19,6 @@ function makeSession(name: string, host = 'local', agentType = 'claude') {
     host_online: true,
     backend: 'daemon',
     created: now,
-    attached: true,
-    last_activity: now,
     project_path: '/tmp/e2e',
     agent_type: agentType,
     user_prompt: '',
@@ -41,8 +39,6 @@ function makeSession(name: string, host = 'local', agentType = 'claude') {
             session_id: name,
             index: 0,
             active: true,
-            width: 80,
-            height: 24,
             current_command: agentType,
             current_path: '/tmp/e2e',
             pid: 1234,
@@ -192,8 +188,6 @@ async function installBackendStubs(
         body: JSON.stringify({
           sessions: {
             total: localSessions.length,
-            attached: 0,
-            detached: 0,
           },
           windows: 0,
           panes: 0,

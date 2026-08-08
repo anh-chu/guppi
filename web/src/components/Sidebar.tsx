@@ -148,10 +148,10 @@ function writeStoredList(key: string, values: string[]) {
 }
 
 
-function sortNewestFirst<T extends { created?: string; last_activity?: string }>(items: T[]): T[] {
+function sortNewestFirst<T extends { created?: string }>(items: T[]): T[] {
   return [...items].sort((a, b) => {
-    const aTime = new Date(a.created || a.last_activity || 0).getTime()
-    const bTime = new Date(b.created || b.last_activity || 0).getTime()
+    const aTime = new Date(a.created || 0).getTime()
+    const bTime = new Date(b.created || 0).getTime()
     return bTime - aTime
   })
 }

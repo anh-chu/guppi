@@ -18,8 +18,6 @@ function sess(name: string, host = ''): Session {
     host: host || undefined,
     windows: [],
     created: new Date().toISOString(),
-    attached: false,
-    last_activity: new Date().toISOString(),
   }
 }
 

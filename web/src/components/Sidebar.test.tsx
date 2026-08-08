@@ -13,8 +13,6 @@ function makeSession(name: string): Session {
     host: undefined,
     windows: [],
     created: new Date().toISOString(),
-    attached: false,
-    last_activity: new Date().toISOString(),
   }
 }
 

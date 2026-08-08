@@ -7,8 +7,6 @@ export interface Pane {
   session_id: string
   index: number
   active: boolean
-  width: number
-  height: number
   current_command: string
   current_path?: string
   pid: number
@@ -33,8 +31,6 @@ export interface Session {
   backend?: string      // "daemon" for session-daemon sessions
   windows: Window[]
   created: string
-  attached: boolean
-  last_activity: string
   project_path?: string
   is_worktree?: boolean
   worktree_parent?: string  // main worktree root path (linked worktrees only)
@@ -91,8 +87,6 @@ export function optimisticSession(name: string, hostId?: string, hostName?: stri
     host_online: true,
     backend: 'daemon',
     created: now,
-    attached: false,
-    last_activity: now,
     project_path: cwd || undefined,
     windows: [{
       id: `daemon-${name}`,
@@ -107,8 +101,6 @@ export function optimisticSession(name: string, hostId?: string, hostName?: stri
         session_id: name,
         index: 0,
         active: true,
-        width: 120,
-        height: 40,
         current_command: '',
         pid: 0,
       }],

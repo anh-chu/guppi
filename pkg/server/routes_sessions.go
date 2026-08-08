@@ -721,12 +721,8 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			"claude": true, "codex": true, "copilot": true, "opencode": true,
 		}
 		totalWindows := 0
-		attachedSessions := 0
 		agentPanes := 0
 		for _, s := range sessions {
-			if s.Attached {
-				attachedSessions++
-			}
 			totalWindows += len(s.Windows)
 		}
 
@@ -768,9 +764,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 
 		result := map[string]interface{}{
 			"sessions": map[string]int{
-				"total":    len(sessions),
-				"attached": attachedSessions,
-				"detached": len(sessions) - attachedSessions,
+				"total": len(sessions),
 			},
 			"windows":     totalWindows,
 			"panes":       len(allPanes),

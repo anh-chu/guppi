@@ -158,12 +158,14 @@ func (m *Manager) loadDaemonSessionDetails(session *model.Session) {
 
 	cwd := ""
 	pid := 0
+	shell := ""
 	if info != nil {
 		cwd = info.Cwd
 		pid = info.ShellPid
 		if pid == 0 {
 			pid = info.Pid
 		}
+		shell = info.Shell
 		// Try to read live CWD from the shell process.
 		if pid > 0 {
 			if liveCwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid)); err == nil && liveCwd != "" {
@@ -174,10 +176,11 @@ func (m *Manager) loadDaemonSessionDetails(session *model.Session) {
 
 	// Build synthetic pane.
 	pane := &model.Pane{
-		ID:          session.Name + ":0.0",
-		Active:      true,
-		CurrentPath: cwd,
-		PID:         pid,
+		ID:             session.Name + ":0.0",
+		Active:         true,
+		CurrentCommand: shell,
+		CurrentPath:    cwd,
+		PID:            pid,
 	}
 	win := &model.Window{
 		ID:     session.Name + ":0",

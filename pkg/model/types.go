@@ -9,11 +9,9 @@ type Session struct {
 	Host             string    `json:"host,omitempty"`        // peer fingerprint (empty = local)
 	HostName         string    `json:"host_name,omitempty"`   // peer display name
 	HostOnline       bool      `json:"host_online,omitempty"` // whether the host peer is connected
-	Backend          string    `json:"backend,omitempty"`       // "daemon" for session-daemon sessions
+	Backend          string    `json:"backend,omitempty"`     // "daemon" for session-daemon sessions
 	Windows          []*Window `json:"windows"`
 	Created          time.Time `json:"created"`
-	Attached         bool      `json:"attached"`
-	LastActivity     time.Time `json:"last_activity"`
 	ProjectPath      string    `json:"project_path,omitempty"`
 	IsWorktree       bool      `json:"is_worktree,omitempty"`
 	WorktreeParent   string    `json:"worktree_parent,omitempty"` // main worktree root path (linked worktrees only)
@@ -45,8 +43,6 @@ type Pane struct {
 	SessionID      string `json:"session_id"`
 	Index          int    `json:"index"`
 	Active         bool   `json:"active"`
-	Width          int    `json:"width"`
-	Height         int    `json:"height"`
 	CurrentCommand string `json:"current_command"`
 	CurrentPath    string `json:"current_path,omitempty"`
 	PID            int    `json:"pid"`

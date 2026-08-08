@@ -9,8 +9,6 @@ const mkSession = (over: Partial<Session> = {}): Session => ({
   name: 'demo',
   windows: [],
   created: '',
-  attached: false,
-  last_activity: '',
   ...over,
 } as Session)
 
@@ -27,8 +25,6 @@ const win = (panes: { current_command?: string; id?: string }[]) => ({
     session_id: 's1',
     index: i,
     active: true,
-    width: 1,
-    height: 1,
     current_command: p.current_command ?? '',
     pid: 1,
   })),

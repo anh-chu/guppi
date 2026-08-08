@@ -95,7 +95,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
     const seen = new Set<string>()
     const sorted = [...sessions]
       .filter(s => s.project_path && s.project_path.trim())
-      .sort((a, b) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime())
+      .sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime())
     const unique: RecentLocation[] = []
     for (const s of sorted) {
       const p = s.project_path!
