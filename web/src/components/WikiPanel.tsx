@@ -79,6 +79,12 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
   const pendingPathRef = useRef<string | null>(null)
   const bakedPathRef = useRef<string | null>(null)
   const currentRootRef = useRef<string | null>(null)
+  // Set when the most recent open request failed to resolve to a real file
+  // (bad path, no active pane cwd, peer unreachable, ...). Surfaced by the
+  // panel itself -- wiki-viewer never sees a request it can't satisfy, so it
+  // has no error of its own to show, and the panel used to just stay on its
+  // blank "select a file" screen with no indication anything went wrong.
+  const [openError, setOpenError] = useState<string | null>(null)
 
   // Resolve root and file target from inputs. Keyed on the three values that
   // represent a distinct open request. Root changes rebuild the iframe src;
@@ -89,6 +95,7 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
     ;(async () => {
       let root: string | undefined
       let file: string | null = null
+      let error: string | null = null
 
       if (hostId) {
         // Non-local: materialise the file locally through the grant endpoint,
@@ -100,8 +107,12 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
             const grant: { token?: string; path?: string; root?: string } = await gr.json()
             if (grant.root) root = grant.root
             if (grant.path) file = grant.path
+          } else {
+            error = (await gr.text().catch(() => '')).trim() || `could not open file (${gr.status})`
           }
-        } catch { /* keep root undefined */ }
+        } catch {
+          error = 'could not reach server to open file'
+        }
 
         // A grant only carries a root when it materialised the file into a
         // private temp dir, which happens for genuinely remote peers. A local
@@ -130,6 +141,17 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
       }
 
       if (cancelled) return
+
+      setOpenError(error)
+      if (error) {
+        // Surface the failure where the user is looking (the panel itself
+        // asked for this file) rather than only inside the panel body, so a
+        // failed open on top of an already-open file isn't silently
+        // swallowed once the overlay below is hidden by an existing iframe.
+        window.dispatchEvent(new CustomEvent('termyard:toast', {
+          detail: { severity: 'warn', source: 'wiki-panel', message: `Could not open ${filePath}: ${error}` },
+        }))
+      }
       if (!root) return
 
       const rootChanged = root !== currentRootRef.current
@@ -261,6 +283,25 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
         <div className="flex items-center justify-center flex-1 gap-2 text-mute/50">
           <span className="inline-block h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin" />
           <span className="text-[11px]">Starting wiki-viewer...</span>
+        </div>
+      )
+    }
+    // wiki-viewer is up but the panel has nothing to show it: the requested
+    // file failed to resolve (bad path, no active pane cwd, ...) and there is
+    // no previously-open file to fall back to. Without this, the panel body
+    // was just blank -- correct per the underlying state, but indistinguishable
+    // from "still loading" or a bug.
+    if (openError && !iframeSrc) {
+      return (
+        <div className="flex flex-col items-center justify-center flex-1 gap-3 px-6 text-center">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-mute/50">
+            <path d="M9.5 2h5l7 12.5-3.5 6h-12l-3.5-6z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="16" x2="12" y2="16"/>
+          </svg>
+          <p className="text-[12px] text-mute">Could not open file</p>
+          {filePath && (
+            <p className="text-[11px] text-mute/60 font-mono break-all">{filePath}</p>
+          )}
+          <p className="text-[11px] text-mute/60">{openError}</p>
         </div>
       )
     }

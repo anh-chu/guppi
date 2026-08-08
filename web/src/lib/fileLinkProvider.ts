@@ -122,7 +122,11 @@ function findSpanInBuffer(
 }
 
 class FileLinkProviderImpl implements ILinkProvider {
-  constructor(private terminal: Terminal, private onOpen: OpenFileHandler) {}
+  constructor(
+    private terminal: Terminal,
+    private onOpen: OpenFileHandler,
+    private checkExists?: (path: string) => Promise<boolean>,
+  ) {}
 
   provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void): void {
     // xterm passes a 1-based buffer line number, while Buffer.getLine() is
@@ -135,7 +139,7 @@ class FileLinkProviderImpl implements ILinkProvider {
     const { text: lineText } = collectWrappedLine(this.terminal, row)
     if (!lineText.trim()) { callback(undefined); return }
 
-    const links: ILink[] = []
+    const candidates: Array<{ link: ILink; path: string }> = []
     const tokens = lineText.split(/\s+/)
     let searchFrom = 0
 
@@ -152,32 +156,54 @@ class FileLinkProviderImpl implements ILinkProvider {
       const span = findSpanInBuffer(this.terminal, row, globalStart, analysis.length)
       if (span) {
         const match = analysis.match
-        links.push({
-          range: {
-            start: { x: span.startX + 1, y: span.startY + 1 },
-            end:   { x: span.endX + 1,   y: span.endY + 1 },
-          },
-          text: token.slice(analysis.start, analysis.start + analysis.length),
-          activate: () => this.onOpen(match),
-          hover: (event) => {
-            if (event?.target instanceof HTMLElement) {
-              event.target.style.cursor = 'pointer'
-              event.target.style.textDecoration = 'underline'
-            }
-          },
-          leave: (event) => {
-            if (event?.target instanceof HTMLElement) {
-              event.target.style.cursor = ''
-              event.target.style.textDecoration = ''
-            }
+        candidates.push({
+          path: match.path,
+          link: {
+            range: {
+              start: { x: span.startX + 1, y: span.startY + 1 },
+              end:   { x: span.endX + 1,   y: span.endY + 1 },
+            },
+            text: token.slice(analysis.start, analysis.start + analysis.length),
+            activate: () => this.onOpen(match),
+            hover: (event) => {
+              if (event?.target instanceof HTMLElement) {
+                event.target.style.cursor = 'pointer'
+                event.target.style.textDecoration = 'underline'
+              }
+            },
+            leave: (event) => {
+              if (event?.target instanceof HTMLElement) {
+                event.target.style.cursor = ''
+                event.target.style.textDecoration = ''
+              }
+            },
           },
         })
       }
     }
-    callback(links.length ? links : undefined)
+
+    if (!this.checkExists) {
+      const links = candidates.map((c) => c.link)
+      callback(links.length ? links : undefined)
+      return
+    }
+
+    // Existence check is async (server round trip, cached client-side), so
+    // the callback fires once every candidate on this line has resolved.
+    // Fails open per-candidate: a rejected check keeps the link rather than
+    // hiding a path we simply failed to confirm.
+    const checkExists = this.checkExists
+    Promise.all(candidates.map((c) => checkExists(c.path).catch(() => true))).then((results) => {
+      const links = candidates.filter((_, i) => results[i]).map((c) => c.link)
+      callback(links.length ? links : undefined)
+    })
   }
 }
 
-export function createFileLinkProvider(terminal: Terminal, onOpen: OpenFileHandler): ILinkProvider {
-  return new FileLinkProviderImpl(terminal, onOpen)
+export function createFileLinkProvider(
+  terminal: Terminal,
+  onOpen: OpenFileHandler,
+  checkExists?: (path: string) => Promise<boolean>,
+): ILinkProvider {
+  return new FileLinkProviderImpl(terminal, onOpen, checkExists)
 }

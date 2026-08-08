@@ -7,6 +7,7 @@ import { UploadStatus } from './UploadStatus'
 import { cn } from '../lib/utils'
 import { popOut, pipUnavailableReason } from '../lib/pip'
 import { grantArtifactToken, getArtifactKind } from '../lib/artifactPreview'
+import { checkPathExists } from '../lib/pathExists'
 import { ArtifactPreview } from './ArtifactPreview'
 import { createFileLinkProvider } from '../lib/fileLinkProvider'
 import type { IDisposable } from '@xterm/xterm'
@@ -190,13 +191,17 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     if (term) {
       fileLinkDisposableRef.current?.dispose()
       fileLinkDisposableRef.current = term.registerLinkProvider(
-        createFileLinkProvider(term, ({ path }) => {
-          // Fall back when there is no handler, or the handler declines because
-          // this session lives on another host and wiki-viewer only sees its own
-          // filesystem. Without the fallback a remote pane would clobber the
-          // shared panel and then fail to resolve the path.
-          if (!onOpenFileRef.current?.(path)) openFilePathRef.current(path)
-        })
+        createFileLinkProvider(
+          term,
+          ({ path }) => {
+            // Fall back when there is no handler, or the handler declines because
+            // this session lives on another host and wiki-viewer only sees its own
+            // filesystem. Without the fallback a remote pane would clobber the
+            // shared panel and then fail to resolve the path.
+            if (!onOpenFileRef.current?.(path)) openFilePathRef.current(path)
+          },
+          (path) => checkPathExists(path, sessionName, hostId),
+        )
       )
     }
     return () => {

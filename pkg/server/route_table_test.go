@@ -103,6 +103,7 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"GET /api/wiki/status",
 		"GET /debug/*",
 		"GET /file",
+		"GET /file/exists",
 		"GET /proxy/{port}",
 		"GET /proxy/{port}/*",
 		"GET /ws/daemon-session",

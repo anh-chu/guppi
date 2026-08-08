@@ -291,6 +291,20 @@ func resolveFilePath(p string, opts *Options, r *http.Request) (string, int, str
 	if p == "" {
 		return "", http.StatusBadRequest, "path required"
 	}
+	// ~ / ~/foo only a shell can expand in general, but the server has one
+	// concrete, correct interpretation: its own process's home dir. Without
+	// this, "~/foo" fell through to the relative-path branch below and was
+	// joined onto the session cwd as a literal "~" segment, which never
+	// exists.
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			if p == "~" {
+				p = home
+			} else {
+				p = filepath.Join(home, p[2:])
+			}
+		}
+	}
 	if !filepath.IsAbs(p) {
 		base := ""
 		// ListPanes(session) targets the session's current window; pick its
@@ -336,6 +350,28 @@ func handleFileGrant(w http.ResponseWriter, r *http.Request, opts *Options, gran
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"token": grants.grant(p), "path": p})
+}
+
+// handleFileExists is a read-only counterpart to handleFileGrant: same path
+// resolution (relative-to-active-pane-cwd, ~/-to-home), but no token minted
+// and no error body leaked to the caller. It exists so the terminal's
+// file-link highlighter can check a path before deciding to highlight it,
+// without creating a capability for every path it merely glances at.
+//
+// Route: GET /file/exists?path=<abs-or-rel>&session=<name>[&host=<id>]
+func handleFileExists(w http.ResponseWriter, r *http.Request, opts *Options) {
+	w.Header().Set("Content-Type", "application/json")
+	hostID := r.URL.Query().Get("host")
+	if hostID != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(hostID) {
+		// A real check means fetching the file over the peer link, which is
+		// too expensive to pay for every path a terminal happens to print.
+		// Fail open: an unconfirmed remote path still gets highlighted, same
+		// as before this endpoint existed.
+		_ = json.NewEncoder(w).Encode(map[string]bool{"exists": true})
+		return
+	}
+	_, status, _ := resolveFilePath(r.URL.Query().Get("path"), opts, r)
+	_ = json.NewEncoder(w).Encode(map[string]bool{"exists": status == 0})
 }
 
 // handleRemoteFileGrant fetches a file from a remote peer, writes it to a
@@ -662,15 +698,18 @@ func registerProxyFileRoutes(r chi.Router, opts *Options) {
 	grants := newFileGrants()
 	grantHandler := func(w http.ResponseWriter, r *http.Request) { handleFileGrant(w, r, opts, grants) }
 	fileHandler := func(w http.ResponseWriter, r *http.Request) { handleFile(w, r, grants) }
+	existsHandler := func(w http.ResponseWriter, r *http.Request) { handleFileExists(w, r, opts) }
 	uploadHandler := func(w http.ResponseWriter, r *http.Request) { handleUpload(w, r, opts) }
 	if opts.AuthEnabled {
 		authMw := auth.Middleware(opts.SessionMgr)
 		r.With(authMw).Post("/file/grant", grantHandler)
 		r.With(authMw).Get("/file", fileHandler)
+		r.With(authMw).Get("/file/exists", existsHandler)
 		r.With(authMw).Post("/api/upload", uploadHandler)
 	} else {
 		r.Post("/file/grant", grantHandler)
 		r.Get("/file", fileHandler)
+		r.Get("/file/exists", existsHandler)
 		r.Post("/api/upload", uploadHandler)
 	}
 }
