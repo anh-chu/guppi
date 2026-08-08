@@ -51,15 +51,17 @@ type Result struct {
 	Remote bool
 }
 
-// DaemonRegistry is the session backend needed to spawn a local daemon.
+// DaemonRegistry is the session backend needed to spawn and kill daemon sessions.
 type DaemonRegistry interface {
 	Create(name, shell, cwd string, cols, rows uint16) error
+	Kill(name string) error
 }
 
-// StateManager stores explicit agent-type overrides for a session.
+// StateManager manages session state, including agent overrides and removal.
 type StateManager interface {
 	SetSessionAgentType(sessionName, agentType string)
 	GetSessions() []*model.Session
+	RemoveSession(name string)
 }
 
 // ScheduleAttr is the metadata snapshot the launch service stores and fans out.
@@ -109,7 +111,7 @@ type ExistingNames func(host string) []string
 // nil skips the refresh.
 type RefreshFunc func()
 
-// Service is the sole owner of session launch semantics.
+// Service is the sole owner of session launch and kill semantics.
 type Service struct {
 	DaemonReg DaemonRegistry
 	StateMgr  StateManager
@@ -120,6 +122,7 @@ type Service struct {
 	Fanout    PeerFanout
 	Names     ExistingNames
 	Refresh   RefreshFunc
+	Forget    func(name string) error // optional; if nil, ForgetSession is skipped during Kill
 }
 
 // Create validates, resolves, and launches one session.
@@ -233,6 +236,49 @@ func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) 
 	}
 
 	return Result{Name: req.Name, Host: req.Host, Path: cwd}, nil
+}
+
+// Kill terminates a session daemon, removes it from state, and forgets it from recovery.
+// It combines the results of all cleanup steps and logs errors with session name and reason.
+// If any step fails, remaining steps still execute (error joined and returned at end).
+func (s *Service) Kill(name, reason string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("%w: session name required", ErrInvalidInput)
+	}
+
+	log := logrus.WithFields(logrus.Fields{
+		"session": name,
+		"reason":  reason,
+	})
+
+	var errs []error
+
+	// Kill daemon (includes lifecycle transition internally).
+	if s.DaemonReg != nil {
+		if err := s.DaemonReg.Kill(name); err != nil {
+			log.WithError(err).Warn("daemon kill failed")
+			errs = append(errs, err)
+		}
+	}
+
+	// Remove from state manager.
+	if s.StateMgr != nil {
+		s.StateMgr.RemoveSession(name)
+	}
+
+	// Forget from recovery manifest.
+	if s.Forget != nil {
+		if err := s.Forget(name); err != nil {
+			log.WithError(err).Warn("failed to forget session from recovery")
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 func (s *Service) prepareLocalPath(req Request) (string, error) {

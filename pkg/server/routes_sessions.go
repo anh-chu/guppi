@@ -160,10 +160,6 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
-		if opts.Launch == nil {
-			http.Error(w, "launch service unavailable", http.StatusServiceUnavailable)
-			return
-		}
 		localHost := ""
 		if opts.PeerMgr != nil {
 			localHost = opts.PeerMgr.LocalID()
@@ -504,23 +500,14 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			worktreePath = opts.StateMgr.GetSessionProjectPath(req.Name)
 		}
 
-		// Transition lifecycle state before killing so the daemon
-		// records this as an intentional termination, not a crash.
-		if opts.DaemonReg != nil && opts.DaemonReg.LifecycleStore() != nil {
-			_ = opts.DaemonReg.LifecycleStore().Transition(req.Name, "active", "termination_requested")
-		}
-		// Kill daemon session.
-		if opts.DaemonReg != nil {
-			if err := opts.DaemonReg.Kill(req.Name); err != nil {
-				logrus.WithError(err).WithField("session", req.Name).Warn("daemon kill failed")
-			}
-		}
-		if opts.StateMgr != nil {
-			opts.StateMgr.RemoveSession(req.Name)
-		}
+		// Kill daemon, remove from state, and forget from recovery.
+		// Service.Kill logs failures with full context (session + reason), so we only
+		// check the error for control flow, not re-log it.
+		_ = opts.Launch.Kill(req.Name, "rest-kill")
 
 		// Remove the linked worktree if requested. Non-fatal -- session is
 		// already gone; log and continue.
+
 		if req.RemoveWorktree && worktreePath != "" {
 			if err := git.RemoveWorktree(worktreePath); err != nil {
 				logrus.WithError(err).WithField("path", worktreePath).Warn("git worktree remove failed")

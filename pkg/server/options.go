@@ -126,6 +126,10 @@ func (o *Options) Validate() error {
 		errs = append(errs, errors.New("SchedulerStore configured but Launch is nil"))
 	}
 
+	if o.Launch == nil {
+		errs = append(errs, errors.New("Launch service is required"))
+	}
+
 	if o.SchedulerRunner != nil && o.SchedulerStore == nil {
 		errs = append(errs, errors.New("SchedulerRunner configured but SchedulerStore is nil"))
 	}

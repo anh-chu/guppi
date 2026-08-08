@@ -16,6 +16,7 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/auth"
 	"github.com/anh-chu/termyard/pkg/portforward"
+	"github.com/anh-chu/termyard/pkg/sessionlaunch"
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 	"github.com/anh-chu/termyard/pkg/ws"
@@ -38,6 +39,13 @@ func TestRouteTableSnapshot(t *testing.T) {
 	}
 	sm := auth.NewSessionManager(time.Hour)
 	tracker := toolevents.NewTracker()
+	stateMgr := state.NewManager()
+
+	// Create a minimal Launch service for tests (Launch is now required)
+	launchSvc := &sessionlaunch.Service{
+		StateMgr:  stateMgr,
+		Refresh:   func() {},
+	}
 
 	opts := &Options{
 		AuthEnabled:      true,
@@ -47,8 +55,9 @@ func TestRouteTableSnapshot(t *testing.T) {
 		AuthLimiter:      auth.NewLimiter(),
 		NotifyToken:      "notify-token-test",
 		Tracker:          tracker,
-		Hub:              ws.NewHub(state.NewManager(), tracker),
+		Hub:              ws.NewHub(stateMgr, tracker),
 		PortForwardStore: portforward.NewStore(),
+		Launch:           launchSvc,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

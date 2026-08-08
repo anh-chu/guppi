@@ -6,7 +6,6 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/anh-chu/termyard/pkg/recovery"
 	"github.com/anh-chu/termyard/pkg/sessionlaunch"
 )
 
@@ -67,12 +66,9 @@ func handleSessionAction(payload *SessionActionPayload, pc *PeerConnection, deps
 		if err := json.Unmarshal(payload.Params, &params); err != nil || params.Name == "" {
 			return
 		}
-		if err := deps.DaemonReg.Kill(params.Name); err != nil {
-			log.WithError(err).Warn("kill session via peer failed")
-		}
-		if err := recovery.ForgetSession(params.Name); err != nil {
-			log.WithError(err).Warn("failed to remove session from recovery manifest")
-		}
+		// Service.Kill logs failures with full context (session + reason), so we only
+		// call it without re-logging.
+		_ = deps.Launch.Kill(params.Name, "peer-kill")
 		sendStateUpdate(pc, deps)
 
 	case "regenerate-name":

@@ -15,7 +15,10 @@ import (
 
 type fakeDaemon struct {
 	created []createCall
+	killed  []string
 	err     error
+	killErr error
+	events  *[]string // pointer to shared event log
 }
 
 type createCall struct {
@@ -30,9 +33,19 @@ func (f *fakeDaemon) Create(name, shell, cwd string, cols, rows uint16) error {
 	return f.err
 }
 
+func (f *fakeDaemon) Kill(name string) error {
+	f.killed = append(f.killed, name)
+	if f.events != nil {
+		*f.events = append(*f.events, "kill")
+	}
+	return f.killErr
+}
+
 type fakeStateMgr struct {
 	agentTypes map[string]string
 	sessions   []*model.Session
+	removed    []string
+	events     *[]string // pointer to shared event log
 }
 
 func (f *fakeStateMgr) SetSessionAgentType(sessionName, agentType string) {
@@ -43,6 +56,13 @@ func (f *fakeStateMgr) SetSessionAgentType(sessionName, agentType string) {
 }
 
 func (f *fakeStateMgr) GetSessions() []*model.Session { return f.sessions }
+
+func (f *fakeStateMgr) RemoveSession(name string) {
+	f.removed = append(f.removed, name)
+	if f.events != nil {
+		*f.events = append(*f.events, "remove")
+	}
+}
 
 type fakeAttrs struct {
 	calls []struct{ key, scheduleID string }
@@ -439,6 +459,162 @@ func TestResolveNameUsesFallback(t *testing.T) {
 	}
 	if d.created[0].name != res.Name {
 		t.Fatalf("daemon name = %q", d.created[0].name)
+	}
+}
+
+func TestKillEmptyNameRejected(t *testing.T) {
+	s, _, _, _, _ := newService()
+
+	err := s.Kill("", "test-reason")
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}
+
+func TestKillWhitespaceNameRejected(t *testing.T) {
+	s, _, _, _, _ := newService()
+
+	err := s.Kill("  ", "test-reason")
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}
+
+func TestKillExecutesStepsInOrder(t *testing.T) {
+	s, d, st, _, _ := newService()
+	var events []string
+	d.events = &events
+	st.events = &events
+	
+	s.Forget = func(name string) error {
+		events = append(events, "forget")
+		return nil
+	}
+
+	err := s.Kill("session-1", "test-reason")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify steps executed in order: daemon kill, remove session, forget
+	expectedOrder := []string{"kill", "remove", "forget"}
+	if len(events) != len(expectedOrder) {
+		t.Fatalf("expected %d events in order %v, got %d events: %v", len(expectedOrder), expectedOrder, len(events), events)
+	}
+	for i, e := range expectedOrder {
+		if events[i] != e {
+			t.Fatalf("event %d: expected %q, got %q; full sequence: %v", i, e, events[i], events)
+		}
+	}
+}
+
+func TestKillDaemonErrorDoesNotSkipRemaining(t *testing.T) {
+	s, d, st, _, _ := newService()
+	d.killErr = errors.New("daemon error")
+	var forgetCalls []string
+	s.Forget = func(name string) error {
+		forgetCalls = append(forgetCalls, name)
+		return nil
+	}
+
+	err := s.Kill("session-1", "test-reason")
+	if err == nil {
+		t.Fatalf("expected error from daemon failure")
+	}
+
+	// Verify remaining steps still executed despite daemon error
+	if len(st.removed) != 1 || st.removed[0] != "session-1" {
+		t.Fatalf("state remove should still execute, got %v", st.removed)
+	}
+	if len(forgetCalls) != 1 || forgetCalls[0] != "session-1" {
+		t.Fatalf("forget should still execute, got %v", forgetCalls)
+	}
+}
+
+func TestKillNilForgetTolerated(t *testing.T) {
+	s, d, st, _, _ := newService()
+	s.Forget = nil
+
+	err := s.Kill("session-1", "test-reason")
+	if err != nil {
+		t.Fatalf("unexpected error when Forget is nil: %v", err)
+	}
+
+	if len(d.killed) != 1 {
+		t.Fatalf("daemon kill should execute")
+	}
+	if len(st.removed) != 1 {
+		t.Fatalf("state remove should execute")
+	}
+}
+
+func TestKillNilDaemonRegTolerated(t *testing.T) {
+	s, _, st, _, _ := newService()
+	s.DaemonReg = nil
+	var forgetCalls []string
+	s.Forget = func(name string) error {
+		forgetCalls = append(forgetCalls, name)
+		return nil
+	}
+
+	err := s.Kill("session-1", "test-reason")
+	if err != nil {
+		t.Fatalf("unexpected error when DaemonReg is nil: %v", err)
+	}
+
+	// Other steps should still execute
+	if len(st.removed) != 1 {
+		t.Fatalf("state remove should execute")
+	}
+	if len(forgetCalls) != 1 {
+		t.Fatalf("forget should execute")
+	}
+}
+
+func TestKillNilStateMgrTolerated(t *testing.T) {
+	s, d, _, _, _ := newService()
+	s.StateMgr = nil
+	var forgetCalls []string
+	s.Forget = func(name string) error {
+		forgetCalls = append(forgetCalls, name)
+		return nil
+	}
+
+	err := s.Kill("session-1", "test-reason")
+	if err != nil {
+		t.Fatalf("unexpected error when StateMgr is nil: %v", err)
+	}
+
+	// Other steps should still execute
+	if len(d.killed) != 1 {
+		t.Fatalf("daemon kill should execute")
+	}
+	if len(forgetCalls) != 1 {
+		t.Fatalf("forget should execute")
+	}
+}
+
+func TestKillCombinesErrors(t *testing.T) {
+	s, d, _, _, _ := newService()
+	d.killErr = errors.New("kill error")
+	var forgetCalls []string
+	s.Forget = func(name string) error {
+		forgetCalls = append(forgetCalls, name)
+		return errors.New("forget error")
+	}
+
+	err := s.Kill("session-1", "test-reason")
+	if err == nil {
+		t.Fatalf("expected combined error")
+	}
+
+	// Both errors should be present in joined error
+	errStr := err.Error()
+	if !strings.Contains(errStr, "kill error") {
+		t.Fatalf("error should contain 'kill error', got %v", err)
+	}
+	if !strings.Contains(errStr, "forget error") {
+		t.Fatalf("error should contain 'forget error', got %v", err)
 	}
 }
 

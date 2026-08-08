@@ -119,7 +119,7 @@ func registerSchedulerRoutes(r chi.Router, opts *Options) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	r.Post("/schedules/{id}/run", func(w http.ResponseWriter, r *http.Request) {
-		if opts.SchedulerStore == nil || opts.SchedulerRunner == nil || opts.Launch == nil {
+		if opts.SchedulerStore == nil || opts.SchedulerRunner == nil {
 			http.Error(w, "scheduler not available", http.StatusServiceUnavailable)
 			return
 		}

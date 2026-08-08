@@ -5,8 +5,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/sirupsen/logrus"
-
 	"github.com/anh-chu/termyard/pkg/groupsync"
 	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/peer"
@@ -287,8 +285,8 @@ func EnforceScheduleCap(opts *Options, scheduleID string, keep int) {
 	for len(tagged) > keep {
 		victim := tagged[0]
 		tagged = tagged[1:]
-		if err := opts.DaemonReg.Kill(victim.Name); err != nil {
-			logrus.WithError(err).WithField("session", victim.Name).Warn("schedule cap: kill daemon failed")
-		}
+		// Service.Kill logs failures with full context (session + reason), so we only
+		// call it without re-logging. Kill errors are non-fatal in this loop.
+		_ = opts.Launch.Kill(victim.Name, "schedule-cap-prune")
 	}
 }

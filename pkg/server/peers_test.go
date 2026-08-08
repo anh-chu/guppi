@@ -16,6 +16,7 @@ import (
 	"github.com/anh-chu/termyard/pkg/auth"
 	"github.com/anh-chu/termyard/pkg/identity"
 	"github.com/anh-chu/termyard/pkg/peer"
+	"github.com/anh-chu/termyard/pkg/sessionlaunch"
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
@@ -30,22 +31,29 @@ func newTestOpts(t *testing.T) *Options {
 	ps, _ := identity.NewPeerStore()
 	pStore, _ := auth.NewPasswordStore()
 	_ = pStore.SetPassword("supersecret")
-	mgr := peer.NewManager(id, ps, state.NewManager())
+	stateMgr := state.NewManager()
+	mgr := peer.NewManager(id, ps, stateMgr)
 	deps := peer.SessionDeps{
 		Manager:     mgr,
-		LocalMgr:    state.NewManager(),
+		LocalMgr:    stateMgr,
 		Identity:    id,
 		ActTracker:  activity.NewTracker(),
 		ToolTracker: toolevents.NewTracker(),
 		PeerStore:   ps,
 	}
 	sup := peer.NewLinkSupervisor(deps)
+	// Launch is now required; provide a minimal one for tests
+	launchSvc := &sessionlaunch.Service{
+		StateMgr: stateMgr,
+		Refresh:  func() {},
+	}
 	return &Options{
 		Identity:       id,
 		PeerStore:      ps,
 		PeerMgr:        mgr,
 		LinkSupervisor: sup,
 		PasswordStore:  pStore,
+		Launch:         launchSvc,
 	}
 }
 

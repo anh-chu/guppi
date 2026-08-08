@@ -23,9 +23,7 @@ func BuildRouter(ctx context.Context, opts *Options) (chi.Router, *ws.Hub, error
 	}
 
 	hub := setupHub(opts)
-	if opts.Launch != nil {
-		opts.Launch.Hub = opts.Hub
-	}
+	opts.Launch.Hub = opts.Hub
 	wireSessionAttrsSync(opts, hub)
 
 	coordinator := newGroupNamingCoordinator(ctx, opts, hub)

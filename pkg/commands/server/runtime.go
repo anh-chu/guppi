@@ -21,6 +21,7 @@ import (
 	"github.com/anh-chu/termyard/pkg/peer"
 	"github.com/anh-chu/termyard/pkg/portforward"
 	"github.com/anh-chu/termyard/pkg/preferences"
+	"github.com/anh-chu/termyard/pkg/recovery"
 	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/scheduler"
 	"github.com/anh-chu/termyard/pkg/server"
@@ -275,6 +276,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 			}
 			return nil
 		},
+		Forget: recovery.ForgetSession,
 	}
 
 	streamReg := peer.NewStreamRegistry()
