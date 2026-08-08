@@ -10,6 +10,7 @@ const mockPrefs = vi.hoisted(() => ({
       font_size: 13,
       font_family: 'Space Mono',
       scrollback: 50000,
+      unicode_graphemes: false,
     },
     theme: 'dark',
     sidebar: { default_collapsed: false, collapse_mode: 'small' },
@@ -82,7 +83,7 @@ test('renderer select removed, predictive echo removed', async () => {
     />,
   )
 
-  await waitFor(() => expect(screen.getByText('Hide Alerts in Fullscreen')).toBeTruthy())
+  await waitFor(() => expect(screen.getByText('Unicode Graphemes')).toBeTruthy())
 
   expect(screen.queryByText(/Renderer/)).toBeNull()
   expect(screen.queryByText(/Predictive Echo/)).toBeNull()

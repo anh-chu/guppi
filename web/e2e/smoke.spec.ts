@@ -59,6 +59,7 @@ const DEFAULT_PREFS = {
     font_family: 'Space Mono',
     scrollback: 50000,
     renderer: 'webgl',
+    unicode_graphemes: false,
   },
   theme: 'dark',
   sidebar: { default_collapsed: false, collapse_mode: 'small' },

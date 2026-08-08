@@ -204,6 +204,7 @@ class FakeWebglAddon {
   _fireContextLoss() { this._onContextLoss?.() }
 }
 class FakeImageAddon { constructor() { addonCreateCount++ } dispose() { addonDisposeCount++ } }
+class FakeUnicodeGraphemesAddon { constructor() { addonCreateCount++ } dispose() { addonDisposeCount++ } }
 
 // ── Fake WebSocket ───────────────────────────────────────────────────
 
@@ -261,6 +262,7 @@ function createFakeFactory(): PoolFactory {
     createClipboardAddon: () => new FakeClipboardAddon() as unknown as any,
     createWebglAddon: () => new FakeWebglAddon() as unknown as any,
     createImageAddon: () => new FakeImageAddon() as unknown as any,
+    createUnicodeGraphemesAddon: () => new FakeUnicodeGraphemesAddon() as unknown as any,
     createWebSocket: (url) => new FakeWebSocket(url) as unknown as WebSocket,
   }
 }
@@ -271,6 +273,7 @@ function defPrefs(overrides?: Partial<TerminalPrefs>): TerminalPrefs {
   return {
     theme: 'dark', fontFamily: 'Space Mono', fontSize: 13,
     scrollback: 50000, renderer: 'webgl',
+    unicodeGraphemes: false,
     ...overrides,
   }
 }

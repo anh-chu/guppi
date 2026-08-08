@@ -320,6 +320,14 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
               />
             </Row>
             <Divider />
+            <Row label="Unicode Graphemes" description="Experimental: proper rendering of ZWJ emoji, CJK, and combining marks">
+              <Toggle
+                checked={prefs.terminal.unicode_graphemes}
+                onChange={(v) => updateNested('terminal', { unicode_graphemes: v })}
+                label={prefs.terminal.unicode_graphemes ? 'EXPERIMENTAL · ON' : 'EXPERIMENTAL · OFF'}
+              />
+            </Row>
+            <Divider />
             <Row label="Hide Alerts in Fullscreen" description="Hide the agent alert banner when terminal is fullscreen">
               <Toggle
                 checked={prefs.fullscreen_hide_alerts}

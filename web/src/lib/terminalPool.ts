@@ -15,6 +15,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { ClipboardAddon, type IClipboardProvider, type ClipboardSelectionType } from '@xterm/addon-clipboard'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { ImageAddon } from '@xterm/addon-image'
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 
 import { getXtermTheme } from '../theme'
 import { ConnectionMachine } from './terminal/connectionMachine'
@@ -264,6 +265,7 @@ export interface TerminalPrefs {
   fontSize: number
   scrollback: number
   renderer: string
+  unicodeGraphemes: boolean
 }
 
 /** Identity for a pool entry. */
@@ -281,6 +283,7 @@ export interface PoolFactory {
   createClipboardAddon: (provider?: IClipboardProvider) => ClipboardAddon
   createWebglAddon: () => WebglAddon | null
   createImageAddon: () => ImageAddon | null
+  createUnicodeGraphemesAddon: () => UnicodeGraphemesAddon | null
   createWebSocket: (url: string) => WebSocket
 }
 
@@ -304,6 +307,9 @@ const defaultFactory: PoolFactory = {
       })
     } catch { return null }
   },
+  createUnicodeGraphemesAddon: () => {
+    try { return new UnicodeGraphemesAddon() } catch { return null }
+  },
   createWebSocket: (url) => new WebSocket(url),
 }
 
@@ -319,6 +325,8 @@ interface PoolEntry {
   fitAddon: FitAddon
   webglAddon: WebglAddon | null
   imageAddon: ImageAddon | null
+  graphemesAddon: UnicodeGraphemesAddon | null
+  graphemesLoaded: boolean
 
   // Delegates
   connection: ConnectionMachine
@@ -682,6 +690,22 @@ export class TerminalPool {
       // with xterm's default DOM renderer — no special error handling needed
     }
 
+    // Unicode graphemes
+    if (prefs.unicodeGraphemes && !entry.graphemesLoaded) {
+      const ga = this.factory.createUnicodeGraphemesAddon()
+      if (ga) {
+        try { entry.terminal.loadAddon(ga) } catch { /* ignored */ }
+        entry.graphemesAddon = ga as UnicodeGraphemesAddon
+        entry.graphemesLoaded = true
+      }
+    } else if (!prefs.unicodeGraphemes && entry.graphemesAddon) {
+      entry.graphemesAddon.dispose()
+      entry.graphemesAddon = null
+      entry.graphemesLoaded = false
+    }
+
+
+
     entry.appliedPrefs = { ...prefs }
   }
 
@@ -860,6 +884,17 @@ export class TerminalPool {
       try { term.loadAddon(imageAddon) } catch { /* ignored */ }
     }
 
+    let graphemesAddon: UnicodeGraphemesAddon | null = null
+    let graphemesLoaded = false
+    if (prefs.unicodeGraphemes) {
+      const ga = ef.createUnicodeGraphemesAddon()
+      if (ga) {
+        try { term.loadAddon(ga) } catch { /* ignored */ }
+        graphemesAddon = ga as UnicodeGraphemesAddon
+        graphemesLoaded = true
+      }
+    }
+
     const replayBuffer = new ReplayBuffer()
 
     // eslint-disable-next-line prefer-const
@@ -898,6 +933,8 @@ export class TerminalPool {
       fitAddon,
       webglAddon,
       imageAddon,
+      graphemesAddon,
+      graphemesLoaded,
 
       connection,
       replayBuffer,
@@ -1425,6 +1462,7 @@ export class TerminalPool {
     // Dispose addons
     if (entry.webglAddon) { entry.webglAddon.dispose(); entry.webglAddon = null }
     if (entry.imageAddon) { entry.imageAddon.dispose(); entry.imageAddon = null }
+    if (entry.graphemesAddon) { entry.graphemesAddon.dispose(); entry.graphemesAddon = null }
 
     // Dispose terminal
     try { entry.terminal.dispose() } catch { /* ignored */ }
