@@ -755,12 +755,16 @@ export function Sidebar({
     const agentPresent = !cmdIsShell || !!detectedAgent
     // Bottom row, always non-empty: live activity → last agent message → terminal
     // capture, falling back to a waiting hint (agent) or the live command (shell).
-    const activityIsLive = agentPresent && !!(activityLabel || lastAgentMessage || promptPreview)
-    const isPromptFallback = agentPresent && !activityLabel && !lastAgentMessage && !promptPreview && !!userPrompt
-    const activityDisplay = agentPresent
-      ? (activityLabel || lastAgentMessage || promptPreview || userPrompt || 'Waiting for prompt')
-      : (activeCmd ? `❯ ${activeCmd}` : 'idle')
     const statusBadge = statusOf(session)
+    const activityIsLive = agentPresent && !!(activityLabel || lastAgentMessage || promptPreview)
+    // While actively working, lastAgentMessage/promptPreview may be stale
+    // leftovers from a prior turn — the current userPrompt is more relevant.
+    // Live tool activity still wins as the most immediate signal.
+    const workingPrompt = statusBadge === 'working' ? userPrompt : undefined
+    const activityDisplay = agentPresent
+      ? (activityLabel || workingPrompt || lastAgentMessage || promptPreview || userPrompt || 'Waiting for prompt')
+      : (activeCmd ? `❯ ${activeCmd}` : 'idle')
+    const isPromptFallback = agentPresent && !!userPrompt && activityDisplay === userPrompt
 
     const handleTouchStart = (e: React.TouchEvent) => {
       if (isRenaming) return
