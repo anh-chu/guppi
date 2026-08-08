@@ -756,8 +756,9 @@ export function Sidebar({
     // Bottom row, always non-empty: live activity → last agent message → terminal
     // capture, falling back to a waiting hint (agent) or the live command (shell).
     const activityIsLive = agentPresent && !!(activityLabel || lastAgentMessage || promptPreview)
+    const isPromptFallback = agentPresent && !activityLabel && !lastAgentMessage && !promptPreview && !!userPrompt
     const activityDisplay = agentPresent
-      ? (activityLabel || lastAgentMessage || promptPreview || 'Waiting for prompt')
+      ? (activityLabel || lastAgentMessage || promptPreview || userPrompt || 'Waiting for prompt')
       : (activeCmd ? `❯ ${activeCmd}` : 'idle')
     const statusBadge = statusOf(session)
 
@@ -956,15 +957,11 @@ export function Sidebar({
             )}
           </div>
 
-          {!collapsed && agentPresent && userPrompt && (
-            <div className="mt-1 flex items-baseline gap-1.5 min-w-0" title={userPrompt}>
-              <span className="shrink-0 text-primary/50 text-[11px] leading-tight select-none">›</span>
-              <span className="min-w-0 truncate text-[11px] text-ink/75 leading-tight">{userPrompt}</span>
-            </div>
-          )}
-
           {!collapsed && (
             <div className="mt-1 flex items-center gap-1.5 min-w-0">
+              {isPromptFallback && (
+                <span className="shrink-0 text-primary/50 text-[10px] leading-tight select-none">›</span>
+              )}
               <span className={cn('min-w-0 truncate text-[10px]', activityIsLive ? 'text-mute/70' : 'text-mute/40')} title={activityDisplay}>
                 {activityDisplay}
               </span>

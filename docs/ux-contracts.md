@@ -172,7 +172,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ### 2.4 Session row (Sidebar)
 
-**Contract:** Displays session name, host color dot (multi-host only), optional AI-naming spinner, agent mark icon (if agent active), branch icon + project folder + session label. Uptime shown (e.g. "45m"). Optional user-prompt preview line (when agent active and prompt exists). Active window(s) listed with activity status badge (colored by status, pulsing when config says so). Drag to reorder: visual drop indicators (edge zones → reorder, middle → pair/split). Right-click → context menu. Selection highlights row. Enter/Space confirm selection. Inline rename on double-click or rename menu item (Enter/Escape to submit/cancel).
+**Contract:** Displays session name, host color dot (multi-host only), optional AI-naming spinner, agent mark icon (if agent active), branch icon + project folder + session label. Uptime shown (e.g. "45m"). Second row is a single activity line with priority fallback: live tool activity → last agent message → prompt preview → user prompt (shown with a "›" prefix only in this fallback case, meaning agent hasn't started/replied yet) → "Waiting for prompt"/idle command; paired with a status badge (colored by status, pulsing when config says so). Drag to reorder: visual drop indicators (edge zones → reorder, middle → pair/split). Right-click → context menu. Selection highlights row. Enter/Space confirm selection. Inline rename on double-click or rename menu item (Enter/Escape to submit/cancel).
 
 **Why it matters:** All visible session metadata (name, uptime, agent, branch, activity) and interaction modes (drag, right-click, inline rename) are user-facing contracts.
 
