@@ -2,11 +2,11 @@ import { useState, useEffect, useCallback } from 'react'
 import { usePreferences, type Preferences } from '../hooks/usePreferences'
 import type { UpdateStatus } from '../hooks/useSelfUpdate'
 import { usePushNotifications } from '../hooks/usePushNotifications'
-import { themePresets, applyTheme } from '../theme'
+import { themePresets, applyTheme, defaultCustomThemePalette, type CustomThemePalette } from '../theme'
 import { cn } from '../lib/utils'
 import { AgentStatusList, SetupCommandBox } from './Setup'
 import { getShortcuts } from '../lib/shortcuts'
-import { Section, Divider, Row, SelectInput, NumberInput, TextInput, Toggle, Kbd } from './settings/controls'
+import { Section, Divider, Row, SelectInput, NumberInput, TextInput, Toggle, Kbd, ColorInput } from './settings/controls'
 import { PeersSection } from './settings/PeersSection'
 import { WikiViewerSection } from './settings/WikiViewerSection'
 
@@ -131,8 +131,17 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
   }
 
   const handleThemeChange = async (theme: string) => {
-    applyTheme(theme)
+    applyTheme(theme, theme === 'custom' ? prefs.custom_theme : undefined)
     await update({ theme })
+  }
+
+  // Resolved custom palette (defaults filled in) used for editing + preview
+  const customPalette: CustomThemePalette = { ...defaultCustomThemePalette, ...(prefs.custom_theme || {}) }
+
+  const updateCustomPalette = async (patch: Partial<CustomThemePalette>) => {
+    const next = { ...customPalette, ...patch }
+    applyTheme('custom', next)
+    await update({ custom_theme: next })
   }
 
 
@@ -199,7 +208,65 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
                   )}>{theme.label}</div>
                 </button>
               ))}
+              <button
+                key="custom"
+                onClick={() => handleThemeChange('custom')}
+                className={cn(
+                  'p-4 rounded-lg border text-left transition-all duration-200 group',
+                  prefs.theme === 'custom'
+                    ? 'border-primary bg-primary/5 shadow-[0_0_15px_rgba(255,255,255,0.05)]'
+                    : 'border-hairline bg-surface hover:border-hairline/60',
+                )}
+              >
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-4.5 h-4.5 rounded-full border border-hairline/40" style={{ background: customPalette.background }} />
+                  <div className="w-4.5 h-4.5 rounded-full border border-hairline/40" style={{ background: customPalette.foreground }} />
+                  <div className="w-4.5 h-4.5 rounded-full border border-hairline/40" style={{ background: customPalette.ansiBlue }} />
+                  <div className="w-4.5 h-4.5 rounded-full border border-hairline/40" style={{ background: customPalette.ansiGreen }} />
+                </div>
+                <div className={cn(
+                  'text-[13px] font-bold tracking-tight',
+                  prefs.theme === 'custom' ? 'text-primary' : 'text-ink/80'
+                )}>Custom</div>
+              </button>
             </div>
+
+            {prefs.theme === 'custom' && (
+              <div id="custom-theme-editor" className="mt-2 flex flex-col gap-3 rounded-lg border border-hairline bg-surface-elevated/40 p-4">
+                <div className="text-xs font-bold uppercase tracking-wider text-mute/60 mb-1">Custom Palette</div>
+                <Row label="Background"><ColorInput value={customPalette.background} onChange={(v) => updateCustomPalette({ background: v })} /></Row>
+                <Row label="Text"><ColorInput value={customPalette.foreground} onChange={(v) => updateCustomPalette({ foreground: v })} /></Row>
+                <Row label="Muted Text"><ColorInput value={customPalette.muted} onChange={(v) => updateCustomPalette({ muted: v })} /></Row>
+                <Row label="Accent / Primary"><ColorInput value={customPalette.accent} onChange={(v) => updateCustomPalette({ accent: v })} /></Row>
+                <Row label="Success"><ColorInput value={customPalette.success} onChange={(v) => updateCustomPalette({ success: v })} /></Row>
+                <Row label="Warning"><ColorInput value={customPalette.warning} onChange={(v) => updateCustomPalette({ warning: v })} /></Row>
+                <Row label="Destructive"><ColorInput value={customPalette.destructive} onChange={(v) => updateCustomPalette({ destructive: v })} /></Row>
+                <Divider />
+                <div className="text-xs font-bold uppercase tracking-wider text-mute/60 mb-1">Terminal Palette</div>
+                <Row label="Cursor"><ColorInput value={customPalette.cursor} onChange={(v) => updateCustomPalette({ cursor: v })} /></Row>
+                <Row label="Selection Background" description="Supports rgba() for translucency">
+                  <TextInput value={customPalette.selectionBackground} onChange={(v) => updateCustomPalette({ selectionBackground: v })} wide />
+                </Row>
+                <div className="grid grid-cols-2 gap-3">
+                  <Row label="Black"><ColorInput value={customPalette.ansiBlack} onChange={(v) => updateCustomPalette({ ansiBlack: v })} /></Row>
+                  <Row label="Bright Black"><ColorInput value={customPalette.ansiBrightBlack} onChange={(v) => updateCustomPalette({ ansiBrightBlack: v })} /></Row>
+                  <Row label="Red"><ColorInput value={customPalette.ansiRed} onChange={(v) => updateCustomPalette({ ansiRed: v })} /></Row>
+                  <Row label="Bright Red"><ColorInput value={customPalette.ansiBrightRed} onChange={(v) => updateCustomPalette({ ansiBrightRed: v })} /></Row>
+                  <Row label="Green"><ColorInput value={customPalette.ansiGreen} onChange={(v) => updateCustomPalette({ ansiGreen: v })} /></Row>
+                  <Row label="Bright Green"><ColorInput value={customPalette.ansiBrightGreen} onChange={(v) => updateCustomPalette({ ansiBrightGreen: v })} /></Row>
+                  <Row label="Yellow"><ColorInput value={customPalette.ansiYellow} onChange={(v) => updateCustomPalette({ ansiYellow: v })} /></Row>
+                  <Row label="Bright Yellow"><ColorInput value={customPalette.ansiBrightYellow} onChange={(v) => updateCustomPalette({ ansiBrightYellow: v })} /></Row>
+                  <Row label="Blue"><ColorInput value={customPalette.ansiBlue} onChange={(v) => updateCustomPalette({ ansiBlue: v })} /></Row>
+                  <Row label="Bright Blue"><ColorInput value={customPalette.ansiBrightBlue} onChange={(v) => updateCustomPalette({ ansiBrightBlue: v })} /></Row>
+                  <Row label="Magenta"><ColorInput value={customPalette.ansiMagenta} onChange={(v) => updateCustomPalette({ ansiMagenta: v })} /></Row>
+                  <Row label="Bright Magenta"><ColorInput value={customPalette.ansiBrightMagenta} onChange={(v) => updateCustomPalette({ ansiBrightMagenta: v })} /></Row>
+                  <Row label="Cyan"><ColorInput value={customPalette.ansiCyan} onChange={(v) => updateCustomPalette({ ansiCyan: v })} /></Row>
+                  <Row label="Bright Cyan"><ColorInput value={customPalette.ansiBrightCyan} onChange={(v) => updateCustomPalette({ ansiBrightCyan: v })} /></Row>
+                  <Row label="White"><ColorInput value={customPalette.ansiWhite} onChange={(v) => updateCustomPalette({ ansiWhite: v })} /></Row>
+                  <Row label="Bright White"><ColorInput value={customPalette.ansiBrightWhite} onChange={(v) => updateCustomPalette({ ansiBrightWhite: v })} /></Row>
+                </div>
+              </div>
+            )}
 
             <Divider />
 

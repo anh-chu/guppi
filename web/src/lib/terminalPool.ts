@@ -260,6 +260,7 @@ export interface CheckoutCallbacks {
 /** Terminal preferences relevant to the pool. */
 export interface TerminalPrefs {
   theme: string
+  customTheme?: Record<string, string> | null
   fontFamily: string
   fontSize: number
   scrollback: number
@@ -663,7 +664,7 @@ export class TerminalPool {
   /** Reconcile entry against current prefs (idempotent). Call on checkout. */
   reconcilePrefs(entry: PoolEntry, prefs: TerminalPrefs): void {
     // Theme
-    const xtermTheme = getXtermTheme(prefs.theme)
+    const xtermTheme = getXtermTheme(prefs.theme, prefs.customTheme)
     entry.terminal.options.theme = xtermTheme
     try { entry.terminal.refresh(0, entry.terminal.rows - 1) } catch { /* ignored */ }
 
@@ -855,7 +856,7 @@ export class TerminalPool {
     prefs: TerminalPrefs,
     ef: PoolFactory,
   ): PoolEntry {
-    const xtermTheme = getXtermTheme(prefs.theme)
+    const xtermTheme = getXtermTheme(prefs.theme, prefs.customTheme)
     const fontFamily = `'${prefs.fontFamily}', 'JetBrains Mono', 'Fira Code', Menlo, Monaco, 'Inconsolata LGC Nerd Font Mono', 'DejaVu Sans Mono Symbols', monospace`
 
     const term = ef.createTerminal({

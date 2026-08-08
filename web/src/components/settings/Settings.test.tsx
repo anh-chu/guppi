@@ -22,6 +22,7 @@ const mockPrefs = vi.hoisted(() => ({
     default_agent: 'claude',
     wiki_disabled: false,
     ai_naming: { enabled: false, endpoint: '', api_key: '', model: 'gpt-4o-mini' },
+    custom_theme: null as Record<string, string> | null,
   },
 }))
 
@@ -247,6 +248,77 @@ test('Font Family: typing custom value calls updatePrefs', async () => {
   await waitFor(() =>
     expect(mockPrefs.updatePrefs).toHaveBeenCalledWith(
       expect.objectContaining({ terminal: expect.objectContaining({ font_family: 'Cascadia Code' }) }),
+    ),
+  )
+})
+
+test('theme picker: deleted presets are gone, only Raycast/Dark/Light/Custom shown', async () => {
+  render(
+    <Settings
+      pushState="unsupported"
+      onPushSubscribe={() => {}}
+      onPushUnsubscribe={() => {}}
+      bucket="look"
+    />,
+  )
+
+  await waitFor(() => expect(screen.getByText('Raycast')).toBeTruthy())
+
+  expect(screen.getByText('Raycast')).toBeTruthy()
+  expect(screen.getByText('Dark')).toBeTruthy()
+  expect(screen.getByText('Light')).toBeTruthy()
+  expect(screen.getByText('Custom')).toBeTruthy()
+  expect(screen.queryByText('Retro CRT Blue')).toBeNull()
+  expect(screen.queryByText('Green Phosphor')).toBeNull()
+  expect(screen.queryByText('Midnight')).toBeNull()
+})
+
+test('theme picker: selecting Custom reveals the palette editor', async () => {
+  render(
+    <Settings
+      pushState="unsupported"
+      onPushSubscribe={() => {}}
+      onPushUnsubscribe={() => {}}
+      bucket="look"
+    />,
+  )
+
+  await waitFor(() => expect(screen.getByText('Custom')).toBeTruthy())
+
+  expect(screen.queryByText('Custom Palette')).toBeNull()
+
+  fireEvent.click(screen.getByText('Custom'))
+
+  await waitFor(() =>
+    expect(mockPrefs.updatePrefs).toHaveBeenCalledWith(
+      expect.objectContaining({ theme: 'custom' }),
+    ),
+  )
+})
+
+test('theme picker: editing a custom color persists via updatePrefs', async () => {
+  mockPrefs.prefs = { ...mockPrefs.prefs, theme: 'custom', custom_theme: null }
+  mockPrefs.updatePrefs.mockClear()
+
+  render(
+    <Settings
+      pushState="unsupported"
+      onPushSubscribe={() => {}}
+      onPushUnsubscribe={() => {}}
+      bucket="look"
+    />,
+  )
+
+  await waitFor(() => expect(screen.getByText('Custom Palette')).toBeTruthy())
+
+  const backgroundRow = screen.getByText('Background').parentElement!.parentElement!
+  const backgroundText = within(backgroundRow).getAllByDisplayValue('#07080a').find(el => (el as HTMLInputElement).type === 'text') as HTMLInputElement
+
+  fireEvent.change(backgroundText, { target: { value: '#123456' } })
+
+  await waitFor(() =>
+    expect(mockPrefs.updatePrefs).toHaveBeenCalledWith(
+      expect.objectContaining({ custom_theme: expect.objectContaining({ background: '#123456' }) }),
     ),
   )
 })

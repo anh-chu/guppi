@@ -52,12 +52,13 @@ export function useTerminal(sessionName: string, hostId?: string, backend?: stri
   // Build terminal prefs
   const buildPrefs = useCallback((): TerminalPrefs => ({
     theme: prefs.theme,
+    customTheme: prefs.custom_theme,
     fontFamily: prefs.terminal.font_family,
     fontSize: prefs.terminal.font_size,
     scrollback: prefs.terminal.scrollback,
     renderer: prefs.terminal.renderer,
     unicodeGraphemes: prefs.terminal.unicode_graphemes,
-  }), [prefs.theme, prefs.terminal.font_family, prefs.terminal.font_size, prefs.terminal.scrollback, prefs.terminal.renderer, prefs.terminal.unicode_graphemes])
+  }), [prefs.theme, prefs.custom_theme, prefs.terminal.font_family, prefs.terminal.font_size, prefs.terminal.scrollback, prefs.terminal.renderer, prefs.terminal.unicode_graphemes])
 
   // Checkout into a container — called from Terminal.tsx layout effect
   const checkout = useCallback((container: HTMLElement) => {

@@ -57,6 +57,9 @@ type Preferences struct {
 	FullscreenHideAlerts    bool          `json:"fullscreen_hide_alerts"`
 	DefaultAgent            string        `json:"default_agent"`
 	AINaming                AINaming      `json:"ai_naming"`
+	// CustomTheme holds the user-defined palette for the "custom" theme option.
+	// Nil/absent by default; only populated once a user edits a custom color.
+	CustomTheme             map[string]string `json:"custom_theme,omitempty"`
 	// Inverted so the zero value means enabled. PUT /api/preferences decodes
 	// the body into a zero-valued Preferences and replaces the store wholesale,
 	// so any client that omits this key would persist it as false. A default-true

@@ -34,6 +34,7 @@ export interface Preferences {
     api_key: string
     model: string
   }
+  custom_theme: Record<string, string> | null
 }
 
 export const defaultPreferences: Preferences = {
@@ -66,6 +67,7 @@ export const defaultPreferences: Preferences = {
     api_key: '',
     model: 'gpt-4o-mini',
   },
+  custom_theme: null,
 }
 
 interface PreferencesContextValue {

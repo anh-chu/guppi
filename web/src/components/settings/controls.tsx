@@ -76,6 +76,28 @@ function TextInput({ value, onChange, placeholder, type = 'text', wide }: { valu
   )
 }
 
+function ColorInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const swatchValue = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value) ? value : '#000000'
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        type="color"
+        value={swatchValue}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-7 w-7 rounded-sm border border-hairline bg-surface-elevated cursor-pointer p-0"
+      />
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete="off"
+        spellCheck={false}
+        className="bg-surface-elevated border border-hairline rounded-sm px-2 py-1 text-[12px] font-mono text-ink outline-none focus:border-primary/60 w-[92px]"
+      />
+    </div>
+  )
+}
+
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
   return (
     <div className="flex items-center gap-3">
@@ -109,4 +131,4 @@ function Kbd({ children }: { children: string }) {
   )
 }
 
-export { Section, Divider, Row, SelectInput, NumberInput, TextInput, Toggle, Kbd }
+export { Section, Divider, Row, SelectInput, NumberInput, TextInput, Toggle, Kbd, ColorInput }

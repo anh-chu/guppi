@@ -148,92 +148,6 @@ export const themePresets: Record<string, ThemePreset> = {
             brightWhite: '#ffffff',
         },
     },
-    'retro-blue': {
-        name: 'retro-blue',
-        label: 'Retro CRT Blue',
-        cssVars: {
-            // Design tokens (Retro CRT Blue palette)
-            '--canvas': 'oklch(0.08 0.02 250)',
-            '--surface': 'oklch(0.1 0.02 250)',
-            '--surface-elevated': 'oklch(0.12 0.02 250)',
-            '--surface-card': 'oklch(0.14 0.03 250)',
-            '--hairline': 'oklch(0.28 0.08 230)',
-            '--hairline-soft': 'oklch(0.28 0.08 230 / 0.5)',
-            '--hairline-strong': 'oklch(0.28 0.08 230)',
-            '--ink': 'oklch(0.78 0.12 230)',
-            '--body-text': 'oklch(0.68 0.1 230)',
-            '--mute': 'oklch(0.55 0.08 230)',
-            '--ash': 'oklch(0.45 0.06 230)',
-            '--stone': 'oklch(0.35 0.04 230)',
-            '--on-dark': 'oklch(0.95 0 0)',
-            '--on-dark-mute': 'oklch(0.95 0 0 / 0.72)',
-            '--accent-blue': 'oklch(0.72 0.15 230)',
-            '--accent-blue-soft': 'oklch(0.72 0.15 230 / 0.15)',
-            '--accent-red': 'oklch(0.55 0.2 25)',
-            '--accent-red-soft': 'oklch(0.55 0.2 25 / 0.15)',
-            '--accent-green': 'oklch(0.65 0.15 145)',
-            '--accent-green-soft': 'oklch(0.65 0.15 145 / 0.15)',
-            '--accent-yellow': 'oklch(0.65 0.15 80)',
-            '--accent-yellow-soft': 'oklch(0.65 0.15 80 / 0.15)',
-            '--hero-stripe-start': 'oklch(0.55 0.2 25)',
-            '--hero-stripe-end': 'oklch(0.4 0.15 25)',
-            // Shadcn CSS variable mappings
-            '--background': 'var(--canvas)',
-            '--foreground': 'var(--ink)',
-            '--card': 'var(--surface)',
-            '--card-foreground': 'var(--ink)',
-            '--popover': 'var(--surface-elevated)',
-            '--popover-foreground': 'var(--ink)',
-            '--primary': 'oklch(0.72 0.15 230)',
-            '--primary-foreground': 'oklch(0.08 0.02 250)',
-            '--secondary': 'oklch(0.15 0.03 250)',
-            '--secondary-foreground': 'oklch(0.68 0.1 230)',
-            '--muted': 'var(--surface-elevated)',
-            '--muted-foreground': 'var(--mute)',
-            '--accent': 'oklch(0.7 0.15 200)',
-            '--accent-foreground': 'oklch(0.08 0.02 250)',
-            '--destructive': 'var(--accent-red)',
-            '--destructive-foreground': 'var(--on-dark)',
-            '--border': 'var(--hairline)',
-            '--input': 'var(--surface-elevated)',
-            '--ring': 'oklch(0.72 0.15 230)',
-            '--success': 'var(--accent-green)',
-            '--warning': 'var(--accent-yellow)',
-            '--sidebar': 'var(--canvas)',
-            '--sidebar-foreground': 'var(--ink)',
-            '--sidebar-primary': 'oklch(0.72 0.15 230)',
-            '--sidebar-primary-foreground': 'oklch(0.08 0.02 250)',
-            '--sidebar-accent': 'oklch(0.15 0.03 250)',
-            '--sidebar-accent-foreground': 'var(--ink)',
-            '--sidebar-border': 'var(--hairline)',
-            '--sidebar-ring': 'oklch(0.72 0.15 230)',
-            '--chart-primary': 'oklch(0.72 0.12 230)',
-            '--chart-secondary': 'oklch(0.72 0.12 300)',
-        },
-        xterm: {
-            background: '#0a0a1a',
-            foreground: '#66b3ff',
-            cursor: '#66b3ff',
-            cursorAccent: '#0a0a1a',
-            selectionBackground: 'rgba(102, 179, 255, 0.25)',
-            black: '#1a1a3a',
-            red: '#ff7b72',
-            green: '#66e088',
-            yellow: '#e6c866',
-            blue: '#66b3ff',
-            magenta: '#c4a0ff',
-            cyan: '#66d9e8',
-            white: '#b8c4d0',
-            brightBlack: '#3a3a5a',
-            brightRed: '#ffa198',
-            brightGreen: '#7ee8a0',
-            brightYellow: '#f0d880',
-            brightBlue: '#80c4ff',
-            brightMagenta: '#d4b8ff',
-            brightCyan: '#80e8f0',
-            brightWhite: '#d0dce8',
-        },
-    },
     'dark': {
         name: 'dark',
         label: 'Dark',
@@ -408,35 +322,110 @@ export const themePresets: Record<string, ThemePreset> = {
             brightWhite: '#ffffff',
         },
     },
-    'green-phosphor': {
-        name: 'green-phosphor',
-        label: 'Green Phosphor',
+}
+
+// ── Custom theme (user-defined palette) ──────────────────────────────────
+//
+// A small, curated set of primitives the user can control directly, rather
+// than exposing all ~50 cssVar keys. Anything in the Shadcn CSS variable
+// mapping section that doesn't have a direct primitive equivalent here just
+// reuses the closest matching primitive (e.g. all surface tiers collapse to
+// `background`, all secondary-text tiers collapse to `muted`).
+export interface CustomThemePalette {
+    background: string
+    foreground: string
+    muted: string
+    accent: string
+    success: string
+    warning: string
+    destructive: string
+    ansiBlack: string
+    ansiRed: string
+    ansiGreen: string
+    ansiYellow: string
+    ansiBlue: string
+    ansiMagenta: string
+    ansiCyan: string
+    ansiWhite: string
+    ansiBrightBlack: string
+    ansiBrightRed: string
+    ansiBrightGreen: string
+    ansiBrightYellow: string
+    ansiBrightBlue: string
+    ansiBrightMagenta: string
+    ansiBrightCyan: string
+    ansiBrightWhite: string
+    cursor: string
+    selectionBackground: string
+}
+
+// Fallback values used for any field missing from the persisted custom
+// palette (e.g. a user who has only touched a couple of fields so far).
+// Sourced from the Raycast preset so an unconfigured custom theme still
+// looks coherent.
+export const defaultCustomThemePalette: CustomThemePalette = {
+    background: '#07080a',
+    foreground: '#f4f4f6',
+    muted: '#9c9c9d',
+    accent: '#57c1ff',
+    success: '#59d499',
+    warning: '#ffc533',
+    destructive: '#ff6161',
+    ansiBlack: '#07080a',
+    ansiRed: '#ff6161',
+    ansiGreen: '#59d499',
+    ansiYellow: '#ffc533',
+    ansiBlue: '#57c1ff',
+    ansiMagenta: '#bc8cff',
+    ansiCyan: '#57c1ff',
+    ansiWhite: '#f4f4f6',
+    ansiBrightBlack: '#6a6b6c',
+    ansiBrightRed: '#ff6161',
+    ansiBrightGreen: '#59d499',
+    ansiBrightYellow: '#ffc533',
+    ansiBrightBlue: '#57c1ff',
+    ansiBrightMagenta: '#bc8cff',
+    ansiBrightCyan: '#57c1ff',
+    ansiBrightWhite: '#ffffff',
+    cursor: '#ffffff',
+    selectionBackground: 'rgba(255, 255, 255, 0.2)',
+}
+
+export function resolveCustomThemePalette(stored?: Partial<CustomThemePalette> | null): CustomThemePalette {
+    return { ...defaultCustomThemePalette, ...(stored || {}) }
+}
+
+export function buildCustomThemePreset(stored?: Partial<CustomThemePalette> | null): ThemePreset {
+    const p = resolveCustomThemePalette(stored)
+    return {
+        name: 'custom',
+        label: 'Custom',
         cssVars: {
-            // Design tokens (Green Phosphor palette)
-            '--canvas': 'oklch(0.08 0.02 140)',
-            '--surface': 'oklch(0.1 0.02 140)',
-            '--surface-elevated': 'oklch(0.12 0.02 140)',
-            '--surface-card': 'oklch(0.14 0.03 140)',
-            '--hairline': 'oklch(0.25 0.06 145)',
-            '--hairline-soft': 'oklch(0.25 0.06 145 / 0.5)',
-            '--hairline-strong': 'oklch(0.25 0.06 145)',
-            '--ink': 'oklch(0.75 0.15 145)',
-            '--body-text': 'oklch(0.65 0.12 145)',
-            '--mute': 'oklch(0.5 0.08 145)',
-            '--ash': 'oklch(0.4 0.06 145)',
-            '--stone': 'oklch(0.3 0.04 145)',
-            '--on-dark': 'oklch(0.95 0 0)',
-            '--on-dark-mute': 'oklch(0.95 0 0 / 0.72)',
-            '--accent-blue': 'oklch(0.65 0.15 200)',
-            '--accent-blue-soft': 'oklch(0.65 0.15 200 / 0.15)',
-            '--accent-red': 'oklch(0.55 0.2 25)',
-            '--accent-red-soft': 'oklch(0.55 0.2 25 / 0.15)',
-            '--accent-green': 'oklch(0.65 0.15 145)',
-            '--accent-green-soft': 'oklch(0.65 0.15 145 / 0.15)',
-            '--accent-yellow': 'oklch(0.65 0.15 80)',
-            '--accent-yellow-soft': 'oklch(0.65 0.15 80 / 0.15)',
-            '--hero-stripe-start': 'oklch(0.55 0.2 25)',
-            '--hero-stripe-end': 'oklch(0.4 0.15 25)',
+            // Design tokens
+            '--canvas': p.background,
+            '--surface': p.background,
+            '--surface-elevated': p.background,
+            '--surface-card': p.background,
+            '--hairline': `color-mix(in srgb, ${p.foreground} 20%, transparent)`,
+            '--hairline-soft': `color-mix(in srgb, ${p.foreground} 10%, transparent)`,
+            '--hairline-strong': `color-mix(in srgb, ${p.foreground} 30%, transparent)`,
+            '--ink': p.foreground,
+            '--body-text': p.foreground,
+            '--mute': p.muted,
+            '--ash': p.muted,
+            '--stone': p.muted,
+            '--on-dark': p.foreground,
+            '--on-dark-mute': `color-mix(in srgb, ${p.foreground} 72%, transparent)`,
+            '--accent-blue': p.accent,
+            '--accent-blue-soft': `color-mix(in srgb, ${p.accent} 15%, transparent)`,
+            '--accent-red': p.destructive,
+            '--accent-red-soft': `color-mix(in srgb, ${p.destructive} 15%, transparent)`,
+            '--accent-green': p.success,
+            '--accent-green-soft': `color-mix(in srgb, ${p.success} 15%, transparent)`,
+            '--accent-yellow': p.warning,
+            '--accent-yellow-soft': `color-mix(in srgb, ${p.warning} 15%, transparent)`,
+            '--hero-stripe-start': p.accent,
+            '--hero-stripe-end': p.destructive,
             // Shadcn CSS variable mappings
             '--background': 'var(--canvas)',
             '--foreground': 'var(--ink)',
@@ -444,153 +433,71 @@ export const themePresets: Record<string, ThemePreset> = {
             '--card-foreground': 'var(--ink)',
             '--popover': 'var(--surface-elevated)',
             '--popover-foreground': 'var(--ink)',
-            '--primary': 'oklch(0.7 0.18 145)',
-            '--primary-foreground': 'oklch(0.08 0.02 140)',
-            '--secondary': 'oklch(0.15 0.03 140)',
-            '--secondary-foreground': 'oklch(0.65 0.12 145)',
+            '--primary': 'var(--accent-blue)',
+            '--primary-foreground': p.background,
+            '--secondary': 'var(--surface-elevated)',
+            '--secondary-foreground': 'var(--ink)',
             '--muted': 'var(--surface-elevated)',
             '--muted-foreground': 'var(--mute)',
-            '--accent': 'oklch(0.65 0.15 145)',
-            '--accent-foreground': 'oklch(0.08 0.02 140)',
+            '--accent': 'var(--accent-blue)',
+            '--accent-foreground': p.background,
             '--destructive': 'var(--accent-red)',
-            '--destructive-foreground': 'var(--on-dark)',
+            '--destructive-foreground': p.background,
             '--border': 'var(--hairline)',
             '--input': 'var(--surface-elevated)',
-            '--ring': 'oklch(0.7 0.18 145)',
+            '--ring': 'var(--accent-blue)',
             '--success': 'var(--accent-green)',
             '--warning': 'var(--accent-yellow)',
             '--sidebar': 'var(--canvas)',
             '--sidebar-foreground': 'var(--ink)',
-            '--sidebar-primary': 'oklch(0.7 0.18 145)',
-            '--sidebar-primary-foreground': 'oklch(0.08 0.02 140)',
-            '--sidebar-accent': 'oklch(0.15 0.03 140)',
+            '--sidebar-primary': 'var(--accent-blue)',
+            '--sidebar-primary-foreground': p.background,
+            '--sidebar-accent': 'var(--surface-elevated)',
             '--sidebar-accent-foreground': 'var(--ink)',
             '--sidebar-border': 'var(--hairline)',
-            '--sidebar-ring': 'oklch(0.7 0.18 145)',
-            '--chart-primary': 'oklch(0.7 0.18 145)',
-            '--chart-secondary': 'oklch(0.65 0.15 200)',
+            '--sidebar-ring': 'var(--accent-blue)',
+            '--chart-primary': 'var(--accent-blue)',
+            '--chart-secondary': 'var(--accent-green)',
         },
         xterm: {
-            background: '#0a1a0a',
-            foreground: '#33ff33',
-            cursor: '#33ff33',
-            cursorAccent: '#0a1a0a',
-            selectionBackground: 'rgba(51, 255, 51, 0.2)',
-            black: '#0a1a0a',
-            red: '#ff5555',
-            green: '#33ff33',
-            yellow: '#ffff55',
-            blue: '#55aaff',
-            magenta: '#ff55ff',
-            cyan: '#55ffff',
-            white: '#aaffaa',
-            brightBlack: '#225522',
-            brightRed: '#ff8888',
-            brightGreen: '#66ff66',
-            brightYellow: '#ffff88',
-            brightBlue: '#88ccff',
-            brightMagenta: '#ff88ff',
-            brightCyan: '#88ffff',
-            brightWhite: '#ccffcc',
-        },
-    },
-    'midnight': {
-        name: 'midnight',
-        label: 'Midnight',
-        cssVars: {
-            // Design tokens (Midnight palette)
-            '--canvas': 'oklch(0.145 0 0)',
-            '--surface': 'oklch(0.205 0 0)',
-            '--surface-elevated': 'oklch(0.195 0 0)',
-            '--surface-card': 'oklch(0.225 0 0)',
-            '--hairline': 'oklch(0.265 0 0)',
-            '--hairline-soft': 'oklch(0.265 0 0 / 0.5)',
-            '--hairline-strong': 'oklch(0.265 0 0)',
-            '--ink': 'oklch(0.922 0 0)',
-            '--body-text': 'oklch(0.708 0 0)',
-            '--mute': 'oklch(0.556 0 0)',
-            '--ash': 'oklch(0.45 0 0)',
-            '--stone': 'oklch(0.35 0 0)',
-            '--on-dark': 'oklch(0.985 0 0)',
-            '--on-dark-mute': 'oklch(0.985 0 0 / 0.72)',
-            '--accent-blue': 'oklch(0.623 0.214 259)',
-            '--accent-blue-soft': 'oklch(0.623 0.214 259 / 0.15)',
-            '--accent-red': 'oklch(0.637 0.237 25)',
-            '--accent-red-soft': 'oklch(0.637 0.237 25 / 0.15)',
-            '--accent-green': 'oklch(0.685 0.143 175)',
-            '--accent-green-soft': 'oklch(0.685 0.143 175 / 0.15)',
-            '--accent-yellow': 'oklch(0.768 0.185 70)',
-            '--accent-yellow-soft': 'oklch(0.768 0.185 70 / 0.15)',
-            '--hero-stripe-start': 'oklch(0.637 0.237 25)',
-            '--hero-stripe-end': 'oklch(0.45 0.15 25)',
-            // Shadcn CSS variable mappings
-            '--background': 'var(--canvas)',
-            '--foreground': 'var(--ink)',
-            '--card': 'var(--surface)',
-            '--card-foreground': 'var(--ink)',
-            '--popover': 'var(--surface-elevated)',
-            '--popover-foreground': 'var(--ink)',
-            '--primary': 'oklch(0.623 0.214 259)',
-            '--primary-foreground': 'oklch(0.145 0 0)',
-            '--secondary': 'oklch(0.250 0 0)',
-            '--secondary-foreground': 'oklch(0.708 0 0)',
-            '--muted': 'var(--surface-elevated)',
-            '--muted-foreground': 'var(--mute)',
-            '--accent': 'oklch(0.685 0.143 175)',
-            '--accent-foreground': 'oklch(0.145 0 0)',
-            '--destructive': 'var(--accent-red)',
-            '--destructive-foreground': 'var(--on-dark)',
-            '--border': 'var(--hairline)',
-            '--input': 'var(--surface-elevated)',
-            '--ring': 'oklch(0.623 0.214 259)',
-            '--success': 'var(--accent-green)',
-            '--warning': 'var(--accent-yellow)',
-            '--sidebar': 'var(--canvas)',
-            '--sidebar-foreground': 'var(--ink)',
-            '--sidebar-primary': 'oklch(0.623 0.214 259)',
-            '--sidebar-primary-foreground': 'oklch(0.145 0 0)',
-            '--sidebar-accent': 'oklch(0.250 0 0)',
-            '--sidebar-accent-foreground': 'var(--ink)',
-            '--sidebar-border': 'var(--hairline)',
-            '--sidebar-ring': 'oklch(0.623 0.214 259)',
-            '--chart-primary': 'oklch(0.623 0.214 259)',
-            '--chart-secondary': 'oklch(0.685 0.143 175)',
-        },
-        xterm: {
-            background: '#0a0a0a',
-            foreground: '#e5e5e5',
-            cursor: '#3b82f6',
-            cursorAccent: '#0a0a0a',
-            selectionBackground: 'rgba(59, 130, 246, 0.3)',
-            black: '#171717',
-            red: '#ef4444',
-            green: '#14b8a6',
-            yellow: '#f59e0b',
-            blue: '#3b82f6',
-            magenta: '#a855f7',
-            cyan: '#22d3ee',
-            white: '#e5e5e5',
-            brightBlack: '#737373',
-            brightRed: '#f87171',
-            brightGreen: '#2dd4bf',
-            brightYellow: '#fbbf24',
-            brightBlue: '#60a5fa',
-            brightMagenta: '#c084fc',
-            brightCyan: '#67e8f9',
-            brightWhite: '#fafafa',
+            background: p.background,
+            foreground: p.foreground,
+            cursor: p.cursor,
+            cursorAccent: p.background,
+            selectionBackground: p.selectionBackground,
+            black: p.ansiBlack,
+            red: p.ansiRed,
+            green: p.ansiGreen,
+            yellow: p.ansiYellow,
+            blue: p.ansiBlue,
+            magenta: p.ansiMagenta,
+            cyan: p.ansiCyan,
+            white: p.ansiWhite,
+            brightBlack: p.ansiBrightBlack,
+            brightRed: p.ansiBrightRed,
+            brightGreen: p.ansiBrightGreen,
+            brightYellow: p.ansiBrightYellow,
+            brightBlue: p.ansiBrightBlue,
+            brightMagenta: p.ansiBrightMagenta,
+            brightCyan: p.ansiBrightCyan,
+            brightWhite: p.ansiBrightWhite,
         },
     }
 }
 
-export function applyTheme(themeName: string) {
-    const theme = themePresets[themeName] || themePresets['dark']
+export function applyTheme(themeName: string, customPalette?: Partial<CustomThemePalette> | null) {
+    const theme = themeName === 'custom'
+        ? buildCustomThemePreset(customPalette)
+        : (themePresets[themeName] || themePresets['dark'])
     const root = document.documentElement
     for (const [key, value] of Object.entries(theme.cssVars)) {
         root.style.setProperty(key, value)
     }
 }
 
-export function getXtermTheme(themeName: string) {
-    const theme = themePresets[themeName] || themePresets['dark']
+export function getXtermTheme(themeName: string, customPalette?: Partial<CustomThemePalette> | null) {
+    const theme = themeName === 'custom'
+        ? buildCustomThemePreset(customPalette)
+        : (themePresets[themeName] || themePresets['dark'])
     return theme.xterm
 }

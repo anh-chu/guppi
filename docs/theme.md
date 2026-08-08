@@ -107,6 +107,6 @@ Status colors are derived from theme CSS variables:
 
 **Total slots for a new theme: 31 CSS vars + 21 xterm colors = 52 values.**
 
-Existing themes: `retro-blue` (default), `dark`, `light`, `green-phosphor`, `midnight`.
+Existing themes: `raycast` (default), `dark`, `light`, plus a user-editable `custom` theme built at runtime from a persisted palette (see `buildCustomThemePreset` in `web/src/theme.ts`) rather than a static `themePresets` entry.
 
 File to edit: `web/src/theme.ts`

@@ -1488,7 +1488,7 @@ export default function App() {
   // Apply theme when preferences load or theme changes, and cache for login page
   useEffect(() => {
     if (prefsProvider.loaded) {
-      applyTheme(prefsProvider.prefs.theme)
+      applyTheme(prefsProvider.prefs.theme, prefsProvider.prefs.custom_theme)
       try {
         localStorage.setItem('termyard:theme', prefsProvider.prefs.theme)
       } catch {}
