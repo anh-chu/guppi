@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.4.0] — Features & Bug Fixes
+
+### Features
+
+- **terminal:** make Unicode graphemes always-on; remove the setting toggle.
+- **theme:** trim built-in presets to 3 and add a user-defined custom color theme.
+- **overview:** remove Grid mode — Board is now the only layout.
+- **settings/terminal:** remove predictive echo, default to the WebGL renderer, stage AI-naming saves, and support custom terminal fonts.
+
+### Bug Fixes
+
+- **wiki:** resolve relative and `~/`-aliased paths correctly when opening a file from the terminal. Server-side path resolution now expands `~` against the home directory instead of joining it onto the session cwd as a literal segment. The wiki panel surfaces open failures (bad path, no active pane cwd, unreachable peer) with a visible message or toast instead of a silent blank panel, and the terminal's file-link highlighter now checks existence (via a new read-only `GET /file/exists`) before highlighting a path, so links to files that don't exist are no longer clickable.
+- **settings:** allow an empty AI naming endpoint (env-var fallback is valid).
+- **peer:** remove dead peer-protocol code (unused bootstrap route, message types, dead browser branch).
+
 ## [4.3.0] — Features
 
 ### Features
