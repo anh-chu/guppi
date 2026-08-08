@@ -137,7 +137,6 @@ describe('Terminal', () => {
     theme: 'dark',
     terminal: {
       renderer: 'webgl',
-      unicode_graphemes: true,
       scrollback: 10000,
       font_size: 13,
       font_family: 'mono',
