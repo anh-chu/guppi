@@ -37,3 +37,16 @@ Contents at the top for fast routing to the relevant section.
   corrupted this file before. If your read tool truncates on a large file, read it in
   chunks (offset/limit) or edit via a targeted, verified string replacement instead of a
   full rewrite.
+
+## Releasing
+
+`pkg/common/version.go` (`VERSION`) is the single source of truth for the app version;
+`web/package.json`/`package-lock.json` must stay in sync with it.
+
+1. Run `./scripts/release.sh [patch|minor|major]` — bumps and verifies all three files
+   consistently. It does NOT commit, tag, or push.
+2. Update `CHANGELOG.md` with a new `## [X.Y.Z]` entry.
+3. Commit, then `git tag -a vX.Y.Z -m "Release vX.Y.Z"` and `git push origin master vX.Y.Z`.
+   Pushing the tag triggers the GoReleaser workflow, which publishes the release.
+4. Never hand-edit only `pkg/common/version.go` — the CI tag-vs-version check and the
+   frontend package files will drift out of sync.
