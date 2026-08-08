@@ -15,7 +15,6 @@ type Terminal struct {
 	Scrollback       int    `json:"scrollback"`
 	// Renderer is legacy/backward-compatible; no longer read meaningfully by frontend rendering logic but still accepted/persisted for old clients. Default: "webgl".
 	Renderer         string `json:"renderer"`
-	UnicodeGraphemes bool   `json:"unicode_graphemes"`
 }
 
 type Sidebar struct {
@@ -75,7 +74,6 @@ func Default() *Preferences {
 			FontFamily:       "Space Mono",
 			Scrollback:       5000,
 			Renderer:         "webgl",
-			UnicodeGraphemes: false,
 		},
 		Theme: "dark",
 		Sidebar: Sidebar{

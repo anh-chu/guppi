@@ -265,7 +265,6 @@ export interface TerminalPrefs {
   fontSize: number
   scrollback: number
   renderer: string
-  unicodeGraphemes: boolean
 }
 
 /** Identity for a pool entry. */
@@ -690,18 +689,14 @@ export class TerminalPool {
       // with xterm's default DOM renderer — no special error handling needed
     }
 
-    // Unicode graphemes
-    if (prefs.unicodeGraphemes && !entry.graphemesLoaded) {
+    // Unicode graphemes: always on, no user toggle.
+    if (!entry.graphemesLoaded) {
       const ga = this.factory.createUnicodeGraphemesAddon()
       if (ga) {
         try { entry.terminal.loadAddon(ga) } catch { /* ignored */ }
         entry.graphemesAddon = ga as UnicodeGraphemesAddon
         entry.graphemesLoaded = true
       }
-    } else if (!prefs.unicodeGraphemes && entry.graphemesAddon) {
-      entry.graphemesAddon.dispose()
-      entry.graphemesAddon = null
-      entry.graphemesLoaded = false
     }
 
 
@@ -884,15 +879,14 @@ export class TerminalPool {
       try { term.loadAddon(imageAddon) } catch { /* ignored */ }
     }
 
+    // Unicode graphemes: always on, no user toggle.
     let graphemesAddon: UnicodeGraphemesAddon | null = null
     let graphemesLoaded = false
-    if (prefs.unicodeGraphemes) {
-      const ga = ef.createUnicodeGraphemesAddon()
-      if (ga) {
-        try { term.loadAddon(ga) } catch { /* ignored */ }
-        graphemesAddon = ga as UnicodeGraphemesAddon
-        graphemesLoaded = true
-      }
+    const ga0 = ef.createUnicodeGraphemesAddon()
+    if (ga0) {
+      try { term.loadAddon(ga0) } catch { /* ignored */ }
+      graphemesAddon = ga0 as UnicodeGraphemesAddon
+      graphemesLoaded = true
     }
 
     const replayBuffer = new ReplayBuffer()

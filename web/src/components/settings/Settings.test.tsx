@@ -10,7 +10,6 @@ const mockPrefs = vi.hoisted(() => ({
       font_size: 13,
       font_family: 'Space Mono',
       scrollback: 50000,
-      unicode_graphemes: false,
     },
     theme: 'dark',
     sidebar: { default_collapsed: false, collapse_mode: 'small' },
@@ -73,7 +72,7 @@ test('toggle change calls updatePrefs', async () => {
   )
 })
 
-test('renderer select removed, predictive echo removed', async () => {
+test('renderer select removed, predictive echo removed, unicode graphemes toggle removed (always on)', async () => {
   render(
     <Settings
       pushState="unsupported"
@@ -83,10 +82,11 @@ test('renderer select removed, predictive echo removed', async () => {
     />,
   )
 
-  await waitFor(() => expect(screen.getByText('Unicode Graphemes')).toBeTruthy())
+  await waitFor(() => expect(screen.getByText('Hide Alerts in Fullscreen')).toBeTruthy())
 
   expect(screen.queryByText(/Renderer/)).toBeNull()
   expect(screen.queryByText(/Predictive Echo/)).toBeNull()
+  expect(screen.queryByText('Unicode Graphemes')).toBeNull()
 })
 
 test('AI Naming: inputs do not call updatePrefs until Save clicked', async () => {

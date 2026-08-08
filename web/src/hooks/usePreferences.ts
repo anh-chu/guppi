@@ -9,7 +9,6 @@ export interface Preferences {
     // backend API contract, but is no longer consulted by rendering code.
     // WebGL is now unconditionally attempted with automatic silent DOM fallback.
     renderer: string
-    unicode_graphemes: boolean
   }
   theme: string
   sidebar: {
@@ -43,7 +42,6 @@ export const defaultPreferences: Preferences = {
     font_family: 'Space Mono',
     scrollback: 50000,
     renderer: 'webgl',
-    unicode_graphemes: false,
   },
   theme: 'dark',
   sidebar: {

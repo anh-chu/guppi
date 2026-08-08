@@ -213,7 +213,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     if (!prefs) return
     reconfigure()
   }, [prefs.terminal.scrollback, prefs.terminal.font_size, prefs.terminal.font_family,
-      prefs.terminal.unicode_graphemes, prefs.theme, reconfigure])
+      prefs.theme, reconfigure])
 
   // Auto-focus on mount only for the active pane — the inactive pane's
   // auto-focus would steal focus from the intended target.

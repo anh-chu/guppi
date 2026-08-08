@@ -273,7 +273,6 @@ function defPrefs(overrides?: Partial<TerminalPrefs>): TerminalPrefs {
   return {
     theme: 'dark', fontFamily: 'Space Mono', fontSize: 13,
     scrollback: 50000, renderer: 'webgl',
-    unicodeGraphemes: false,
     ...overrides,
   }
 }
@@ -337,6 +336,15 @@ describe('TerminalPool', () => {
     expect(terminalCreateCount).toBe(1)
     expect(addonCreateCount).toBeGreaterThanOrEqual(4)
     expect(socketOpenCount).toBe(1)
+  })
+
+  it('unicode graphemes addon always loads on cold checkout, unconditionally (no user toggle)', () => {
+    const container = fakeEl()
+    addonCreateCount = 0
+    pool.checkout(defId('s-graphemes'), defPrefs(), container, noopCbs())
+    // FakeUnicodeGraphemesAddon increments addonCreateCount in its constructor;
+    // there is no TerminalPrefs field to disable it, so it must be present every time.
+    expect(addonCreateCount).toBeGreaterThanOrEqual(4)
   })
 
   // Registration-timing guard. Terminal.tsx registers the file-link provider in
