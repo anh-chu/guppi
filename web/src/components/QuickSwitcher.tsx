@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { Session, sessionKey } from '../hooks/useSessions'
 import { ToolEvent } from '../hooks/useToolEvents'
 import { toolColors } from '../theme'
+import { LOUD_STATUSES } from '../lib/sessionState'
 import { cn } from '../lib/utils'
 
 interface QuickSwitcherProps {
@@ -41,7 +42,8 @@ export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, o
 
   const allItems = useMemo<SwitcherItem[]>(() => {
     const items: SwitcherItem[] = []
-    const sorted = [...waitingEvents].sort((a, b) => {
+    const loudEvents = waitingEvents.filter(e => LOUD_STATUSES.has(e.status))
+    const sorted = [...loudEvents].sort((a, b) => {
       const ta = new Date(a.timestamp).getTime()
       const tb = new Date(b.timestamp).getTime()
       return ta - tb

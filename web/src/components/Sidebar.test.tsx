@@ -39,7 +39,6 @@ function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> & { 
       hosts={[]}
       onSessionSelect={() => {}}
       getSessionEvents={() => []}
-      sessionNeedsAttention={() => false}
       isSessionInActiveTurn={() => false}
       getSessionActivity={() => undefined}
       sessionOrderRanks={{}}

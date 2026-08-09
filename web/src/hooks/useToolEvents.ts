@@ -120,18 +120,6 @@ export function useToolEvents() {
     return events.filter(e => e.session === name && e.host === host)
   }, [events])
 
-  // Check if a session has any "waiting" events (accepts composite key)
-  const sessionNeedsAttention = useCallback((key: string) => {
-    const idx = key.indexOf('/')
-    const needsAttn = (e: ToolEvent) => e.status === 'waiting' || e.status === 'stuck'
-    if (idx === -1) {
-      return events.some(e => e.session === key && !e.host && needsAttn(e))
-    }
-    const host = key.substring(0, idx)
-    const name = key.substring(idx + 1)
-    return events.some(e => e.session === name && e.host === host && needsAttn(e))
-  }, [events])
-
   // Returns true if the session has an in-progress hook-based agent turn.
   // More stable than checking events directly — persists across the brief
   // gaps between tool calls where no active event is in-flight.
@@ -166,5 +154,5 @@ export function useToolEvents() {
     setActiveSessions(new Set())
   }, [])
 
-  return { events, handleEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll, refresh }
+  return { events, handleEvent, getSessionEvents, isSessionInActiveTurn, dismissEvent, dismissAll, refresh }
 }

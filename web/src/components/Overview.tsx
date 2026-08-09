@@ -4,7 +4,7 @@ import { Host } from '../hooks/useHosts'
 import { ToolEvent } from '../hooks/useToolEvents'
 import { ActivitySnapshot } from '../hooks/useActivity'
 import { toolColors, statusConfig, signalTreatment } from '../theme'
-import { stateRank, sessionSignal, isSessionActive, isToolSession, SessionState } from '../lib/sessionState'
+import { stateRank, sessionSignal, sessionProjection, isSessionActive, isToolSession, SessionState, LOUD_STATUSES } from '../lib/sessionState'
 import { formatSessionUptime, formatSystemUptime } from '../lib/time'
 import { sessionLabel } from '../hooks/useSessions'
 import { SessionActionsMenu, SessionMenuTarget } from './SessionActionsMenu'
@@ -128,8 +128,9 @@ type CardItem = {
   signal: ReturnType<typeof sessionSignal>
   event: ToolEvent | undefined
   events: ToolEvent[]
-  activity: ActivitySnapshot | undefined
   scheduleRunCount?: number
+  userPrompt: string
+  activityLabel?: string
 }
 
 const COLUMN_ORDER: SessionState[] = ['needs_you', 'working', 'idle', 'offline']
@@ -143,7 +144,6 @@ const COLUMN_META: Record<SessionState, { label: string; color: string }> = {
 function SessionCard({
   item,
   hasMultipleHosts,
-  getSessionEvents,
   onOpen,
   onJumpToSession,
   onDismissAlert,
@@ -154,7 +154,6 @@ function SessionCard({
 }: {
   item: CardItem
   hasMultipleHosts: boolean
-  getSessionEvents: (session: string) => ToolEvent[]
   onOpen: (session: Session) => void
   onJumpToSession: (session: string, windowIndex?: number, pane?: string) => void
   onDismissAlert: (evt: ToolEvent) => void
@@ -163,13 +162,12 @@ function SessionCard({
   glanceTrigger: (t: GlanceTarget) => DOMAttributes<HTMLElement>
   mates?: CardItem[]
 }) {
-  const { session, key, signal, event, events, activity, scheduleRunCount } = item
+  const { session, key, signal, event, events, scheduleRunCount, userPrompt, activityLabel } = item
   const isWaiting = signal.state === 'needs_you'
-  const loudEvent = event || getSessionEvents(key).find(e => e.status === 'waiting' || e.status === 'stuck' || e.status === 'error')
+  const loudEvent = event
   // Mirror the sidebar: the user prompt is the task (the "what"), the live
   // activity label / last agent message is the status shown beneath it.
-  const userPrompt = session.user_prompt?.trim() || ''
-  const activityText = (events.find(e => e.status === 'active' && !e.auto_detected)?.message || session.last_agent_message?.trim() || session.prompt_preview?.trim() || '')
+  const activityText = activityLabel || session.last_agent_message?.trim() || session.prompt_preview?.trim() || ''
   const taskPrimary = userPrompt || activityText
   const taskSecondary = userPrompt && activityText && activityText !== userPrompt ? activityText : ''
   return (
@@ -353,9 +351,9 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
     const key = sessionKey(session)
     const events = getSessionEvents(key)
     const activity = getSessionActivity(key)
-    const signal = sessionSignal(session, events, activity, isSessionInActiveTurn(key))
-    const event = events.find(e => e.status === 'waiting' || e.status === 'stuck' || e.status === 'error')
-    return { session, key, signal, event, events, activity }
+    const proj = sessionProjection(session, events, activity, isSessionInActiveTurn(key))
+    const event = events.find(e => LOUD_STATUSES.has(e.status))
+    return { session, key, signal: proj.signal, event, events, userPrompt: proj.userPrompt || '', activityLabel: proj.activityLabel }
   }, [getSessionEvents, getSessionActivity, isSessionInActiveTurn])
 
   const items = useMemo<CardItem[]>(() => foregroundSessions.map(buildItem), [foregroundSessions, buildItem])
@@ -438,7 +436,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
         </h3>
         <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2 items-start">
           {railItems.map(item => (
-            <SessionCard key={item.key} item={item} hasMultipleHosts={hasMultipleHosts} getSessionEvents={getSessionEvents} onOpen={handleCardOpen} onJumpToSession={onJumpToSession} onDismissAlert={onDismissAlert} onContextMenu={openMenu} selected={selectedKey === item.key} glanceTrigger={glance.trigger} />
+            <SessionCard key={item.key} item={item} hasMultipleHosts={hasMultipleHosts} onOpen={handleCardOpen} onJumpToSession={onJumpToSession} onDismissAlert={onDismissAlert} onContextMenu={openMenu} selected={selectedKey === item.key} glanceTrigger={glance.trigger} />
           ))}
         </div>
       </div>
@@ -470,7 +468,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
             </h3>
             <div className={split ? 'grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 items-start' : 'grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2 items-start'}>
               {colItems.map(item => (
-                <SessionCard key={item.key} item={item} hasMultipleHosts={hasMultipleHosts} getSessionEvents={getSessionEvents} onOpen={handleCardOpen} onJumpToSession={onJumpToSession} onDismissAlert={onDismissAlert} onContextMenu={openMenu} selected={selectedKey === item.key} glanceTrigger={glance.trigger} mates={matesByCard.get(item.key)} />
+                <SessionCard key={item.key} item={item} hasMultipleHosts={hasMultipleHosts} onOpen={handleCardOpen} onJumpToSession={onJumpToSession} onDismissAlert={onDismissAlert} onContextMenu={openMenu} selected={selectedKey === item.key} glanceTrigger={glance.trigger} mates={matesByCard.get(item.key)} />
               ))}
             </div>
           </div>

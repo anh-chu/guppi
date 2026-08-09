@@ -11,7 +11,7 @@ import { renameSession, aiNameSession as aiNameSessionApi, killSession as killSe
 import { describeCron } from '../lib/cron'
 import { formatRelativeTime, formatUptime } from '../lib/time'
 import { pathLeaf } from '../lib/path'
-import { isToolSession } from '../lib/sessionState'
+import { isToolSession, sessionProjection, LOUD_STATUSES } from '../lib/sessionState'
 import { hostColor } from '../lib/hostColor'
 import { AgentMark } from './AgentMark'
 import { useGlance } from './GlancePopover'
@@ -44,7 +44,6 @@ interface SidebarProps {
   hosts?: Host[]
   onSessionSelect: (session: Session) => void
   getSessionEvents: (session: string) => ToolEvent[]
-  sessionNeedsAttention: (session: string) => boolean
   isSessionInActiveTurn: (session: string) => boolean
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
   agentCount?: number
@@ -80,42 +79,11 @@ interface RenameState {
   host?: string
 }
 
-const shellCommands = new Set(['bash', 'zsh', 'fish', 'sh', 'dash', 'ksh', 'csh', 'tcsh', 'tmux', 'login'])
-
-function isSessionActive(session: Session): boolean {
-  if (!session.windows) return false
-  return session.windows.some(w =>
-    w.panes?.some(p => p.current_command && !shellCommands.has(p.current_command))
-  )
-}
-
-function getRunningCommands(session: Session): string[] {
-  if (!session.windows) return []
-  const seen = new Set<string>()
-  const cmds: string[] = []
-  for (const w of session.windows) {
-    for (const p of w.panes ?? []) {
-      if (p.current_command && !shellCommands.has(p.current_command) && !seen.has(p.current_command)) {
-        seen.add(p.current_command)
-        cmds.push(p.current_command)
-      }
-    }
-  }
-  return cmds
-}
-
-const SHELL_COMMANDS = new Set(['zsh', 'bash', 'fish', 'sh', 'dash', 'ksh', 'tcsh', 'csh'])
-
-// Agents that report their own working/idle lifecycle via hooks. For these,
-// process-tree presence is not a working signal — a freshly opened agent
-// sitting at its prompt is idle, not working. Their real "working" state comes
-// from hook events (isSessionInActiveTurn).
-const NATIVE_HOOK_TOOLS = new Set(['pi', 'claude', 'opencode', 'codex'])
-
 const statusBadgeConfig = {
   working: { label: 'working', color: 'var(--accent-green)',  bg: 'rgba(89,212,153,0.12)',  pulse: true  },
   waiting: { label: 'waiting', color: 'var(--accent-yellow)', bg: 'rgba(255,197,51,0.12)',  pulse: true  },
   stuck:   { label: 'stuck',   color: 'var(--accent-red)',    bg: 'rgba(255,97,97,0.12)',   pulse: false },
+  error:   { label: 'error',   color: 'var(--accent-red)',    bg: 'rgba(255,97,97,0.12)',   pulse: false },
   idle:    { label: 'idle',    color: 'var(--mute)',          bg: 'transparent',            pulse: false },
   process: { label: 'process', color: 'var(--accent-blue)',   bg: 'rgba(87,193,255,0.12)',  pulse: false },
   shell:   { label: 'shell',   color: 'var(--mute)',          bg: 'transparent',            pulse: false },
@@ -124,7 +92,7 @@ const statusBadgeConfig = {
 type StatusBadge = keyof typeof statusBadgeConfig
 
 const STATUS_BUCKETS: { id: string; label: string; statuses: StatusBadge[] }[] = [
-  { id: 'attention', label: 'Needs attention', statuses: ['stuck', 'waiting'] },
+  { id: 'attention', label: 'Needs attention', statuses: ['error', 'stuck', 'waiting'] },
   { id: 'working',   label: 'Working',         statuses: ['working'] },
   { id: 'idle',      label: 'Idle',            statuses: ['idle'] },
   { id: 'shell',     label: 'Shell',           statuses: ['shell'] },
@@ -188,7 +156,6 @@ export function Sidebar({
   hosts,
   onSessionSelect,
   getSessionEvents,
-  sessionNeedsAttention,
   isSessionInActiveTurn,
   getSessionActivity,
   agentCount = 0,
@@ -668,27 +635,14 @@ export function Sidebar({
 
   // Derive the status badge for a session. Single source of truth shared by the
   // row renderer and the status-grouped view mode.
-  const statusOf = useCallback((session: Session): StatusBadge => {
+  const projectionOf = (session: Session) => {
     const sk = sessionKey(session)
-    const events = getSessionEvents(sk)
-    const hasHookHistory = !!(session.user_prompt?.trim() || session.last_agent_message?.trim())
-    const activeCmd = (() => {
-      for (const w of session.windows ?? []) {
-        for (const p of w.panes ?? []) { if (p.active) return p.current_command }
-      }
-      return session.windows?.[0]?.panes?.[0]?.current_command ?? ''
-    })()
-    const cmdIsShell = SHELL_COMMANDS.has(activeCmd)
-    if (events.some(e => e.status === 'stuck'))   return 'stuck'
-    if (events.some(e => e.status === 'waiting')) return 'waiting'
-    if (isSessionInActiveTurn(sk)) return 'working'
-    if (events.some(e => e.status === 'active' && e.auto_detected && !NATIVE_HOOK_TOOLS.has(e.tool)) && !hasHookHistory) return 'working'
-    if (hasHookHistory && !cmdIsShell) return 'idle'
-    // A recognized native-hook agent present in the pane (e.g. freshly opened,
-    // before its first prompt) is ready and idle, not a generic process.
-    if (events.some(e => e.status === 'active' && e.auto_detected && NATIVE_HOOK_TOOLS.has(e.tool))) return 'idle'
-    return cmdIsShell ? 'shell' : 'process'
-  }, [getSessionEvents, isSessionInActiveTurn])
+    return sessionProjection(session, getSessionEvents(sk), getSessionActivity(sk), isSessionInActiveTurn(sk))
+  }
+
+  const statusOf = useCallback((session: Session): StatusBadge => {
+    return projectionOf(session).status as StatusBadge
+  }, [getSessionEvents, getSessionActivity, isSessionInActiveTurn])
 
   const statusGroups = useMemo(() => {
     if (viewMode !== 'status') return []
@@ -706,59 +660,31 @@ export function Sidebar({
   const renderSessionItem = (session: Session, isHiddenSection = false, inHostGroup = false) => {
     const sk = sessionKey(session)
     const isSelected = selectedSession === sk
-    const needsAttention = sessionNeedsAttention(sk)
-    const events = getSessionEvents(sk)
-    const act = getSessionActivity(sk)
+    const proj = projectionOf(session)
     const isRenaming = renamingSession?.key === sk
     const isOffline = session.host && session.host_online === false
     const stripeColor = hasMultipleHosts ? hostColor(session.host, localHostId) : null
     const hostLabel = stripeColor
       ? (hosts?.find(h => h.id === session.host)?.name ?? session.host_name ?? session.host ?? 'remote')
       : null
-    const promptPreview = session.prompt_preview?.trim()
-    const lastAgentMessage = session.last_agent_message?.trim()
-    const userPrompt = session.user_prompt?.trim()
-    // Live activity label from the active tool event (e.g. "reading files", "running commands"),
-    // or from a waiting event's message (the actual question the agent is blocked on) —
-    // without this, "waiting" status fell through to a stale lastAgentMessage/userPrompt.
-    const activeEvent = events.find(e => e.status === 'active' && !e.auto_detected)
-    const waitingEvent = events.find(e => e.status === 'waiting')
-    const activityLabel = activeEvent?.message || waitingEvent?.message
     const projectName = pathLeaf(session.project_path)
     const worktreeParent = session.is_worktree ? pathLeaf(session.worktree_parent) : ''
-    const agentType = session.agent_type || events[0]?.tool
+    const agentType = session.agent_type || proj.loudEvent?.tool || getSessionEvents(sk)[0]?.tool
     const allPanes = !collapsed
       ? (session.windows ?? []).flatMap(w => (w.panes ?? []).map(p => ({ ...p, windowIndex: w.index })))
       : []
     const showPanes = allPanes.length > 1
-
-    // Status badge: single text indicator replacing the two dot indicators
-    // Live foreground command of the active pane. This is the reliable signal
-    // for whether an agent is still running in the pane right now: while an
-    // agent runs it shows as node/pi/claude/etc, and the moment it exits the
-    // command reverts to the shell. Hook history (user_prompt/agent_message)
-    // persists on the session for its whole lifetime, so it cannot tell us
-    // the agent left — only the live command can.
-    const activeCmd = (() => {
-      for (const w of session.windows ?? []) {
-        for (const p of w.panes ?? []) { if (p.active) return p.current_command }
-      }
-      return session.windows?.[0]?.panes?.[0]?.current_command ?? ''
-    })()
-    const cmdIsShell = SHELL_COMMANDS.has(activeCmd)
-    // The process-tree detector emits an auto_detected active event when it sees
-    // an agent process in the pane. Some agents (e.g. claude) run as a child while
-    // the pane's foreground command still resolves to the shell, so current_command
-    // alone reports "shell" even though the agent is live. Trust the detector here.
-    const detectedAgent = events.find(e => e.status === 'active' && e.auto_detected)
-    // Agent is considered present while its process is foregrounded in the pane,
-    // or while the detector still sees it in the process tree.
-    // Once it exits to a shell, the per-session metadata (icon/prompt/message)
-    // is stale and must not linger, so we suppress it in the row below.
-    const agentPresent = !cmdIsShell || !!detectedAgent
+    const activeCmd = proj.activeCommand
+    const cmdIsShell = proj.commandIsShell
+    const agentPresent = proj.agentPresent
+    const needsAttention = proj.needsAttention
+    const activityLabel = proj.activityLabel
+    const userPrompt = proj.userPrompt
+    const lastAgentMessage = proj.lastAgentMessage
+    const promptPreview = proj.promptPreview
     // Bottom row, always non-empty: live activity → last agent message → terminal
     // capture, falling back to a waiting hint (agent) or the live command (shell).
-    const statusBadge = statusOf(session)
+    const statusBadge = proj.status as StatusBadge
     const activityIsLive = agentPresent && !!(activityLabel || lastAgentMessage || promptPreview)
     // While actively working, lastAgentMessage/promptPreview may be stale
     // leftovers from a prior turn — the current userPrompt is more relevant.
@@ -1326,7 +1252,7 @@ export function Sidebar({
     const overflow = isExpanded && sessions.length > maxExpandedChildren ? sessions.length - maxExpandedChildren : 0
     const latestStatus = latest ? statusOf(latest) : 'idle'
     const latestColor = statusBadgeConfig[latestStatus].color
-    const attentionCount = sessions.filter(s => { const st = statusOf(s); return st === 'stuck' || st === 'waiting' }).length
+    const attentionCount = sessions.filter(s => { const st = statusOf(s); return LOUD_STATUSES.has(st) }).length
     const sessionHost = latest?.host || ''
     // Definition unknown locally: the schedule lives on another peer (its runs may
     // be local here or on another host) or was removed. Without registry sync we
@@ -1704,9 +1630,8 @@ export function Sidebar({
             {backgroundSessions.map(session => {
               const sk = sessionKey(session)
               const isSelected = selectedSession === sk
-              const active = isSessionActive(session)
-              const cmds = getRunningCommands(session)
-              const cmdLabel = cmds.join(' · ')
+              const proj = projectionOf(session)
+              const cmdLabel = proj.runningCommands.join(' · ')
               return (
                 <li key={sk}>
                   <div
@@ -1730,11 +1655,11 @@ export function Sidebar({
                     <span
                       className={cn(
                         'w-1.5 h-1.5 rounded-full shrink-0 transition-colors',
-                        active
+                        proj.signal.state === 'working'
                           ? 'bg-success animate-[pulse_1.5s_ease-in-out_infinite]'
                           : 'bg-muted-foreground/40',
                       )}
-                      title={active ? 'running' : 'idle'}
+                      title={proj.signal.state === 'working' ? 'running' : 'idle'}
                     />
                     {renamingSession?.key === sk ? (
                       <input

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ToolEvent } from '../hooks/useToolEvents'
 import { usePreferences } from '../hooks/usePreferences'
 import { toolColors, statusConfig } from '../theme'
+import { LOUD_STATUSES } from '../lib/sessionState'
 import { cn } from '../lib/utils'
 import { HeaderOverflow } from './HeaderOverflow'
 
@@ -132,7 +133,7 @@ export function TopBar({
   updateApplying,
   onDismissUpdate,
 }: TopBarProps) {
-  const actionable = useMemo(() => events.filter(e => e.status === 'waiting' || e.status === 'error' || e.status === 'stuck'), [events])
+  const actionable = useMemo(() => events.filter(e => LOUD_STATUSES.has(e.status)), [events])
   const [showAll, setShowAll] = useState(false)
   const dismissTimers = useRef<Map<string, number>>(new Map())
   const { prefs } = usePreferences()
@@ -151,7 +152,7 @@ export function TopBar({
     if (seconds <= 0) return
 
     events.forEach((evt, i) => {
-      if (evt.status !== 'waiting' && evt.status !== 'error' && evt.status !== 'stuck') return
+      if (!LOUD_STATUSES.has(evt.status)) return
       const key = `${evt.tool}-${evt.session}-${evt.pane}-${i}`
       if (dismissTimers.current.has(key)) return
       const timer = window.setTimeout(() => {

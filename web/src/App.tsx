@@ -33,7 +33,7 @@ import { RecoveryPanel } from './components/RecoveryPanel'
 import { useCrashedSessions } from './hooks/useCrashedSessions'
 import { useSelfUpdate, type UpdateStatus } from './hooks/useSelfUpdate'
 import { applyTheme } from './theme'
-import { sessionSignal } from './lib/sessionState'
+import { sessionSignal, LOUD_STATUSES } from './lib/sessionState'
 import { generateKeyBetween } from 'fractional-indexing'
 import { terminalPool, keyFor as poolKeyFor } from './lib/terminalPool'
 
@@ -90,7 +90,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const refreshGroups = groupSync.refresh
   const { setTree: setGroupTree, setName: setGroupName, setRank: setGroupRank, deleteGroup, forceAiName, namingGroupId } = groupSync
 
-  const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
+  const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
   const { getSessionActivity, handleActivityEvent } = useActivity()
   const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications()
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
@@ -1074,7 +1074,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // Keep the browser title stable unless user attention is needed.
   useEffect(() => {
     const needsAttention = allToolEvents.some(
-      evt => evt.status === 'waiting' || evt.status === 'error' || evt.status === 'stuck',
+      evt => LOUD_STATUSES.has(evt.status),
     )
     document.title = needsAttention ? 'Termyard - Attention needed' : 'Termyard'
   }, [allToolEvents])
@@ -1231,10 +1231,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             hosts={hosts}
             onSessionSelect={handleSessionSelect}
             getSessionEvents={getSessionEvents}
-            sessionNeedsAttention={sessionNeedsAttention}
             isSessionInActiveTurn={isSessionInActiveTurn}
             getSessionActivity={getSessionActivity}
-            agentCount={allToolEvents.filter(e => e.auto_detected || e.status === 'waiting' || e.status === 'error' || e.status === 'stuck').length}
+            agentCount={allToolEvents.filter(e => e.auto_detected || LOUD_STATUSES.has(e.status)).length}
             glance={glance}
             onToggleCollapse={() => setSidebarCollapsed(c => !c)}
             layoutGroups={layoutGroups}
