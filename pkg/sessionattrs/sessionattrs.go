@@ -84,6 +84,11 @@ func NewStore() (*Store, error) {
 	return s, nil
 }
 
+// Path returns the file system path where the store is persisted.
+func (s *Store) Path() string {
+	return s.path
+}
+
 // Snapshot returns a copy of every retained attribute (including tombstones).
 // Used to seed a freshly-connected peer so it can reconcile via per-key LWW.
 func (s *Store) Snapshot() map[string]Attr {
@@ -128,10 +133,17 @@ func (s *Store) Sets() Sets {
 func (s *Store) Set(key string, background, hidden bool) (Attr, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cur := s.attrs[key]
+	cur, priorExists := s.attrs[key]
+
 	a := Attr{Background: background, Hidden: hidden, ScheduleID: cur.ScheduleID, UpdatedAt: time.Now()}
 	s.put(key, a)
 	if err := s.save(); err != nil {
+		// Rollback: restore prior state
+		if priorExists {
+			s.attrs[key] = cur
+		} else {
+			delete(s.attrs, key)
+		}
 		return Attr{}, err
 	}
 	return a, nil

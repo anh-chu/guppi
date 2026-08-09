@@ -58,8 +58,9 @@ export function useSessionAttrs(authenticated: boolean) {
   // server is the writer; we optimistically reflect the change and reconcile
   // from the response. background/hidden default to the current value when
   // omitted, so callers can toggle one bit without disturbing the other.
+  // Returns true iff the POST succeeded (res.ok), false on error.
   const setAttr = useCallback(
-    async (key: string, next: { background?: boolean; hidden?: boolean }) => {
+    async (key: string, next: { background?: boolean; hidden?: boolean }): Promise<boolean> => {
       const background = next.background ?? sets.background.has(key)
       const hidden = next.hidden ?? sets.hidden.has(key)
       // Optimistic local update.
@@ -80,10 +81,16 @@ export function useSessionAttrs(authenticated: boolean) {
         if (res.ok) {
           const body: WireSets = await res.json()
           setSets(toSets(body))
+          return true
+        } else {
+          // Non-2xx response: re-sync from server truth.
+          refresh()
+          return false
         }
       } catch {
         // Network error: re-sync from server truth.
         refresh()
+        return false
       } finally {
         inFlightKeys.current.delete(key)
       }

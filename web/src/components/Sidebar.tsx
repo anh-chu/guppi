@@ -57,10 +57,10 @@ interface SidebarProps {
   forceAiName?: (groupId: string) => Promise<boolean>
   namingGroupId?: string | null
   onPairSessions?: (keyA: string, keyB: string) => void
-  onRemoveFromSplit?: (key: string) => void
   onSessionKilled?: (key: string) => void
   sessionAttrs: SessionAttrSets
   setSessionAttr: (key: string, next: { background?: boolean; hidden?: boolean }) => void
+  backgroundSession: (key: string, next: boolean) => Promise<void>
   // True while the session list is still converging after a WS (re)connect.
   // Pruning per-device ordering then would delete entries for sessions that
   // simply haven't reappeared yet.
@@ -169,10 +169,10 @@ export function Sidebar({
   forceAiName,
   namingGroupId,
   onPairSessions,
-  onRemoveFromSplit,
   onSessionKilled,
   sessionAttrs,
   setSessionAttr,
+  backgroundSession,
   pruningSuspended,
 
   onQuickShell,
@@ -389,13 +389,7 @@ export function Sidebar({
 
   const toggleBackground = (key: string) => {
     const next = !backgroundSet.has(key)
-    if (next) {
-      const inAnyGroup = layoutGroups?.some(g => g.leaves.includes(key))
-      if (inAnyGroup) {
-        onRemoveFromSplit?.(key)
-      }
-    }
-    setSessionAttr(key, { background: next })
+    void backgroundSession(key, next)
     setContextMenu(null)
   }
 

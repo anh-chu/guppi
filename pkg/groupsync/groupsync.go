@@ -345,6 +345,143 @@ func replaceStrings(v any, olds, news []string) (any, bool) {
 	}
 }
 
+// RemoveSessionKey prunes a session key from all group trees. For every live
+// group with a non-empty tree, unmarshal the tree JSON and remove all leaves
+// matching the key using removeLeafAny. If a tree becomes empty, set DeletedAt
+// to mark it as tombstoned. Otherwise remarshal and bump TreeUpdatedAt.
+// Returns the map of changed groups (id -> new Group), prior state, and any
+// error. If no trees contain the key, returns (nil, nil, nil) with no save.
+// On error, no changes are persisted.
+func (s *Store) RemoveSessionKey(key string) (changed map[string]Group, prior map[string]Group, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pruned := make(map[string]Group) // local map of pruned groups (not yet assigned to s.groups)
+	prior = make(map[string]Group)
+	now := time.Now()
+
+	// First pass: compute all pruned trees without touching s.groups
+	for id, g := range s.groups {
+		if !g.DeletedAt.IsZero() || len(g.Tree) == 0 {
+			continue
+		}
+
+		var tree any
+		if err := json.Unmarshal(g.Tree, &tree); err != nil {
+			return nil, nil, err
+		}
+
+		updated, removed := removeLeafAny(tree, key)
+		if !removed {
+			continue
+		}
+
+		prior[id] = g // save prior state for potential rollback
+
+		if updated == nil {
+			// Tree emptied; tombstone the group
+			g.DeletedAt = now
+		} else {
+			// Tree still has content; remarshal
+			raw, err := json.Marshal(updated)
+			if err != nil {
+				return nil, nil, err
+			}
+			g.Tree = raw
+			g.TreeUpdatedAt = now
+		}
+
+		pruned[id] = g // store in local map
+	}
+
+	if len(pruned) == 0 {
+		return nil, nil, nil
+	}
+
+	// Second pass: assign pruned groups to s.groups and persist
+	for id, g := range pruned {
+		s.groups[id] = g
+	}
+
+	if err := s.save(); err != nil {
+		// Restore prior entries to s.groups before returning error
+		for id, g := range prior {
+			s.groups[id] = g
+		}
+		return nil, nil, err
+	}
+
+	return pruned, prior, nil
+}
+
+// Restore puts back a set of groups after a failed RemoveSessionKey operation.
+// Restores in-memory state regardless of save() error; if save fails, the error
+// is returned but the in-memory state is still restored.
+func (s *Store) Restore(groups map[string]Group) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, g := range groups {
+		s.groups[id] = g
+	}
+	return s.save()
+}
+
+// removeLeafAny recursively removes a leaf node matching the key from any tree
+// structure. Returns (updated tree, removed bool). If the tree becomes empty,
+// returns (nil, true). Mirrors frontend removeLeaf logic.
+func removeLeafAny(v any, key string) (any, bool) {
+	switch x := v.(type) {
+	case map[string]any:
+		typ, ok := x["type"].(string)
+		if !ok {
+			return v, false
+		}
+
+		if typ == "leaf" {
+			if k, ok := x["sessionKey"].(string); ok && k == key {
+				return nil, true
+			}
+			return v, false
+		}
+
+		if typ == "split" {
+			first, ok1 := x["first"]
+			second, ok2 := x["second"]
+			if !ok1 || !ok2 {
+				return v, false
+			}
+
+			newFirst, removed1 := removeLeafAny(first, key)
+			newSecond, removed2 := removeLeafAny(second, key)
+
+			// Both unchanged
+			if !removed1 && !removed2 {
+				return v, false
+			}
+
+			// One or both removed
+			if newFirst == nil && newSecond == nil {
+				return nil, true
+			}
+			if newFirst == nil {
+				return newSecond, true
+			}
+			if newSecond == nil {
+				return newFirst, true
+			}
+
+			// Both still exist; rebuild
+			x["first"] = newFirst
+			x["second"] = newSecond
+			return x, true
+		}
+
+		return v, false
+	default:
+		return v, false
+	}
+}
+
 func (s *Store) save() error {
 	return config.WriteJSON(s.path, s.groups, 0o644)
 }

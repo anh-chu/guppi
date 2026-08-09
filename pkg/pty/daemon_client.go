@@ -258,3 +258,13 @@ func (d *DaemonSession) Close() {
 	d.signalDone()
 	logrus.Debug("daemon session client disconnected (daemon still running)")
 }
+
+// Kill sends a FrameClose frame to the daemon, instructing it to
+// terminate the shell and exit, then closes the local connection.
+// Unlike Close, this actually shuts down the daemon process.
+func (d *DaemonSession) Kill() {
+	frame := encodeFrame(FrameClose, nil)
+	d.conn.Write(frame)
+	d.conn.Close()
+	d.signalDone()
+}

@@ -26,6 +26,7 @@ interface OverviewProps {
   onJumpToSession: (session: string, windowIndex?: number, pane?: string) => void
   onDismissAlert: (evt: ToolEvent) => void
   setSessionAttr: (key: string, next: { background?: boolean; hidden?: boolean }) => void
+  backgroundSession: (key: string, next: boolean) => Promise<void>
   onSessionKilled?: (key: string) => void
   onOpenFile?: (path: string, cwd?: string, hostId?: string, sessionName?: string) => boolean
   // Tiled layout groups (sessionKeys per group). Used to fold non-agent
@@ -252,7 +253,7 @@ function SessionCard({
   )
 }
 
-export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, onSessionKilled, onOpenFile, layoutGroups }: OverviewProps) {
+export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleIDs, onSessionSelect, getSessionEvents, getSessionActivity, isSessionInActiveTurn, onJumpToSession, onDismissAlert, setSessionAttr, backgroundSession, onSessionKilled, onOpenFile, layoutGroups }: OverviewProps) {
   const { schedules } = useSchedules()
   const scheduleById = useMemo(() => new Map(schedules.map(s => [s.id, s])), [schedules])
   const scheduleIdFor = useCallback((session: Session) => (
@@ -506,6 +507,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
           hiddenSet={hiddenSet}
           backgroundSet={backgroundSet}
           setSessionAttr={setSessionAttr}
+          backgroundSession={backgroundSession}
           onSessionKilled={onSessionKilled}
           onClose={() => setMenu(null)}
         />

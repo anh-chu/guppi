@@ -106,6 +106,10 @@ func (r *simpleReader) stop() {
 }
 
 func TestDaemonPTYComparison(t *testing.T) {
+	if os.Getenv("RUN_PTY_BENCH") == "" {
+		t.Skip("skipping PTY benchmark comparison; set RUN_PTY_BENCH=1 to run")
+	}
+
 	const throughputSeconds = 3
 	const latencyIters = 20
 
@@ -159,6 +163,7 @@ func TestDaemonPTYComparison(t *testing.T) {
 		Cols:      120,
 		Rows:      40,
 		SocketDir: socketDir,
+		StateDir:  t.TempDir(),
 	}
 
 	// Start daemon in background.
@@ -203,7 +208,7 @@ func TestDaemonPTYComparison(t *testing.T) {
 		dar.drain(50 * time.Millisecond)
 	}
 	dar.stop()
-	daSess.Close()
+	daSess.Kill()
 	daAvgLat := trimmedAvg(daLats)
 
 	// Wait for daemon to exit.
@@ -213,7 +218,7 @@ func TestDaemonPTYComparison(t *testing.T) {
 			t.Logf("  daemon exited with: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Log("  daemon did not exit within timeout")
+		t.Fatal("  daemon did not exit within timeout")
 	}
 
 	// ============================================================
@@ -277,5 +282,3 @@ func trimmedAvg(ds []time.Duration) time.Duration {
 	}
 	return total / time.Duration(count)
 }
-
-

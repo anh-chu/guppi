@@ -45,6 +45,7 @@ function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> & { 
       setSessionOrderRank={() => {}}
       sessionAttrs={sessionAttrs}
       setSessionAttr={() => {}}
+      backgroundSession={async () => {}}
       pruningSuspended={false}
       layoutGroups={layoutGroups}
       {...props}

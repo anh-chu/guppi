@@ -981,15 +981,49 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			http.Error(w, "key is required", http.StatusBadRequest)
 			return
 		}
+
+		var groupsChanged map[string]groupsync.Group
+		var groupsPrior map[string]groupsync.Group
+
+		// When backgrounding a tiled session, atomically remove it from all group trees.
+		if body.Background && opts.GroupStore != nil {
+			var err error
+			groupsChanged, groupsPrior, err = opts.GroupStore.RemoveSessionKey(body.Key)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
 		a, err := opts.AttrsStore.Set(body.Key, body.Background, body.Hidden)
 		if err != nil {
+			// Rollback group changes if attrs save failed.
+			if len(groupsPrior) > 0 {
+				if restoreErr := opts.GroupStore.Restore(groupsPrior); restoreErr != nil {
+					logrus.WithError(restoreErr).Warn("failed to restore groups after attrs save failure")
+				}
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		hub.BroadcastJSON(map[string]interface{}{
-			"type": "session-attrs-updated",
-			"key":  body.Key,
-		})
+
+		// Broadcast group tree mutations (same pattern as POST /group op=tree).
+		for id, changed := range groupsChanged {
+			if coordinator != nil {
+				coordinator.ObserveTreeMutation(id, groupsPrior[id], changed)
+			}
+			if hub != nil {
+				hub.BroadcastJSON(map[string]interface{}{"type": "groups-updated", "id": id, "op": "tree"})
+			}
+			fanoutGroupDeltaToPeers(opts, id, changed)
+		}
+
+		if hub != nil {
+			hub.BroadcastJSON(map[string]interface{}{
+				"type": "session-attrs-updated",
+				"key":  body.Key,
+			})
+		}
 		fanoutAttrsDeltaToPeers(opts, body.Key, a)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(opts.AttrsStore.Sets())

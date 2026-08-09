@@ -418,9 +418,11 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 **Contract:** Server-authoritative last-write-wins store (mesh-wide). `hidden` excludes session from main view, shown in Hidden section. `background` runs quietly, excluded from glance counts, shown in Hidden/Background sections. Persist across peers. Optimistic local update + WS reconcile.
 
-**Why it matters:** Background/hidden persistence is a contract; losing it would reset user organizational choices on peer reconnect.
+**Backgrounding a tiled session:** When `background=true` for a session in any saved group layout, the backend atomically removes it from every saved group tree (leaf nodes deleted, split panes collapse to remaining sibling, emptied groups tombstoned), sets the background bit, and persists both group trees and attrs. Either the whole operation succeeds (session removed from layout, background bit set, broadcasts fire) or nothing persists—no partial state. Foregrounding (`background=false`) only clears the bit; it never re-adds the session to any layout (clients are responsible for re-tiling it if desired).
 
-**Verification pointer:** `web/src/hooks/useSessionAttrs.ts`, `pkg/sessionattrs/sessionattrs.go`
+**Why it matters:** Background/hidden persistence is a contract; losing it would reset user organizational choices on peer reconnect. Backgrounding a tiled session is an atomic cross-store operation; losing atomicity would orphan sessions in dead layout positions or inconsistently set bits across peers.
+
+**Verification pointer:** `web/src/hooks/useSessionAttrs.ts`, `pkg/sessionattrs/sessionattrs.go`, `pkg/groupsync/groupsync.go`
 
 ### 10.6 Crash & recovery
 

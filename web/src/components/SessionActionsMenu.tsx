@@ -21,6 +21,7 @@ export function SessionActionsMenu({
   hiddenSet,
   backgroundSet,
   setSessionAttr,
+  backgroundSession,
   onSessionKilled,
   onClose,
 }: {
@@ -30,6 +31,7 @@ export function SessionActionsMenu({
   hiddenSet: Set<string>
   backgroundSet: Set<string>
   setSessionAttr: (key: string, next: { background?: boolean; hidden?: boolean }) => void
+  backgroundSession: (key: string, next: boolean) => Promise<void>
   onSessionKilled?: (key: string) => void
   onClose: () => void
 }) {
@@ -102,7 +104,7 @@ export function SessionActionsMenu({
       <div className={item} onClick={() => { setSessionAttr(target.key, { hidden: !hiddenSet.has(target.key) }); onClose() }}>
         {hiddenSet.has(target.key) ? 'Unhide' : 'Hide'}
       </div>
-      <div className={item} onClick={() => { setSessionAttr(target.key, { background: !backgroundSet.has(target.key) }); onClose() }}>
+      <div className={item} onClick={() => { void backgroundSession(target.key, !backgroundSet.has(target.key)); onClose() }}>
         {backgroundSet.has(target.key) ? 'Foreground' : 'Background'}
       </div>
       <div className="my-1 border-t border-hairline" />

@@ -1,6 +1,7 @@
 package pty_test
 
 import (
+	"os"
 	"os/exec"
 	"sync"
 	"testing"
@@ -97,6 +98,10 @@ func (r *ptyReader) drain(dur time.Duration) {
 }
 
 func TestPTYComparison(t *testing.T) {
+	if os.Getenv("RUN_PTY_BENCH") == "" {
+		t.Skip("skipping PTY benchmark comparison; set RUN_PTY_BENCH=1 to run")
+	}
+
 	const throughputDuration = 3 * time.Second
 	const latencyIterations = 20
 

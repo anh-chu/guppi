@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 )
@@ -287,5 +288,150 @@ func TestApplySnapshotNameModeLWW(t *testing.T) {
 	got := s.groups["g1"]
 	if got.NameMode != NameModeAuto || got.NameModeUpdatedAt != mustTime(20) {
 		t.Fatalf("merged = %#v", got)
+	}
+}
+
+func TestRemoveSessionKey(t *testing.T) {
+	tests := []struct {
+		name          string
+		groups        map[string]Group
+		keyToRemove   string
+		wantChanged   []string
+		wantTombstone bool                                                   // if true, group should be deleted (DeletedAt set)
+		checkTree     func(t *testing.T, s *Store, groupID string, tree any) // optional: verify resulting tree structure
+	}{
+		{
+			name: "key in 2-leaf split collapses to sibling",
+			groups: map[string]Group{
+				"g1": {
+					Tree: json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"a"},"second":{"type":"leaf","sessionKey":"b"}}`),
+				},
+			},
+			keyToRemove: "a",
+			wantChanged: []string{"g1"},
+			checkTree: func(t *testing.T, s *Store, groupID string, tree any) {
+				treeMap, ok := tree.(map[string]any)
+				if !ok {
+					t.Fatalf("collapsed tree is not map: %T", tree)
+				}
+				if typ, ok := treeMap["type"].(string); !ok || typ != "leaf" {
+					t.Fatalf("collapsed tree type = %q, want leaf", typ)
+				}
+				if key, ok := treeMap["sessionKey"].(string); !ok || key != "b" {
+					t.Fatalf("collapsed tree sessionKey = %q, want b", key)
+				}
+			},
+		},
+		{
+			name: "key as sole leaf tombstones group",
+			groups: map[string]Group{
+				"g1": {
+					Tree: json.RawMessage(`{"type":"leaf","sessionKey":"a"}`),
+				},
+			},
+			keyToRemove:   "a",
+			wantChanged:   []string{"g1"},
+			wantTombstone: true,
+		},
+		{
+			name: "key absent returns no-op",
+			groups: map[string]Group{
+				"g1": {
+					Tree: json.RawMessage(`{"type":"leaf","sessionKey":"x"}`),
+				},
+			},
+			keyToRemove: "a",
+			wantChanged: nil,
+			checkTree: func(t *testing.T, s *Store, groupID string, tree any) {
+				treeMap, ok := tree.(map[string]any)
+				if !ok {
+					t.Fatalf("tree is not map: %T", tree)
+				}
+				if key, ok := treeMap["sessionKey"].(string); !ok || key != "x" {
+					t.Fatalf("tree sessionKey = %q, want x (unchanged)", key)
+				}
+			},
+		},
+		{
+			name: "key in two groups both pruned",
+			groups: map[string]Group{
+				"g1": {
+					Tree: json.RawMessage(`{"type":"leaf","sessionKey":"a"}`),
+				},
+				"g2": {
+					Tree: json.RawMessage(`{"type":"split","direction":"v","ratio":0.5,"first":{"type":"leaf","sessionKey":"a"},"second":{"type":"leaf","sessionKey":"c"}}`),
+				},
+			},
+			keyToRemove: "a",
+			wantChanged: []string{"g1", "g2"},
+			checkTree: func(t *testing.T, s *Store, groupID string, tree any) {
+				treeMap, ok := tree.(map[string]any)
+				if !ok {
+					t.Fatalf("tree is not map: %T", tree)
+				}
+				// g1 should be tombstoned (no tree check)
+				// g2 should have collapsed to just the "c" leaf
+				if groupID == "g2" {
+					if typ, ok := treeMap["type"].(string); !ok || typ != "leaf" {
+						t.Fatalf("g2 collapsed tree type = %q, want leaf", typ)
+					}
+					if key, ok := treeMap["sessionKey"].(string); !ok || key != "c" {
+						t.Fatalf("g2 collapsed tree sessionKey = %q, want c", key)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "groups.json")
+			s := &Store{path: path, groups: tt.groups}
+
+			changed, prior, err := s.RemoveSessionKey(tt.keyToRemove)
+			if err != nil {
+				t.Fatalf("RemoveSessionKey: %v", err)
+			}
+
+			var gotChanged []string
+			for id := range changed {
+				gotChanged = append(gotChanged, id)
+			}
+			sort.Strings(gotChanged)
+
+			if !reflect.DeepEqual(gotChanged, tt.wantChanged) {
+				t.Fatalf("changed = %#v, want %#v", gotChanged, tt.wantChanged)
+			}
+
+			if len(changed) != len(prior) {
+				t.Fatalf("changed/prior mismatch: len(changed)=%d len(prior)=%d", len(changed), len(prior))
+			}
+
+			// Verify tombstone if expected
+			if tt.wantTombstone && len(changed) > 0 {
+				for id := range changed {
+					if s.groups[id].DeletedAt.IsZero() {
+						t.Fatalf("group %s should be tombstoned", id)
+					}
+				}
+			}
+
+			// Verify resulting tree structure if checkTree provided
+			if tt.checkTree != nil {
+				for groupID := range tt.groups {
+					g, ok := s.groups[groupID]
+					if !ok {
+						continue
+					}
+					if g.DeletedAt.IsZero() && len(g.Tree) > 0 {
+						var tree any
+						if err := json.Unmarshal(g.Tree, &tree); err != nil {
+							t.Fatalf("unmarshal tree for %s: %v", groupID, err)
+						}
+						tt.checkTree(t, s, groupID, tree)
+					}
+				}
+			}
+		})
 	}
 }

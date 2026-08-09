@@ -323,6 +323,11 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     workspaceActions.closePane(sessKey)
   }, [workspaceActions])
 
+  const backgroundSession = useCallback(async (key: string, next: boolean) => {
+    const ok = await setSessionAttr(key, { background: next })
+    if (ok && next) closePane(key)
+  }, [setSessionAttr, closePane])
+
   // Synchronous removal for a deliberately killed session: drop its leaf from
   // the active tree, any background group, and singleView at once, so the pane
   // disappears immediately instead of on the next session refresh.
@@ -1244,10 +1249,10 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             forceAiName={forceAiName}
             namingGroupId={namingGroupId}
             onPairSessions={handlePairSessions}
-            onRemoveFromSplit={closePane}
             onSessionKilled={removeSessionFromLayout}
             sessionAttrs={sessionAttrs}
             setSessionAttr={setSessionAttr}
+            backgroundSession={backgroundSession}
             pruningSuspended={pruningSuspended}
 
             onQuickShell={handleQuickShell}
@@ -1401,6 +1406,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
               onJumpToSession={jumpToSession}
               onDismissAlert={dismissEvent}
               setSessionAttr={setSessionAttr}
+              backgroundSession={backgroundSession}
               onSessionKilled={removeSessionFromLayout}
               layoutGroups={layoutGroups}
             />
