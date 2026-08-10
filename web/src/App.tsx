@@ -280,7 +280,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       const newGroupId = Math.random().toString(36).slice(2)
       const currentRank = syncedGroups[activeGroupId]?.rank ?? null
       if (paneTree) {
-        void setGroupTree(activeGroupId, paneTree)
+        const savedTree = removeLeaf(paneTree, anchor)
+        if (savedTree) void setGroupTree(activeGroupId, savedTree)
+        else if (syncedGroupsRef.current[activeGroupId]) void deleteGroup(activeGroupId)
         if (!currentRank) void setGroupRank(activeGroupId, generateKeyBetween(null, generateKeyBetween(currentRank, null)))
       }
       void setGroupTree(newGroupId, newTree)
@@ -317,7 +319,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         : splitLeaf(prev, key, direction, sessKey)
     })
     setActiveKey(sessKey)
-  }, [detachFromOtherGroups, singleView, paneTree, activeGroupId, syncedGroups, setGroupTree, setGroupRank])
+  }, [detachFromOtherGroups, singleView, paneTree, activeGroupId, syncedGroups, setGroupTree, setGroupRank, deleteGroup])
 
   const closePane = useCallback((sessKey: string) => {
     workspaceActions.closePane(sessKey)
@@ -1034,10 +1036,13 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     // save current group to background and start a new group from singleView
     if (!targetKey && singleView) {
       key = singleView
+      detachFromOtherGroups(singleView)
       const newGroupId = Math.random().toString(36).slice(2)
       const currentRank = syncedGroups[activeGroupId]?.rank ?? null
       if (paneTree) {
-        void setGroupTree(activeGroupId, paneTree)
+        const savedTree = removeLeaf(paneTree, singleView)
+        if (savedTree) void setGroupTree(activeGroupId, savedTree)
+        else if (syncedGroupsRef.current[activeGroupId]) void deleteGroup(activeGroupId)
         if (!currentRank) void setGroupRank(activeGroupId, generateKeyBetween(null, generateKeyBetween(currentRank, null)))
       }
       const newRank = generateKeyBetween(currentRank, null)
@@ -1070,7 +1075,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     for (let n = 2; existingNames.has(name); n++) name = `shell-${n}`
     // Pass splitTarget directly — avoids ref race when event fires on both pane and container
     handleCreateSession(name, cwd, '', host || undefined, undefined, undefined, splitTarget)
-  }, [singleView, activeKey, activeGroupId, paneTree, handleCreateSession])
+  }, [detachFromOtherGroups, singleView, activeKey, activeGroupId, paneTree, deleteGroup, handleCreateSession, syncedGroups, setGroupTree, setGroupRank])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
