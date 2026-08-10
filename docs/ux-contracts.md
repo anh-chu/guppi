@@ -408,7 +408,7 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 ### 10.4 Session discovery & pruning
 
-**Contract:** Snapshot from `/api/sessions` (local + peer merged). Live events: `sessions-changed`, `session-added`, `session-removed`, `session-renamed`. Missing sessions absent from N consecutive snapshots → pruned from UI. Connection state (`connection.live`) drives "offline" display when events WS down. URL rewritten if current session renamed.
+**Contract:** Snapshot from `/api/sessions` (local + peer merged). Live events: `sessions-changed`, `session-added`, `session-removed`, `session-renamed`. Session removal: immediate when `session-removed` event broadcast, OR missing from N consecutive snapshots → pruned from UI. Connection state (`connection.live`) drives "offline" display when events WS down. URL rewritten if current session renamed.
 
 **Why it matters:** Session discovery and prune timing are observable; removing them would break session visibility.
 

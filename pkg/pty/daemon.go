@@ -615,9 +615,22 @@ func (d *daemon) removeClient(conn net.Conn) {
 	d.clientsMu.Unlock()
 }
 
+// closeAllClients closes all attached client connections and their write channels.
+// This is called during shutdown to wake handleClient goroutines blocked in io.ReadFull.
+func (d *daemon) closeAllClients() {
+	d.clientsMu.Lock()
+	defer d.clientsMu.Unlock()
+	for conn, ch := range d.clients {
+		conn.Close()
+		close(ch)
+	}
+	d.clients = make(map[net.Conn]chan []byte)
+}
+
 // shutdown closes the PTY, kills the shell, and closes the listener.
 // It also transitions the lifecycle record to cleanly_ended so the
-// registry knows this was intentional, not a crash.
+// registry knows this was intentional, not a crash. All attached client
+// connections are closed to ensure handleClient goroutines exit promptly.
 func (d *daemon) shutdown() {
 	d.closeOnce.Do(func() {
 		// Transition lifecycle before tearing down.
@@ -634,6 +647,10 @@ func (d *daemon) shutdown() {
 		// the process group.  If the shell already exited this is a no-op.
 		killProcessGroup(d.cmd.Process.Pid)
 		d.ln.Close()
+		// Close all attached client connections. This causes io.ReadFull in
+		// handleClient to return with EOF, allowing those goroutines to exit
+		// and the daemon process to terminate.
+		d.closeAllClients()
 		close(d.shellDone)
 		d.log.Debug("daemon shutdown complete")
 	})

@@ -132,7 +132,9 @@ export function useWorkspace(authenticated: boolean) {
     if (type === 'session-removed') {
       const name = evt.session || ''
       const host = evt.host || ''
-      dispatch({ type: 'sessions/remove', key: makeKey(name, host) })
+      const key = makeKey(name, host)
+      dispatch({ type: 'sessions/remove', key })
+      dispatch({ type: 'view/removeFromLayout', sessionKey: key })
       refresh()
       return true
     }

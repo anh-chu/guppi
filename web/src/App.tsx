@@ -618,6 +618,12 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     }
     if (['session-removed', 'session-renamed', 'session-added', 'sessions-changed'].includes(evt.type)) {
       workspaceActions.onEvent(evt)
+      if (evt.type === 'session-removed') {
+        // Dispose terminal pool entry immediately so WS/pty teardown happens promptly
+        const name = evt.session || ''
+        const host = evt.host || ''
+        terminalPool.dispose(poolKeyFor(name, host || undefined))
+      }
       if (evt.type === 'session-renamed') {
         refreshSessionOrder()
         refreshGroups()

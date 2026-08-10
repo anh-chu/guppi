@@ -43,6 +43,9 @@ func (m *Manager) UpdateSessions(sessions []*model.Session) {
 	// daemon removes its socket on exit, discovery returns empty, and without
 	// this the dead session would linger in the sidebar forever as
 	// "disconnected — reconnecting".
+	// This guard is intentionally all-or-nothing: empty discovery gets full
+	// protection until all vanished sessions are confirmed dead, enforcing strict
+	// confirmation before wiping the entire session list.
 	allDead := false
 	if len(m.sessions) > 0 && len(newMap) == 0 {
 		allDead = m.daemonReg != nil
@@ -70,18 +73,38 @@ func (m *Manager) UpdateSessions(sessions []*model.Session) {
 		}
 	}
 
-	// Guard 2: don't remove more than 50% of sessions in one cycle (unless we
-	// only had 2 or fewer — a single intentional kill would look like 50%).
-	// Removing 1-2 sessions is fine; removing MOST sessions is almost certainly
-	// a discovery bug, not real session death. Skip when Guard 1 already
-	// confirmed every vanished session is genuinely dead.
+	// Guard 2: When removing >50% of sessions (and we have >2 sessions),
+	// only allow removal of sessions individually confirmed dead.
+	// Sessions not confirmed dead are kept, protecting against transient
+	// discovery failures. Skip when Guard 1 already confirmed every vanished
+	// session is genuinely dead.
 	if !allDead && len(removed) > len(m.sessions)/2 && len(m.sessions) > 2 {
-		logrus.WithFields(logrus.Fields{
-			"current":      len(m.sessions),
-			"would_remove": len(removed),
-		}).Warn("state: would remove majority of sessions — skipping removal (likely transient)")
-		m.mu.Unlock()
-		return
+		// Filter removed list: partition into confirmed-dead and unconfirmed.
+		var confirmedDead, unconfirmed []string
+		for _, name := range removed {
+			if m.daemonReg != nil && m.daemonReg.IsSessionDead(name) {
+				confirmedDead = append(confirmedDead, name)
+			} else {
+				unconfirmed = append(unconfirmed, name)
+			}
+		}
+
+		if len(unconfirmed) > 0 {
+			logrus.WithFields(logrus.Fields{
+				"current":              len(m.sessions),
+				"would_remove":         len(removed),
+				"confirmed_dead":       len(confirmedDead),
+				"unconfirmed_retained": len(unconfirmed),
+			}).Warn("state: would remove majority of sessions — removing confirmed dead, retaining unconfirmed (likely transient)")
+			// Restore unconfirmed sessions to newMap so they are not silently deleted
+			for _, name := range unconfirmed {
+				if session, ok := m.sessions[name]; ok {
+					newMap[name] = session
+				}
+			}
+		}
+		// Remove only confirmed dead sessions
+		removed = confirmedDead
 	}
 
 	// Now perform the actual removals. A session that vanishes from discovery

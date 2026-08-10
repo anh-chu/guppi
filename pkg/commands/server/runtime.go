@@ -21,8 +21,8 @@ import (
 	"github.com/anh-chu/termyard/pkg/peer"
 	"github.com/anh-chu/termyard/pkg/portforward"
 	"github.com/anh-chu/termyard/pkg/preferences"
-	"github.com/anh-chu/termyard/pkg/recovery"
 	"github.com/anh-chu/termyard/pkg/pty"
+	"github.com/anh-chu/termyard/pkg/recovery"
 	"github.com/anh-chu/termyard/pkg/scheduler"
 	"github.com/anh-chu/termyard/pkg/server"
 	"github.com/anh-chu/termyard/pkg/sessionattrs"
@@ -47,11 +47,11 @@ type Runtime struct {
 	opts  *server.Options
 
 	// Core stores / registries
-	stateMgr  *state.Manager
-	tracker   *toolevents.Tracker
+	stateMgr   *state.Manager
+	tracker    *toolevents.Tracker
 	actTracker *activity.Tracker
-	daemonReg *pty.Registry
-	adapter   *daemonAdapter
+	daemonReg  *pty.Registry
+	adapter    *daemonAdapter
 
 	// Tool-event monitors
 	reconciler     *toolevents.Reconciler
@@ -463,7 +463,7 @@ func (rt *Runtime) Options() *server.Options {
 // pushes it to the state manager. It is a narrow helper for the launch service
 // and recovery callbacks.
 func (rt *Runtime) refreshSessionsFunc() {
-	rt.refreshSessions(rt.adapter.List())
+	rt.refreshSessions(rt.adapter.refresh())
 }
 
 func (rt *Runtime) refreshSessions(infos []pty.SessionInfo) {
