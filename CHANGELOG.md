@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.3] — Bug Fixes
+
+### Bug Fixes
+- Sidebar: a session left alone in a layout group after other members were killed now returns to standalone display; groups dissolve (locally and on the server) when they drop below 2 members.
+
 ## [4.4.2] — Bug Fixes
 
 ### Bug Fixes

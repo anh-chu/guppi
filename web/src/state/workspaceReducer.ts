@@ -320,14 +320,20 @@ function reconcilePaneTree(
   const nextSingleView =
     view.singleView && validKeys.has(view.singleView) ? view.singleView : null
 
-  // Always reconcile saved groups: prune stale keys, delete empty groups.
+  // Always reconcile saved groups: prune stale keys, delete empty/single-leaf groups.
   const nextGroups = { ...groups }
   for (const groupId of Object.keys(nextGroups)) {
     const group = nextGroups[groupId]
     if (!group.tree) continue
     const nextTree = pruneMissingFromTree(group.tree, validKeys)
     if (nextTree && nextTree !== group.tree) {
-      nextGroups[groupId] = { ...group, tree: nextTree }
+      // Tree was pruned; check if it still has >= 2 leaves.
+      const leaves = getLeaves(nextTree)
+      if (leaves.length < 2) {
+        delete nextGroups[groupId]
+      } else {
+        nextGroups[groupId] = { ...group, tree: nextTree }
+      }
     } else if (!nextTree) {
       // Tree became empty after pruning; delete the group.
       delete nextGroups[groupId]
@@ -435,7 +441,14 @@ export function workspaceReducer(
     }
 
     case 'sessions/remove': {
-      return { ...state, sessions: removeSessionByKey(state.sessions, action.key) }
+      const nextSessions = removeSessionByKey(state.sessions, action.key)
+      const validKeys = new Set(nextSessions.map(s => sessionKey(s)))
+      const { view: nextView, groups: nextGroups } = reconcilePaneTree(
+        state.view,
+        validKeys,
+        state.groups,
+      )
+      return { ...state, sessions: nextSessions, view: nextView, groups: nextGroups }
     }
 
     case 'groups/snapshot':

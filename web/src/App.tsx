@@ -249,8 +249,16 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     for (const [id, g] of Object.entries(syncedGroupsRef.current)) {
       if (id === active || !findLeaf(g.tree, sessKey)) continue
       const pruned = removeLeaf(g.tree, sessKey)
-      if (pruned === null) void deleteGroup(id)
-      else void setGroupTree(id, pruned)
+      if (pruned === null) {
+        void deleteGroup(id)
+      } else {
+        const prunedLeaves = getLeaves(pruned)
+        if (prunedLeaves.length < 2) {
+          void deleteGroup(id)
+        } else {
+          void setGroupTree(id, pruned)
+        }
+      }
     }
   }, [deleteGroup, setGroupTree])
 
@@ -326,11 +334,12 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // the active tree, any background group, and singleView at once, so the pane
   // disappears immediately instead of on the next session refresh.
   const removeSessionFromLayout = useCallback((sessKey: string) => {
+    detachFromOtherGroups(sessKey)
     workspaceActions.removeFromLayout(sessKey)
     // Explicit kill: dispose the pool entry so terminal/WS tear down.
     const { host, name } = parseSessionKey(sessKey)
     terminalPool.dispose(poolKeyFor(name, host || undefined))
-  }, [workspaceActions])
+  }, [detachFromOtherGroups, workspaceActions])
 
   const popOutPane = useCallback((sessKey: string) => {
     setSingleView(null)
@@ -1088,6 +1097,10 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         activeKey: activeLeaf,
         name: group?.name ?? (id === activeGroupId ? activeGroupName || undefined : undefined),
       }
+    }).filter(g => {
+      // Keep groups with >= 2 leaves, or keep the active group if paneTree exists
+      // (the dissolution effect will handle transient single-leaf active groups)
+      return g.leaves.length >= 2 || (g.id === activeGroupId && paneTree)
     }).sort((a, b) => {
       const ar = syncedGroups[a.id]?.rank ?? (a.id === activeGroupId ? activeGroup?.rank ?? '' : '')
       const br = syncedGroups[b.id]?.rank ?? (b.id === activeGroupId ? activeGroup?.rank ?? '' : '')

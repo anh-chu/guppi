@@ -8,6 +8,7 @@ import {
   type WorkspaceState,
   type LegacyMigrationInput,
 } from './workspaceReducer'
+import { getLeaves } from '../lib/paneTree'
 import type { Session } from '../hooks/useSessions'
 
 function sess(name: string, host = ''): Session {
@@ -156,6 +157,49 @@ describe('workspaceReducer', () => {
     expect(s2g1Tree && s2g1Tree.type === 'leaf' && s2g1Tree.sessionKey).toBe('alpha')
     // g2's tree is pruned away, and the group is deleted
     expect(s2.groups.g2).toBeUndefined()
+  })
+
+  it('authoritative snapshot deletes a group when pruned to single-leaf', () => {
+    const s0 = createInitialWorkspaceState()
+    const s1 = reduce(
+      s0,
+      snapshot([sess('alpha'), sess('beta'), sess('gamma')], 1, 0, false),
+      { type: 'groups/snapshot', groups: {
+        g1: { tree: { type: 'split', direction: 'h', ratio: 0.5, first: { type: 'leaf', sessionKey: 'alpha' }, second: { type: 'leaf', sessionKey: 'beta' } }, rank: 'a0' },
+      }, generation: 1 },
+    )
+    // g1 has two leaves: alpha and beta
+    const g1Before = s1.groups.g1?.tree
+    if (g1Before && g1Before.type === 'split') {
+      const leaves = [getLeaves(g1Before)]
+      expect(leaves[0]?.length).toBe(2)
+    }
+    // Authoritative snapshot: only alpha and gamma remain, beta is gone.
+    const s2 = workspaceReducer(s1, {
+      type: 'sessions/snapshot',
+      sessions: [sess('alpha'), sess('gamma')],
+      generation: 2,
+      now: 0,
+      authoritative: true,
+    })
+    // g1 is now single-leaf (alpha only) and must be deleted
+    expect(s2.groups.g1).toBeUndefined()
+  })
+
+  it('sessions/remove deletes a group when pruned to single-leaf', () => {
+    const s0 = createInitialWorkspaceState()
+    const s1 = reduce(
+      s0,
+      snapshot([sess('alpha'), sess('beta')], 1, 0, false),
+      { type: 'groups/snapshot', groups: {
+        g1: { tree: { type: 'split', direction: 'h', ratio: 0.5, first: { type: 'leaf', sessionKey: 'alpha' }, second: { type: 'leaf', sessionKey: 'beta' } }, rank: 'a0' },
+      }, generation: 1 },
+    )
+    // g1 has two leaves: alpha and beta
+    expect(s1.groups.g1).toBeDefined()
+    // Remove beta: the group should be left with just alpha (single-leaf) and deleted
+    const s2 = workspaceReducer(s1, { type: 'sessions/remove', key: 'beta' })
+    expect(s2.groups.g1).toBeUndefined()
   })
 
   it('renames a session across sessions, view, and wiki state', () => {

@@ -24,6 +24,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
   - [1.5 localStorage persistence (Overview)](#15-localstorage-persistence-overview)
 - [2. Sidebar](#2-sidebar)
   - [2.1 Sidebar grouping modes](#21-sidebar-grouping-modes)
+  - [2.1a Layout group dissolution](#21a-layout-group-dissolution)
   - [2.2 Sidebar collapse](#22-sidebar-collapse)
   - [2.3 Sidebar width adjustment](#23-sidebar-width-adjustment)
   - [2.4 Session row (Sidebar)](#24-session-row-sidebar)
@@ -153,6 +154,14 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 **Why it matters:** Status view is an optional grouping mode; removing it would eliminate an alternative organization strategy.
 
 **Verification pointer:** `web/src/components/Sidebar.tsx`
+
+### 2.1a Layout group dissolution
+
+**Contract:** A layout group (custom pane grouping) is dissolved when its member count drops below 2. When a session is killed or removed, if its group is left with a single remaining member (or none), the group is deleted: its server record is removed, and the Sidebar no longer displays it as a group header. The remaining session returns to standalone display (not under a group header). This applies to both active and background groups.
+
+**Why it matters:** Single-leaf groups are UI clutter and confuse the grouping model (a group by definition has multiple members); dissolving them keeps the UI consistent and prevents stale group records from lingering after kills.
+
+**Verification pointer:** `web/src/state/workspaceReducer.ts` (reconcilePaneTree, sessions/remove case), `web/src/App.tsx` (detachFromOtherGroups, removeSessionFromLayout, layoutGroups memo)
 
 ### 2.2 Sidebar collapse
 
