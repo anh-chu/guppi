@@ -23,6 +23,16 @@ import (
 	"github.com/anh-chu/termyard/pkg/ws"
 )
 
+// DaemonReg is the interface for daemon registry operations (session creation, termination, capture).
+type DaemonReg interface {
+	Create(name, shell, cwd string, cols, rows uint16) (pty.SessionInfo, error)
+	Kill(name string) error
+	Capture(name string) (string, error)
+	CaptureTail(name string, maxBytes int) (string, error)
+	SocketPath(name string) string
+	List() []pty.SessionInfo
+}
+
 // Options configures the termyard HTTP/WebSocket server.
 //
 // The struct is intentionally flat so existing callers using keyed field
@@ -49,7 +59,6 @@ type Options struct {
 	Tracker         *toolevents.Tracker
 	ActivityTracker *activity.Tracker
 	Detector        *toolevents.Detector
-	RefreshSessions func()              // triggers daemon state refresh
 	OnDaemonOutput  func(paneID string) // called on PTY output for daemon sessions (silence monitor)
 	CWDResolver     toolevents.CWDResolver
 
@@ -70,7 +79,7 @@ type Options struct {
 
 	// Launch / registry
 	Launch    *sessionlaunch.Service
-	DaemonReg *pty.Registry
+	DaemonReg DaemonReg
 	Hub       *ws.Hub
 
 	// Push notifications / media

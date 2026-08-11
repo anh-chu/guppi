@@ -77,8 +77,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 	sort.Strings(routes)
 
 	want := []string{
-		"DELETE /api/crashed-sessions",
-		"DELETE /api/crashed-sessions/{id}",
 		"DELETE /api/peers/{fp}",
 		"DELETE /api/portforward/{port}",
 		"DELETE /api/schedules/{id}",
@@ -93,7 +91,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"GET /api/artifacts",
 		"GET /api/auth/check",
 		"GET /api/auth/status",
-		"GET /api/crashed-sessions",
 		"GET /api/groups",
 		"GET /api/hosts",
 		"GET /api/pane-capture",
@@ -126,7 +123,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"POST /api/auth/login",
 		"POST /api/auth/logout",
 		"POST /api/auth/setup",
-		"POST /api/crashed-sessions/{id}/recover",
 		"POST /api/group/name",
 		"POST /api/groups",
 		"POST /api/peers",

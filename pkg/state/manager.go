@@ -77,26 +77,10 @@ type Manager struct {
 	subscribers []chan StateEvent
 }
 
-// CrashedSessionInfo carries a crashed session record from the daemon
-// lifecycle store for state-change broadcasts.
-type CrashedSessionInfo struct {
-	ID         string `json:"id"`
-	Shell      string `json:"shell"`
-	Cwd        string `json:"cwd"`
-	Cols       uint16 `json:"cols"`
-	Rows       uint16 `json:"rows"`
-	CreatedAt  string `json:"created_at"`
-	DaemonPID  int    `json:"daemon_pid"`
-	CrashTime  string `json:"crash_time,omitempty"`
-	Generation string `json:"generation"`
-}
-
 // DaemonRegistry is the subset of pty.Registry needed by the state manager.
 type DaemonRegistry interface {
 	List() []pty.SessionInfo
 	Capture(name string) (string, error)
-	CrashedSessions() []CrashedSessionInfo
-	IsSessionDead(name string) bool
 }
 
 // TailCapturer is the optional subset of pty.Registry that supports a bounded

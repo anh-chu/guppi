@@ -163,7 +163,6 @@ func TestDaemonPTYComparison(t *testing.T) {
 		Cols:      120,
 		Rows:      40,
 		SocketDir: socketDir,
-		StateDir:  t.TempDir(),
 	}
 
 	// Start daemon in background.

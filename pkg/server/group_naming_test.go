@@ -21,7 +21,7 @@ func TestGroupNaming_CreationAtTwoMembersTriggersGeneration(t *testing.T) {
 	c, store, stateMgr, srv, count := setupTestCoordinator(t)
 	defer srv.Close()
 
-	stateMgr.UpdateSessions(testSessions("alpha", "beta"))
+	addTestSessions(stateMgr, "alpha", "beta")
 	after, _ := store.SetTree("g1", tree("alpha", "beta"))
 
 	c.ObserveTreeMutation("g1", groupsync.Group{}, after)
@@ -39,7 +39,7 @@ func TestGroupNaming_RatioReorderRankMetadataDoNotTrigger(t *testing.T) {
 	c, store, stateMgr, srv, count := setupTestCoordinator(t)
 	defer srv.Close()
 
-	stateMgr.UpdateSessions(testSessions("alpha", "beta"))
+	addTestSessions(stateMgr, "alpha", "beta")
 	_, _ = store.SetTree("g1", tree("alpha", "beta"))
 	before, _ := store.Get("g1")
 	// Swapped leaf order and different split direction/ratio; membership identical.
@@ -57,12 +57,12 @@ func TestGroupNaming_AddRemoveMembershipTriggersRefresh(t *testing.T) {
 	c, store, stateMgr, srv, count := setupTestCoordinator(t)
 	defer srv.Close()
 
-	stateMgr.UpdateSessions(testSessions("alpha", "beta"))
+	addTestSessions(stateMgr, "alpha", "beta")
 	g, _ := store.SetTree("g1", tree("alpha", "beta"))
 	c.ObserveTreeMutation("g1", groupsync.Group{}, g)
 	waitForNamed(t, store, "g1", "name-2")
 
-	stateMgr.UpdateSessions(testSessions("alpha", "beta", "gamma"))
+	addTestSessions(stateMgr, "alpha", "beta", "gamma")
 	before, _ := store.Get("g1")
 	after, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
 	c.ObserveTreeMutation("g1", before, after)
@@ -81,7 +81,7 @@ func TestGroupNaming_ManualModeBlocksAutomaticTrigger(t *testing.T) {
 	c, store, stateMgr, srv, count := setupTestCoordinator(t)
 	defer srv.Close()
 
-	stateMgr.UpdateSessions(testSessions("alpha", "beta"))
+	addTestSessions(stateMgr, "alpha", "beta")
 	g, _ := store.SetTree("g1", tree("alpha", "beta"))
 	g, _ = store.SetName("g1", "user-name", groupsync.NameModeManual)
 
@@ -105,7 +105,7 @@ func TestGroupNaming_BurstCoalescesToLatestFingerprint(t *testing.T) {
 	c, store, stateMgr, srv, count := setupTestCoordinator(t)
 	defer srv.Close()
 
-	stateMgr.UpdateSessions(testSessions("alpha", "beta", "gamma", "delta"))
+	addTestSessions(stateMgr, "alpha", "beta", "gamma", "delta")
 	g, _ := store.SetTree("g1", tree("alpha", "beta"))
 	c.ObserveTreeMutation("g1", groupsync.Group{}, g)
 	waitForNamed(t, store, "g1", "name-2")
@@ -146,7 +146,7 @@ func TestGroupNaming_StaleResultDiscarded(t *testing.T) {
 	defer srv.Close()
 	c.debounce = 200 * time.Millisecond
 
-	stateMgr.UpdateSessions(testSessions("alpha", "beta", "gamma", "delta"))
+	addTestSessions(stateMgr, "alpha", "beta", "gamma", "delta")
 	g, _ := store.SetTree("g1", tree("alpha", "beta"))
 	c.ObserveTreeMutation("g1", groupsync.Group{}, g)
 	waitName(t, store, "g1")
@@ -174,7 +174,7 @@ func TestGroupNaming_ForceBypassesGateAndSwitchesToAuto(t *testing.T) {
 	c, store, stateMgr, srv, count := setupTestCoordinator(t)
 	defer srv.Close()
 
-	stateMgr.UpdateSessions(testSessions("alpha", "beta", "gamma"))
+	addTestSessions(stateMgr, "alpha", "beta", "gamma")
 	_, _ = store.SetTree("g1", tree("alpha", "beta"))
 	_, _ = store.SetName("g1", "manual", groupsync.NameModeManual)
 
@@ -231,6 +231,13 @@ func testSessions(names ...string) []*model.Session {
 		}
 	}
 	return sessions
+}
+
+// addTestSessions adds test sessions to the state manager.
+func addTestSessions(stateMgr *state.Manager, names ...string) {
+	for _, sess := range testSessions(names...) {
+		stateMgr.AddSession(sess)
+	}
 }
 
 func tree(members ...string) json.RawMessage {

@@ -22,9 +22,7 @@ type fakePreviewRegistry struct {
 	tailCalls    int
 }
 
-func (f *fakePreviewRegistry) List() []pty.SessionInfo               { return nil }
-func (f *fakePreviewRegistry) CrashedSessions() []CrashedSessionInfo { return nil }
-func (f *fakePreviewRegistry) IsSessionDead(name string) bool        { return f.dead[name] }
+func (f *fakePreviewRegistry) List() []pty.SessionInfo { return nil }
 
 func (f *fakePreviewRegistry) Capture(name string) (string, error) {
 	f.mu.Lock()
@@ -144,9 +142,7 @@ type fakeFallbackRegistry struct {
 	captureHook  func(name string) (string, error)
 }
 
-func (f *fakeFallbackRegistry) List() []pty.SessionInfo               { return nil }
-func (f *fakeFallbackRegistry) CrashedSessions() []CrashedSessionInfo { return nil }
-func (f *fakeFallbackRegistry) IsSessionDead(name string) bool        { return false }
+func (f *fakeFallbackRegistry) List() []pty.SessionInfo { return nil }
 func (f *fakeFallbackRegistry) Capture(name string) (string, error) {
 	f.captureCalls++
 	if f.captureHook != nil {
@@ -300,27 +296,6 @@ func TestPreview_EvictedOnRemoveSession(t *testing.T) {
 	m.RemoveSession("s1")
 	if m.preview("s1") != "" {
 		t.Fatal("preview string not evicted by RemoveSession")
-	}
-}
-
-func TestPreview_EvictedOnUpdateSessions(t *testing.T) {
-	reg := &fakePreviewRegistry{
-		tailHook: func(string, int) (string, error) { return "$ x", nil },
-		dead:     map[string]bool{"s1": true},
-	}
-	m := newManagerWithPreview(reg)
-	m.sessions["s1"] = &model.Session{Name: "s1"}
-	m.meta["s1"] = SessionMetadata{}
-	m.refreshPreviewSync("s1")
-
-	if m.preview("s1") == "" {
-		t.Fatal("preview missing before UpdateSessions removal")
-	}
-
-	m.UpdateSessions(nil) // discovery empty, session confirmed dead
-
-	if m.preview("s1") != "" {
-		t.Fatal("preview string not evicted by UpdateSessions removal")
 	}
 }
 

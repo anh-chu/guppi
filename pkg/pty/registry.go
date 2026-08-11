@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -75,14 +76,9 @@ func validSessionID(id string) bool {
 	return true
 }
 
-// Registry manages session daemon lifecycle: create, list, kill, capture.
+// Registry manages session daemon lifecycle: create, kill, capture.
 type Registry struct {
-	dir       string // socket directory
-	failMu    sync.Mutex
-	failCount map[string]int // consecutive liveness failures per session
-
-	recoveryMu     sync.Mutex      // serializes recover/dismiss operations
-	lifecycleStore *LifecycleStore // durable lifecycle state (may be nil)
+	dir string // socket directory
 
 	// stopUnitFn is a test hook that, when non-nil, is called instead of
 	// spawning a real systemctl process. The unit argument is the systemd
@@ -94,24 +90,12 @@ type Registry struct {
 // The directory is created with 0700 if it does not exist.
 func NewRegistry(dir string) *Registry {
 	os.MkdirAll(dir, 0700)
-	return &Registry{dir: dir, failCount: make(map[string]int)}
+	return &Registry{dir: dir}
 }
 
 // Dir returns the registry's socket directory.
 func (r *Registry) Dir() string {
 	return r.dir
-}
-
-// SetLifecycleStore wires the durable lifecycle store into the registry.
-// When set, the registry will differentiate crashes from clean shutdowns
-// and persist session metadata for crash recovery.
-func (r *Registry) SetLifecycleStore(store *LifecycleStore) {
-	r.lifecycleStore = store
-}
-
-// LifecycleStore returns the durable lifecycle store, or nil if not set.
-func (r *Registry) LifecycleStore() *LifecycleStore {
-	return r.lifecycleStore
 }
 
 // SocketPath returns the full path to a session's Unix socket.
@@ -194,9 +178,8 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) (SessionIn
 		"--nonce", nonce,
 	}
 
-	// Pass state dir for lifecycle persistence.
-	stateDir := DefaultStateDir()
-	args = append(args, "--state-dir", stateDir)
+	// State dir is no longer used for lifecycle persistence.
+	// Omit the argument for new-style sessions.
 
 	// Try to wrap in a systemd user scope for cgroup isolation.
 	// Falls back to direct spawn if systemd-run is unavailable or
@@ -947,174 +930,6 @@ func (r *Registry) Adopt() []SessionInfo {
 	return out
 }
 
-// List scans the socket directory for *.sock files, reads their sidecar JSON,
-// and checks liveness by attempting a connection.
-// Stale socket+json files (where the daemon process is confirmed dead) are removed.
-func (r *Registry) List() []SessionInfo {
-	entries, err := filepath.Glob(filepath.Join(r.dir, "*.sock"))
-	if err != nil {
-		return nil
-	}
-
-	type removal struct {
-		name   string
-		reason string
-	}
-
-	var (
-		out   []SessionInfo
-		stale []removal
-		total = len(entries)
-	)
-	// Track which entries we saw for later failure-count cleanup.
-	seen := make(map[string]bool, total)
-
-	for _, sockPath := range entries {
-		name := filepath.Base(sockPath[:len(sockPath)-len(".sock")])
-		seen[name] = true
-
-		conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
-		if err != nil {
-			// If the daemon process is provably gone, remove now instead of
-			// waiting out the 5-tick (~10s) grace window. This matters when a
-			// crash/SIGKILL leaves the .sock file behind: without this, the
-			// session lingers unreachable and the frontend shows its
-			// "Disconnected — Reconnecting" overlay for ~10s. A live-but-
-			// unreachable daemon still falls through to the grace below.
-			if pid := r.readDaemonPID(name); pid > 0 && !processAlive(pid) {
-				stale = append(stale, removal{name: name, reason: "daemon process dead"})
-				continue
-			}
-
-			r.failMu.Lock()
-			r.failCount[name]++
-			fails := r.failCount[name]
-			r.failMu.Unlock()
-
-			if fails < 5 {
-				logrus.WithFields(logrus.Fields{
-					"component": "registry",
-					"name":      name,
-					"fails":     fails,
-				}).Debug("daemon liveness check failed, will retry")
-				// Still include the session so it is not removed from
-				// state during the grace window. Metadata sidecar is
-				// readable regardless of socket health.
-			} else {
-				// Threshold reached. Before removing, verify the daemon
-				// process is actually dead (not just slow/overloaded).
-				pid := r.readDaemonPID(name)
-				if pid > 0 && processAlive(pid) {
-					logrus.WithFields(logrus.Fields{
-						"component": "registry",
-						"name":      name,
-						"pid":       pid,
-						"fails":     fails,
-					}).Warn("daemon process is alive but socket unreachable — keeping session")
-					r.failMu.Lock()
-					delete(r.failCount, name)
-					r.failMu.Unlock()
-				} else {
-					// Process is dead — safe to clean up.
-					stale = append(stale, removal{name: name, reason: "daemon process dead"})
-					continue
-				}
-			}
-		} else {
-			conn.Close()
-
-			// Reset failure counter on successful connect.
-			r.failMu.Lock()
-			delete(r.failCount, name)
-			r.failMu.Unlock()
-		}
-
-		info := SessionInfo{
-			ID:     name,
-			Socket: sockPath,
-		}
-
-		// Read metadata sidecar.
-		metaPath := r.metadataPath(name)
-		if data, err := os.ReadFile(metaPath); err == nil {
-			var meta sessionMeta
-			if json.Unmarshal(data, &meta) == nil {
-				info.Pid = meta.Pid
-				info.ShellPid = meta.ShellPid
-				info.Shell = meta.Shell
-				info.Cwd = meta.Cwd
-				info.Created = meta.Created
-				info.Cols = meta.Cols
-				info.Rows = meta.Rows
-			}
-		}
-
-		out = append(out, info)
-	}
-
-	// Mass-removal protection: if ALL entries would be removed (stale > 0
-	// and live == 0), skip staleness cleanup — this is almost certainly a
-	// transient system event (load spike, tmpfs issue, etc.) and we should
-	// not nuke every session in one go.
-	if len(out) == 0 && len(stale) > 0 {
-		logrus.WithFields(logrus.Fields{
-			"component": "registry",
-			"stale":     len(stale),
-			"total":     total,
-		}).Warn("all sessions appear stale — skipping removal (probable transient event)")
-		// Keep all sessions — do not clean up.
-		for _, s := range stale {
-			r.failMu.Lock()
-			delete(r.failCount, s.name)
-			r.failMu.Unlock()
-		}
-	} else {
-		for _, s := range stale {
-			r.removeStale(s.name, s.reason)
-			r.failMu.Lock()
-			delete(r.failCount, s.name)
-			r.failMu.Unlock()
-		}
-	}
-
-	// Clean up failure counters for sessions whose sockets disappeared
-	// (e.g. killed externally).
-	r.failMu.Lock()
-	for name := range r.failCount {
-		if !seen[name] {
-			delete(r.failCount, name)
-		}
-	}
-	r.failMu.Unlock()
-
-	return out
-}
-
-// IsSessionDead reports whether a session is confirmed to have terminated
-// (cleanly exited, intentionally killed, or dismissed) according to the
-// durable lifecycle store. The state manager uses this to distinguish a
-// genuinely empty discovery (all sessions dead) from a transient discovery
-// failure, so the last session can be removed instead of lingering in the
-// sidebar as "disconnected — reconnecting" forever.
-//
-// Returns false when no lifecycle store is configured or no record exists —
-// conservative, so the mass-removal guards keep protecting against transients
-// in the pre-lifecycle / no-store cases.
-func (r *Registry) IsSessionDead(name string) bool {
-	if r.lifecycleStore == nil {
-		return false
-	}
-	rec, err := r.lifecycleStore.Get(name)
-	if err != nil {
-		return false
-	}
-	switch rec.State {
-	case LifecycleCleanlyEnded, LifecycleTerminationRequested, LifecycleDismissed:
-		return true
-	}
-	return false
-}
-
 // readDaemonPID reads the metadata JSON sidecar and returns the daemon PID,
 // or 0 if the file cannot be read or parsed.
 func (r *Registry) readDaemonPID(name string) int {
@@ -1160,85 +975,39 @@ func processAlive(pid int) bool {
 	return state != 'Z'
 }
 
-// removeStale removes a socket file and its metadata sidecar.
-// If the lifecycle store is configured, this function checks whether the
-// daemon exited intentionally (cleanly_ended, termination_requested, dismissed)
-// or crashed (active state with dead process).  Crashed sessions are NOT
-// deleted — they are left on disk for recovery.
-// In all cleanup paths (including crash preservation), the associated
-// systemd scope is stopped as a best-effort cleanup to prevent orphaned
-// cgroups.
-func (r *Registry) removeStale(name, reason string) {
-	sockPath := r.SocketPath(name)
-	metaPath := r.metadataPath(name)
-
-	// Check lifecycle store for crash detection.
-	if r.lifecycleStore != nil {
-		rec, err := r.lifecycleStore.Get(name)
-		if err == nil {
-			switch rec.State {
-			case LifecycleActive:
-				// The daemon process died but the lifecycle record
-				// was never transitioned out of active — this is a crash.
-				// Preserve the socket and metadata for recovery.
-				logrus.WithFields(logrus.Fields{
-					"component": "registry",
-					"name":      name,
-					"pid":       rec.DaemonPID,
-				}).Warn("daemon crashed — preserving session for recovery")
-				if transErr := r.lifecycleStore.Transition(name, LifecycleActive, LifecycleCrashed); transErr != nil {
-					logrus.WithError(transErr).WithField("name", name).Warn("failed to transition to crashed")
-				}
-				// Stop the systemd scope even though we preserve files.
-				// Use the exact unit from the record we already read.
-				r.StopSystemdUnit(rec.SystemdUnit)
-				// Do NOT delete socket/metadata — they are needed for recovery.
-				return
-
-			case LifecycleCleanlyEnded, LifecycleTerminationRequested, LifecycleDismissed:
-				// Intentionally terminated or dismissed — clean up normally.
-
-			case LifecycleCrashed:
-				// Already marked as crashed, keep preserved.
-				r.StopSystemdUnit(rec.SystemdUnit)
-				return
-
-			default:
-				// Unknown state — clean up cautiously.
-			}
-		}
-		// If no lifecycle record exists (pre-lifecycle daemon),
-		// fall through to normal cleanup.
+// procStartTime reads field 22 (starttime) from /proc/<pid>/stat.
+// Returns 0 if the file cannot be read or parsed.
+func procStartTime(pid int) int64 {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0
 	}
-
-	// Stop systemd scope before removing files.
-	r.stopSystemdScope(name)
-
-	os.Remove(sockPath)
-	os.Remove(metaPath)
-	logrus.WithFields(logrus.Fields{
-		"component": "registry",
-		"name":      name,
-		"reason":    reason,
-	}).Info("removed stale session files")
+	// Fields are space-separated; field 2 (comm) is in parens and may
+	// contain spaces, so find the last ')' first.
+	s := string(data)
+	idx := strings.LastIndex(s, ")")
+	if idx < 0 || idx+2 >= len(s) {
+		return 0
+	}
+	fields := strings.Fields(s[idx+2:])
+	// starttime is field 22 in stat (1-indexed), which is fields[19]
+	// after skipping the first 3 fields (state, ppid, pgrp at positions 3-5).
+	// After ')' we have fields starting at position 3, so starttime is at index 19.
+	if len(fields) < 20 {
+		return 0
+	}
+	v, err := strconv.ParseInt(fields[19], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // Kill sends a FrameClose to the daemon via its socket.
-// It marks the session as intentionally terminated in the lifecycle store
-// so the registry can distinguish explicit kills from crashes.
 // If a systemd scope unit was recorded, it is stopped as a best-effort
 // cleanup (in case the daemon process doesn't exit cleanly).
 func (r *Registry) Kill(name string) error {
-	// Record intentional kill before sending FrameClose.
-	// If the daemon process dies without transitioning to cleanly_ended,
-	// the termination_requested state tells the registry this wasn't a crash.
-	if r.lifecycleStore != nil {
-		// Best-effort — ignore errors (the record may not exist yet or
-		// the state may already have changed).
-		_ = r.lifecycleStore.Transition(name, LifecycleActive, LifecycleTerminationRequested)
-	}
-
-	// Read the systemd unit once for cleanup, regardless of the path taken.
+	// Read the systemd unit once for cleanup.
 	unit := r.readSystemdUnit(name)
 
 	socketPath := r.SocketPath(name)
@@ -1472,181 +1241,6 @@ func (r *Registry) legacyCleanCapture(payload []byte) string {
 	return clean
 }
 
-// CrashedSessions returns lifecycle records for all sessions that crashed
-// (state == "crashed").  Returns nil if no lifecycle store is configured.
-func (r *Registry) CrashedSessions() []LifecycleRecord {
-	if r.lifecycleStore == nil {
-		return nil
-	}
-	return r.lifecycleStore.ListByState(LifecycleCrashed)
-}
-
-// DetectAndCleanupCrashes calls DetectCrashes on the lifecycle store and
-// stops the systemd scope for each newly discovered crashed session.
-// This prevents orphaned cgroups from accumulating across server restarts.
-// Returns the list of newly crashed records (in "crashed" state).
-func (r *Registry) DetectAndCleanupCrashes() []LifecycleRecord {
-	if r.lifecycleStore == nil {
-		return nil
-	}
-	crashed := r.lifecycleStore.DetectCrashes()
-	for _, rec := range crashed {
-		// Stop the exact unit from the crashed record — do NOT re-read
-		// lifecycle state via stopSystemdScope, which could pick up a
-		// concurrently-recovered record and kill the replacement scope.
-		r.StopSystemdUnit(rec.SystemdUnit)
-	}
-	return crashed
-}
-
-// RecoverSession re-spawns a daemon for a previously crashed session.
-// It reads the saved shell/cwd from the lifecycle record, starts a new daemon,
-// and transitions the state to "recovered".  The old stale socket and metadata
-// files are cleaned up before the new daemon is spawned.
-// Optional shellOverride and cwdOverride allow the user to choose a different
-// shell or working directory at recovery time.
-func (r *Registry) RecoverSession(id string, shellOverride ...string) error {
-	if !validSessionID(id) {
-		return fmt.Errorf("invalid session id: %q", id)
-	}
-	r.recoveryMu.Lock()
-	defer r.recoveryMu.Unlock()
-	if r.lifecycleStore == nil {
-		return fmt.Errorf("no lifecycle store configured")
-	}
-
-	rec, err := r.lifecycleStore.Get(id)
-	if err != nil {
-		return fmt.Errorf("get lifecycle record for %s: %w", id, err)
-	}
-	if rec.State != LifecycleCrashed {
-		return fmt.Errorf("session %s is in state %q, not crashed", id, rec.State)
-	}
-
-	shell := rec.Shell
-	cwd := rec.Cwd
-	if len(shellOverride) > 0 && shellOverride[0] != "" {
-		shell = shellOverride[0]
-	}
-	if len(shellOverride) > 1 && shellOverride[1] != "" {
-		cwd = shellOverride[1]
-	}
-
-	// Stop the old systemd scope before removing files and spawning
-	// the replacement.  The crashed session's scope may still have
-	// orphaned child processes (shell, background jobs).
-	// Use the exact unit from the crashed record — do not re-read.
-	r.StopSystemdUnit(rec.SystemdUnit)
-
-	// Transition to recovered BEFORE spawning — the new daemon will
-	// overwrite the lifecycle record with a fresh "active" state on
-	// startup, which is the correct final state.
-	if err := r.lifecycleStore.Transition(id, LifecycleCrashed, LifecycleRecovered); err != nil {
-		return fmt.Errorf("transition to recovered: %w", err)
-	}
-
-	// Clean up old stale files so the new daemon can claim the socket.
-	os.Remove(r.SocketPath(id))
-	os.Remove(r.metadataPath(id))
-
-	// Spawn a new daemon with the saved (or overridden) configuration.
-	_, err = r.Create(id, shell, cwd, rec.Cols, rec.Rows)
-	if err != nil {
-		// Rollback lifecycle state on spawn failure.
-		_ = r.lifecycleStore.Transition(id, LifecycleRecovered, LifecycleCrashed)
-		return fmt.Errorf("re-spawn daemon for %s: %w", id, err)
-	}
-
-	logrus.WithFields(logrus.Fields{
-		"component": "registry",
-		"id":        id,
-		"shell":     shell,
-		"cwd":       cwd,
-	}).Info("recovered crashed session")
-
-	return nil
-}
-
-// DismissSession marks a crashed session as dismissed and cleans up its files.
-func (r *Registry) DismissSession(id string) error {
-	if !validSessionID(id) {
-		return fmt.Errorf("invalid session id: %q", id)
-	}
-	r.recoveryMu.Lock()
-	defer r.recoveryMu.Unlock()
-	return r.dismissSessionLocked(id)
-}
-
-// dismissSessionLocked is the inner implementation; caller must hold recoveryMu.
-func (r *Registry) dismissSessionLocked(id string) error {
-	if r.lifecycleStore == nil {
-		// No lifecycle store — clean up files only (no scope to stop).
-		os.Remove(r.SocketPath(id))
-		os.Remove(r.metadataPath(id))
-		return nil
-	}
-
-	rec, err := r.lifecycleStore.Get(id)
-	if err != nil {
-		// No lifecycle record — clean up files only (pre-lifecycle daemon).
-		os.Remove(r.SocketPath(id))
-		os.Remove(r.metadataPath(id))
-		return nil
-	}
-
-	// Guard: only crashed sessions can be dismissed.  Do NOT stop the
-	// scope before this check — a live session must not be killed just
-	// because someone asked to dismiss it.
-	if rec.State != LifecycleCrashed {
-		return fmt.Errorf("session %s is in state %q, not crashed", id, rec.State)
-	}
-
-	// Stop the exact systemd unit from the crashed record before
-	// cleaning up files.  We use the unit from the already-read record
-	// to avoid re-reading mutable lifecycle state.
-	r.StopSystemdUnit(rec.SystemdUnit)
-
-	if err := r.lifecycleStore.Transition(id, LifecycleCrashed, LifecycleDismissed); err != nil {
-		return fmt.Errorf("transition to dismissed: %w", err)
-	}
-
-	os.Remove(r.SocketPath(id))
-	os.Remove(r.metadataPath(id))
-	return nil
-}
-
-// DismissAll marks all crashed sessions as dismissed and cleans up their files.
-func (r *Registry) DismissAll() error {
-	r.recoveryMu.Lock()
-	defer r.recoveryMu.Unlock()
-	crashed := r.CrashedSessions()
-	for _, rec := range crashed {
-		_ = r.dismissSessionLocked(rec.ID)
-	}
-	return nil
-}
-
-// CleanupCrashedIfDead removes crash-preserved files for a session if the
-// daemon process is confirmed dead and the user hasn't chosen recovery.
-// This is called as a fallback when a session transitions from crashed to
-// cleanly_ended (e.g. the daemon's shell finally exits after a crash).
-func (r *Registry) CleanupCrashedIfDead(id string) {
-	if r.lifecycleStore == nil {
-		return
-	}
-	rec, err := r.lifecycleStore.Get(id)
-	if err != nil || rec.State != LifecycleCrashed {
-		return
-	}
-	if !processAlive(rec.DaemonPID) {
-		// Process long dead — safe to clean up.
-		// Use the exact unit from the already-read crashed record.
-		r.StopSystemdUnit(rec.SystemdUnit)
-		os.Remove(r.SocketPath(id))
-		os.Remove(r.metadataPath(id))
-	}
-}
-
 // StopSystemdUnit stops a specific systemd user scope unit by name.
 // This helper does NOT re-read lifecycle state — the caller is responsible
 // for passing the correct unit (e.g., from an already-read lifecycle record).
@@ -1691,25 +1285,9 @@ func (r *Registry) StopSystemdUnit(unit string) {
 	log.Debug("requested systemd scope stop")
 }
 
-// stopSystemdScope reads the unit name for a session and stops it.
-// Prefer stopSystemdUnit when you already have the unit name from an
-// already-read lifecycle record, to avoid re-reading mutable state.
-func (r *Registry) stopSystemdScope(name string) {
-	unit := r.readSystemdUnit(name)
-	r.StopSystemdUnit(unit)
-}
-
-// readSystemdUnit returns the systemd unit name from the lifecycle record
-// or, as a fallback, from the metadata JSON sidecar.
+// readSystemdUnit returns the systemd unit name from the metadata JSON sidecar.
 func (r *Registry) readSystemdUnit(name string) string {
-	// Try lifecycle record first.
-	if r.lifecycleStore != nil {
-		if rec, err := r.lifecycleStore.Get(name); err == nil && rec.SystemdUnit != "" {
-			return rec.SystemdUnit
-		}
-	}
-
-	// Fallback: read from metadata sidecar.
+	// Read from metadata sidecar.
 	metaPath := r.metadataPath(name)
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
@@ -1767,4 +1345,18 @@ func (r *Registry) CheckAdoptionLockHeld() bool {
 	}
 	// Lock held; another process has exclusive lock
 	return true
+}
+
+// CleanupLegacyStateDir removes lifecycle record files left behind by older
+// versions (the lifecycle store was removed). Called once at boot adoption.
+func CleanupLegacyStateDir() {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	_ = os.RemoveAll(filepath.Join(base, "termyard", "sessions"))
 }

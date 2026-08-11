@@ -38,7 +38,6 @@ func executeSessionDaemon(ctx context.Context, c *cli.Command) error {
 		Shell:       c.String("shell"),
 		Cwd:         c.String("cwd"),
 		SocketDir:   c.String("socket-dir"),
-		StateDir:    c.String("state-dir"),
 		SystemdUnit: c.String("systemd-unit"),
 		BufferSize:  int(c.Int("buffer-size")),
 		Nonce:       c.String("nonce"),
@@ -463,10 +462,6 @@ func init() {
 				Name:     "socket-dir",
 				Usage:    "socket directory",
 				Required: true,
-			},
-			&cli.StringFlag{
-				Name:  "state-dir",
-				Usage: "lifecycle state directory",
 			},
 			&cli.StringFlag{
 				Name:  "systemd-unit",

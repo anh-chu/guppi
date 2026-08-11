@@ -119,10 +119,10 @@ Phase gates: do not start a phase until the previous phase's tasks are checked.
 
 ## Phase 3 — Delete reconciliation machinery (backend)
 
-- [ ] **T12. Delete `UpdateSessions` + guards** (`sessions.go:18-140`);
+- [x] **T12. Delete `UpdateSessions` + guards** (`sessions.go:18-140`);
       shrink `state.DaemonRegistry` (drop `IsSessionDead`,
       `CrashedSessions`, `CrashedSessionInfo`). Update/delete guard tests.
-- [ ] **T13. Delete crash routes + concrete DaemonReg.**
+- [x] **T13. Delete crash routes + concrete DaemonReg.**
       Remove `routes_sessions.go:520-585`; change `Options.DaemonReg`
       (`options.go:73`) from `*pty.Registry` to server interface
       (`Create/Kill/Capture/CaptureTail/SocketPath/List`) implemented by
@@ -130,13 +130,13 @@ Phase gates: do not start a phase until the previous phase's tasks are checked.
       `RefreshSessions` caller and the option field (finishes T8).
       Verify: `curl /api/crashed-sessions` → 404; schedule cap + stats routes
       still work off adapter `List()`; `pkg/peer` compiles untouched.
-- [ ] **T14. Delete registry scanning/crash code.** `List()` scan +
+- [x] **T14. Delete registry scanning/crash code.** `List()` scan +
       failCount/grace, `IsSessionDead`, crash APIs, `SetLifecycleStore`,
       `recoveryMu`, crash branch of `removeStale`. Keep
       `SocketPath/Create/Kill/Capture/CaptureTail/Watch/Scan/Adopt` +
       PID/systemd helpers.
       Verify: build + remaining registry tests green.
-- [ ] **T15. Delete `pkg/pty/lifecycle.go`** + tests; remove lifecycle writes
+- [x] **T15. Delete `pkg/pty/lifecycle.go`** + tests; remove lifecycle writes
       from `daemon.go` (step 3b, `lifecycleStore` field, shutdown
       `Transition`); remove lifecycle-store setup from `runtime.go:90-97`
       (boot cleanup from T6 stays permanently).

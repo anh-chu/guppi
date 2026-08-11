@@ -98,14 +98,6 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 	rt.tracker.EnablePersistence()
 
 	rt.daemonReg = pty.NewRegistry(defaultSessionDir())
-	if lcStore, err := pty.NewLifecycleStore(pty.DefaultStateDir()); err != nil {
-		logrus.WithError(err).Warn("failed to create lifecycle store -- crash recovery disabled")
-	} else {
-		rt.daemonReg.SetLifecycleStore(lcStore)
-		if crashed := rt.daemonReg.DetectAndCleanupCrashes(); len(crashed) > 0 {
-			logrus.WithField("count", len(crashed)).Warn("detected crashed sessions from previous run")
-		}
-	}
 
 	rt.adapter = &daemonAdapter{reg: rt.daemonReg}
 	rt.stateMgr.SetDaemonRegistry(rt.adapter)
@@ -363,7 +355,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		PortForwardStore: portforward.NewStore(),
 		SchedulerStore:   schedulerStore,
 		WikiLite:         rt.wikiSup,
-		DaemonReg:        rt.daemonReg,
+		DaemonReg:        rt.adapter,
 		Launch:           launchSvc,
 		CWDResolver:      rt.adapter,
 		OnDaemonOutput: func(paneID string) {
@@ -510,6 +502,9 @@ func (rt *Runtime) adoptSessionsAtBoot() {
 	} else {
 		defer release()
 	}
+
+	// One-time cleanup of lifecycle records left by pre-watch versions (R11).
+	pty.CleanupLegacyStateDir()
 
 	// Adopt all live daemons synchronously.
 	// Adopt() performs PID-dead stale-file cleanup as specified in the design.
@@ -874,9 +869,6 @@ type registryView interface {
 	Capture(name string) (string, error)
 	CaptureTail(name string, maxBytes int) (string, error)
 	SocketPath(name string) string
-	List() []pty.SessionInfo
-	IsSessionDead(name string) bool
-	CrashedSessions() []pty.LifecycleRecord
 }
 
 // daemonAdapter wraps a registryView and presents one immutable snapshot to
@@ -920,26 +912,6 @@ func (a *daemonAdapter) CaptureTail(name string, maxBytes int) (string, error) {
 }
 
 func (a *daemonAdapter) SocketPath(name string) string { return a.reg.SocketPath(name) }
-
-func (a *daemonAdapter) IsSessionDead(name string) bool { return a.reg.IsSessionDead(name) }
-
-func (a *daemonAdapter) CrashedSessions() []state.CrashedSessionInfo {
-	recs := a.reg.CrashedSessions()
-	out := make([]state.CrashedSessionInfo, len(recs))
-	for i, rec := range recs {
-		out[i] = state.CrashedSessionInfo{
-			ID:         rec.ID,
-			Shell:      rec.Shell,
-			Cwd:        rec.Cwd,
-			Cols:       rec.Cols,
-			Rows:       rec.Rows,
-			CreatedAt:  rec.CreatedAt.Format(time.RFC3339),
-			DaemonPID:  rec.DaemonPID,
-			Generation: rec.Generation,
-		}
-	}
-	return out
-}
 
 func (a *daemonAdapter) SessionCWD(session string) string {
 	for _, d := range a.List() {
