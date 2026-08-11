@@ -285,7 +285,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ### 9.3 Clipboard menu (mobile)
 
-**Contract:** Mobile/coarse-pointer viewports show 8-button bar at bottom. Clipboard button toggles menu: **Paste** (read clipboard text, paste into terminal), **Paste file…** (file-picker, upload to server, path typed into terminal), **Copy** (capture last 40 lines of terminal, modal for selection, copy via system). Menu closes on selection.
+**Contract:** Mobile/coarse-pointer viewports show 9-button bar at bottom. Clipboard button toggles menu: **Paste** (read clipboard text, paste into terminal), **Paste file…** (file-picker, upload to server, path typed into terminal), **Copy** (capture last 40 lines of terminal, modal for selection, copy via system). Menu closes on selection.
 
 **Why it matters:** Mobile clipboard access is a platform-specific contract; removing it would break mobile usage.
 
@@ -301,7 +301,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ### 9.5 Mobile key bar
 
-**Contract:** Appears on coarse-pointer or viewport width <900px (visible only when terminal `keyBarEnabled = true`, i.e., pane is active). Portal-rendered into fixed bottom bar. 8 buttons: **Clipboard menu toggle**, **Ctrl sticky** (toggles, next letter → Ctrl+letter), **Alt sticky** (toggles, next letter → Alt+letter), **Esc** (sends ESC, 0x1b), **Tab** (sends TAB), **Backspace** (sends DEL, 0x7f), **Page Up/Down** (swipeable gesture key, vertical arrows), **Arrow cross** (swipeable gesture key, 4-direction). Sticky modifiers clear on next input; gesture keys auto-repeat if held >260ms, then every 80ms. Dead zone for swipe: 18px threshold before direction fires.
+**Contract:** Appears on coarse-pointer or viewport width <900px (visible only when terminal `keyBarEnabled = true`, i.e., pane is active). Portal-rendered into fixed bottom bar. 9 buttons: **Clipboard menu toggle**, **Compose input** (opens native textarea modal; Send types the text into the terminal without pressing Enter), **Ctrl sticky** (toggles, next letter → Ctrl+letter), **Alt sticky** (toggles, next letter → Alt+letter), **Esc** (sends ESC, 0x1b), **Tab** (sends TAB), **Backspace** (sends DEL, 0x7f), **Page Up/Down** (swipeable gesture key, vertical arrows), **Arrow cross** (swipeable gesture key, 4-direction). Sticky modifiers clear on next input; gesture keys auto-repeat if held >260ms, then every 80ms. Dead zone for swipe: 18px threshold before direction fires.
 
 **Why it matters:** The 260ms hold delay, 80ms repeat, and 18px dead zone are measurable UX parameters; changing them would affect mobile usability.
 

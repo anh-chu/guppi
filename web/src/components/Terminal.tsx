@@ -95,6 +95,8 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
 
   const { prefs } = usePreferences()
   const [showMobileKeyBar, setShowMobileKeyBar] = useState(false)
+  const [composeOpen, setComposeOpen] = useState(false)
+  const [composeText, setComposeText] = useState('')
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [expandedPreviewPath, setExpandedPreviewPath] = useState<string | null>(null)
   const { artifacts: serverArtifacts, refresh: refreshArtifacts } = useArtifacts(sessionName, hostId)
@@ -590,7 +592,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
         </div>
         {showMobileKeyBar && keyBarEnabled && keyBarSlot && createPortal(
           <div className="flex-none pt-1 px-[3px] pb-[3px]">
-            <div className="grid grid-cols-8 gap-1.5 p-1.5 bg-surface border border-hairline rounded-md">
+            <div className="grid grid-cols-9 gap-1.5 p-1.5 bg-surface border border-hairline rounded-md">
               <div className="relative">
                 <button
                   type="button"
@@ -612,6 +614,18 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                   </div>
                 )}
               </div>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { setClipboardMenuOpen(false); setComposeText(''); setComposeOpen(true) }}
+                className="h-10 rounded-sm border border-hairline bg-surface-elevated text-mute flex items-center justify-center transition-colors active:bg-surface"
+                title="Compose input"
+                aria-label="Compose input"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" />
+                </svg>
+              </button>
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
@@ -704,6 +718,49 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
         className="sr-only"
         onChange={handleFileSelection}
       />
+      {composeOpen && (
+        <div
+          className="absolute inset-0 z-30 flex items-end justify-center bg-black/70 p-4"
+          onClick={() => setComposeOpen(false)}
+        >
+          <div
+            className="flex w-full max-w-2xl flex-col rounded-lg border border-hairline bg-surface overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-hairline px-4 py-3 bg-surface-elevated/30">
+              <div className="text-[13px] font-bold uppercase tracking-widest text-ink">Compose Input</div>
+              <button
+                type="button"
+                onClick={() => setComposeOpen(false)}
+                className="rounded-sm border border-hairline px-3 py-1 text-xs font-bold uppercase tracking-widest text-mute hover:text-ink hover:bg-surface-elevated transition-all"
+              >
+                Close
+              </button>
+            </div>
+            <textarea
+              autoFocus
+              value={composeText}
+              onChange={(e) => setComposeText(e.target.value)}
+              placeholder="Type here, then Send to fill the terminal…"
+              className="h-40 resize-none bg-canvas px-4 py-3 font-mono text-[13px] text-ink outline-none"
+              spellCheck={false}
+            />
+            <div className="flex justify-end border-t border-hairline px-4 py-2.5 bg-surface-elevated/30">
+              <button
+                type="button"
+                onClick={() => {
+                  if (composeText) sendText(composeText)
+                  setComposeOpen(false)
+                  focus()
+                }}
+                className="rounded-sm bg-primary px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-primary-foreground transition-all"
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {capturedText && (
         <div
           className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
