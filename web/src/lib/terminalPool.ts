@@ -947,15 +947,23 @@ export class TerminalPool {
           }
         },
         onReplayEnd: () => {
-          this.flushReplayBuffer(entry)
-          // Clear replay window after 100ms to catch any lingering xterm auto-replies
+          // term.write is async: xterm may still be parsing the replayed
+          // buffer (and emitting auto-replies like DA1) long after replay-end
+          // arrives. Start the 100ms grace timer only once the replay write
+          // has been parsed, so lingering auto-replies are still suppressed.
+          this.flushReplayBuffer(entry, () => {
+            if (entry.replayWindowClearTimer !== undefined) {
+              clearTimeout(entry.replayWindowClearTimer)
+            }
+            entry.replayWindowClearTimer = window.setTimeout(() => {
+              entry.inReplayWindow = false
+              entry.replayWindowClearTimer = undefined
+            }, 100)
+          })
           if (entry.replayWindowClearTimer !== undefined) {
             clearTimeout(entry.replayWindowClearTimer)
-          }
-          entry.replayWindowClearTimer = window.setTimeout(() => {
-            entry.inReplayWindow = false
             entry.replayWindowClearTimer = undefined
-          }, 100)
+          }
         },
         onFallback: () => {
           this.flushReplayBuffer(entry)
@@ -1109,10 +1117,17 @@ export class TerminalPool {
     this.writeRaw(entry, text)
   }
 
-  private flushReplayBuffer(entry: PoolEntry): void {
+  private flushReplayBuffer(entry: PoolEntry, onParsed?: () => void): void {
     const all = entry.replayBuffer.flush()
     if (all) {
-      this.writeRaw(entry, all)
+      entry.terminal.write(all, () => {
+        if (!entry.userScrolled) {
+          try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
+        }
+        onParsed?.()
+      })
+    } else {
+      onParsed?.()
     }
   }
 

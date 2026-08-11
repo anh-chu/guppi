@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.4] — Bug Fixes
+
+### Bug Fixes
+- **terminal:** stray characters like `62;4;9;22c` no longer leak into the shell after reconnect/replay. The auto-reply suppression window now closes only after xterm has finished parsing the replayed buffer, so late DA1/DA2/DSR replies from replayed queries are still filtered.
+
 ## [4.4.3] — Bug Fixes
 
 ### Bug Fixes
