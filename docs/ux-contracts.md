@@ -643,7 +643,7 @@ Complete route surface below. Adding/removing routes breaks external integration
 | `/api/active-turns` | GET | — | `[{host?, session}]` | Currently active turns |
 | `/api/tool-event` (bulk) | DELETE | — | 204 | `ClearAll()` |
 | `/api/tool-event` (single) | DELETE | `{host?, session, window?, pane?}` | 204 | Single event clear |
-| `/api/artifacts` | GET | query `session`, `host?` | `{artifacts:[...]}` | Stale flagged |
+| `/api/artifacts` | GET | query `session`, `host?` | `{artifacts:[...]}` | Deleted files evicted; cleared on session kill; >7d dropped at load |
 | `/api/activity` | GET | query `session?` | `[]Activity` | Peer-merged |
 | `/api/stats` | GET | — | System stats | CPU, Memory, load, uptime |
 | `/api/pane-capture` | GET | query `session`, `lines?` (default 40), `host?` | `{text}` | Last N lines; 504 3s timeout |
@@ -707,7 +707,7 @@ Entire protocol: raw JSON `{type: ...}`. Server→browser only; browser frames r
 | type | Payload | Meaning | Trigger |
 |---|---|---|---|
 | `welcome` | `{type, version, commit}` | Server info | On connect |
-| `tool-event` | `{type, tool, status, host, session, window, pane, message, timestamp, artifacts}` | Agent status change | Tool event hook or detector |
+| `tool-event` | `{type, tool, tool_name?, status, host, session, window, pane, message, timestamp, artifacts}` | Agent status change | Tool event hook or detector |
 | `artifacts` | `{type, host, session, artifacts}` | File batch | Artifact-kind tool event |
 | `activity` | `{type, snapshots:[...]}` | Activity snapshot | 5s ticker |
 | `session-attrs-updated` | `{type, origin?, key?}` | Background/hidden updated | Remote attrs applied |
