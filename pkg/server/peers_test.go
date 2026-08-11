@@ -16,6 +16,7 @@ import (
 	"github.com/anh-chu/termyard/pkg/auth"
 	"github.com/anh-chu/termyard/pkg/identity"
 	"github.com/anh-chu/termyard/pkg/peer"
+	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/sessionlaunch"
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
@@ -44,8 +45,8 @@ func newTestOpts(t *testing.T) *Options {
 	sup := peer.NewLinkSupervisor(deps)
 	// Launch is now required; provide a minimal one for tests
 	launchSvc := &sessionlaunch.Service{
-		StateMgr: stateMgr,
-		Refresh:  func() {},
+		StateMgr:   stateMgr,
+		OnLaunched: func(info pty.SessionInfo) {},
 	}
 	return &Options{
 		Identity:       id,

@@ -35,6 +35,12 @@ import (
 	"github.com/anh-chu/termyard/pkg/ws"
 )
 
+// trackedSession holds a live daemon instance and its watcher stop func.
+type trackedSession struct {
+	inst pty.Instance
+	stop func() // stop-and-wait for watcher goroutine
+}
+
 // Runtime assembles the server's long-lived dependencies and exposes explicit
 // Start/Ready/Stop lifecycle control. It owns the goroutines that used to be
 // launched inline in Execute, so startup order, readiness, and cancellation are
@@ -52,6 +58,10 @@ type Runtime struct {
 	actTracker *activity.Tracker
 	daemonReg  *pty.Registry
 	adapter    *daemonAdapter
+
+	// Session authority: in-memory map is the single authority for local membership.
+	sessionsMu sync.Mutex
+	tracked    map[string]trackedSession // indexed by session name
 
 	// Tool-event monitors
 	reconciler     *toolevents.Reconciler
@@ -83,6 +93,7 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		actTracker: activity.NewTracker(),
 		ready:      make(chan struct{}),
 		fgProvider: newForegroundProvider(),
+		tracked:    make(map[string]trackedSession),
 	}
 	rt.tracker.EnablePersistence()
 
@@ -209,8 +220,8 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 				UpdatedAt:  attr.UpdatedAt,
 			}, nil
 		}),
-		Identity: nodeIdentity,
-		Refresh:  rt.refreshSessionsFunc,
+		Identity:   nodeIdentity,
+		OnLaunched: rt.onLaunched,
 		Remote: func(ctx context.Context, req sessionlaunch.Request) (sessionlaunch.Result, error) {
 			peerConn := rt.peerMgr.GetPeerConnection(req.Host)
 			if peerConn == nil {
@@ -355,7 +366,6 @@ func newRuntime(c *cli.Command) (*Runtime, error) {
 		DaemonReg:        rt.daemonReg,
 		Launch:           launchSvc,
 		CWDResolver:      rt.adapter,
-		RefreshSessions:  rt.refreshSessionsFunc,
 		OnDaemonOutput: func(paneID string) {
 			rt.silenceMonitor.RecordOutput(paneID)
 		},
@@ -431,11 +441,16 @@ func (rt *Runtime) Start(parent context.Context) error {
 	go rt.silenceMonitor.Run(rt.ctx)
 	go runShellNameWatcher(rt.ctx, rt.stateMgr, rt.adapter, rt.fgProvider)
 
-	go rt.runDaemonRefresh(rt.ctx)
+	// Enrichment tick: update session fields without changing membership
+	go rt.runEnrichmentTick(rt.ctx)
 
 	if rt.schedulerRunner != nil {
 		go rt.schedulerRunner.Run(rt.ctx)
 	}
+
+	// Atomic boot adoption: acquire flock, clean lifecycle records, adopt all
+	// live daemons, and start watchers synchronously before Ready() closes.
+	rt.adoptSessionsAtBoot()
 
 	close(rt.ready)
 	return nil
@@ -447,8 +462,29 @@ func (rt *Runtime) Ready() <-chan struct{} {
 	return rt.ready
 }
 
-// Stop cancels the runtime context and stops all monitors started by Start.
+// Stop cancels the runtime context and synchronously stops all watchers.
+// Stop cancels the runtime context and synchronously stops all watchers.
 func (rt *Runtime) Stop() {
+	// Release adoption lock if held (should have been released in Start,
+	// but ensure it's cleaned up on abnormal shutdown).
+	// Detach and stop all watchers synchronously before canceling context.
+	// This ensures callback suppression covers in-flight callbacks.
+	rt.sessionsMu.Lock()
+	toStop := make([]func(), 0, len(rt.tracked))
+	for name := range rt.tracked {
+		if stop := rt.tracked[name].stop; stop != nil {
+			toStop = append(toStop, stop)
+		}
+	}
+	rt.tracked = make(map[string]trackedSession)
+	rt.sessionsMu.Unlock()
+
+	// Call stop() for each watcher outside mutex (each waits for goroutine).
+	for _, stop := range toStop {
+		stop()
+	}
+
+	// Cancel context to shut down other monitors.
 	if rt.cancel != nil {
 		rt.cancel()
 	}
@@ -459,63 +495,324 @@ func (rt *Runtime) Options() *server.Options {
 	return rt.opts
 }
 
-// refreshSessionsFunc builds a model.Session snapshot from daemon metadata and
-// pushes it to the state manager. It is a narrow helper for the launch service
-// and recovery callbacks.
-func (rt *Runtime) refreshSessionsFunc() {
-	rt.refreshSessions(rt.adapter.refresh())
-}
-
-func (rt *Runtime) refreshSessions(infos []pty.SessionInfo) {
-	sessions := make([]*model.Session, 0, len(infos))
-	for _, d := range infos {
-		var created time.Time
-		if t, err := time.Parse(time.RFC3339, d.Created); err == nil {
-			created = t
-		}
-		sessions = append(sessions, &model.Session{
-			Name:        d.ID,
-			Created:     created,
-			Backend:     "daemon",
-			ProjectPath: d.Cwd,
-			Windows: []*model.Window{{
-				ID:     "daemon-" + d.ID,
-				Name:   "shell",
-				Active: true,
-				Panes: []*model.Pane{{
-					ID:          model.SessionRef{Session: d.ID, Window: 0, Pane: 0}.PaneID(),
-					Active:      true,
-					CurrentPath: d.Cwd,
-				}},
-			}},
-		})
+// adoptSessionsAtBoot performs atomic boot adoption: acquire flock on the socket
+// directory, clean lifecycle records, adopt all live daemons, and start watchers
+// synchronously. The lock is held until adoption completes, preventing CLI direct-spawn
+// races. This runs before Ready() closes, ensuring the first API response contains
+// all adopted sessions.
+func (rt *Runtime) adoptSessionsAtBoot() {
+	// Acquire exclusive lock on socket directory for the duration of adoption.
+	// CLI direct-spawn fallback checks this lock; if held, it waits/retries API path.
+	release, err := rt.daemonReg.AcquireAdoptionLock()
+	if err != nil {
+		logrus.WithError(err).Warn("failed to acquire adoption lock (continuing anyway)")
+		release = func() {}
+	} else {
+		defer release()
 	}
-	rt.stateMgr.UpdateSessions(sessions)
+
+	// Adopt all live daemons synchronously.
+	// Adopt() performs PID-dead stale-file cleanup as specified in the design.
+	for _, info := range rt.daemonReg.Adopt() {
+		rt.onLaunched(info)
+	}
 }
 
-// runDaemonRefresh keeps an up-to-date snapshot of daemon sessions and runs
-// crash detection on the same cadence as state discovery.
-func (rt *Runtime) runDaemonRefresh(ctx context.Context) {
+// onLaunched handles a newly launched or adopted session.
+// Called under no lock; acquires sessionsMu to manage tracked map and watchers.
+// Performs atomic swap: delete old, call Watch, store new entry all under sessionsMu.
+func (rt *Runtime) onLaunched(info pty.SessionInfo) {
+	// Build model.Session from info (before lock to avoid holding lock during enrichment).
+	var created time.Time
+	if t, err := time.Parse(time.RFC3339, info.Created); err == nil {
+		created = t
+	}
+
+	// Determine shell PID: use ShellPid if available, else fall back to daemon PID
+	shellPid := info.ShellPid
+	if shellPid == 0 {
+		shellPid = info.Pid
+	}
+
+	// Determine shell cwd: try to read from /proc, else use info.Cwd
+	shellCwd := info.Cwd
+	if shellPid > 0 {
+		if liveCwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", shellPid)); err == nil && liveCwd != "" {
+			shellCwd = liveCwd
+		}
+	}
+
+	session := &model.Session{
+		Name:        info.Name,
+		Created:     created,
+		Backend:     "daemon",
+		ProjectPath: shellCwd,
+		Windows: []*model.Window{{
+			ID:     "daemon-" + info.Name,
+			Name:   "shell",
+			Active: true,
+			Panes: []*model.Pane{{
+				ID:             model.SessionRef{Session: info.Name, Window: 0, Pane: 0}.PaneID(),
+				Active:         true,
+				CurrentPath:    shellCwd,
+				CurrentCommand: info.Shell,
+				PID:            shellPid,
+			}},
+		}},
+	}
+
+	// Atomic operation under sessionsMu: detach old watcher, start new watcher,
+	// install the tracked entry, and add the session to state. Performing the
+	// state mutation inside the same critical section guarantees a stale onExit
+	// (which also takes sessionsMu before removing state) can never remove a
+	// replacement session. The state manager only takes its own internal lock
+	// and broadcasts; it never calls back into the runtime, so the sessionsMu >
+	// state.mu lock order is acyclic.
+	inst := info.Instance
+	var oldStop func()
+	rt.sessionsMu.Lock()
+
+	// If duplicate name exists, capture old watcher for cleanup outside lock.
+	if old, exists := rt.tracked[info.Name]; exists {
+		oldStop = old.stop
+	}
+
+	// Start new watcher for this instance while holding lock (atomic with map
+	// update). Watch returns promptly; dialing happens in its goroutine.
+	stop, err := rt.daemonReg.Watch(inst, rt.onExit, rt.onUnreachable)
+	if err != nil {
+		logrus.WithError(err).WithField("session", info.Name).Warn("failed to start watcher")
+		rt.sessionsMu.Unlock()
+		// Stop old watcher if it exists (watch() failed, so can't track new one).
+		if oldStop != nil {
+			oldStop()
+		}
+		return
+	}
+
+	// Install new entry and add to state (all under lock).
+	rt.tracked[info.Name] = trackedSession{inst: inst, stop: stop}
+	rt.stateMgr.AddSession(session)
+	rt.sessionsMu.Unlock()
+
+	// Stop old watcher after unlock (outside critical section).
+	if oldStop != nil {
+		oldStop()
+	}
+
+	// Apply full enrichment (metadata, preview, worktree detection, stale-agent
+	// cleanup). Field-only; safe outside sessionsMu.
+	rt.stateMgr.EnrichSessionInPlaceWithMetaCallback(info.Name, &info)
+
+	// Update adapter snapshot for consumers.
+	snapshot := rt.buildAdapterSnapshot()
+	rt.adapter.refresh(snapshot)
+}
+
+// onExit handles daemon exit (PID confirmed dead).
+// Called by watcher; instance-matched removal only.
+// Uses generation guard to prevent removal of replacement sessions added before RemoveSession is called.
+func (rt *Runtime) onExit(inst pty.Instance) {
+	rt.sessionsMu.Lock()
+	tracked, exists := rt.tracked[inst.Name]
+	if !exists || !rt.instanceMatch(tracked.inst, inst) {
+		// Instance mismatch or already removed; skip.
+		rt.sessionsMu.Unlock()
+		return
+	}
+	// Delete from map and remove from state in one critical section: a
+	// replacement launch (which installs its entry and AddSession under the
+	// same mutex) can never interleave between the decision and the removal.
+	delete(rt.tracked, inst.Name)
+	rt.stateMgr.RemoveSession(inst.Name)
+	rt.sessionsMu.Unlock()
+
+	// Best-effort cleanup after removal: stop systemd scope and remove stale
+	// files (identity re-verified inside removeStaleFiles).
+	if inst.SystemdUnit != "" {
+		rt.daemonReg.StopSystemdUnit(inst.SystemdUnit)
+	}
+	rt.removeStaleFiles(inst)
+
+	// Update adapter snapshot for consumers.
+	snapshot := rt.buildAdapterSnapshot()
+	rt.adapter.refresh(snapshot)
+}
+
+// onUnreachable handles transient connection loss (PID alive).
+// Called by watcher with bad=true (connection lost) or false (recovered).
+func (rt *Runtime) onUnreachable(inst pty.Instance, bad bool) {
+	rt.sessionsMu.Lock()
+	tracked, exists := rt.tracked[inst.Name]
+	if !exists || !rt.instanceMatch(tracked.inst, inst) {
+		// Instance mismatch; skip.
+		rt.sessionsMu.Unlock()
+		return
+	}
+	rt.sessionsMu.Unlock()
+
+	// Mark session unreachable in state.
+	rt.stateMgr.Unreachable(inst.Name, bad)
+}
+
+// instanceMatch checks if two instances match by identity.
+func (rt *Runtime) instanceMatch(a, b pty.Instance) bool {
+	if a.Pid != b.Pid {
+		return false
+	}
+	if a.Nonce != "" || b.Nonce != "" {
+		return a.Nonce == b.Nonce
+	}
+	return a.ProcStartTime == b.ProcStartTime
+}
+
+// removeStaleFiles deletes .sock and .json files after re-verifying sidecar identity.
+// Per design.md: stale-file removal must verify nonce/start-time matches the exiting
+// instance before removing .sock/.json, to prevent a stale callback from deleting
+// replacement files when a new instance takes the same name.
+func (rt *Runtime) removeStaleFiles(inst pty.Instance) {
+	sockPath := rt.daemonReg.SocketPath(inst.Name)
+	jsonPath := strings.TrimSuffix(sockPath, ".sock") + ".json"
+
+	// Re-read sidecar to verify it still matches the exiting instance.
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		// File already gone or unreadable; nothing to clean.
+		return
+	}
+
+	var meta struct {
+		Pid           int    `json:"pid"`
+		Nonce         string `json:"nonce"`
+		ProcStartTime int64  `json:"procStartTime"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		// Can't parse sidecar; skip deletion (unsafe).
+		return
+	}
+
+	// Verify identity matches the exiting instance.
+	if meta.Pid != inst.Pid {
+		// PID changed; don't delete (new daemon).
+		return
+	}
+
+	if inst.Nonce != "" {
+		// Nonce-based identity: must match exactly.
+		if meta.Nonce != inst.Nonce {
+			// Nonce changed; don't delete (new daemon).
+			return
+		}
+	} else if inst.ProcStartTime > 0 {
+		// Legacy: verify /proc start time matches.
+		if meta.ProcStartTime > 0 && meta.ProcStartTime != inst.ProcStartTime {
+			// Start time changed; don't delete (new daemon).
+			return
+		}
+	}
+
+	// Identity matches; safe to delete.
+	_ = os.Remove(sockPath)
+	_ = os.Remove(jsonPath)
+}
+
+// runEnrichmentTick updates session fields (cwd, preview, worktree) every 2s
+// without changing membership. It reads current daemon info and enriches each
+// session with live data, then updates the adapter snapshot for consumers.
+func (rt *Runtime) runEnrichmentTick(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-
-	// One immediate refresh so tests see state without waiting for the tick.
-	rt.refreshSessions(rt.adapter.refresh())
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			infos := rt.adapter.refresh()
-			rt.refreshSessions(infos)
-			if lcStore := rt.daemonReg.LifecycleStore(); lcStore != nil {
-				if crashed := rt.daemonReg.DetectAndCleanupCrashes(); len(crashed) > 0 {
-					logrus.WithField("count", len(crashed)).Warn("detected newly crashed sessions")
+			rt.sessionsMu.Lock()
+			names := make([]string, 0, len(rt.tracked))
+			for name := range rt.tracked {
+				names = append(names, name)
+			}
+			rt.sessionsMu.Unlock()
+
+			// Update each tracked session's fields via enrichment callback.
+			for _, name := range names {
+				// Fetch daemon info before the callback to avoid double-lookup.
+				var info *pty.SessionInfo
+				for _, di := range rt.adapter.List() {
+					if di.ID == name {
+						info = &di
+						break
+					}
+				}
+
+				if info != nil {
+					// Fetch metadata outside callback to avoid nested lock in callback.
+					meta := rt.stateMgr.GetSessionMetadata(name)
+					rt.stateMgr.UpdateSessionFields(name, func(sess *model.Session) {
+						// Re-populate daemon details (cwd, pane PID, preview, worktree, metadata).
+						rt.enrichSession(sess, info, meta)
+					})
 				}
 			}
+
+			// Build adapter snapshot from current tracked sessions + enriched state.
+			snapshot := rt.buildAdapterSnapshot()
+			rt.adapter.refresh(snapshot)
 		}
 	}
+}
+
+// buildAdapterSnapshot builds SessionInfo from the tracked sessions and enriched state.
+func (rt *Runtime) buildAdapterSnapshot() []pty.SessionInfo {
+	rt.sessionsMu.Lock()
+	defer rt.sessionsMu.Unlock()
+
+	var out []pty.SessionInfo
+	for name, tracked := range rt.tracked {
+		// Get enriched session from state manager.
+		sessions := rt.stateMgr.GetSessions()
+		var sess *model.Session
+		for _, s := range sessions {
+			if s.Name == name {
+				sess = s
+				break
+			}
+		}
+
+		// Build SessionInfo from instance + session data.
+		info := pty.SessionInfo{
+			Instance: tracked.inst,
+			ID:       name,
+			Pid:      tracked.inst.Pid,
+			Socket:   rt.daemonReg.SocketPath(name),
+		}
+
+		if sess != nil {
+			if len(sess.Windows) > 0 && len(sess.Windows[0].Panes) > 0 {
+				pane := sess.Windows[0].Panes[0]
+				info.Shell = pane.CurrentCommand
+				info.Cwd = pane.CurrentPath
+				info.ShellPid = pane.PID
+			}
+			info.Created = sess.Created.Format(time.RFC3339)
+		}
+
+		out = append(out, info)
+	}
+
+	return out
+}
+
+// enrichSession populates a session with live daemon metadata for enrichment.
+// Called by the enrichment tick's callback to update cwd, pane PID, preview, worktree, etc.
+// Takes pre-fetched metadata to avoid nested lock acquisition.
+// Safe to call from UpdateSessionFields callback context.
+func (rt *Runtime) enrichSession(session *model.Session, info *pty.SessionInfo, meta state.SessionMetadata) {
+	if session == nil || info == nil {
+		return
+	}
+	rt.stateMgr.EnrichSessionInPlaceInCallback(session, info, meta)
 }
 
 // listPanes returns the current daemon panes for the agent detector, using the
@@ -588,20 +885,20 @@ type registryView interface {
 type daemonAdapter struct {
 	reg  registryView
 	mu   sync.RWMutex
-	snap []pty.SessionInfo
+	snap []pty.SessionInfo // snapshot updated by runtime from tracked map, not from directory scans
 }
 
-// refresh captures a new snapshot from the registry and stores it locally.
-func (a *daemonAdapter) refresh() []pty.SessionInfo {
-	infos := a.reg.List()
+// refresh updates the snapshot from the authoritative tracked map and enriched state.
+// Called by runtime after enrichment tick; does NOT scan the directory.
+func (a *daemonAdapter) refresh(infos []pty.SessionInfo) {
 	a.mu.Lock()
 	a.snap = infos
 	a.mu.Unlock()
-	return infos
 }
 
 // List returns the last refreshed snapshot. Consumers receive a shallow copy so
-// one caller cannot mutate the shared slice.
+// one caller cannot mutate the shared slice. This is the authoritative source for
+// session membership, derived from the runtime's tracked map, not directory scans.
 func (a *daemonAdapter) List() []pty.SessionInfo {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

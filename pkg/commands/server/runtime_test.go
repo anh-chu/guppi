@@ -29,6 +29,7 @@ func (f *fakeRegistry) List() []pty.SessionInfo {
 func TestRuntimeReadyWithoutPolling(t *testing.T) {
 	// The runtime must become ready immediately; any 10 ms hub-polling loop
 	// would introduce visible latency here.
+	t.Setenv("TERMYARD_SESSION_DIR", t.TempDir())
 	rt, err := newRuntime(&cli.Command{})
 	if err != nil {
 		t.Fatalf("newRuntime: %v", err)
@@ -50,6 +51,7 @@ func TestRuntimeReadyWithoutPolling(t *testing.T) {
 }
 
 func TestRuntimeCancellationStops(t *testing.T) {
+	t.Setenv("TERMYARD_SESSION_DIR", t.TempDir())
 	rt, err := newRuntime(&cli.Command{})
 	if err != nil {
 		t.Fatalf("newRuntime: %v", err)
@@ -71,30 +73,29 @@ func TestRuntimeCancellationStops(t *testing.T) {
 }
 
 func TestDaemonAdapterSharesSnapshot(t *testing.T) {
-	reg := &fakeRegistry{
-		sessions: []pty.SessionInfo{
-			{ID: "alpha", Cwd: "/tmp/alpha"},
-			{ID: "beta", Cwd: "/tmp/beta"},
-		},
+	sessions := []pty.SessionInfo{
+		{ID: "alpha", Cwd: "/tmp/alpha"},
+		{ID: "beta", Cwd: "/tmp/beta"},
 	}
+	reg := &fakeRegistry{sessions: sessions}
 	adapter := &daemonAdapter{reg: reg}
 
 	// Both interface shapes can be assigned without a second conversion.
 	var _ state.DaemonRegistry = adapter
 	var _ peer.DaemonRegistry = adapter
 
-	first := adapter.refresh()
-	if len(first) != 2 {
-		t.Fatalf("refresh returned %d sessions, want 2", len(first))
+	// refresh now takes SessionInfo slice directly (updated from registry by runtime)
+	adapter.refresh(sessions)
+
+	// List returns the cached snapshot.
+	list := adapter.List()
+	if len(list) != 2 {
+		t.Fatalf("List returned %d sessions, want 2", len(list))
 	}
 
-	// List uses the cached snapshot; it does not call the registry again.
-	list := adapter.List()
-	if reg.listCalls != 1 {
-		t.Fatalf("registry.List called %d times, want 1", reg.listCalls)
-	}
-	if len(list) != len(first) {
-		t.Fatalf("List returned %d sessions, want %d", len(list), len(first))
+	// Verify snapshot is correct
+	if list[0].ID != "alpha" || list[1].ID != "beta" {
+		t.Fatalf("snapshot has wrong sessions: got %v", list)
 	}
 
 	// Mutating the returned slice must not affect later callers.

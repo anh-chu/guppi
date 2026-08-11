@@ -31,7 +31,21 @@ type createCall struct {
 
 func (f *fakeDaemon) Create(name, shell, cwd string, cols, rows uint16) (pty.SessionInfo, error) {
 	f.created = append(f.created, createCall{name: name, shell: shell, cwd: cwd, cols: cols, rows: rows})
-	return pty.SessionInfo{}, f.err
+	if f.err != nil {
+		return pty.SessionInfo{}, f.err
+	}
+	return pty.SessionInfo{
+		Instance: pty.Instance{Name: name, Pid: 12345, Nonce: "test-nonce", SystemdUnit: "termyard-" + name + ".scope"},
+		ID:       name,
+		Pid:      12345,
+		ShellPid: 12346,
+		Shell:    shell,
+		Cwd:      cwd,
+		Created:  time.Now().Format(time.RFC3339),
+		Cols:     cols,
+		Rows:     rows,
+		Socket:   "/tmp/termyard-" + name + ".sock",
+	}, nil
 }
 
 func (f *fakeDaemon) Kill(name string) error {
@@ -121,11 +135,11 @@ func newService() (*Service, *fakeDaemon, *fakeStateMgr, *fakeAttrs, *fakeHub) {
 	a := &fakeAttrs{}
 	h := &fakeHub{}
 	s := &Service{
-		DaemonReg: d,
-		StateMgr:  st,
-		Attrs:     a,
-		Hub:       h,
-		Refresh:   func() {},
+		DaemonReg:  d,
+		StateMgr:   st,
+		Attrs:      a,
+		Hub:        h,
+		OnLaunched: func(info pty.SessionInfo) {},
 	}
 	return s, d, st, a, h
 }
@@ -396,17 +410,27 @@ func TestCreateScheduleMetadataBareKey(t *testing.T) {
 	}
 }
 
-func TestCreateRefreshOnce(t *testing.T) {
-	s, _, _, _, _ := newService()
-	var refreshCount int
-	s.Refresh = func() { refreshCount++ }
+func TestCreateOnLaunchedOnce(t *testing.T) {
+	s, d, _, _, _ := newService()
+	var launchCount int
+	var launchInfo pty.SessionInfo
+	s.OnLaunched = func(info pty.SessionInfo) {
+		launchCount++
+		launchInfo = info
+	}
 
 	_, err := s.Create(context.Background(), Request{Name: "foo"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if refreshCount != 1 {
-		t.Fatalf("refreshCount = %d", refreshCount)
+	if launchCount != 1 {
+		t.Fatalf("launchCount = %d", launchCount)
+	}
+	if launchInfo.Name != "foo" {
+		t.Fatalf("launchInfo.Name = %q", launchInfo.Name)
+	}
+	if len(d.created) != 1 || d.created[0].name != "foo" {
+		t.Fatalf("daemon create not called correctly")
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/auth"
 	"github.com/anh-chu/termyard/pkg/portforward"
+	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/sessionlaunch"
 	"github.com/anh-chu/termyard/pkg/state"
 	"github.com/anh-chu/termyard/pkg/toolevents"
@@ -43,8 +44,8 @@ func TestRouteTableSnapshot(t *testing.T) {
 
 	// Create a minimal Launch service for tests (Launch is now required)
 	launchSvc := &sessionlaunch.Service{
-		StateMgr:  stateMgr,
-		Refresh:   func() {},
+		StateMgr:   stateMgr,
+		OnLaunched: func(info pty.SessionInfo) {},
 	}
 
 	opts := &Options{
@@ -159,6 +160,7 @@ func TestRouteTableSnapshot(t *testing.T) {
 	}
 	// Wiki routes only appear when opts.WikiLite is set.
 	// Peer WebSocket routes only appear when opts.PeerHandler is set.
+	// POST /api/sessions/create was deleted; CLI uses POST /api/session/new instead.
 
 	missing, extra := diff(want, routes)
 	if len(missing)+len(extra) > 0 {

@@ -67,6 +67,8 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		json.NewEncoder(w).Encode(sessions)
 	})
 
+	// Note: Session creation is handled by /api/session/new below.
+
 	r.Get("/hosts", func(w http.ResponseWriter, r *http.Request) {
 		if opts.PeerMgr != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -415,10 +417,8 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		}
 
 		// Daemon sessions can't be renamed at the OS level; update display name only.
+		// SetDisplayName broadcasts sessions-changed automatically.
 		opts.StateMgr.SetDisplayName(req.OldName, req.NewName, true)
-		if opts.RefreshSessions != nil {
-			opts.RefreshSessions()
-		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -1349,13 +1349,9 @@ func handleDaemonSession(w http.ResponseWriter, r *http.Request, opts *Options) 
 	ws.BridgeDirectPTY(conn, sess, name, opts.ActivityTracker, log, replayGated, onOutput)
 
 	// The bridge returned: either this tab disconnected (daemon still alive)
-	// or the daemon/shell exited (Ctrl+D, kill, crash). Reconcile discovery now
-	// instead of waiting up to 2s for the ticker, so a dead session disappears
-	// from the sidebar and its terminal view unmounts promptly. A live daemon
-	// simply stays in the list, so this is a no-op for tab disconnects.
-	if opts.RefreshSessions != nil {
-		opts.RefreshSessions()
-	}
+	// or the daemon/shell exited (Ctrl+D, kill, crash). Watch callbacks handle
+	// removal automatically when the daemon PID is confirmed dead; this is now
+	// a no-op for both cases (tab disconnect or daemon exit).
 }
 
 func enrichSessionsFromTracker(sessions []*model.Session, tracker *toolevents.Tracker, localHost string) {

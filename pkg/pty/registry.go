@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -140,6 +141,23 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) (SessionIn
 		return SessionInfo{}, fmt.Errorf("session %q already exists", name)
 	}
 
+	// Atomically claim the name via O_CREATE|O_EXCL on a .claim file.
+	// This prevents two concurrent CLI spawns from selecting the same name.
+	// The claim is released once the daemon writes metadata and is ready.
+	claimPath := filepath.Join(r.dir, name+".claim")
+	claimFile, err := os.OpenFile(claimPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return SessionInfo{}, fmt.Errorf("session %q creation in progress", name)
+		}
+		return SessionInfo{}, fmt.Errorf("claim name: %w", err)
+	}
+	claimFile.Close() // Just holding the file was the point; close immediately.
+	// Always remove the claim on exit: on success the sidecar/socket now guard
+	// the name; on failure the name must become reusable. A conditional check
+	// of the (shadowed) err variable previously leaked claims permanently.
+	defer func() { _ = os.Remove(claimPath) }()
+
 	exe, err := os.Executable()
 	if err != nil {
 		return SessionInfo{}, fmt.Errorf("get executable: %w", err)
@@ -235,12 +253,15 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) (SessionIn
 			if err := cmd.Start(); err != nil {
 				return SessionInfo{}, fmt.Errorf("start daemon process: %w", err)
 			}
+			useSystemd = false // Now using direct spawn, not systemd
 		} else {
 			return SessionInfo{}, fmt.Errorf("start daemon process: %w", err)
 		}
 	}
 
 	// Release the process handle so the daemon is fully independent.
+	// Keep track of the PID to check for exit on readiness timeout.
+	originalPid := cmd.Process.Pid
 	if err := cmd.Process.Release(); err != nil {
 		log.WithError(err).Warn("failed to release daemon process handle")
 	}
@@ -252,8 +273,42 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) (SessionIn
 	metaPath := r.metadataPath(name)
 	socketPath := r.SocketPath(name)
 	deadline := time.Now().Add(2 * time.Second)
+	var retried bool
+
+readiness_poll:
 	for {
 		if time.Now().After(deadline) {
+			// Readiness timeout. If we used systemd and the process died, retry with direct spawn.
+			if useSystemd && !retried {
+				// The systemd-run wrapper may be alive but stuck (e.g. bogus
+				// DBUS_SESSION_BUS_ADDRESS). Terminate it best-effort and retry
+				// with direct spawn regardless of wrapper liveness.
+				if proc, _ := os.FindProcess(originalPid); proc != nil {
+					_ = proc.Kill()
+				}
+				log.Warn("systemd-run daemon not ready, retrying with direct spawn")
+				devNull2, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+				if err != nil {
+					return SessionInfo{}, fmt.Errorf("daemon did not become ready within 2s, and retry failed: open /dev/null: %w", err)
+				}
+				cmd = exec.Command(exe, args...)
+				cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+				cmd.Stdin = devNull2
+				cmd.Stdout = devNull2
+				cmd.Stderr = devNull2
+				if err := cmd.Start(); err != nil {
+					devNull2.Close()
+					return SessionInfo{}, fmt.Errorf("daemon did not become ready within 2s, and direct spawn retry failed: %w", err)
+				}
+				originalPid = cmd.Process.Pid
+				_ = cmd.Process.Release()
+				devNull2.Close()
+				useSystemd = false
+				retried = true
+				// Reset deadline for retry.
+				deadline = time.Now().Add(2 * time.Second)
+				goto readiness_poll
+			}
 			return SessionInfo{}, fmt.Errorf("daemon did not become ready within 2s")
 		}
 
@@ -296,7 +351,11 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) (SessionIn
 		}
 		conn.Close() // Immediately close; this was just a probe
 
-		// Daemon is ready. Build SessionInfo.
+		// Daemon is ready. Release the claim (name is now taken by actual daemon).
+		_ = os.Remove(claimPath)
+		err = nil // Clear error so deferred cleanup won't remove files on success.
+
+		// Build SessionInfo.
 		startTime := meta.ProcStartTime
 		if startTime <= 0 {
 			// Sidecar lacks a start time; capture from /proc so identity is
@@ -351,6 +410,8 @@ func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable fun
 	stopCh := make(chan struct{})
 	// WaitGroup to track goroutine completion
 	var wg sync.WaitGroup
+	// WaitGroup to track in-flight callbacks
+	var cbWg sync.WaitGroup
 	// Flag to suppress callbacks after stop is called
 	var suppressMu sync.Mutex
 	suppress := false
@@ -363,8 +424,8 @@ func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable fun
 	// Make stop idempotent
 	var stopOnce sync.Once
 
-	// Helper to call callbacks only if not suppressed
 	// Helper to call callbacks only if not suppressed.
+	// Increments callback WaitGroup before invoking, decrements after.
 	// Checks suppression under mutex, releases, THEN invokes callback.
 	// This prevents callbacks from being blocked by locks that stop() holds.
 	callOnExit := func() {
@@ -373,8 +434,11 @@ func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable fun
 			suppressMu.Unlock()
 			return
 		}
+		// Increment callback counter before releasing lock
+		cbWg.Add(1)
 		suppressMu.Unlock()
 
+		defer cbWg.Done()
 		exitOnce.Do(func() {
 			if onExit != nil {
 				onExit(inst)
@@ -388,9 +452,12 @@ func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable fun
 			suppressMu.Unlock()
 			return
 		}
+		// Increment callback counter before releasing lock
+		cbWg.Add(1)
 		cb := onUnreachable
 		suppressMu.Unlock()
 
+		defer cbWg.Done()
 		if cb != nil {
 			cb(inst, bad)
 		}
@@ -478,7 +545,7 @@ func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable fun
 					// PID alive; session is unreachable
 					log.WithError(err).Debug("connection error, PID alive, entering unreachable loop")
 					callOnUnreachable(true)
-					break // Exit read loop, enter reconnect loop
+					continue WATCH_LOOP // conn is nil now; next iteration reconnects with backoff
 				}
 
 				// Discard the frame payload
@@ -582,6 +649,9 @@ func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable fun
 
 			// Wait for goroutine to exit
 			wg.Wait()
+
+			// Wait for any in-flight callbacks to complete
+			cbWg.Wait()
 		})
 	}
 
@@ -623,6 +693,27 @@ func (r *Registry) processPIDAlive(inst Instance) bool {
 	// Identity unverifiable; trust the PID check — safe direction, since a
 	// wrong-instance watch degrades to unreachable, never removal.
 	return true
+}
+
+// TryAcquireAdoptionLock attempts to acquire the adoption lock without blocking.
+// Returns the release func and true if acquired, or nil func and false if lock is held.
+func (r *Registry) TryAcquireAdoptionLock() (func(), bool) {
+	lockPath := r.SocketDirLockPath()
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, false
+	}
+
+	// Try non-blocking lock
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lockFile.Close()
+		return nil, false // Lock held by another process
+	}
+
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}, true
 }
 
 // instanceAlive checks if the daemon PID is alive, using instance identity matching.
@@ -1039,10 +1130,34 @@ func (r *Registry) readDaemonPID(name string) int {
 	return meta.Pid
 }
 
-// processAlive returns true if the process with the given PID exists.
+// processAlive returns true if the process with the given PID exists and is not a zombie.
+// Zombies are detected by reading /proc/<pid>/stat and checking the state field (3rd field after last ')'),
+// treating 'Z' as dead. Falls back to signal 0 check if /proc is unreadable.
 func processAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
-	return err == nil
+	if err != nil {
+		return false
+	}
+	// Signal 0 succeeded; process exists. Check if it's a zombie.
+	// Read /proc/<pid>/stat to detect zombie state.
+	statPath := fmt.Sprintf("/proc/%d/stat", pid)
+	data, err := os.ReadFile(statPath)
+	if err != nil {
+		// /proc unreadable; can't verify zombie state. Trust signal 0.
+		// Conservative: assume alive (removing a live PID is worse than keeping a zombie).
+		return true
+	}
+	// Parse state field: (pid) ... state ....
+	// Field 3 (after the last ')') is the state.
+	statStr := string(data)
+	closeParen := strings.LastIndexByte(statStr, ')')
+	if closeParen < 0 || closeParen+2 >= len(statStr) {
+		// Can't parse; trust signal 0.
+		return true
+	}
+	state := statStr[closeParen+2]
+	// 'Z' = zombie
+	return state != 'Z'
 }
 
 // removeStale removes a socket file and its metadata sidecar.
@@ -1076,7 +1191,7 @@ func (r *Registry) removeStale(name, reason string) {
 				}
 				// Stop the systemd scope even though we preserve files.
 				// Use the exact unit from the record we already read.
-				r.stopSystemdUnit(rec.SystemdUnit)
+				r.StopSystemdUnit(rec.SystemdUnit)
 				// Do NOT delete socket/metadata — they are needed for recovery.
 				return
 
@@ -1085,7 +1200,7 @@ func (r *Registry) removeStale(name, reason string) {
 
 			case LifecycleCrashed:
 				// Already marked as crashed, keep preserved.
-				r.stopSystemdUnit(rec.SystemdUnit)
+				r.StopSystemdUnit(rec.SystemdUnit)
 				return
 
 			default:
@@ -1130,7 +1245,7 @@ func (r *Registry) Kill(name string) error {
 	conn, err := net.DialTimeout("unix", socketPath, 1*time.Second)
 	if err != nil {
 		// Socket unreachable — try to stop the systemd scope anyway.
-		r.stopSystemdUnit(unit)
+		r.StopSystemdUnit(unit)
 		return fmt.Errorf("dial daemon socket %s: %w", socketPath, err)
 	}
 	defer conn.Close()
@@ -1138,14 +1253,14 @@ func (r *Registry) Kill(name string) error {
 	frame := encodeFrame(FrameClose, nil)
 	if _, err := conn.Write(frame); err != nil {
 		// FrameClose failed — try to force-stop the systemd scope.
-		r.stopSystemdUnit(unit)
+		r.StopSystemdUnit(unit)
 		return fmt.Errorf("send close frame: %w", err)
 	}
 
 	// Best-effort: stop the systemd scope so it doesn't linger.
 	// The daemon should exit on its own after receiving FrameClose, but
 	// systemd scope cleanup is an extra safety net.
-	r.stopSystemdUnit(unit)
+	r.StopSystemdUnit(unit)
 	return nil
 }
 
@@ -1379,7 +1494,7 @@ func (r *Registry) DetectAndCleanupCrashes() []LifecycleRecord {
 		// Stop the exact unit from the crashed record — do NOT re-read
 		// lifecycle state via stopSystemdScope, which could pick up a
 		// concurrently-recovered record and kill the replacement scope.
-		r.stopSystemdUnit(rec.SystemdUnit)
+		r.StopSystemdUnit(rec.SystemdUnit)
 	}
 	return crashed
 }
@@ -1421,7 +1536,7 @@ func (r *Registry) RecoverSession(id string, shellOverride ...string) error {
 	// the replacement.  The crashed session's scope may still have
 	// orphaned child processes (shell, background jobs).
 	// Use the exact unit from the crashed record — do not re-read.
-	r.stopSystemdUnit(rec.SystemdUnit)
+	r.StopSystemdUnit(rec.SystemdUnit)
 
 	// Transition to recovered BEFORE spawning — the new daemon will
 	// overwrite the lifecycle record with a fresh "active" state on
@@ -1489,7 +1604,7 @@ func (r *Registry) dismissSessionLocked(id string) error {
 	// Stop the exact systemd unit from the crashed record before
 	// cleaning up files.  We use the unit from the already-read record
 	// to avoid re-reading mutable lifecycle state.
-	r.stopSystemdUnit(rec.SystemdUnit)
+	r.StopSystemdUnit(rec.SystemdUnit)
 
 	if err := r.lifecycleStore.Transition(id, LifecycleCrashed, LifecycleDismissed); err != nil {
 		return fmt.Errorf("transition to dismissed: %w", err)
@@ -1526,17 +1641,17 @@ func (r *Registry) CleanupCrashedIfDead(id string) {
 	if !processAlive(rec.DaemonPID) {
 		// Process long dead — safe to clean up.
 		// Use the exact unit from the already-read crashed record.
-		r.stopSystemdUnit(rec.SystemdUnit)
+		r.StopSystemdUnit(rec.SystemdUnit)
 		os.Remove(r.SocketPath(id))
 		os.Remove(r.metadataPath(id))
 	}
 }
 
-// stopSystemdUnit stops a specific systemd user scope unit by name.
+// StopSystemdUnit stops a specific systemd user scope unit by name.
 // This helper does NOT re-read lifecycle state — the caller is responsible
 // for passing the correct unit (e.g., from an already-read lifecycle record).
 // It is best-effort: failures are logged but not returned.
-func (r *Registry) stopSystemdUnit(unit string) {
+func (r *Registry) StopSystemdUnit(unit string) {
 	// Test hook: if set, delegate to the injected function instead of
 	// spawning a real systemctl process.
 	if r.stopUnitFn != nil {
@@ -1581,7 +1696,7 @@ func (r *Registry) stopSystemdUnit(unit string) {
 // already-read lifecycle record, to avoid re-reading mutable state.
 func (r *Registry) stopSystemdScope(name string) {
 	unit := r.readSystemdUnit(name)
-	r.stopSystemdUnit(unit)
+	r.StopSystemdUnit(unit)
 }
 
 // readSystemdUnit returns the systemd unit name from the lifecycle record

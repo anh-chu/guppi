@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/anh-chu/termyard/pkg/model"
+	"github.com/anh-chu/termyard/pkg/pty"
 )
 
 // TestSessionsEqual_IncludesAllFields verifies sessionsEqual checks all required fields.
@@ -168,5 +169,121 @@ func TestSessionsEqual_NilHandling(t *testing.T) {
 	}
 	if sessionsEqual(session, nil) {
 		t.Error("sessionsEqual(session, nil) should return false")
+	}
+}
+
+// TestEnrichmentClearsStaleAgentMetadata verifies that enrichment clears agent metadata
+// when the agent process has exited, while preserving user-set names.
+func TestEnrichmentClearsStaleAgentMetadata(t *testing.T) {
+	m := NewManager()
+	sessionName := "test-session"
+
+	// Create a session with agent metadata pre-populated
+	session := &model.Session{
+		ID:               sessionName,
+		Name:             sessionName,
+		Created:          time.Now(),
+		AgentType:        "developer", // previously set by agent
+		UserPrompt:       "debug this",
+		LastAgentMessage: "working on it",
+		DisplayName:      "My Agent Session",
+		UserSetName:      true,
+	}
+
+	// Add session and metadata to the manager
+	m.mu.Lock()
+	m.sessions[sessionName] = session
+	// Pre-populate metadata with agent-derived fields
+	m.meta[sessionName] = SessionMetadata{
+		AgentType:        "developer",
+		UserPrompt:       "debug this",
+		LastAgentMessage: "working on it",
+		DisplayName:      "My Agent Session",
+		UserSetName:      true,
+		ProjectPath:      "/home/user/project",
+	}
+	m.mu.Unlock()
+
+	// Enrich with a dead agent PID (no actual agent process running)
+	// SessionInfo with ShellPid that won't have an agent process
+	info := &pty.SessionInfo{
+		ID:       sessionName,
+		Pid:      99998, // daemon PID
+		ShellPid: 99999, // shell PID (won't match any actual agent)
+		Shell:    "bash",
+		Cwd:      "/home/user/project",
+	}
+
+	// Enrich - should detect agent is not alive and clear stale metadata
+	m.EnrichSessionInPlace(session, info)
+
+	// Verify stale agent metadata was cleared from m.meta
+	m.mu.RLock()
+	cleanedMeta := m.meta[sessionName]
+	m.mu.RUnlock()
+
+	if cleanedMeta.AgentType != "" {
+		t.Errorf("expected AgentType to be cleared after agent death, got %q", cleanedMeta.AgentType)
+	}
+	if cleanedMeta.UserPrompt != "" {
+		t.Errorf("expected UserPrompt to be cleared after agent death, got %q", cleanedMeta.UserPrompt)
+	}
+	if cleanedMeta.LastAgentMessage != "" {
+		t.Errorf("expected LastAgentMessage to be cleared after agent death, got %q", cleanedMeta.LastAgentMessage)
+	}
+	// User-set name should be preserved
+	if cleanedMeta.DisplayName != "My Agent Session" {
+		t.Errorf("expected DisplayName to be preserved (user-set), got %q", cleanedMeta.DisplayName)
+	}
+	if !cleanedMeta.UserSetName {
+		t.Error("expected UserSetName to remain true")
+	}
+
+	// Session fields should also be cleared
+	if session.AgentType != "" {
+		t.Errorf("expected session.AgentType to be cleared after agent death, got %q", session.AgentType)
+	}
+	if session.UserPrompt != "" {
+		t.Errorf("expected session.UserPrompt to be cleared after agent death, got %q", session.UserPrompt)
+	}
+	if session.LastAgentMessage != "" {
+		t.Errorf("expected session.LastAgentMessage to be cleared after agent death, got %q", session.LastAgentMessage)
+	}
+	// Session DisplayName should be preserved (user-set)
+	if session.DisplayName != "My Agent Session" {
+		t.Errorf("expected session.DisplayName to be preserved (user-set), got %q", session.DisplayName)
+	}
+}
+
+func TestEnrichmentClearsGeneratedDisplayNameOnly(t *testing.T) {
+	m := NewManager()
+	name := "display-only"
+
+	m.mu.Lock()
+	m.sessions[name] = &model.Session{
+		ID:          name,
+		Name:        name,
+		Created:     time.Now(),
+		DisplayName: "AI Generated Name",
+	}
+	m.meta[name] = SessionMetadata{DisplayName: "AI Generated Name", UserSetName: false}
+	m.clearStaleAgentMetadataIfNeeded(name)
+	sess := m.sessions[name]
+	meta := m.meta[name]
+	m.mu.Unlock()
+
+	if sess.DisplayName != "" || meta.DisplayName != "" {
+		t.Fatalf("generated display name not cleared: session=%q meta=%q", sess.DisplayName, meta.DisplayName)
+	}
+
+	// User-set names must survive.
+	m.mu.Lock()
+	m.sessions[name].DisplayName = "user name"
+	m.meta[name] = SessionMetadata{DisplayName: "user name", UserSetName: true}
+	m.clearStaleAgentMetadataIfNeeded(name)
+	kept := m.sessions[name].DisplayName
+	m.mu.Unlock()
+	if kept != "user name" {
+		t.Fatalf("user-set display name was cleared")
 	}
 }

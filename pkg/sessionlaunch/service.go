@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -108,22 +109,26 @@ type PeerFanout func(key string, attr ScheduleAttr)
 // means the local node. nil is treated as "no existing sessions".
 type ExistingNames func(host string) []string
 
-// RefreshFunc triggers a state refresh so browsers see the new session.
-// nil skips the refresh.
-type RefreshFunc func()
+// OnLaunchedFunc handles notification of a newly launched session.
+// nil skips the callback.
+type OnLaunchedFunc func(info pty.SessionInfo)
 
 // Service is the sole owner of session launch and kill semantics.
 type Service struct {
-	DaemonReg DaemonRegistry
-	StateMgr  StateManager
-	Attrs     ScheduleAttrStore
-	Hub       BrowserHub
-	Identity  Identity
-	Remote    RemoteLauncher
-	Fanout    PeerFanout
-	Names     ExistingNames
-	Refresh   RefreshFunc
-	Forget    func(name string) error // optional; if nil, ForgetSession is skipped during Kill
+	DaemonReg  DaemonRegistry
+	StateMgr   StateManager
+	Attrs      ScheduleAttrStore
+	Hub        BrowserHub
+	Identity   Identity
+	Remote     RemoteLauncher
+	Fanout     PeerFanout
+	Names      ExistingNames
+	OnLaunched OnLaunchedFunc
+	Forget     func(name string) error // optional; if nil, ForgetSession is skipped during Kill
+
+	// createMu serializes local name resolution + registry Create to prevent TOCTOU races.
+	// Remote launches do not need serialization (they go to different peers).
+	createMu sync.Mutex
 }
 
 // Create validates, resolves, and launches one session.
@@ -199,14 +204,19 @@ func (s *Service) createRemote(ctx context.Context, req Request) (Result, error)
 }
 
 func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) {
-	req.Name = s.resolveName(req)
-
 	cwd, err := s.prepareLocalPath(req)
 	if err != nil {
 		return Result{}, err
 	}
 
-	if err := s.daemonCreate(ctx, req.Name, req.Command, cwd, req.Cols, req.Rows); err != nil {
+	// Serialize name resolution + daemon creation to prevent TOCTOU races.
+	// Two concurrent creates must not select the same name.
+	s.createMu.Lock()
+	req.Name = s.resolveName(req)
+	info, err := s.daemonCreate(ctx, req.Name, req.Command, cwd, req.Cols, req.Rows)
+	s.createMu.Unlock()
+
+	if err != nil {
 		if cwd != req.Path && req.Path != "" {
 			_ = git.RemoveWorktree(cwd)
 		}
@@ -232,8 +242,8 @@ func (s *Service) createLocal(ctx context.Context, req Request) (Result, error) 
 		}
 	}
 
-	if s.Refresh != nil {
-		s.Refresh()
+	if s.OnLaunched != nil {
+		s.OnLaunched(info)
 	}
 
 	return Result{Name: req.Name, Host: req.Host, Path: cwd}, nil
@@ -305,16 +315,16 @@ func (s *Service) prepareLocalPath(req Request) (string, error) {
 	return cwd, nil
 }
 
-func (s *Service) daemonCreate(ctx context.Context, name, command, cwd string, cols, rows uint16) error {
+func (s *Service) daemonCreate(ctx context.Context, name, command, cwd string, cols, rows uint16) (pty.SessionInfo, error) {
 	shell := command
 	if shell == "" || shell == "shell" {
 		shell = ""
 	}
-	_, err := s.DaemonReg.Create(name, shell, cwd, cols, rows)
+	info, err := s.DaemonReg.Create(name, shell, cwd, cols, rows)
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrSpawn, err)
+		return pty.SessionInfo{}, fmt.Errorf("%w: %w", ErrSpawn, err)
 	}
-	return nil
+	return info, nil
 }
 
 func (s *Service) resolveName(req Request) string {
