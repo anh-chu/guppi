@@ -456,8 +456,8 @@ func init() {
 			},
 			&cli.IntFlag{
 				Name:  "buffer-size",
-				Usage: "ring buffer size in bytes (default 1MB)",
-				Value: 1 << 20,
+				Usage: "ring buffer size in bytes (default 32MB)",
+				Value: 32 << 20,
 			},
 		},
 		Action: executeSessionDaemon,

@@ -108,6 +108,12 @@ const clipboardProvider: IClipboardProvider = {
 
 const MAX_PASTED_FILE_BYTES = 10 * 1024 * 1024
 
+// Window during which a real user scroll gesture (wheel/touch/scrollbar
+// mousedown) legitimizes an at-bottom viewport 'scroll' event as a genuine
+// re-pin. Scroll events outside this window are treated as non-user
+// (reflow/write-driven) and must NOT clear userScrolled.
+const USER_SCROLL_REPIN_WINDOW_MS = 200
+
 export function concatU8Legacy(parts: Uint8Array[]): Uint8Array {
   let len = 0
   for (const p of parts) len += p.length
@@ -172,12 +178,14 @@ async function sendPastedImage(
 // fitAddon.fit() reflows rows and can move the viewport, so we restore the
 // user's prior scroll anchor afterward.
 //
-// CRITICAL: we decide whether to preserve a non-bottom offset using
+// CRITICAL: we decide whether to preserve a non-bottom position using
 // entry.userScrolled (set only by real wheel/touch/scrollbar gestures), NOT
-// buffer geometry. xterm updates viewportY asynchronously during rapid writes
-// (spinner/redraw animations), so capturing `baseY - viewportY` mid-frame
-// reads a stale in-between state and "restores" the terminal to a phantom
-// offset, pinning it mid-history and flashing on every redraw.
+// buffer geometry. The anchor itself is the absolute buffer line
+// (buf.viewportY), not a baseY-relative pixel/offset computation — xterm
+// updates viewportY asynchronously during rapid writes, so an offset
+// computed mid-frame can be stale; an absolute line number restored via
+// scrollLines/scrollToLine degrades gracefully (clamped) instead of pinning
+// to a phantom position.
 function fitPreservingScroll(
   entry: PoolEntry,
   container: HTMLElement,
@@ -189,9 +197,9 @@ function fitPreservingScroll(
 
   const myEpoch = ++entry.fitEpoch
   const buf = term.buffer.active
-  // Only preserve a real user offset. geometry-based distFromBottom is
+  // Only preserve a real user anchor. geometry-based distFromBottom is
   // unreliable during async writes.
-  const userOffset = entry.userScrolled ? Math.max(0, buf.baseY - buf.viewportY) : 0
+  const anchorLine = entry.userScrolled ? buf.viewportY : -1
 
   const isStale = () => entry.fitEpoch !== myEpoch
 
@@ -202,7 +210,7 @@ function fitPreservingScroll(
     try { term.refresh(0, term.rows - 1) } catch { /* renderer dispose race */ }
   }
 
-  if (userOffset === 0) {
+  if (anchorLine < 0) {
     // Following output: pin to bottom once. xterm keeps it there on writes.
     try { term.scrollToBottom() } catch { /* renderer dispose race */ }
     const forceDOM = () => {
@@ -216,14 +224,14 @@ function fitPreservingScroll(
     return
   }
 
-  // User is genuinely scrolled up: restore the captured offset, but only
-  // across a single deferred frame (xterm recomputes viewport async).
+  // User is genuinely scrolled up: restore the captured absolute buffer
+  // line, but only across a single deferred frame (xterm recomputes
+  // viewport async). Clamp to the (possibly changed) buffer bounds.
   const restoreOnce = () => {
     if (isStale() || !entry.userScrolled) return
     try {
       const after = term.buffer.active
-      if (userOffset > after.baseY) { term.scrollToBottom(); return }
-      const target = after.baseY - userOffset
+      const target = Math.min(Math.max(0, anchorLine), after.baseY)
       const delta = target - after.viewportY
       if (delta !== 0) term.scrollLines(delta)
     } catch { /* renderer dispose race */ }
@@ -345,6 +353,13 @@ interface PoolEntry {
   // gesture (wheel, touch, scrollbar drag). Buffer geometry is NOT a reliable
   // signal: xterm updates viewportY asynchronously during rapid writes.
   userScrolled: boolean
+
+  // Timestamp (performance.now()) of the last real user scroll gesture
+  // (wheel, touch, scrollbar mousedown). The viewport 'scroll' listener only
+  // clears userScrolled when the at-bottom geometry check passes AND a user
+  // gesture happened within the last USER_SCROLL_REPIN_WINDOW_MS — otherwise
+  // a non-user scroll event fired during writes (e.g. reflow) could clear it.
+  lastUserScrollAt: number
 
   // Active container state
   activeContainer: HTMLElement | null
@@ -922,6 +937,11 @@ export class TerminalPool {
           entry.syncBuffer = []
           entry.syncCarryover = null
           entry.inReplayWindow = true
+          // A fresh replay always starts pinned to bottom; any prior
+          // scroll-up anchor is stale (buffer content is being replaced).
+          entry.userScrolled = false
+          entry.lastUserScrollAt = -Infinity
+          entry.fitEpoch++
           if (entry.replayWindowClearTimer !== undefined) {
             clearTimeout(entry.replayWindowClearTimer)
           }
@@ -968,6 +988,7 @@ export class TerminalPool {
       generation: 0,
       fitEpoch: 0,
       userScrolled: false,
+      lastUserScrollAt: -Infinity,
 
       activeContainer: null,
       activeCallbacks: null,
@@ -1392,15 +1413,25 @@ export class TerminalPool {
 
     // User took over the viewport.
     const markUserScroll = () => {
+      entry.lastUserScrollAt = performance.now()
       if (!entry.userScrolled) {
         entry.userScrolled = true
         entry.fitEpoch++
       }
     }
     const onViewportScroll = () => {
-      if (!entry.userScrolled || !vpEl) return
-      if (vpEl.scrollTop + vpEl.clientHeight >= vpEl.scrollHeight - 2) {
+      if (!vpEl) return
+      const atBottom = vpEl.scrollTop + vpEl.clientHeight >= vpEl.scrollHeight - 2
+      const userDriven =
+        scrollbarDragging ||
+        performance.now() - entry.lastUserScrollAt <= USER_SCROLL_REPIN_WINDOW_MS
+      if (!userDriven) return
+      if (entry.userScrolled && atBottom) {
         entry.userScrolled = false
+      } else if (!entry.userScrolled && !atBottom) {
+        // Scrollbar drag: a user gesture (viewport mousedown) followed by an
+        // off-bottom scroll means the user took over the viewport.
+        markUserScroll()
       }
     }
     const onWheel = () => markUserScroll()
@@ -1408,6 +1439,20 @@ export class TerminalPool {
     vpEl?.addEventListener('scroll', onViewportScroll, { passive: true })
     container.addEventListener('wheel', onWheel, { passive: true })
     container.addEventListener('touchmove', markUserScroll, { passive: true })
+    // Scrollbar-drag gesture: mousedown on the viewport starts a drag that
+    // fires 'scroll' events without wheel/touchmove. Only stamp the gesture
+    // window here — a bare click must not unpin; the scroll listener promotes
+    // it to userScrolled only if the viewport actually leaves the bottom.
+    let scrollbarDragging = false
+    const onViewportMouseDown = () => {
+      scrollbarDragging = true
+      window.addEventListener('mouseup', onViewportMouseUp, true)
+    }
+    const onViewportMouseUp = () => {
+      scrollbarDragging = false
+      window.removeEventListener('mouseup', onViewportMouseUp, true)
+    }
+    vpEl?.addEventListener('mousedown', onViewportMouseDown, true)
 
     container.addEventListener('mousedown', onMouseDown, true)
     container.addEventListener('keydown', onKeyDown, true)
@@ -1485,7 +1530,11 @@ export class TerminalPool {
       window.removeEventListener('keydown', onWindowKeyDownCapture, true)
       helperTextarea?.removeEventListener('paste', onPaste)
       container.removeEventListener('contextmenu', onContextMenu)
-      if (vpEl) vpEl.removeEventListener('scroll', onViewportScroll)
+      if (vpEl) {
+        vpEl.removeEventListener('scroll', onViewportScroll)
+        vpEl.removeEventListener('mousedown', onViewportMouseDown, true)
+        window.removeEventListener('mouseup', onViewportMouseUp, true)
+      }
       container.removeEventListener('wheel', onWheel)
       container.removeEventListener('touchmove', markUserScroll)
     }

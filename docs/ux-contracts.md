@@ -320,9 +320,9 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ### 9.8 Artifacts / detected files
 
-**Contract:** Tool events may include artifacts (file paths). Detected files badge shown in terminal toolbar (count). Click badge → panel opens showing detected files (newest first, max 100 merged). Per file: path (truncated, title shows full), source/tool/kind labels, stale flag (deleted badge, grayed italic). "Open full" button (opens in wiki or token new-tab), Download button (artifact token, temp `<a download>`), Preview button (inline preview if text/image). Refresh button re-fetches from `/api/artifacts?session=…`. Stale artifacts excluded from open/download buttons.
+**Contract:** Tool events may include artifacts (file paths) only for write-ish tools (write, edit, multiedit, str_replace, apply_patch, notebook_edit). Detected files badge shown in terminal toolbar (count). Click badge → panel opens showing detected files (newest first, max 100 merged). Per file: path (truncated, title shows full), source/tool/kind labels. "Open full" button (opens in wiki or token new-tab), Download button (artifact token, temp `<a download>`), Preview button (inline preview if text/image). Refresh button re-fetches from `/api/artifacts?session=…` and evicts any files that were deleted from disk. Artifacts are scoped per session and cleared when the session is killed. Persisted artifacts older than 7 days are dropped on server load. **Note:** Pi extension currently reports write/edit/multiedit calls made directly by the agent via tool_execution_end events; file writes performed inside fabric_exec programs are not exposed by Pi API and thus not captured as artifacts.
 
-**Why it matters:** Artifact detection, max 100 limit, and stale flagging are observable contracts.
+**Why it matters:** Artifact detection, write-tool filtering, max 100 limit, and automatic eviction of deleted files are observable contracts.
 
 **Verification pointer:** `web/src/components/Terminal.tsx`, `web/src/hooks/useArtifacts.ts`, `web/src/lib/artifactPreview.ts`
 
@@ -344,7 +344,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ### 9.11 Terminal resize / scrollback
 
-**Contract:** Resize message sent on viewport change (ResizeObserver). Terminal buffer scrollback depth configurable via `terminal.scrollback` pref (default FE 50000, note BE default 5000 mismatch). Scroll-to-bottom on output unless user scrolled up. Wheel/touch scroll emulation for mouse-mode apps: single-touch drag → velocity-based wheel events (threshold 20px per line, multiplier by speed, inertia on release with 0.92 friction). Home/End keys handled. Mobile page-up/page-down → escape sequences.
+**Contract:** Resize message sent on viewport change (ResizeObserver). Terminal buffer scrollback depth configurable via `terminal.scrollback` pref (default FE 50000, note BE default 5000 mismatch). Daemon ring buffer (replay window) defaults to 32 MiB (`--buffer-size`, `pkg/pty/daemon.go`), sized to comfortably retain 50k lines of typical output so the FE scrollback pref is actually reachable after long/high-output sessions; bound is bytes, not lines, so extremely wide/dense output can still exceed it. Scroll-to-bottom on output unless user scrolled up. Wheel/touch scroll emulation for mouse-mode apps: single-touch drag → velocity-based wheel events (threshold 20px per line, multiplier by speed, inertia on release with 0.92 friction). Home/End keys handled. Mobile page-up/page-down → escape sequences.
 
 **Why it matters:** Scrollback depth, scroll behavior, and touch scroll emulation are observable; changing them affects terminal responsiveness.
 
@@ -784,7 +784,7 @@ Peer→hub: result frame with no type field: `{path, quotedPath}` on success, `{
 - Max artifact preview in-panel: 100 artifacts (newest first); overflow dropped.
 - Max artifact download: 10 MiB per file (peer cap).
 - Max PTY control frame: ~14.7 MiB (WS 14 MiB read limit).
-- PTY ring buffer: 8 MiB default (replay window).
+- PTY ring buffer: 32 MiB default (replay window; sized to comfortably cover the 50k-line FE scrollback pref, matches web MAX_REPLAY_BUFFER_BYTES).
 - File upload max: no client-side limit (server validates).
 - Per-terminal data frame size: 64 KiB coalesced output.
 
