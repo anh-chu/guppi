@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.4.1] — Bug Fixes
+
+### Bug Fixes
+
+- **sessions:** exited shells now disappear from the sidebar and pane layout within a second, no page reload needed. The whole session lifecycle moved from periodic disk scanning to an event-driven design: the server watches each session daemon over its socket and reacts the moment the shell exits, while daemons carry a unique instance identity (nonce plus process start time) so a dead session can never be confused with a new one reusing its name. Live shells still survive server restarts through a one-time adoption scan at boot.
+- **sessions:** removed sessions no longer resurrect after switching groups or reloading, and transient connection loss to a live daemon shows the session as offline instead of dropping it.
+- **ui:** locally originated session-removed and session-added events now carry the host id, so the sidebar and split panes update immediately instead of waiting for a reload.
+- **cleanup:** the crash-recovery panel and its API routes were removed along with the discovery polling they depended on; session create and list from the CLI now route through the running server and only fall back to direct spawn when no server is up.
+
 ## [4.4.0] — Features & Bug Fixes
 
 ### Features
