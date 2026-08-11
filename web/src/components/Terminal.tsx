@@ -222,6 +222,45 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
   }, [prefs.terminal.scrollback, prefs.terminal.font_size, prefs.terminal.font_family,
       prefs.theme, reconfigure])
 
+  // Long-press (touch) on the terminal opens the capture modal so text can be
+  // selected natively — xterm's canvas renderer has no touch selection.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    let timer: number | null = null
+    let startX = 0
+    let startY = 0
+    const cancel = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null }
+    }
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) { cancel(); return }
+      startX = e.touches[0].clientX
+      startY = e.touches[0].clientY
+      cancel()
+      timer = window.setTimeout(() => {
+        timer = null
+        handleCopy()
+      }, 500)
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      if (timer === null) return
+      const t = e.touches[0]
+      if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) cancel()
+    }
+    container.addEventListener('touchstart', onTouchStart, { passive: true })
+    container.addEventListener('touchmove', onTouchMove, { passive: true })
+    container.addEventListener('touchend', cancel)
+    container.addEventListener('touchcancel', cancel)
+    return () => {
+      cancel()
+      container.removeEventListener('touchstart', onTouchStart)
+      container.removeEventListener('touchmove', onTouchMove)
+      container.removeEventListener('touchend', cancel)
+      container.removeEventListener('touchcancel', cancel)
+    }
+  }, [handleCopy])
+
   // Auto-focus on mount only for the active pane — the inactive pane's
   // auto-focus would steal focus from the intended target.
   useEffect(() => {

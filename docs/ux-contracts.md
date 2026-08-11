@@ -289,7 +289,9 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 **Why it matters:** Mobile clipboard access is a platform-specific contract; removing it would break mobile usage.
 
-**Verification pointer:** `web/src/components/terminal/useTerminalInput.ts`, `web/src/components/terminal/MobileKeys.tsx`
+**Trigger (also):** Long-press (~500ms, single touch, <10px movement) on the terminal opens the same capture modal directly.
+
+**Verification pointer:** `web/src/components/terminal/useTerminalInput.ts`, `web/src/components/terminal/MobileKeys.tsx`, `web/src/components/Terminal.tsx` (long-press effect)
 
 ### 9.4 Drag-drop / file uploads
 
