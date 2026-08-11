@@ -75,6 +75,10 @@ function createMockTerminal(sendText: ReturnType<typeof vi.fn>, overrides: Recor
     clearSelection: vi.fn(),
     paste: vi.fn(),
     registerLinkProvider: vi.fn(() => ({ dispose: vi.fn() })),
+    onScroll: vi.fn(() => ({ dispose: vi.fn() })),
+    onRender: vi.fn(() => ({ dispose: vi.fn() })),
+    onResize: vi.fn(() => ({ dispose: vi.fn() })),
+    rows: 24,
     ...overrides,
   } as unknown as XTermTerminal
 }
