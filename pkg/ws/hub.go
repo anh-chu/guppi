@@ -115,7 +115,7 @@ func (h *Hub) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if evt.Type == "session-renamed" && evt.Host == "" && h.localHostID != "" {
+			if evt.Host == "" && h.localHostID != "" && (evt.Type == "session-renamed" || evt.Type == "session-removed" || evt.Type == "session-added") {
 				evt.Host = h.localHostID
 			}
 			data, err := json.Marshal(evt)
