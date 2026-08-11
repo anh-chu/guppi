@@ -180,7 +180,7 @@ Phase gates: do not start a phase until the previous phase's tasks are checked.
 
 ## Phase 5 — Docs
 
-- [ ] **T20. Update `docs/ux-contracts.md`.**
+- [x] **T20. Update `docs/ux-contracts.md`.**
       - Discovery/removal/pruning (~409-415): removal = `session-removed`
         broadcast or absence from an authoritative reconnect snapshot,
         immediate; 1s bounded best-effort removal timing; no polling.

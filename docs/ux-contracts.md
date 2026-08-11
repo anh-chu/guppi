@@ -140,7 +140,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ## 2. Sidebar
 
-**Contract:** Session list grouped by status or by custom layout groups. Sidebar can be collapsed to narrow column or completely hidden; width adjustable via drag handle. Per-group collapse toggles. Drag-drop sessions to reorder. Click selects session. Right-click → context menu. Toolbar buttons: filter by project, toggle status-view grouping, show crashed session count, quick-shell button, collapse toggle.
+**Contract:** Session list grouped by status or by custom layout groups. Sidebar can be collapsed to narrow column or completely hidden; width adjustable via drag handle. Per-group collapse toggles. Drag-drop sessions to reorder. Click selects session. Right-click → context menu. Toolbar buttons: filter by project, toggle status-view grouping, quick-shell button, collapse toggle.
 
 **Why it matters:** The sidebar's grouping modes, collapse mechanism, drag-drop reordering, and toolbar controls are core navigation; removing them would disable session management.
 
@@ -408,11 +408,19 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 ### 10.4 Session discovery & pruning
 
-**Contract:** Snapshot from `/api/sessions` (local + peer merged). Live events: `sessions-changed`, `session-added`, `session-removed`, `session-renamed`. Session removal: immediate when `session-removed` event broadcast, OR missing from N consecutive snapshots → pruned from UI. Connection state (`connection.live`) drives "offline" display when events WS down. URL rewritten if current session renamed.
+**Contract:** Snapshot from `/api/sessions` (local + peer merged). Live events: `sessions-changed`, `session-added`, `session-removed`, `session-renamed`. **Session removal:** triggered by either a `session-removed` broadcast or absence from an authoritative reconnect snapshot (no N-consecutive-snapshot prune, no polling). Removal is immediate and bounded best-effort to ~1s under normal operating load. When removed, the session is pruned from UI (list, pane tree, terminal pool, persisted groups); disconnected (failed snapshot fetch) → nothing pruned, filters protected. Connection state (`connection.live`) drives "offline" display when events WS down. URL rewritten if current session renamed.
 
 **Why it matters:** Session discovery and prune timing are observable; removing them would break session visibility.
 
 **Verification pointer:** `web/src/state/workspaceReducer.ts`, `pkg/state/sessions.go`
+
+### 10.4a Session "unreachable" state
+
+**Contract:** When a local session's daemon PID is alive but the server's watch connection to it is broken (socket error, dial failure, output read error), the session enters an "unreachable" state and is displayed with the same visual treatment as a disconnected/offline terminal — opacity-60, muted, not responsive to input. The session is never removed (live PID is sacred). The server reconnects to the daemon with bounded exponential backoff (250ms → 5s, capped, forever) until the watch succeeds. On reconnect, the `unreachable` flag clears and the session becomes interactive again. Peers propagate unreachable status normally over the sync protocol. The terminal render of an unreachable session shows the disconnect overlay (pulsing dot + "Disconnected — Reconnecting" if applicable).
+
+**Why it matters:** Transport-level failures must never remove a session with a live daemon; visual indication is required for safety (user awareness of actual connectivity loss vs. momentary network blip).
+
+**Verification pointer:** `web/src/components/Terminal.tsx`, `web/src/lib/sessionState.ts`, `pkg/pty/registry.go` (Watch backoff logic)
 
 ### 10.5 Session attributes (background / hidden)
 
@@ -426,11 +434,7 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 ### 10.6 Crash & recovery
 
-**Contract:** Daemon crash → session state visible as crashed. `/api/crashed-sessions` list shows name, crash time, daemon pid/generation, shell + cwd (editable). **Recover** button re-spawns daemon with same/overridden shell+cwd. **Dismiss** removes record. **Dismiss all** clears list.
-
-**Why it matters:** Crash recovery UI is a contract; removing it would leave crashed sessions inaccessible.
-
-**Verification pointer:** `web/src/components/RecoveryPanel.tsx`, `pkg/server/routes_sessions.go`
+**Status: Removed.** Crash recovery — daemon respawn UI, `/api/crashed-sessions` endpoint, `RecoveryPanel` component, and all associated lifecycle tracking — has been deleted. Sessions are added when launched or adopted at boot, and removed only when confirmed dead. A killed daemon is removed like any normal exit: no separate "crashed" state exists.
 
 ---
 
@@ -599,6 +603,12 @@ Writes hooks for: Claude Code (~/.claude/settings.json), Codex (~/.codex/config.
 
 `session create`, `session list`, `session kill`, `session capture` — low-level session lifecycle (used internally by daemon; not primary UX).
 
+**Routing (`create` and `list`):**
+- `create`: Attempts server API (`POST /api/session/create`) first. If the server is confirmed absent (no socket, connection refused, flock held by boot lock), acquires flock and spawns daemon directly (fallback). A fallback-spawned session has no watcher and appears at next server boot with adoption. HTTP errors from a reachable server (5xx, timeout) are treated as user errors (no fallback).
+- `list`: Attempts `GET /api/sessions` first, falls back to a read-only socket-directory scan when server is down.
+
+**Contract:** Both paths JSON-output compatible. Lock coordination prevents direct-spawn/boot-adoption race.
+
 ---
 
 ## 17. Backend API
@@ -637,10 +647,6 @@ Complete route surface below. Adding/removing routes breaks external integration
 | `/api/activity` | GET | query `session?` | `[]Activity` | Peer-merged |
 | `/api/stats` | GET | — | System stats | CPU, Memory, load, uptime |
 | `/api/pane-capture` | GET | query `session`, `lines?` (default 40), `host?` | `{text}` | Last N lines; 504 3s timeout |
-| `/api/crashed-sessions` | GET | — | `[]CrashedSession` | Daemon crashes |
-| `/api/crashed-sessions/{id}/recover` | POST | `{shell?, cwd?}` | `{ok, session}` | Respawn daemon |
-| `/api/crashed-sessions/{id}` | DELETE | — | 204 | Dismiss single |
-| `/api/crashed-sessions` | DELETE | — | 204 | Dismiss all |
 | `/api/session-attrs` | GET | — | `{Sets}` | Background/hidden map |
 | `/api/session-attrs` | POST | `{key, background?, hidden?}` | `{Sets}` | Broadcasts + peer fanout |
 | `/api/session-order` | GET | — | `{Ranks}` | Fractional rank map |
@@ -677,6 +683,8 @@ Complete route surface below. Adding/removing routes breaks external integration
 | `/api/upload` | POST | query `session`, `host?`, `filename` | `{path, quotedPath}` | File upload (30s deadline) |
 | `/proxy/{port}/*` | ALL | — | Proxied response | HTTP reverse proxy; WS supported |
 
+**API Breaking Change:** `/api/crashed-sessions` and related recover/dismiss endpoints have been removed. Crash recovery as a user-facing feature is deleted; a killed daemon is removed like any normal exit via `session-removed` event. This is an intentional external API break.
+
 ### WebSocket routes
 
 | Path | Query | Payload | Notes |
@@ -707,8 +715,10 @@ Entire protocol: raw JSON `{type: ...}`. Server→browser only; browser frames r
 | `groups-updated` | `{type, ...}` | Group tree changed | Remote group applied / local update |
 | `update-status` | `{type, current_version, latest_version, update_available, pending_restart, channel}` | Update status | Check completed or apply |
 | `sessions-changed` | `{type, host?, host_name?}` | Session list changed | Peer session sync |
+| `session-added` | `{type, host?, session:[...]}` | Session(s) created/adopted | Authoritative launch or adoption signal (exactly-once per instance) |
+| `session-removed` | `{type, host?, session}` | Session removed | Authoritative removal signal (exactly-once per instance; daemon exit, kill, or PID death) |
 
-**Note:** `peer-connected` / `peer-disconnected` were confirmed dead on the browser path (hub only ever subscribed to state.Manager, never peer.Manager) and the dead `web/src/App.tsx` branch handling them has been deleted (see §23). They still exist and are sent on the peer-to-peer wire protocol between peers (`forwardPeerStateChanges`) — only the never-reachable browser-hub receive path was removed.
+**Note on `session-added` / `session-removed`:** These are exactly-once authority signals for instance lifecycle. Frontend uses them alongside authoritative reconnect snapshots for reconciliation. A `session-removed` is emitted once per removed instance (eager UI-initiated kill and later watch-EOF confirmation do not double-broadcast). `peer-connected` / `peer-disconnected` were confirmed dead on the browser path (hub only ever subscribed to state.Manager, never peer.Manager) and the dead `web/src/App.tsx` branch handling them has been deleted (see §23). They still exist and are sent on the peer-to-peer wire protocol between peers (`forwardPeerStateChanges`) — only the never-reachable browser-hub receive path was removed.
 
 ### Terminal WS (`/ws/session`)
 
@@ -743,11 +753,14 @@ Peer→hub: result frame with no type field: `{path, quotedPath}` on success, `{
 
 ### Connection / timing
 
+- **Session removal SLA:** ~1s bounded best-effort under normal operating load (kernel EOF delivery immediate; callback scheduling may exceed 1s only under CPU starvation). Removal triggered by `session-removed` broadcast or absence from authoritative reconnect snapshot.
+- **Session unreachable backoff:** Watch reconnect retry with exponential backoff: 250ms → 5s (cap 5s, indefinite); attempt initial dial ≤2s. Cleared on successful reconnect.
+- **Boot adoption:** One-time socket directory scan at startup before `Ready()` closes, then no scanning again for session membership during the lifetime of the process. Flock held during adoption to prevent CLI direct-spawn race.
 - Heartbeat (peer): session loop ping every 15s (write 5s deadline, read 30s).
 - Heartbeat (terminal): 10s browser→server ping, no-traffic ≥25s → timeout/reconnect.
 - Activity broadcast ticker: 5s.
 - Replay fallback: 250ms max wait for replay-start; exceeded → force live.
-- Reconnect backoff: 1s → 30s (double per failure, cap 30s, reset after up >30s), ±25% jitter.
+- Peer reconnect backoff: 1s → 30s (double per failure, cap 30s, reset after up >30s), ±25% jitter.
 - Offline peer prune: 5 minutes before sessions hidden.
 - Inactivity waiting promotion: 30s no hook activity → "waiting" status (low precision fallback).
 
@@ -755,7 +768,6 @@ Peer→hub: result frame with no type field: `{path, quotedPath}` on success, `{
 
 - Mobile key bar: HOLD_DELAY_MS = 260ms (tap-vs-hold threshold), HOLD_REPEAT_MS = 80ms (repeat interval).
 - Swipe gesture dead zone: 18px threshold before direction fires.
-- Predictive echo: 500ms clear timeout (no output), always 0.4 opacity italic.
 - Artifact panel: max 100 artifacts merged (newest first, oldest dropped if exceed).
 - Upload auto-dismiss: 4s on success.
 - Glance popover: 400ms enter delay (hover before show).
