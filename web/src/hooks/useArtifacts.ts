@@ -9,7 +9,6 @@ export interface FileArtifact {
   tool?: string
   source: string
   first_seen: string
-  stale?: boolean
 }
 
 type ArtifactEvent = {
@@ -28,10 +27,10 @@ function mergeArtifacts(base: FileArtifact[], incoming: FileArtifact[]): FileArt
     if (!art || !art.path) continue
     const idx = merged.findIndex(a => a.path === art.path)
     if (idx >= 0) {
-      merged[idx] = { ...merged[idx], ...art, stale: !!art.stale }
+      merged[idx] = { ...merged[idx], ...art }
       continue
     }
-    merged.push({ ...art, stale: !!art.stale })
+    merged.push({ ...art })
     if (merged.length > MAX_ARTIFACTS) {
       merged.splice(0, merged.length - MAX_ARTIFACTS)
     }
@@ -58,7 +57,7 @@ export function useArtifacts(session: string, host?: string) {
       const res = await fetch(`/api/artifacts?${qs.toString()}`)
       if (!res.ok) return
       const data: { artifacts?: FileArtifact[] } = await res.json()
-      setArtifacts(prev => mergeArtifacts(prev, data.artifacts || []))
+      setArtifacts(data.artifacts || [])
     } catch (err) {
       console.error('Failed to fetch artifacts:', err)
     }

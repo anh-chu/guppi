@@ -46,8 +46,8 @@ type stdinEvent struct {
 
 // stdinResult holds the parsed fields from a stdin hook event.
 type stdinResult struct {
-	Tool, Status, Message, UserPrompt, AgentMessage, AgentSessionID string
-	Files                                                           []string
+	Tool, Status, Message, UserPrompt, AgentMessage, AgentSessionID, ToolName string
+	Files                                                                      []string
 }
 
 // toolNameToActivity maps an agent tool name to a human-readable activity label.
@@ -283,6 +283,7 @@ func parseStdinEvent(tool string) (stdinResult, error) {
 		UserPrompt:     userPrompt,
 		AgentMessage:   agentMessage,
 		AgentSessionID: agentSessionID,
+		ToolName:       evt.ToolName,
 		Files:          files,
 	}, nil
 }
@@ -502,6 +503,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	serverURL := c.String("server")
 	cwd := ""
 	agentSessionID := c.String("agent-session-id")
+	toolName := "" // actual tool name from hook events (e.g. "write", "edit")
 	var stdinFiles []string
 
 	log := logrus.WithField("component", "notify")
@@ -550,6 +552,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		}
 		tool = res.Tool
 		stdinFiles = res.Files
+		toolName = res.ToolName
 		if !c.IsSet("status") {
 			status = res.Status
 		}
@@ -594,6 +597,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 
 	evt := &toolevents.Event{
 		Tool:           toolevents.Tool(tool),
+		ToolName:       toolName,
 		Status:         toolevents.Status(status),
 		Session:        session,
 		Window:         window,

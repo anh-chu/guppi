@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestPersistRoundTrip verifies retained waiting events and session metadata
@@ -58,10 +59,11 @@ func TestLoadDropsLegacyArtifactKeys(t *testing.T) {
 		Source: "regex",
 	}
 	newFormatArt := &FileArtifact{
-		Path:   "/hostA/result.log",
-		Name:   "result.log",
-		Tool:   ToolClaude,
-		Source: "hook",
+		Path:      "/hostA/result.log",
+		Name:      "result.log",
+		Tool:      ToolClaude,
+		Source:    "hook",
+		FirstSeen: time.Now(), // Recent time so it's not dropped by 7-day TTL
 	}
 
 	st := persistedState{

@@ -107,7 +107,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *gr
 				evt.Host = opts.PeerMgr.LocalID()
 				evt.HostName = opts.PeerMgr.LocalName()
 			}
-			if len(evt.Files) > 0 {
+			if len(evt.Files) > 0 && toolevents.IsWriteTool(evt.ToolName) {
 				cwd := toolevents.ResolveSessionCWD(opts.CWDResolver, evt.Session)
 				evt.Artifacts = toolevents.EnrichArtifacts(evt.Files, cwd, evt.Tool, "hook")
 			}

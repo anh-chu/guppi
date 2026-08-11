@@ -509,14 +509,11 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                   const kind = getArtifactKind(art.path, art.name)
                   const displayPath = art.display_path || art.path
                   const isExpanded = expandedPreviewPath === art.path
-                  const canPreview = kind !== 'other' && !art.stale
+                  const canPreview = kind !== 'other'
                   return (
                     <div key={art.path} className="border-b border-hairline/40 last:border-b-0">
                       <div
-                        className={cn(
-                          'flex items-start gap-2 px-3 py-2 hover:bg-surface transition-colors',
-                          art.stale && 'opacity-70'
-                        )}
+                        className="flex items-start gap-2 px-3 py-2 hover:bg-surface transition-colors"
                       >
                         <button
                           type="button"
@@ -530,13 +527,8 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                           className="min-w-0 flex-1 text-left text-xs font-mono"
                           title={art.path}
                         >
-                          <div className={cn('flex min-w-0 items-center gap-2', art.stale && 'text-mute/70 italic')}>
+                          <div className="flex min-w-0 items-center gap-2">
                             <span className="min-w-0 truncate">{displayPath}</span>
-                            {art.stale && (
-                              <span className="flex-none rounded border border-hairline px-1 py-0.5 text-[9px] font-bold uppercase tracking-widest text-mute/70 not-italic">
-                                deleted
-                              </span>
-                            )}
                           </div>
                           <div className="mt-0.5 flex items-center gap-2 text-[10px] uppercase tracking-widest text-mute/60">
                             <span>{art.source}</span>
@@ -544,19 +536,17 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                             {kind !== 'other' && <span>{kind}</span>}
                           </div>
                         </button>
-                        {!art.stale && (
-                          <button
-                            type="button"
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => downloadArtifact(art.path, art.name)}
-                            title="Download"
-                            className="flex-none rounded-sm border border-hairline px-1.5 py-1 text-mute hover:text-primary transition-colors"
-                          >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
-                            </svg>
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => downloadArtifact(art.path, art.name)}
+                          title="Download"
+                          className="flex-none rounded-sm border border-hairline px-1.5 py-1 text-mute hover:text-primary transition-colors"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                          </svg>
+                        </button>
                         {canPreview && (
                           <button
                             type="button"

@@ -474,8 +474,13 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			return
 		}
 
-		// Remote host -- forward via peer connection
+		// Remote host -- clear artifacts locally, then forward via peer connection
 		if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
+			// Clear any artifacts we have stored for this remote host's session
+			if opts.Tracker != nil {
+				opts.Tracker.ClearArtifacts(req.Host, req.Name)
+			}
+
 			peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
 			if peerConn == nil {
 				http.Error(w, "peer not connected", http.StatusBadGateway)
@@ -504,6 +509,15 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		// Service.Kill logs failures with full context (session + reason), so we only
 		// check the error for control flow, not re-log it.
 		_ = opts.Launch.Kill(req.Name, "rest-kill")
+
+		// Clear artifacts for this session using the same host ID used to store them
+		if opts.Tracker != nil {
+			hostID := ""
+			if opts.PeerMgr != nil {
+				hostID = opts.PeerMgr.LocalID()
+			}
+			opts.Tracker.ClearArtifacts(hostID, req.Name)
+		}
 
 		// Remove the linked worktree if requested. Non-fatal -- session is
 		// already gone; log and continue.
@@ -575,17 +589,22 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		}
 		host := r.URL.Query().Get("host")
 		artifacts := opts.Tracker.GetArtifacts(host, session)
+		// Filter out and evict dead files (deleted since creation)
+		live := make([]*toolevents.FileArtifact, 0, len(artifacts))
 		for _, art := range artifacts {
 			if art == nil || art.Path == "" {
 				continue
 			}
 			info, err := os.Stat(art.Path)
 			if err != nil || info.IsDir() {
-				art.Stale = true
+				// File no longer exists or is a directory: evict it
+				opts.Tracker.EvictArtifact(host, session, art.Path)
+				continue
 			}
+			live = append(live, art)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"artifacts": artifacts})
+		json.NewEncoder(w).Encode(map[string]any{"artifacts": live})
 	})
 
 	// Dedicated file upload -- streams a browser-supplied file into

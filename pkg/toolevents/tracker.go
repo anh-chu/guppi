@@ -38,6 +38,23 @@ const (
 	StatusStuck     Status = "stuck"     // agent claims active but made no observable progress
 )
 
+// writeToolAllowlist defines which tool types produce recordable artifacts.
+// Only write-ish tools are included; read, grep, glob produce no artifacts.
+var writeToolAllowlist = map[string]bool{
+	"write":              true,
+	"edit":               true,
+	"multiedit":          true,
+	"str_replace":        true,
+	"str_replace_editor": true,
+	"apply_patch":        true,
+	"notebook_edit":      true,
+}
+
+// IsWriteTool returns true if the tool name is in the allowlist (case-insensitive).
+func IsWriteTool(toolName string) bool {
+	return writeToolAllowlist[strings.ToLower(toolName)]
+}
+
 // FileArtifact is a file an agent produced, with server-local stat metadata.
 type FileArtifact struct {
 	Path        string    `json:"path"`
@@ -48,12 +65,12 @@ type FileArtifact struct {
 	Tool        Tool      `json:"tool,omitempty"`
 	Source      string    `json:"source"`
 	FirstSeen   time.Time `json:"first_seen"`
-	Stale       bool      `json:"stale,omitempty"`
 }
 
 // Event is a single notification from an agent hook
 type Event struct {
 	Tool           Tool            `json:"tool"`
+	ToolName       string          `json:"tool_name,omitempty"`        // actual tool name (e.g., "write", "edit") for write-tool filtering
 	Status         Status          `json:"status"`
 	Kind           string          `json:"kind,omitempty"`
 	Host           string          `json:"host,omitempty"`             // peer fingerprint (empty = local)
@@ -198,6 +215,8 @@ func (t *Tracker) load() {
 		}
 		t.events[PaneKey{Host: evt.Host, Session: evt.Session, Window: evt.Window, Pane: evt.Pane}] = evt
 	}
+	now := time.Now()
+	sevenDaysAgo := now.AddDate(0, 0, -7)
 	for k, arts := range st.Artifacts {
 		if len(arts) == 0 {
 			continue
@@ -210,6 +229,10 @@ func (t *Tracker) load() {
 		dup := make([]*FileArtifact, 0, len(arts))
 		for _, art := range arts {
 			if art == nil {
+				continue
+			}
+			// Drop artifacts older than 7 days
+			if art.FirstSeen.Before(sevenDaysAgo) {
 				continue
 			}
 			dup = append(dup, art)
@@ -598,6 +621,59 @@ func (t *Tracker) GetArtifacts(host, session string) []*FileArtifact {
 		out = append(out, &dup)
 	}
 	return out
+}
+
+// clearArtifactsLocked removes all artifacts for a session, assuming the lock is held
+func (t *Tracker) clearArtifactsLocked(host, session string) {
+	key := artifactSessionKey(host, session)
+	delete(t.artifacts, key)
+}
+
+// ClearArtifacts removes all artifacts for a session and persists the change
+func (t *Tracker) ClearArtifacts(host, session string) {
+	t.mu.Lock()
+	t.clearArtifactsLocked(host, session)
+	t.mu.Unlock()
+	t.persist()
+}
+
+// evictArtifactLocked removes a single artifact by path from a session's artifact list,
+// assuming the lock is held. Returns true if any artifacts were removed.
+func (t *Tracker) evictArtifactLocked(host, session, path string) bool {
+	key := artifactSessionKey(host, session)
+	arts := t.artifacts[key]
+	if len(arts) == 0 {
+		return false
+	}
+	filtered := make([]*FileArtifact, 0, len(arts))
+	removed := false
+	for _, art := range arts {
+		if art == nil || art.Path == path {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, art)
+	}
+	if !removed {
+		return false
+	}
+	if len(filtered) == 0 {
+		delete(t.artifacts, key)
+	} else {
+		t.artifacts[key] = filtered
+	}
+	return true
+}
+
+// EvictArtifact removes a single artifact by path from a session's artifact list
+// and persists the change.
+func (t *Tracker) EvictArtifact(host, session, path string) {
+	t.mu.Lock()
+	removed := t.evictArtifactLocked(host, session, path)
+	t.mu.Unlock()
+	if removed {
+		t.persist()
+	}
 }
 
 func (t *Tracker) SessionMetaFor(host, session string) SessionMeta {

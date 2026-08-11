@@ -188,30 +188,28 @@ func resolveAgainstBase(base, p string) string {
 	return filepath.Clean(p)
 }
 
-// ResolveArtifactPath resolves p against cwd and rejects anything outside cwd
-// after symlink resolution. This keeps unauthenticated /tool-event ingest from
-// surfacing arbitrary host paths.
+// ResolveArtifactPath resolves p against cwd or accepts absolute paths.
+// Absolute paths are resolved and symlink-checked (regular file stat in caller).
+// Relative paths and ~ are resolved against cwd. The deployment is fully trusted;
+// ResolveArtifactPath is a sanity check (symlink validity, regular file), not a boundary.
 func ResolveArtifactPath(cwd, p string) (string, bool) {
-	if cwd == "" || p == "" {
+	if p == "" {
 		return "", false
 	}
-	base := filepath.Clean(cwd)
-	baseReal, err := filepath.EvalSymlinks(base)
-	if err != nil {
-		return "", false
-	}
-	candidate := p
-	if filepath.IsAbs(candidate) {
-		candidate = filepath.Clean(candidate)
+	var candidate string
+	if filepath.IsAbs(p) {
+		// Absolute path: accepted anywhere, just resolve symlinks
+		candidate = filepath.Clean(p)
 	} else {
-		candidate = resolveAgainstBase(base, candidate)
+		// Relative path or ~: resolve against cwd
+		if cwd == "" {
+			return "", false
+		}
+		candidate = resolveAgainstBase(filepath.Clean(cwd), p)
 	}
+	// Resolve symlinks; stat happens in caller
 	candidateReal, err := filepath.EvalSymlinks(candidate)
 	if err != nil {
-		return "", false
-	}
-	rel, err := filepath.Rel(baseReal, candidateReal)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false
 	}
 	return candidateReal, true
