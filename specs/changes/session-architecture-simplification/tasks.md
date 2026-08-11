@@ -144,7 +144,7 @@ Phase gates: do not start a phase until the previous phase's tasks are checked.
 
 ## Phase 4 — Frontend
 
-- [ ] **T16. Authoritative snapshot reconciliation.**
+- [x] **T16. Authoritative snapshot reconciliation.**
       `useSessions.ts`: snapshot dispatches carry `authoritative: true` only
       on successful fetch triggered by WS (re)connect; failed fetch dispatches
       nothing. `workspaceReducer.ts` `sessions/snapshot` (authoritative):
@@ -156,7 +156,7 @@ Phase gates: do not start a phase until the previous phase's tasks are checked.
       Verify: reducer tests — reconnect snapshot missing a session prunes
       list+panes+groups in one dispatch; empty authoritative snapshot prunes
       all local; failed-fetch path prunes nothing.
-- [ ] **T17. Delete polling + pruneMissing.** Remove 5s interval and
+- [x] **T17. Delete polling + pruneMissing.** Remove 5s interval and
       visibility fallback (`useSessions.ts:146-172` region); delete
       `view/pruneMissing` type (`workspaceReducer.ts:80`), case (`:549`),
       debounce state; creator (`useWorkspace.ts:183-184`); prune effect
@@ -167,13 +167,13 @@ Phase gates: do not start a phase until the previous phase's tasks are checked.
       `workspaceReducer.test.ts:64-89` and Sidebar tests.
       Verify: devtools — no periodic `/api/sessions` while WS live; filters
       survive a disconnect/reconnect cycle.
-- [ ] **T18. Delete crash-recovery UI + dead handlers.**
+- [x] **T18. Delete crash-recovery UI + dead handlers.**
       `components/RecoveryPanel.tsx`, `hooks/useCrashedSessions.ts` (incl.
       10s polling), `useCrashedSessions()` call (`App.tsx:178`), mount, and
       `recovery-started`/`recovery-finished`/`sessions-crashed` handlers
       (`App.tsx:633-660`); sidebar crashed-count toolbar item.
       Verify: `pnpm build` + tests; `grep -r useCrashedSessions|RecoveryPanel|sessions-crashed` empty.
-- [ ] **T19. Unreachable rendering.** Render `session.unreachable` with the
+- [x] **T19. Unreachable rendering.** Render `session.unreachable` with the
       existing disconnected/offline treatment; session stays listed and
       attachable-when-recovered.
       Verify: component test with unreachable flag set.

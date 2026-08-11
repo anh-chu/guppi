@@ -29,8 +29,8 @@ function splitAction(targetKey: string, newKey: string, direction: 'h' | 'v' = '
   return { type: 'view/split', targetKey, direction, newKey }
 }
 
-function snapshot(sessions: Session[], generation: number, now = 0): WorkspaceAction {
-  return { type: 'sessions/snapshot', sessions, generation, now }
+function snapshot(sessions: Session[], generation: number, now = 0, authoritative = false): WorkspaceAction {
+  return { type: 'sessions/snapshot', sessions, generation, now, authoritative }
 }
 
 function connection(live: boolean, livenessUnknown: boolean): WorkspaceAction {
@@ -47,45 +47,116 @@ describe('workspaceReducer', () => {
     expect(s1.connection.livenessUnknown).toBe(true)
   })
 
-  it('non-empty snapshot hydrates sessions and clears liveness unknown', () => {
+  it('non-authoritative snapshot hydrates sessions but does not clear liveness unknown', () => {
     const s0 = createInitialWorkspaceState()
     const sessions = [sess('alpha')]
-    const s1 = workspaceReducer(s0, snapshot(sessions, 1, 0))
+    const s1 = workspaceReducer(s0, snapshot(sessions, 1, 0, false)) // non-authoritative
+    expect(s1.sessions.map(sessionKey)).toEqual(['alpha'])
+    expect(s1.loading).toBe(false)
+    expect(s1.connection.livenessUnknown).toBe(true)
+  })
+
+  it('authoritative snapshot hydrates sessions and clears liveness unknown', () => {
+    const s0 = createInitialWorkspaceState()
+    const sessions = [sess('alpha')]
+    const s1 = workspaceReducer(s0, snapshot(sessions, 1, 0, true)) // authoritative
     expect(s1.sessions.map(sessionKey)).toEqual(['alpha'])
     expect(s1.loading).toBe(false)
     expect(s1.connection.livenessUnknown).toBe(false)
   })
 
-  it('does not prune while disconnected even after an empty snapshot', () => {
+  it('authoritative snapshot immediately prunes missing leaves', () => {
     const s0 = createInitialWorkspaceState()
     const s1 = reduce(
       s0,
       connection(true, false),
       splitAction('alpha', 'beta'),
-      snapshot([sess('alpha'), sess('beta')], 1, 0),
-      connection(false, true),
-      snapshot([], 2, 100),
-      { type: 'view/pruneMissing', validKeys: [], now: 200 },
+      snapshot([sess('alpha'), sess('beta')], 1, 0, false), // non-authoritative (connection live but liveness unknown)
     )
     expect(s1.view.paneTree).not.toBeNull()
     expect(sessionKeyFromLeaves(s1)).toContain('alpha')
     expect(sessionKeyFromLeaves(s1)).toContain('beta')
+    // Now reconnect with an authoritative snapshot missing 'beta'
+    const s2 = workspaceReducer(s1, {
+      type: 'sessions/snapshot',
+      sessions: [sess('alpha')],
+      generation: 2,
+      now: 100,
+      authoritative: true,
+    })
+    expect(s2.view.paneTree).not.toBeNull()
+    expect(sessionKeyFromLeaves(s2)).toEqual(['alpha'])
+    expect(s2.connection.livenessUnknown).toBe(false)
   })
 
-  it('prunes a missing leaf only after two observations at least 1s apart', () => {
+  it('non-authoritative snapshot does not prune or reconcile pane tree', () => {
     const s0 = createInitialWorkspaceState()
     const s1 = reduce(
       s0,
       connection(true, false),
       splitAction('alpha', 'beta'),
-      snapshot([sess('alpha'), sess('beta')], 1, 0),
+      snapshot([sess('alpha'), sess('beta')], 1, 0, false), // non-authoritative
     )
-    const afterFirst = workspaceReducer(s1, { type: 'view/pruneMissing', validKeys: ['alpha'], now: 1000 })
-    expect(sessionKeyFromLeaves(afterFirst)).toContain('beta')
-    expect(afterFirst.view.activeKey).toBe('beta')
-    const afterSecond = workspaceReducer(afterFirst, { type: 'view/pruneMissing', validKeys: ['alpha'], now: 2100 })
-    expect(sessionKeyFromLeaves(afterSecond)).toEqual(['alpha'])
-    expect(afterSecond.view.activeKey).toBe('alpha')
+    expect(sessionKeyFromLeaves(s1)).toEqual(['alpha', 'beta'])
+    // Non-authoritative snapshot missing 'beta' should NOT prune it
+    const s2 = workspaceReducer(s1, snapshot([sess('alpha')], 2, 100, false))
+    expect(sessionKeyFromLeaves(s2)).toEqual(['alpha', 'beta'])
+    expect(s2.view.paneTree).not.toBeNull()
+  })
+
+  it('authoritative empty snapshot prunes all local sessions, clears activeKey and singleView', () => {
+    const s0 = createInitialWorkspaceState()
+    const s1 = reduce(
+      s0,
+      connection(true, false),
+      splitAction('alpha', 'beta'),
+      snapshot([sess('alpha'), sess('beta')], 1, 0, false),
+      { type: 'view/setActiveKey', key: 'alpha' },
+      { type: 'view/setSingleView', sessionKey: 'gamma' }, // singleView to a missing session
+    )
+    expect(s1.view.paneTree).not.toBeNull()
+    expect(s1.view.activeKey).toBe('alpha')
+    // Reconnect with authoritative empty snapshot
+    const s2 = workspaceReducer(s1, {
+      type: 'sessions/snapshot',
+      sessions: [],
+      generation: 2,
+      now: 100,
+      authoritative: true,
+    })
+    expect(s2.view.paneTree).toBeNull()
+    expect(s2.view.activeKey).toBeNull()
+    expect(s2.view.singleView).toBeNull()
+    expect(s2.connection.livenessUnknown).toBe(false)
+  })
+
+  it('saved group with stale session key is pruned on authoritative snapshot', () => {
+    const s0 = createInitialWorkspaceState()
+    const s1 = reduce(
+      s0,
+      snapshot([sess('alpha'), sess('beta'), sess('gamma')], 1, 0, false),
+      { type: 'groups/snapshot', groups: {
+        g1: { tree: { type: 'leaf' as const, sessionKey: 'alpha' }, rank: 'a0' },
+        g2: { tree: { type: 'leaf' as const, sessionKey: 'beta' }, rank: 'b0' },
+      }, generation: 1 },
+    )
+    const g1Tree = s1.groups.g1?.tree
+    const g2Tree = s1.groups.g2?.tree
+    expect(g1Tree && g1Tree.type === 'leaf' && g1Tree.sessionKey).toBe('alpha')
+    expect(g2Tree && g2Tree.type === 'leaf' && g2Tree.sessionKey).toBe('beta')
+    // Authoritative snapshot: only alpha and gamma remain. beta is gone.
+    const s2 = workspaceReducer(s1, {
+      type: 'sessions/snapshot',
+      sessions: [sess('alpha'), sess('gamma')],
+      generation: 2,
+      now: 0,
+      authoritative: true,
+    })
+    // g1 is still present with alpha
+    const s2g1Tree = s2.groups.g1?.tree
+    expect(s2g1Tree && s2g1Tree.type === 'leaf' && s2g1Tree.sessionKey).toBe('alpha')
+    // g2's tree is pruned away, and the group is deleted
+    expect(s2.groups.g2).toBeUndefined()
   })
 
   it('ignores snapshot older than a newer event', () => {
@@ -234,9 +305,9 @@ describe('workspaceReducer', () => {
       const s0 = createInitialWorkspaceState()
       const s1 = workspaceReducer(s0, snapshot([sess('a')], 1, 0))
       expect(s1.transportGeneration).toBe(1)
-      const s2 = workspaceReducer(s1, snapshot([sess('b')], 3, 0))
+      const s2 = workspaceReducer(s1, snapshot([sess('b')], 3, 0, true))
       expect(s2.transportGeneration).toBe(3)
-      const s3 = workspaceReducer(s2, snapshot([sess('c')], 2, 0))
+      const s3 = workspaceReducer(s2, snapshot([sess('c')], 2, 0, true))
       expect(s3.transportGeneration).toBe(3)
       expect(s3.sessions.map(sessionKey)).toEqual(['b'])
     })

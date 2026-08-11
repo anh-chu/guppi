@@ -46,7 +46,7 @@ function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> & { 
       sessionAttrs={sessionAttrs}
       setSessionAttr={() => {}}
       backgroundSession={async () => {}}
-      pruningSuspended={false}
+      filterProtectionActive={false}
       layoutGroups={layoutGroups}
       {...props}
     />,

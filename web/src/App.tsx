@@ -29,8 +29,6 @@ import { useSessionAttrs } from './hooks/useSessionAttrs'
 import { useSessionOrder } from './hooks/useSessionOrder'
 import { useWikiController } from './hooks/useWikiController'
 import { Toasts, Toast } from './components/Toasts'
-import { RecoveryPanel } from './components/RecoveryPanel'
-import { useCrashedSessions } from './hooks/useCrashedSessions'
 import { useSelfUpdate, type UpdateStatus } from './hooks/useSelfUpdate'
 import { applyTheme } from './theme'
 import { sessionSignal, LOUD_STATUSES } from './lib/sessionState'
@@ -166,16 +164,10 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const splitTargetRef = useRef<{ key: string; direction: 'h' | 'v'; newFirst?: boolean } | null>(null)
   const activeKeyRef = useRef(activeKey)
   activeKeyRef.current = activeKey
-  // True while the server is rebuilding sessions after a crash.
-  // Pruning of missing sessions is suspended until recovery finishes, so a
-  // not-yet-rebuilt session is never mistaken for a deliberate kill.
-  const [recovering, setRecovering] = useState(false)
-
   // Shared session attributes (background / hidden) — server-authoritative,
   // mirrored across the mesh. Viewport state (pane-tree, active-key,
   // active-group-id, sidebar-collapsed) stays per-device in localStorage.
   const { sets: sessionAttrs, setAttr: setSessionAttr, refresh: refreshSessionAttrs } = useSessionAttrs(authenticated)
-  const crashedHook = useCrashedSessions()
 
   // Auto-lock: idle detection
   const lastActivityRef = useRef<number>(Date.now())
@@ -630,15 +622,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       }
       return
     }
-    if (evt.type === 'recovery-started') {
-      setRecovering(true)
-      return
-    }
-    if (evt.type === 'recovery-finished') {
-      setRecovering(false)
-      refresh()
-      return
-    }
     if (evt.type === 'session-order-updated') {
       refreshSessionOrder()
       return
@@ -654,10 +637,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (evt.type === 'session-attrs-updated') {
       refreshSessionAttrs()
     }
-    if (evt.type === 'sessions-crashed') {
-      crashedHook.refresh()
-    }
-  }, [refresh, handleToolEvent, processToolEvent, handleActivityEvent, refreshSessionAttrs, refreshSessionOrder, refreshGroups, workspaceActions, crashedHook.refresh])
+  }, [refresh, handleToolEvent, processToolEvent, handleActivityEvent, refreshSessionAttrs, refreshSessionOrder, refreshGroups, workspaceActions])
 
   const { connected } = useWebSocket('/ws/events', onEvent)
 
@@ -665,29 +645,20 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     workspaceActions.setConnection(connected === true)
   }, [connected, workspaceActions])
 
-  const pruningSuspended = recovering || workspaceState.connection.livenessUnknown
+  const filterProtectionActive = workspaceState.connection.livenessUnknown
+  const lastLivenessUnknownRef = useRef(filterProtectionActive)
 
-  // Prune leaves whose session is gone from the live list. While the server is
-  // alive the list is authoritative, so a missing session is a genuine kill and
-  // its pane is removed at once. Recovery (full-server rebuild) is the only time
-  // a live session is transiently absent; pruning is suspended then. We do NOT
-  // bail when sessions is empty: killing the last session makes the list empty,
-  // and its pane must still be pruned so the terminal unmounts instead of
-  // sitting on "disconnected — reconnecting" forever.
+  // Sweep terminal pool entries after authoritative reconciliation (liveness
+  // unknown transitions to false). Explicit removals are disposed directly in
+  // the session-removed event handler; no count-based inference here.
   useEffect(() => {
-    // Never prune while disconnected or when liveness is still unknown.
-    if (sessionsLoading || pruningSuspended || connected !== true) return
+    const isAuthoritativeSnapshot = lastLivenessUnknownRef.current && !filterProtectionActive
+    lastLivenessUnknownRef.current = filterProtectionActive
+    if (!isAuthoritativeSnapshot) return
     const validKeys = new Set(sessions.map(s => sessionKey(s)))
     if (pendingSessionRef.current) validKeys.add(pendingSessionRef.current)
-
-    // Authoritative sweep: dispose pool entries for sessions gone from the
-    // server list.
     terminalPool.disposeAbsent(validKeys)
-
-    if (paneTree) {
-      workspaceActions.pruneMissing([...validKeys], Date.now())
-    }
-  }, [sessions, sessionsLoading, paneTree, pruningSuspended, connected, workspaceActions])
+  }, [sessions, filterProtectionActive])
 
   // Release the pending-session guard once the freshly created session shows
   // up in state (remote creates arrive via a delayed peer broadcast).
@@ -1146,14 +1117,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   return (
     <div className="flex flex-col h-full w-full bg-background text-foreground relative">
       <Toasts toasts={toasts} onDismiss={dismissToast} />
-      {crashedHook.crashedSessions.length > 0 && (
-        <RecoveryPanel
-          crashedSessions={crashedHook.crashedSessions}
-          onRecover={crashedHook.recover}
-          onDismiss={crashedHook.dismiss}
-          onDismissAll={crashedHook.dismissAll}
-        />
-      )}
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
       {portForwardsOpen && (
         <PortForwardModal onClose={() => setPortForwardsOpen(false)} />
@@ -1264,11 +1227,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             sessionAttrs={sessionAttrs}
             setSessionAttr={setSessionAttr}
             backgroundSession={backgroundSession}
-            pruningSuspended={pruningSuspended}
+            filterProtectionActive={filterProtectionActive}
 
             onQuickShell={handleQuickShell}
-            crashedCount={crashedHook.crashedSessions.length}
-            onCrashedClick={() => crashedHook.refresh()}
           />
         )}
         <div

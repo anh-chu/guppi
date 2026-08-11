@@ -28,43 +28,51 @@ describe('useSessions transport', () => {
     vi.unstubAllGlobals()
   })
 
-  it('fetches on mount and dispatches a snapshot', async () => {
+  it('fetches authoritative snapshot on WS reconnect', async () => {
     const dispatch = vi.fn()
     vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([makeSession('a')]) } as Response)
-    renderHook(() => useSessions(dispatch, { live: false, livenessUnknown: true }, true))
+    const { rerender } = renderHook(
+      ({ live }: { live: boolean }) =>
+        useSessions(dispatch, { live, livenessUnknown: true }, true),
+      { initialProps: { live: false } },
+    )
+    // No fetch while disconnected
+    expect(fetch).not.toHaveBeenCalled()
+    await act(async () => rerender({ live: true }))
+    // Reconnect triggers a fetch with authoritative: true
     await waitFor(() =>
       expect(dispatch).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'sessions/snapshot', generation: 1 }),
+        expect.objectContaining({ type: 'sessions/snapshot', generation: 1, authoritative: true }),
       ),
     )
   })
 
-  it('polls while liveness is unknown and pauses when live', async () => {
+  it('does not poll after reconnect', async () => {
     const dispatch = vi.fn()
     vi.mocked(fetch).mockImplementation(() => response([makeSession('a')]))
     const { rerender } = renderHook(
       ({ live }: { live: boolean }) =>
-        useSessions(dispatch, { live, livenessUnknown: !live }, true),
+        useSessions(dispatch, { live, livenessUnknown: false }, true),
       { initialProps: { live: false } },
     )
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
-    await act(async () => vi.advanceTimersByTimeAsync(5000))
-    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch).not.toHaveBeenCalled()
+    // Reconnect triggers a fetch
     await act(async () => rerender({ live: true }))
-    // Live connect triggers a refresh, then polling stops.
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3))
-    await act(async () => vi.advanceTimersByTimeAsync(20000))
-    expect(fetch).toHaveBeenCalledTimes(3)
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+    // Advance time 10 seconds - no polling should occur
+    await act(async () => vi.advanceTimersByTimeAsync(10000))
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 
-  it('aborts an in-flight fetch when a newer refresh starts', async () => {
+  it('explicit refresh calls are independent', async () => {
     const dispatch = vi.fn()
     vi.mocked(fetch).mockImplementation(() => response([makeSession('a')]))
-    const { result } = renderHook(() => useSessions(dispatch, { live: false, livenessUnknown: true }, true))
+    const { result } = renderHook(() => useSessions(dispatch, { live: true, livenessUnknown: false }, true))
+    await act(async () => result.current.refresh())
     expect(fetch).toHaveBeenCalledTimes(1)
     await act(async () => result.current.refresh())
     expect(fetch).toHaveBeenCalledTimes(2)
-    // The first request was aborted; only one snapshot is ultimately applied.
-    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1))
+    // Both fetches complete and dispatch
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(2))
   })
 })

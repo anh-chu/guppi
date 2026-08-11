@@ -128,7 +128,7 @@ function signalFromStatus(
   }
 
   // Check offline before activity upgrade
-  if (session.host && session.host_online === false) {
+  if (session.unreachable || (session.host && session.host_online === false)) {
     return { state: 'offline', loud: false, tool, agentCount }
   }
 

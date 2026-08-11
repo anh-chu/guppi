@@ -55,7 +55,7 @@ export interface WorkspaceState {
 
 export type WorkspaceAction =
   | { type: 'connection'; live: boolean; livenessUnknown: boolean }
-  | { type: 'sessions/snapshot'; sessions: Session[]; generation: number; now: number }
+  | { type: 'sessions/snapshot'; sessions: Session[]; generation: number; now: number; authoritative?: boolean }
   | { type: 'sessions/event'; event: SessionEvent; generation: number }
   | { type: 'optimistic/add'; session: Session; now?: number }
   | { type: 'optimistic/remove'; name: string; host?: string }
@@ -77,7 +77,6 @@ export type WorkspaceAction =
   | { type: 'view/setActiveKey'; key: string | null }
   | { type: 'view/dissolveToSingle' }
   | { type: 'view/promoteNextGroup' }
-  | { type: 'view/pruneMissing'; validKeys: string[]; now: number }
   | { type: 'rename'; oldKey: string; newKey: string }
   | { type: 'wiki/open'; target: WikiTarget }
   | { type: 'wiki/close' }
@@ -117,9 +116,8 @@ export function parseSessionKey(key: string): { host: string; name: string } {
   return { host: key.substring(0, idx), name: key.substring(idx + 1) }
 }
 
-export interface WorkspaceStateWithStreaks extends WorkspaceState {
-  missingStreaks: Record<string, MissingStreak>
-}
+// Type alias for backward compatibility (missingStreaks was removed).
+export type WorkspaceStateWithStreaks = WorkspaceState
 
 export function createInitialWorkspaceState(input?: {
   view?: Partial<WorkspaceView>
@@ -137,7 +135,6 @@ export function createInitialWorkspaceState(input?: {
     transportGeneration: 0,
     groups: {},
     groupsLoaded: false,
-    missingStreaks: {},
     view: {
       currentView: 'overview',
       settingsOpen: false,
@@ -171,21 +168,39 @@ function reconcileSnapshot(
   state: WorkspaceState,
   sessions: Session[],
   now: number,
-): Session[] {
+  authoritative: boolean,
+): { sessions: Session[]; optimistic: Record<string, number> } {
   const confirmed = new Set(sessions.map(s => s.name))
   const nextOptimistic: Record<string, number> = {}
   for (const [name, insertedAt] of Object.entries(state.optimistic)) {
-    if (confirmed.has(name) || now - insertedAt > STUB_TTL_MS) continue
+    if (confirmed.has(name)) continue // confirmed by payload; stub no longer needed
+    if (now - insertedAt > STUB_TTL_MS) continue // stale stub
     nextOptimistic[name] = insertedAt
   }
-  const kept = state.sessions.filter(s => nextOptimistic[s.name] !== undefined)
-  const merged = [...kept]
+
+  if (!authoritative) {
+    // Merge/upsert only; never drop existing sessions. Expired optimistic
+    // stubs (placeholder rows, not real sessions) are still swept.
+    const merged = state.sessions.filter(
+      s => !(s.name in state.optimistic) || confirmed.has(s.name) || nextOptimistic[s.name] !== undefined,
+    )
+    for (const s of sessions) {
+      const idx = merged.findIndex(x => x.name === s.name && (x.host || '') === (s.host || ''))
+      if (idx === -1) merged.push(s)
+      else merged[idx] = s
+    }
+    return { sessions: merged, optimistic: nextOptimistic }
+  }
+
+  // Authoritative: payload wins. Keep only fresh optimistic stubs for
+  // in-flight creations (a session-added broadcast will confirm them).
+  const merged = state.sessions.filter(s => nextOptimistic[s.name] !== undefined)
   for (const s of sessions) {
     const idx = merged.findIndex(x => x.name === s.name && (x.host || '') === (s.host || ''))
     if (idx === -1) merged.push(s)
     else merged[idx] = s
   }
-  return merged
+  return { sessions: merged, optimistic: nextOptimistic }
 }
 
 function upsertSessionByKey(sessions: Session[], session: Session): Session[] {
@@ -294,15 +309,76 @@ function swapPaneView(view: WorkspaceView, a: string, b: string): WorkspaceView 
   return { ...view, paneTree: swapLeaves(view.paneTree, a, b) }
 }
 
-interface MissingStreak {
-  count: number
-  last: number
+// Reconcile pane tree against a set of valid keys: prune missing panes,
+// repair activeKey, singleView, and dropped group members.
+function reconcilePaneTree(
+  view: WorkspaceView,
+  validKeys: Set<string>,
+  groups: GroupRecordMap,
+): { view: WorkspaceView; groups: GroupRecordMap } {
+  // Repair paneTree if present.
+  let tree = view.paneTree
+  let activeKey = view.activeKey
+  if (tree) {
+    const leaves = getLeaves(tree)
+    const toRemove = leaves.filter(key => !validKeys.has(key))
+    if (toRemove.length > 0) {
+      for (const key of toRemove) {
+        if (tree === null) break
+        tree = removeLeaf(tree, key)
+      }
+      // Repair activeKey: if it was removed, pick first remaining leaf.
+      const remainingLeaves = tree ? getLeaves(tree) : []
+      if (activeKey && toRemove.includes(activeKey)) {
+        activeKey = remainingLeaves[0] ?? null
+      }
+    }
+  }
+  // If tree became null after pruning, clear activeKey.
+  if (!tree) {
+    activeKey = null
+  }
+
+  // Repair singleView: keep only if still valid.
+  const nextSingleView =
+    view.singleView && validKeys.has(view.singleView) ? view.singleView : null
+
+  // Always reconcile saved groups: prune stale keys, delete empty groups.
+  const nextGroups = { ...groups }
+  for (const groupId of Object.keys(nextGroups)) {
+    const group = nextGroups[groupId]
+    if (!group.tree) continue
+    const nextTree = pruneMissingFromTree(group.tree, validKeys)
+    if (nextTree && nextTree !== group.tree) {
+      nextGroups[groupId] = { ...group, tree: nextTree }
+    } else if (!nextTree) {
+      // Tree became empty after pruning; delete the group.
+      delete nextGroups[groupId]
+    }
+  }
+
+  return {
+    view: { ...view, paneTree: tree, activeKey, singleView: nextSingleView },
+    groups: nextGroups,
+  }
+}
+
+// Helper to prune a tree by removing leaves not in validKeys.
+function pruneMissingFromTree(tree: PaneTree, validKeys: Set<string>): PaneTree | null {
+  let result: PaneTree | null = tree
+  const leaves = getLeaves(tree)
+  for (const key of leaves) {
+    if (!validKeys.has(key)) {
+      result = result ? removeLeaf(result, key) : null
+    }
+  }
+  return result
 }
 
 export function workspaceReducer(
-  stateArg: WorkspaceStateWithStreaks,
+  stateArg: WorkspaceState,
   action: WorkspaceAction,
-): WorkspaceStateWithStreaks {
+): WorkspaceState {
   let state = stateArg
 
   // Transport generation gate: ignore stale transport actions.
@@ -322,16 +398,42 @@ export function workspaceReducer(
     }
 
     case 'sessions/snapshot': {
-      const merged = reconcileSnapshot(state, action.sessions, action.now)
-      const notEmpty = action.sessions.length > 0
-      const connection = notEmpty
-        ? { ...state.connection, livenessUnknown: false }
-        : state.connection
+      const authoritative = action.authoritative === true
+      const { sessions: merged, optimistic: nextOptimistic } = reconcileSnapshot(
+        state,
+        action.sessions,
+        action.now,
+        authoritative,
+      )
+
+      if (!authoritative) {
+        // Non-authoritative snapshot: merge/upsert only.
+        // Do not prune or reconcile. Liveness remains unknown until authoritative reconnect.
+        return {
+          ...state,
+          sessions: merged,
+          optimistic: nextOptimistic,
+          loading: false,
+        }
+      }
+
+      // Authoritative snapshot (successful WS reconnect): clear liveness unknown
+      // and reconcile immediately (prune missing, repair pane tree/groups).
+      const validKeys = new Set(merged.map(s => sessionKey(s)))
+      const { view: nextView, groups: nextGroups } = reconcilePaneTree(
+        state.view,
+        validKeys,
+        state.groups,
+      )
+
       return {
         ...state,
         sessions: merged,
+        optimistic: nextOptimistic,
         loading: false,
-        connection,
+        connection: { ...state.connection, livenessUnknown: false },
+        view: nextView,
+        groups: nextGroups,
       }
     }
 
@@ -543,72 +645,6 @@ export function workspaceReducer(
           singleView: null,
           currentView: 'session',
         },
-      }
-    }
-
-    case 'view/pruneMissing': {
-      const { validKeys, now } = action
-      const live = state.connection.live && !state.connection.livenessUnknown
-      if (!state.view.paneTree) {
-        return {
-          ...state,
-          view: {
-            ...state.view,
-            singleView: validKeys.includes(state.view.singleView ?? '') ? state.view.singleView : null,
-          },
-          missingStreaks: {},
-        }
-      }
-      const streaks = { ...(state.missingStreaks || {}) }
-      const leaves = getLeaves(state.view.paneTree)
-      const toRemove: string[] = []
-      for (const key of leaves) {
-        if (validKeys.includes(key)) {
-          delete streaks[key]
-          continue
-        }
-        const prev = streaks[key]
-        if (!prev) {
-          streaks[key] = { count: 1, last: now }
-          continue
-        }
-        if (now - prev.last < 1000) continue
-        if (prev.count + 1 >= 2) {
-          if (live) toRemove.push(key)
-          delete streaks[key]
-        } else {
-          streaks[key] = { count: prev.count + 1, last: now }
-        }
-      }
-      if (toRemove.length === 0) {
-        return {
-          ...state,
-          view: {
-            ...state.view,
-            singleView: validKeys.includes(state.view.singleView ?? '') ? state.view.singleView : null,
-          },
-          missingStreaks: streaks,
-        }
-      }
-      let tree: PaneTree | null = state.view.paneTree
-      for (const key of toRemove) {
-        if (tree === null) break
-        tree = removeLeaf(tree, key)
-      }
-      const remainingLeaves = tree ? getLeaves(tree) : []
-      const activeKey =
-        tree && state.view.activeKey && toRemove.includes(state.view.activeKey)
-          ? remainingLeaves[0] ?? null
-          : state.view.activeKey
-      return {
-        ...state,
-        view: {
-          ...state.view,
-          paneTree: tree,
-          activeKey,
-          singleView: validKeys.includes(state.view.singleView ?? '') ? state.view.singleView : null,
-        },
-        missingStreaks: streaks,
       }
     }
 

@@ -180,8 +180,6 @@ export function useWorkspace(authenticated: boolean) {
       setSingleView: (key: string | null) => dispatch({ type: 'view/setSingleView', sessionKey: key }),
       dissolveToSingle: () => dispatch({ type: 'view/dissolveToSingle' }),
       promoteNextGroup: () => dispatch({ type: 'view/promoteNextGroup' }),
-      pruneMissing: (validKeys: string[], now: number) =>
-        dispatch({ type: 'view/pruneMissing', validKeys, now }),
       openWiki: (target: WikiTarget) => dispatch({ type: 'wiki/open', target }),
       closeWiki: () => dispatch({ type: 'wiki/close' }),
       renameSession: (oldKey: string, newKey: string) => dispatch({ type: 'rename', oldKey, newKey }),

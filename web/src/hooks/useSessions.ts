@@ -41,6 +41,7 @@ export interface Session {
   last_agent_message?: string
   display_name?: string   // AI-generated or user-set friendly label
   user_set_name?: boolean // user manually set display_name
+  unreachable?: boolean    // daemon PID alive but socket unreachable
   scheduleID?: string
   schedule_id?: string
 }
@@ -120,8 +121,9 @@ export function useSessions(
 ) {
   const generationRef = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
+  const previousLiveRef = useRef(connection.live)
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (isReconnect = false) => {
     if (!authenticated) return
     generationRef.current += 1
     const generation = generationRef.current
@@ -138,36 +140,23 @@ export function useSessions(
         sessions: data,
         generation,
         now: performance.now(),
+        authoritative: isReconnect,
       })
     } catch {
-      // Network errors are expected during disconnect; the connection state
-      // tells us when to fall back to polling.
+      // Network errors during reconnect are expected; failed authoritative
+      // fetch leaves liveness unknown, prunes nothing.
     }
   }, [authenticated, dispatch])
 
-  // Live events are primary. Reconcile on initial load and whenever the
-  // WebSocket reconnects. Use slow fallback polling only when liveness is
-  // unknown, and pause it in hidden tabs.
+  // Live events are primary. Fetch snapshot on WS (re)connect and when
+  // authentication state changes. Failed fetches leave liveness unknown.
   useEffect(() => {
     if (!authenticated) return
-    refresh()
-    if (connection.live) return
-
-    const tick = () => {
-      if (!document.hidden) refresh()
+    const isReconnect = connection.live && !previousLiveRef.current
+    previousLiveRef.current = connection.live
+    if (isReconnect) {
+      refresh(true)
     }
-    const id = window.setInterval(tick, 5000)
-    return () => window.clearInterval(id)
-  }, [authenticated, connection.live, refresh])
-
-  // Refresh immediately when the tab becomes visible while liveness is unknown.
-  useEffect(() => {
-    if (!authenticated) return
-    const onVisibility = () => {
-      if (!document.hidden && !connection.live) refresh()
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [authenticated, connection.live, refresh])
 
   return { refresh }
