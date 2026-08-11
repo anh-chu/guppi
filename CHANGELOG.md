@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.4.2] — Bug Fixes
+
+### Bug Fixes
+
+- **wiki:** clicking a relative or `~` file path in the terminal now always resolves server-side against the pane's working directory, fixing links that were intermittently treated as absolute or opened against the wrong root.
+- **artifacts:** the detected-files panel now tracks real writes only. Read-style tool calls no longer show up, files written anywhere on disk (not just inside the session cwd) are accepted, deleted files disappear on refresh instead of lingering with a badge, and a session's list is cleared when the session is killed, with entries older than 7 days dropped on server load.
+- **terminal:** replaying buffered output no longer sends stray auto-replies (DA/DSR/CPR/OSC responses) back to the shell.
+- **terminal:** scroll-jump rework and a 32MiB scrollback ring matching the browser replay cap.
+
 ## [4.4.1] — Bug Fixes
 
 ### Bug Fixes
