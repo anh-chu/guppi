@@ -51,6 +51,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
   - [9.12 Terminal fonts / rendering](#912-terminal-fonts-rendering)
   - [9.13 DEC 2026 synchronized updates](#913-dec-2026-synchronized-updates)
   - [9.14 Terminal toolbar](#914-terminal-toolbar)
+  - [9.15 Scroll scrubber](#915-scroll-scrubber)
 - [10. Session Lifecycle & Status](#10-session-lifecycle-status)
   - [10.1 Session states](#101-session-states)
   - [10.2 Tool events & agent tracking](#102-tool-events-agent-tracking)
@@ -390,6 +391,14 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 **Verification pointer:** `web/src/components/Terminal.tsx`
 
 ---
+
+### 9.15 Scroll scrubber
+
+**Contract:** When the buffer is scrollable (length > rows), a thin scrubber track overlays the terminal's right edge. Thumb reflects viewport position/size; dragging (pointer or touch) maps track fraction linearly to the full scrollback via `scrollToLine`, so any depth is reachable in one gesture. Appears while scrolling or dragging, fades out ~1.2s after scrolling stops. Thumb minimum height 10% of track; highlighted while dragging.
+
+**Why it matters:** xterm's native scrollbar is nearly unusable on mobile for deep (50k-line) scrollback; the scrubber is the fast-navigation path.
+
+**Verification pointer:** `web/src/components/terminal/ScrollScrubber.tsx`
 
 ## 10. Session Lifecycle & Status
 

@@ -14,6 +14,7 @@ import type { IDisposable } from '@xterm/xterm'
 import { useTerminalInput } from './terminal/useTerminalInput'
 import { SelectionMenu } from './terminal/SelectionMenu'
 import { MobileGestureKey, HoldableKey } from './terminal/MobileKeys'
+import { ScrollScrubber } from './terminal/ScrollScrubber'
 
 interface TerminalProps {
   sessionName: string
@@ -495,6 +496,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
             ref={containerRef}
             className="absolute inset-0 overflow-hidden"
           />
+          <ScrollScrubber termRef={termRef} connected={termConnected} />
           <UploadStatus uploads={uploads} onCancel={cancelUpload} onDismiss={dismissUpload} />
         {/* Pop-out (PiP) toggle */}
           <button
