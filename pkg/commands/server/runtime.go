@@ -572,7 +572,7 @@ func (rt *Runtime) checkPrompt(paneID string) (bool, bool) {
 // registryView is the subset of pty.Registry used by the adapter, kept narrow
 // so tests can substitute a fake without implementing the full API.
 type registryView interface {
-	Create(name, shell, cwd string, cols, rows uint16) error
+	Create(name, shell, cwd string, cols, rows uint16) (pty.SessionInfo, error)
 	Kill(name string) error
 	Capture(name string) (string, error)
 	CaptureTail(name string, maxBytes int) (string, error)
@@ -610,7 +610,7 @@ func (a *daemonAdapter) List() []pty.SessionInfo {
 	return out
 }
 
-func (a *daemonAdapter) Create(name, shell, cwd string, cols, rows uint16) error {
+func (a *daemonAdapter) Create(name, shell, cwd string, cols, rows uint16) (pty.SessionInfo, error) {
 	return a.reg.Create(name, shell, cwd, cols, rows)
 }
 

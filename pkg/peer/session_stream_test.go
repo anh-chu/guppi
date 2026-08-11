@@ -17,7 +17,7 @@ type fakeDaemonReg struct {
 	list        []pty.SessionInfo
 }
 
-func (f *fakeDaemonReg) Create(name, shell, cwd string, cols, rows uint16) error { return nil }
+func (f *fakeDaemonReg) Create(name, shell, cwd string, cols, rows uint16) (pty.SessionInfo, error) { return pty.SessionInfo{}, nil }
 func (f *fakeDaemonReg) Kill(name string) error                                  { return f.killErr }
 func (f *fakeDaemonReg) Capture(name string) (string, error)                     { return f.captureText, f.captureErr }
 func (f *fakeDaemonReg) SocketPath(name string) string                            { return "" }

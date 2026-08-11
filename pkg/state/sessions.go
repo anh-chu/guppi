@@ -492,10 +492,15 @@ func deepCopySession(s *model.Session) *model.Session {
 }
 
 // RemoveSession removes a session from the in-memory state, broadcasting
-// removal events. Use this when a session no longer exists but the
-// state manager still holds a reference to it.
-func (m *Manager) RemoveSession(name string) {
+// removal events only if the session was actually present (presence-gated).
+// Returns true if the session was removed, false if it wasn't present.
+func (m *Manager) RemoveSession(name string) bool {
 	m.mu.Lock()
+	_, exists := m.sessions[name]
+	if !exists {
+		m.mu.Unlock()
+		return false
+	}
 	delete(m.sessions, name)
 	delete(m.meta, name)
 	m.evictPreview(name)
@@ -503,4 +508,122 @@ func (m *Manager) RemoveSession(name string) {
 	m.saveNames()
 	m.broadcast(StateEvent{Type: "session-removed", Session: name})
 	m.broadcast(StateEvent{Type: "sessions-changed"})
+	return true
+}
+
+// AddSession adds a session to state, broadcasting session-added and sessions-changed.
+func (m *Manager) AddSession(sess *model.Session) {
+	m.mu.Lock()
+	m.sessions[sess.Name] = sess
+	// Initialize metadata entry if not present
+	if _, ok := m.meta[sess.Name]; !ok {
+		m.meta[sess.Name] = SessionMetadata{}
+	}
+	m.mu.Unlock()
+	m.broadcast(StateEvent{Type: "session-added", Session: sess.Name})
+	m.broadcast(StateEvent{Type: "sessions-changed"})
+}
+
+// UpdateSessionFields updates a session's fields using a callback function.
+// Does deep comparison while holding the lock (snapshot/clone before mutation,
+// compare after), broadcasts sessions-changed only if changed, then broadcasts
+// after unlock.
+func (m *Manager) UpdateSessionFields(name string, fn func(*model.Session)) {
+	m.mu.Lock()
+	sess, ok := m.sessions[name]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	// Deep copy before modification to detect changes
+	old := deepCopySession(sess)
+	// Apply callback to modify the session
+	fn(sess)
+	// Deep comparison while holding the lock
+	changed := !sessionsEqual(old, sess)
+	m.mu.Unlock()
+
+	// Broadcast only if something changed (after unlock)
+	if changed {
+		m.broadcast(StateEvent{Type: "sessions-changed"})
+	}
+}
+
+// Unreachable sets the unreachable state of a session and broadcasts sessions-changed.
+func (m *Manager) Unreachable(name string, unreachable bool) {
+	m.mu.Lock()
+	sess, ok := m.sessions[name]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	if sess.Unreachable == unreachable {
+		m.mu.Unlock()
+		return // No change
+	}
+	sess.Unreachable = unreachable
+	m.mu.Unlock()
+	m.broadcast(StateEvent{Type: "sessions-changed"})
+}
+
+// sessionsEqual compares two sessions for deep equality, covering all enrichment-relevant fields.
+// Includes ID, Created, Windows, panes with PID/CWD, and other fields.
+func sessionsEqual(a, b *model.Session) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	// Check basic fields
+	if a.ID != b.ID ||
+		a.Name != b.Name ||
+		a.Host != b.Host ||
+		a.HostName != b.HostName ||
+		a.HostOnline != b.HostOnline ||
+		a.Backend != b.Backend ||
+		a.ProjectPath != b.ProjectPath ||
+		a.IsWorktree != b.IsWorktree ||
+		a.WorktreeParent != b.WorktreeParent ||
+		a.AgentType != b.AgentType ||
+		a.ScheduleID != b.ScheduleID ||
+		a.PromptPreview != b.PromptPreview ||
+		a.AgentSessionID != b.AgentSessionID ||
+		a.UserPrompt != b.UserPrompt ||
+		a.LastAgentMessage != b.LastAgentMessage ||
+		a.DisplayName != b.DisplayName ||
+		a.UserSetName != b.UserSetName ||
+		a.Unreachable != b.Unreachable {
+		return false
+	}
+
+	// Check Created field
+	if !a.Created.Equal(b.Created) {
+		return false
+	}
+
+	// Deep compare Windows and Panes
+	if len(a.Windows) != len(b.Windows) {
+		return false
+	}
+	for i, winA := range a.Windows {
+		winB := b.Windows[i]
+		if winA.ID != winB.ID || winA.SessionID != winB.SessionID || winA.Name != winB.Name || winA.Index != winB.Index || winA.Active != winB.Active || winA.Layout != winB.Layout {
+			return false
+		}
+		if len(winA.Panes) != len(winB.Panes) {
+			return false
+		}
+		for j, paneA := range winA.Panes {
+			paneB := winB.Panes[j]
+			if paneA.ID != paneB.ID ||
+				paneA.WindowID != paneB.WindowID ||
+				paneA.SessionID != paneB.SessionID ||
+				paneA.Index != paneB.Index ||
+				paneA.Active != paneB.Active ||
+				paneA.CurrentCommand != paneB.CurrentCommand ||
+				paneA.CurrentPath != paneB.CurrentPath ||
+				paneA.PID != paneB.PID {
+				return false
+			}
+		}
+	}
+	return true
 }

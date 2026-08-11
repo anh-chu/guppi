@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anh-chu/termyard/pkg/model"
+	"github.com/anh-chu/termyard/pkg/pty"
 )
 
 type fakeDaemon struct {
@@ -28,9 +29,9 @@ type createCall struct {
 	cols, rows uint16
 }
 
-func (f *fakeDaemon) Create(name, shell, cwd string, cols, rows uint16) error {
+func (f *fakeDaemon) Create(name, shell, cwd string, cols, rows uint16) (pty.SessionInfo, error) {
 	f.created = append(f.created, createCall{name: name, shell: shell, cwd: cwd, cols: cols, rows: rows})
-	return f.err
+	return pty.SessionInfo{}, f.err
 }
 
 func (f *fakeDaemon) Kill(name string) error {
@@ -57,11 +58,12 @@ func (f *fakeStateMgr) SetSessionAgentType(sessionName, agentType string) {
 
 func (f *fakeStateMgr) GetSessions() []*model.Session { return f.sessions }
 
-func (f *fakeStateMgr) RemoveSession(name string) {
+func (f *fakeStateMgr) RemoveSession(name string) bool {
 	f.removed = append(f.removed, name)
 	if f.events != nil {
 		*f.events = append(*f.events, "remove")
 	}
+	return true
 }
 
 type fakeAttrs struct {

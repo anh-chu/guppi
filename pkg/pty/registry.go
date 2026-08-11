@@ -2,7 +2,9 @@ package pty
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,10 +27,21 @@ var ansiRe = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x1b\x07]*(?:\x07
 // ctrlRe matches carriage returns and other non-newline control chars.
 var ctrlRe = regexp.MustCompile(`[\x00-\x08\x0b\x0c\x0e-\x1f]`)
 
+// Instance uniquely identifies a session daemon by process and nonce.
+// Identity match uses: nonce != "" ? (Pid+Nonce) : (Pid+ProcStartTime).
+type Instance struct {
+	Name          string // session name
+	Pid           int    // daemon PID from sidecar JSON / Create
+	Nonce         string // 8-byte hex random written by daemon at spawn; "" for legacy
+	ProcStartTime int64  // fallback for legacy daemons: /proc/<pid>/stat field 22
+	SystemdUnit   string // systemd scope name, immutable from spawn/adoption
+}
+
 // SessionInfo holds metadata about a running session daemon.
 type SessionInfo struct {
+	Instance // embedded for easy identity access
 	ID       string
-	Pid      int
+	Pid      int // for backward compat with existing SessionInfo.Pid
 	ShellPid int
 	Shell    string
 	Cwd      string
@@ -36,6 +49,15 @@ type SessionInfo struct {
 	Cols     uint16
 	Rows     uint16
 	Socket   string // full path to .sock file
+}
+
+// generateNonce generates a random 8-byte hex nonce for instance identity.
+func generateNonce() (string, error) {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate nonce: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // validSessionID returns true if id is safe for use in file paths.
@@ -102,8 +124,9 @@ func (r *Registry) metadataPath(name string) string {
 }
 
 // Create spawns a session daemon as a fully detached subprocess.
-// It waits up to 2s for the socket file to appear, then returns.
-func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) error {
+// It waits up to 2s for the sidecar JSON to appear with the nonce (daemon-written),
+// then returns populated SessionInfo including nonce and SystemdUnit.
+func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) (SessionInfo, error) {
 	log := logrus.WithFields(logrus.Fields{
 		"component": "registry",
 		"name":      name,
@@ -114,12 +137,12 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) error {
 	// Guard against duplicate names — the socket file would be overwritten,
 	// causing two terminals to share a single daemon.
 	if _, err := os.Stat(r.SocketPath(name)); err == nil {
-		return fmt.Errorf("session %q already exists", name)
+		return SessionInfo{}, fmt.Errorf("session %q already exists", name)
 	}
 
 	exe, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("get executable: %w", err)
+		return SessionInfo{}, fmt.Errorf("get executable: %w", err)
 	}
 
 	// Derive defaults in-process so the daemon gets explicit values.
@@ -136,6 +159,12 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) error {
 		rows = 40
 	}
 
+	// Generate a unique nonce for instance identity.
+	nonce, err := generateNonce()
+	if err != nil {
+		return SessionInfo{}, fmt.Errorf("generate nonce: %w", err)
+	}
+
 	args := []string{
 		"session-daemon",
 		"--id", name,
@@ -144,6 +173,7 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) error {
 		"--rows", fmt.Sprintf("%d", rows),
 		"--cwd", cwd,
 		"--socket-dir", r.dir,
+		"--nonce", nonce,
 	}
 
 	// Pass state dir for lifecycle persistence.
@@ -186,7 +216,7 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) error {
 	// fds (which may be pipes that close when the server restarts).
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
-		return fmt.Errorf("open /dev/null: %w", err)
+		return SessionInfo{}, fmt.Errorf("open /dev/null: %w", err)
 	}
 	defer devNull.Close()
 	cmd.Stdin = devNull
@@ -203,24 +233,627 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) error {
 			cmd.Stdout = devNull
 			cmd.Stderr = devNull
 			if err := cmd.Start(); err != nil {
-				return fmt.Errorf("start daemon process: %w", err)
+				return SessionInfo{}, fmt.Errorf("start daemon process: %w", err)
 			}
 		} else {
-			return fmt.Errorf("start daemon process: %w", err)
+			return SessionInfo{}, fmt.Errorf("start daemon process: %w", err)
 		}
 	}
 
 	// Release the process handle so the daemon is fully independent.
-	// Don't wait for the socket to appear here — the terminal connects
-	// via NewDaemonSession, which retries the dial until the daemon is
-	// ready. Returning immediately lets the UI mount in parallel with
-	// the daemon's cold-start (and the systemd-run DBus round-trip).
 	if err := cmd.Process.Release(); err != nil {
 		log.WithError(err).Warn("failed to release daemon process handle")
 	}
 
-	log.WithField("socket", r.SocketPath(name)).Info("session daemon created")
-	return nil
+	// Poll for the sidecar JSON to be written with the correct nonce, PID alive,
+	// and socket dialable (up to 2s). This ensures the daemon has started, written
+	// its metadata, and is ready to accept connections.
+	var info SessionInfo
+	metaPath := r.metadataPath(name)
+	socketPath := r.SocketPath(name)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			return SessionInfo{}, fmt.Errorf("daemon did not become ready within 2s")
+		}
+
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			// File not yet written; sleep briefly and retry.
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		var meta sessionMeta
+		if err := json.Unmarshal(data, &meta); err != nil {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		// Verify nonce matches what we generated (identity stale detection)
+		if meta.Nonce != nonce {
+			log.WithFields(logrus.Fields{
+				"expected_nonce": nonce[:8],
+				"got_nonce":      meta.Nonce[:min(8, len(meta.Nonce))],
+			}).Debug("waiting for daemon nonce to match")
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		// Verify PID is alive
+		if meta.Pid <= 0 || !processAlive(meta.Pid) {
+			log.Debug("waiting for daemon process to become alive")
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		// Verify socket is dialable (daemon bound and listening)
+		conn, err := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
+		if err != nil {
+			log.WithError(err).Debug("waiting for daemon socket to be ready")
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		conn.Close() // Immediately close; this was just a probe
+
+		// Daemon is ready. Build SessionInfo.
+		startTime := meta.ProcStartTime
+		if startTime <= 0 {
+			// Sidecar lacks a start time; capture from /proc so identity is
+			// always verifiable.
+			startTime = procStartTime(meta.Pid)
+		}
+		info = SessionInfo{
+			Instance: Instance{
+				Name:          name,
+				Pid:           meta.Pid,
+				Nonce:         meta.Nonce,
+				ProcStartTime: startTime,
+				SystemdUnit:   meta.SystemdUnit,
+			},
+			ID:       name,
+			Pid:      meta.Pid,
+			ShellPid: meta.ShellPid,
+			Shell:    meta.Shell,
+			Cwd:      meta.Cwd,
+			Created:  meta.Created,
+			Cols:     meta.Cols,
+			Rows:     meta.Rows,
+			Socket:   socketPath,
+		}
+		break
+	}
+
+	log.WithField("socket", socketPath).Info("session daemon created")
+	return info, nil
+}
+
+// Watch monitors a daemon instance for liveness and calls callbacks on exit or connectivity issues.
+// It dials the socket and holds an idle connection, discarding frames. On read error/EOF:
+//   - If PID is dead (matched via inst.Pid and, for legacy, inst.ProcStartTime from /proc/<pid>/stat field 22):
+//     call onExit(inst) once.
+//   - If PID is alive: call onUnreachable(inst, true), then reconnect with backoff
+//     (250ms, 500ms, 1s, 2s, 5s, 5s...). On success, verify sidecar still matches inst.
+//     If sidecar mismatch with live PID, keep retrying indefinitely (session unreachable).
+//     Only call onExit when PID confirmed dead.
+//
+// Initial dial retries for up to 2s (daemon startup tolerance).
+// stop() suppresses all callbacks and returns after the goroutine has exited (synchronous stop-and-wait).
+func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable func(Instance, bool)) (func(), error) {
+	log := logrus.WithFields(logrus.Fields{
+		"component": "registry",
+		"name":      inst.Name,
+		"pid":       inst.Pid,
+		"nonce":     inst.Nonce[:min(8, len(inst.Nonce))],
+	})
+
+	// Channel to signal stop
+	stopCh := make(chan struct{})
+	// WaitGroup to track goroutine completion
+	var wg sync.WaitGroup
+	// Flag to suppress callbacks after stop is called
+	var suppressMu sync.Mutex
+	suppress := false
+	// Ensure onExit is called at most once
+	var exitOnce sync.Once
+	// Track active connection for stop to close
+	var connMu sync.Mutex
+	var activeConn net.Conn
+	var stopping bool // guarded by connMu; set by stop() before closing activeConn
+	// Make stop idempotent
+	var stopOnce sync.Once
+
+	// Helper to call callbacks only if not suppressed
+	// Helper to call callbacks only if not suppressed.
+	// Checks suppression under mutex, releases, THEN invokes callback.
+	// This prevents callbacks from being blocked by locks that stop() holds.
+	callOnExit := func() {
+		suppressMu.Lock()
+		if suppress {
+			suppressMu.Unlock()
+			return
+		}
+		suppressMu.Unlock()
+
+		exitOnce.Do(func() {
+			if onExit != nil {
+				onExit(inst)
+			}
+		})
+	}
+
+	callOnUnreachable := func(bad bool) {
+		suppressMu.Lock()
+		if suppress {
+			suppressMu.Unlock()
+			return
+		}
+		cb := onUnreachable
+		suppressMu.Unlock()
+
+		if cb != nil {
+			cb(inst, bad)
+		}
+	}
+
+	// Watch loop runs in a goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		backoffDelays := []time.Duration{
+			250 * time.Millisecond,
+			500 * time.Millisecond,
+			1 * time.Second,
+			2 * time.Second,
+			5 * time.Second,
+			// 5s repeats after the 5th attempt
+		}
+		backoffIndex := 0
+
+		// Initial dial with retries (up to 2s)
+		deadline := time.Now().Add(2 * time.Second)
+		var conn net.Conn
+		var err error
+	TRY_INITIAL_DIAL:
+		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+			}
+
+			if time.Now().After(deadline) {
+				// Initial dial failed within 2s; check if PID is alive
+				if !r.processPIDAlive(inst) {
+					log.Info("initial dial failed and PID dead")
+					callOnExit()
+					return
+				}
+				// PID alive but dial failed; session is unreachable
+				log.Info("initial dial timeout, entering unreachable loop")
+				callOnUnreachable(true)
+				break TRY_INITIAL_DIAL
+			}
+
+			conn, err = net.DialTimeout("unix", r.SocketPath(inst.Name), 500*time.Millisecond)
+			if err == nil {
+				log.Debug("initial dial succeeded")
+				// Publish under connMu with stop check in the same critical
+				// section to close the race with stop().
+				connMu.Lock()
+				if stopping {
+					connMu.Unlock()
+					conn.Close()
+					return
+				}
+				activeConn = conn
+				connMu.Unlock()
+				break TRY_INITIAL_DIAL
+			}
+
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// Hold the connection and discard frames until EOF or stop signal
+	WATCH_LOOP:
+		for {
+			if conn != nil {
+				// Read frames and discard them
+				header := make([]byte, 5)
+				if n, err := io.ReadFull(conn, header); err != nil || n < 5 {
+					conn.Close()
+					connMu.Lock()
+					if activeConn == conn {
+						activeConn = nil
+					}
+					connMu.Unlock()
+					conn = nil
+					// Got EOF or error; check if it's exit or transient
+					if !r.processPIDAlive(inst) {
+						log.Info("connection closed and PID dead")
+						callOnExit()
+						return
+					}
+					// PID alive; session is unreachable
+					log.WithError(err).Debug("connection error, PID alive, entering unreachable loop")
+					callOnUnreachable(true)
+					break // Exit read loop, enter reconnect loop
+				}
+
+				// Discard the frame payload
+				plen := binary.BigEndian.Uint32(header[1:5])
+				if plen > 0 && plen <= captureMaxPayload {
+					_, _ = io.CopyN(io.Discard, conn, int64(plen))
+				}
+
+				select {
+				case <-stopCh:
+					conn.Close()
+					connMu.Lock()
+					if activeConn == conn {
+						activeConn = nil
+					}
+					connMu.Unlock()
+					return
+				default:
+				}
+			} else {
+				// Reconnect with backoff
+				delay := backoffDelays[backoffIndex]
+				if backoffIndex < len(backoffDelays)-1 {
+					backoffIndex++
+				}
+
+				select {
+				case <-time.After(delay):
+				case <-stopCh:
+					return
+				}
+
+				conn, err = net.DialTimeout("unix", r.SocketPath(inst.Name), 1*time.Second)
+				if err != nil {
+					log.WithError(err).Debug("reconnect attempt failed")
+					conn = nil
+					// Check if PID is dead
+					if !r.processPIDAlive(inst) {
+						log.Info("reconnect failed and PID dead")
+						callOnExit()
+						return
+					}
+					// PID alive; continue retrying
+					continue WATCH_LOOP
+				}
+
+				// Publish under connMu with stop check in the same critical
+				// section to close the race with stop().
+				connMu.Lock()
+				if stopping {
+					connMu.Unlock()
+					conn.Close()
+					return
+				}
+				activeConn = conn
+				connMu.Unlock()
+
+				// Successfully reconnected; verify sidecar still matches
+				if !r.instanceMatches(inst) {
+					log.Warn("sidecar mismatch after reconnect; session unreachable")
+					conn.Close()
+					connMu.Lock()
+					if activeConn == conn {
+						activeConn = nil
+					}
+					connMu.Unlock()
+					conn = nil
+					// Don't call onUnreachable again; already in unreachable state
+					// Keep retrying forever
+					continue WATCH_LOOP
+				}
+
+				log.Debug("reconnected and sidecar matches")
+				callOnUnreachable(false)
+				backoffIndex = 0 // Reset backoff on successful reconnect
+			}
+		}
+	}()
+
+	// Return stop function (idempotent)
+	stopFn := func() {
+		stopOnce.Do(func() {
+			// Set suppression FIRST (covers in-flight callbacks)
+			suppressMu.Lock()
+			suppress = true
+			suppressMu.Unlock()
+
+			// Mark stopping and close active connection to break the read.
+			// The stopping flag is checked under connMu at every publication
+			// site, so no connection can be published after this point.
+			connMu.Lock()
+			stopping = true
+			if activeConn != nil {
+				activeConn.Close()
+				activeConn = nil
+			}
+			connMu.Unlock()
+
+			// Signal stop
+			close(stopCh)
+
+			// Wait for goroutine to exit
+			wg.Wait()
+		})
+	}
+
+	return stopFn, nil
+}
+
+// min returns the minimum of two integers.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// processPIDAlive checks if the daemon process instance is alive by verifying:
+// - PID responds to signal 0
+// - For legacy daemons (no nonce): /proc start time matches the recorded start time
+// Sidecar matching is separate and handled by instanceMatches().
+func (r *Registry) processPIDAlive(inst Instance) bool {
+	if inst.Pid <= 0 {
+		return false
+	}
+	if !processAlive(inst.Pid) {
+		return false
+	}
+	// Always verify /proc start time when we have a captured value, for nonce
+	// instances too, to detect PID reuse.
+	if inst.ProcStartTime > 0 {
+		currentStart := procStartTime(inst.Pid)
+		if currentStart > 0 {
+			return currentStart == inst.ProcStartTime
+		}
+		// /proc unreadable: identity unverifiable. Err on the side of
+		// "alive" — returning false would trigger destructive removal (onExit)
+		// of a possibly live session, violating R6.
+		return true
+	}
+	// No captured start time (should not happen: Create/Scan/Adopt capture it).
+	// Identity unverifiable; trust the PID check — safe direction, since a
+	// wrong-instance watch degrades to unreachable, never removal.
+	return true
+}
+
+// instanceAlive checks if the daemon PID is alive, using instance identity matching.
+// Deprecated: use processPIDAlive() instead. This method is kept for compatibility.
+func (r *Registry) instanceAlive(inst Instance) bool {
+	return r.processPIDAlive(inst)
+}
+
+// instanceMatches checks if the current sidecar matches the instance identity.
+func (r *Registry) instanceMatches(inst Instance) bool {
+	data, err := os.ReadFile(r.metadataPath(inst.Name))
+	if err != nil {
+		return false
+	}
+	var meta sessionMeta
+	if json.Unmarshal(data, &meta) != nil {
+		return false
+	}
+	if meta.Pid != inst.Pid {
+		return false
+	}
+	// Guard against PID reuse: verify current /proc start time against the
+	// captured value when available.
+	if inst.ProcStartTime > 0 {
+		if cur := procStartTime(meta.Pid); cur > 0 && cur != inst.ProcStartTime {
+			return false
+		}
+	}
+	if inst.Nonce != "" {
+		return meta.Nonce == inst.Nonce
+	}
+	return meta.ProcStartTime == inst.ProcStartTime || meta.ProcStartTime == 0
+}
+
+// Scan performs a read-only pass over the socket directory, returning SessionInfo
+// for every sidecar/socket pair whose daemon PID is alive. It does not delete files.
+func (r *Registry) Scan() []SessionInfo {
+	entries, err := filepath.Glob(filepath.Join(r.dir, "*.sock"))
+	if err != nil {
+		return nil
+	}
+
+	var out []SessionInfo
+	for _, sockPath := range entries {
+		name := filepath.Base(sockPath[:len(sockPath)-len(".sock")])
+
+		// Read metadata sidecar
+		metaPath := r.metadataPath(name)
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+
+		var meta sessionMeta
+		if json.Unmarshal(data, &meta) != nil {
+			continue
+		}
+
+		// Check if PID is alive
+		if meta.Pid <= 0 || !processAlive(meta.Pid) {
+			continue
+		}
+
+		// Capture ProcStartTime from /proc if not set (legacy daemon support)
+		startTime := meta.ProcStartTime
+		if startTime <= 0 {
+			// No recorded start time; capture from /proc so identity is always
+			// verifiable (applies to legacy and nonce daemons alike).
+			startTime = procStartTime(meta.Pid)
+		}
+
+		info := SessionInfo{
+			Instance: Instance{
+				Name:          name,
+				Pid:           meta.Pid,
+				Nonce:         meta.Nonce,
+				ProcStartTime: startTime,
+				SystemdUnit:   meta.SystemdUnit,
+			},
+			ID:       name,
+			Pid:      meta.Pid,
+			ShellPid: meta.ShellPid,
+			Shell:    meta.Shell,
+			Cwd:      meta.Cwd,
+			Created:  meta.Created,
+			Cols:     meta.Cols,
+			Rows:     meta.Rows,
+			Socket:   sockPath,
+		}
+		out = append(out, info)
+	}
+
+	return out
+}
+
+// Adopt scans for live daemon sidecars and adopts them; cleans up stale PID-dead leftovers
+// after re-verifying sidecar identity (nonce or legacy start-time) and process-instance death.
+// Returns adopted sessions.
+func (r *Registry) Adopt() []SessionInfo {
+	entries, err := filepath.Glob(filepath.Join(r.dir, "*.sock"))
+	if err != nil {
+		return nil
+	}
+
+	var out []SessionInfo
+	var stale []struct {
+		name string
+		meta sessionMeta
+	}
+
+	for _, sockPath := range entries {
+		name := filepath.Base(sockPath[:len(sockPath)-len(".sock")])
+
+		// Read metadata sidecar
+		metaPath := r.metadataPath(name)
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+
+		var meta sessionMeta
+		if json.Unmarshal(data, &meta) != nil {
+			continue
+		}
+
+		// Check if PID is alive
+		if meta.Pid > 0 && processAlive(meta.Pid) {
+			// Alive; adopt even if probe dial fails
+			// Capture ProcStartTime from /proc if not set (legacy daemon support)
+			startTime := meta.ProcStartTime
+			if startTime <= 0 {
+				// No recorded start time; capture from /proc so identity is always
+				// verifiable (applies to legacy and nonce daemons alike).
+				startTime = procStartTime(meta.Pid)
+			}
+
+			info := SessionInfo{
+				Instance: Instance{
+					Name:          name,
+					Pid:           meta.Pid,
+					Nonce:         meta.Nonce,
+					ProcStartTime: startTime,
+					SystemdUnit:   meta.SystemdUnit,
+				},
+				ID:       name,
+				Pid:      meta.Pid,
+				ShellPid: meta.ShellPid,
+				Shell:    meta.Shell,
+				Cwd:      meta.Cwd,
+				Created:  meta.Created,
+				Cols:     meta.Cols,
+				Rows:     meta.Rows,
+				Socket:   sockPath,
+			}
+			out = append(out, info)
+		} else {
+			// PID dead; mark for stale-file cleanup
+			stale = append(stale, struct {
+				name string
+				meta sessionMeta
+			}{name: name, meta: meta})
+		}
+	}
+
+	// Clean up stale PID-dead leftovers after TOCTOU re-verification:
+	// - Re-read sidecar identity
+	// - Verify identity still matches
+	// - Re-check process-instance death (PID + /proc start time)
+	// Only delete if everything confirms the daemon is dead and hasn't been replaced.
+	for _, item := range stale {
+		// Re-read sidecar to verify identity hasn't changed
+		metaPath := r.metadataPath(item.name)
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue // File already gone; skip
+		}
+		var currentMeta sessionMeta
+		if json.Unmarshal(data, &currentMeta) != nil {
+			continue // Can't parse; skip
+		}
+
+		// Verify identity still matches
+		if item.meta.Nonce != "" {
+			if currentMeta.Nonce != item.meta.Nonce || currentMeta.Pid != item.meta.Pid {
+				continue // Identity changed; skip cleanup (might be new daemon)
+			}
+			// Nonce identity matches; verify PID is actually dead (not just nonce unchanged)
+			if currentMeta.Pid > 0 && processAlive(currentMeta.Pid) {
+				continue // PID still alive; don't delete
+			}
+		} else {
+			// Legacy: verify PID + ProcStartTime
+			// Use /proc-captured start time, not sidecar (which may be missing/wrong)
+			expectedStart := item.meta.ProcStartTime
+			if expectedStart <= 0 {
+				// If no start time was recorded, capture it now for comparison
+				if item.meta.Pid > 0 && processAlive(item.meta.Pid) {
+					// PID came back to life; don't delete
+					continue
+				}
+				// PID is dead, proceed with deletion regardless of sidecar mismatch
+			} else {
+				// Verify PID + /proc start time match still
+				if currentMeta.Pid != item.meta.Pid {
+					continue // PID changed; skip cleanup (new daemon)
+				}
+				// Re-check PID is still dead (not reused)
+				if currentMeta.Pid > 0 && processAlive(currentMeta.Pid) {
+					currentStart := procStartTime(currentMeta.Pid)
+					if currentStart > 0 && currentStart != expectedStart {
+						// PID was reused by a different process; proceed with deletion
+					} else {
+						// Same process still alive, or /proc unreadable (identity
+						// unverifiable): never delete while the PID is live.
+						continue
+					}
+				}
+			}
+		}
+
+		// Identity matches and PID is confirmed dead (or reused); safe to delete
+		os.Remove(r.SocketPath(item.name))
+		os.Remove(metaPath)
+		logrus.WithFields(logrus.Fields{
+			"component": "registry",
+			"name":      item.name,
+			"reason":    "daemon process dead",
+		}).Info("removed stale session files during adoption")
+	}
+
+	return out
 }
 
 // List scans the socket directory for *.sock files, reads their sidecar JSON,
@@ -802,7 +1435,8 @@ func (r *Registry) RecoverSession(id string, shellOverride ...string) error {
 	os.Remove(r.metadataPath(id))
 
 	// Spawn a new daemon with the saved (or overridden) configuration.
-	if err := r.Create(id, shell, cwd, rec.Cols, rec.Rows); err != nil {
+	_, err = r.Create(id, shell, cwd, rec.Cols, rec.Rows)
+	if err != nil {
 		// Rollback lifecycle state on spawn failure.
 		_ = r.lifecycleStore.Transition(id, LifecycleRecovered, LifecycleCrashed)
 		return fmt.Errorf("re-spawn daemon for %s: %w", id, err)
@@ -971,4 +1605,51 @@ func (r *Registry) readSystemdUnit(name string) string {
 		return ""
 	}
 	return meta.SystemdUnit
+}
+
+// SocketDirLockPath returns the path to the adoption lock file in the socket directory.
+func (r *Registry) SocketDirLockPath() string {
+	return filepath.Join(r.dir, ".adoption.lock")
+}
+
+// AcquireAdoptionLock acquires an exclusive flock on the socket directory.
+// Used by the server during boot to prevent CLI direct-spawn races.
+// Returns a closer function that releases the lock.
+func (r *Registry) AcquireAdoptionLock() (func(), error) {
+	lockPath := r.SocketDirLockPath()
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+
+	// Acquire exclusive lock
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		lockFile.Close()
+		return nil, fmt.Errorf("acquire lock: %w", err)
+	}
+
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}, nil
+}
+
+// CheckAdoptionLockHeld checks whether the adoption lock is currently held.
+// Returns true if the lock is held by another process (server booting).
+func (r *Registry) CheckAdoptionLockHeld() bool {
+	lockPath := r.SocketDirLockPath()
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return false // Can't check; assume not held
+	}
+	defer lockFile.Close()
+
+	// Try non-blocking lock
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		// Got the lock; release it immediately and return false (not held)
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		return false
+	}
+	// Lock held; another process has exclusive lock
+	return true
 }

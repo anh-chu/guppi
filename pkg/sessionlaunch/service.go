@@ -15,6 +15,7 @@ import (
 
 	"github.com/anh-chu/termyard/pkg/git"
 	"github.com/anh-chu/termyard/pkg/model"
+	"github.com/anh-chu/termyard/pkg/pty"
 )
 
 // Typed launch errors. HTTP/router layers map these to status codes without
@@ -53,7 +54,7 @@ type Result struct {
 
 // DaemonRegistry is the session backend needed to spawn and kill daemon sessions.
 type DaemonRegistry interface {
-	Create(name, shell, cwd string, cols, rows uint16) error
+	Create(name, shell, cwd string, cols, rows uint16) (pty.SessionInfo, error)
 	Kill(name string) error
 }
 
@@ -61,7 +62,7 @@ type DaemonRegistry interface {
 type StateManager interface {
 	SetSessionAgentType(sessionName, agentType string)
 	GetSessions() []*model.Session
-	RemoveSession(name string)
+	RemoveSession(name string) bool
 }
 
 // ScheduleAttr is the metadata snapshot the launch service stores and fans out.
@@ -309,7 +310,8 @@ func (s *Service) daemonCreate(ctx context.Context, name, command, cwd string, c
 	if shell == "" || shell == "shell" {
 		shell = ""
 	}
-	if err := s.DaemonReg.Create(name, shell, cwd, cols, rows); err != nil {
+	_, err := s.DaemonReg.Create(name, shell, cwd, cols, rows)
+	if err != nil {
 		return fmt.Errorf("%w: %w", ErrSpawn, err)
 	}
 	return nil

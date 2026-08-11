@@ -70,7 +70,7 @@ type BrowserBroadcaster interface {
 
 // DaemonRegistry is the interface for daemon session operations.
 type DaemonRegistry interface {
-	Create(name, shell, cwd string, cols, rows uint16) error
+	Create(name, shell, cwd string, cols, rows uint16) (pty.SessionInfo, error)
 	Kill(name string) error
 	Capture(name string) (string, error)
 	SocketPath(name string) string

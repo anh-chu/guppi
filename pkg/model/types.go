@@ -23,6 +23,7 @@ type Session struct {
 	LastAgentMessage string    `json:"last_agent_message,omitempty"`
 	DisplayName      string    `json:"display_name,omitempty"`  // AI-generated friendly label; frontend shows this || Name
 	UserSetName      bool      `json:"user_set_name,omitempty"` // user manually set DisplayName; AI must not overwrite
+	Unreachable      bool      `json:"unreachable,omitempty"`   // daemon PID alive but socket unreachable (watch connection lost)
 }
 
 // Window represents a terminal window
