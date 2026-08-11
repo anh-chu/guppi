@@ -377,6 +377,15 @@ interface PoolEntry {
 
   // Echo/write coordination
   writePending: boolean
+
+  // Replay window flag: true while replaying buffered output.
+  // Used to suppress xterm auto-reply sequences (DA1/DA2/DSR/CPR/OSC)
+  // that are generated in response to terminal queries in the replay buffer
+  // but should not be sent back to the PTY.
+  inReplayWindow: boolean
+
+  // Timer to clear replay window after onReplayEnd (safety margin for any lingering replies)
+  replayWindowClearTimer: number | undefined
 }
 
 // --- Pool singleton ----------------------------------------------------
@@ -912,9 +921,30 @@ export class TerminalPool {
           entry.syncActive = false
           entry.syncBuffer = []
           entry.syncCarryover = null
+          entry.inReplayWindow = true
+          if (entry.replayWindowClearTimer !== undefined) {
+            clearTimeout(entry.replayWindowClearTimer)
+          }
         },
-        onReplayEnd: () => this.flushReplayBuffer(entry),
-        onFallback: () => this.flushReplayBuffer(entry),
+        onReplayEnd: () => {
+          this.flushReplayBuffer(entry)
+          // Clear replay window after 100ms to catch any lingering xterm auto-replies
+          if (entry.replayWindowClearTimer !== undefined) {
+            clearTimeout(entry.replayWindowClearTimer)
+          }
+          entry.replayWindowClearTimer = window.setTimeout(() => {
+            entry.inReplayWindow = false
+            entry.replayWindowClearTimer = undefined
+          }, 100)
+        },
+        onFallback: () => {
+          this.flushReplayBuffer(entry)
+          entry.inReplayWindow = false
+          if (entry.replayWindowClearTimer !== undefined) {
+            clearTimeout(entry.replayWindowClearTimer)
+            entry.replayWindowClearTimer = undefined
+          }
+        },
       },
       this.buildUrl({ key, identity }),
     )
@@ -962,6 +992,9 @@ export class TerminalPool {
       syncBuffer: [],
 
       writePending: false,
+
+      inReplayWindow: false,
+      replayWindowClearTimer: undefined,
     }
 
     connection.connect()
@@ -1391,6 +1424,25 @@ export class TerminalPool {
         return
       }
       entry.suppressedInput = null
+
+      // During replay window, filter xterm-generated auto-reply sequences.
+      // These are responses to terminal queries (DA1, DA2, DSR, CPR, OSC color)
+      // that were in the replayed buffer. Since nothing is reading from the PTY
+      // at that moment, these replies would stall and cause the terminal to
+      // render them as literal text when the PTY finally reads.
+      if (entry.inReplayWindow) {
+        // Regex matches common terminal auto-reply sequences:
+        // - \x1b[c / \x1b[0c: DA1 query
+        // - \x1b[?...c: DA1 response (e.g., \x1b[?62;4;9;22c)
+        // - \x1b[>...c: DA2 response
+        // - \x1b[...R: CPR (cursor position report)
+        // - \x1b]1[01];...: OSC color replies
+        const terminalReplyRegex = /^\x1b\[\??\d[\d;]*[cR]$|^\x1b\[>[\d;]*c$|^\x1b\]1[01];[^\x07\x1b]*(\x07|\x1b\\)$/
+        if (terminalReplyRegex.test(data)) {
+          return
+        }
+      }
+
       const ws = entry.connection.socket
       if (ws && ws.readyState === WebSocket.OPEN) {
         let payload = data
@@ -1442,6 +1494,12 @@ export class TerminalPool {
   // ── entry disposal ──────────────────────────────────────────────────
 
   private disposeEntry(entry: PoolEntry): void {
+    // Clear any pending replay window clear timer
+    if (entry.replayWindowClearTimer !== undefined) {
+      clearTimeout(entry.replayWindowClearTimer)
+      entry.replayWindowClearTimer = undefined
+    }
+
     // Stop the connection machine first so reconnect timers abort.
     entry.connection.dispose()
 
