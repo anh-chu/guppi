@@ -71,7 +71,6 @@ function createMockTerminal(sendText: ReturnType<typeof vi.fn>, overrides: Recor
         getLine: (i: number) => ({ translateToString: (trim?: boolean) => `line ${i}` }),
       },
     },
-    rows: 2,
     clearSelection: vi.fn(),
     paste: vi.fn(),
     registerLinkProvider: vi.fn(() => ({ dispose: vi.fn() })),

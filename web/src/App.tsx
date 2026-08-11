@@ -201,6 +201,39 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     localStorage.setItem('termyard:sidebar-collapsed', String(sidebarCollapsed))
   }, [sidebarCollapsed])
 
+  // Swipe from left edge to open sidebar
+  useEffect(() => {
+    let touchStart: { x: number; y: number } | null = null
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return
+      const touch = e.touches[0]
+      if (touch.clientX < 24) {
+        touchStart = { x: touch.clientX, y: touch.clientY }
+      }
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      if (!touchStart || e.touches.length !== 1) return
+      const touch = e.touches[0]
+      const dx = touch.clientX - touchStart.x
+      const dy = touch.clientY - touchStart.y
+      if (dx > 60 && Math.abs(dy) < 40) {
+        setSidebarCollapsed(false)
+        touchStart = null
+      }
+    }
+    const onTouchEnd = () => {
+      touchStart = null
+    }
+    document.addEventListener('touchstart', onTouchStart, { passive: true })
+    document.addEventListener('touchmove', onTouchMove, { passive: true })
+    document.addEventListener('touchend', onTouchEnd, { passive: true })
+    return () => {
+      document.removeEventListener('touchstart', onTouchStart)
+      document.removeEventListener('touchmove', onTouchMove)
+      document.removeEventListener('touchend', onTouchEnd)
+    }
+  }, [])
+
   // Sync URL -> state on popstate (back/forward)
   useEffect(() => {
     const onPopState = () => {

@@ -34,6 +34,15 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [width, setWidth] = useState(480)
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 900px), (pointer: coarse)').matches)
+
+  // Detect mobile via matchMedia with change listener
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 900px), (pointer: coarse)')
+    const sync = () => setIsMobile(media.matches)
+    media.addEventListener('change', sync)
+    return () => media.removeEventListener('change', sync)
+  }, [])
 
   // wiki-viewer lifecycle status, polled for the overlay.
   const [wikiStatus, setWikiStatus] = useState<WikiStatus | null>(null)
@@ -306,14 +315,16 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
   })()
 
   return (
-    <div className="flex flex-row h-full shrink-0 border-l border-hairline" style={{ width }}>
-      <div
-        className="w-1 cursor-col-resize bg-transparent hover:bg-primary/30 transition-colors shrink-0"
-        onMouseDown={e => {
-          e.preventDefault()
-          dragRef.current = { startX: e.clientX, startWidth: width }
-        }}
-      />
+    <div className={isMobile ? 'fixed inset-0 z-40 bg-canvas flex flex-row' : 'flex flex-row h-full shrink-0 border-l border-hairline'} style={!isMobile ? { width } : {}}>
+      {!isMobile && (
+        <div
+          className="w-1 cursor-col-resize bg-transparent hover:bg-primary/30 transition-colors shrink-0"
+          onMouseDown={e => {
+            e.preventDefault()
+            dragRef.current = { startX: e.clientX, startWidth: width }
+          }}
+        />
+      )}
 
       <div className="flex flex-col flex-1 min-w-0 bg-canvas">
         <div className="flex items-center justify-between px-3 py-1.5 border-b border-hairline shrink-0">

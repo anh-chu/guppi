@@ -26,6 +26,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
   - [2.1 Sidebar grouping modes](#21-sidebar-grouping-modes)
   - [2.1a Layout group dissolution](#21a-layout-group-dissolution)
   - [2.2 Sidebar collapse](#22-sidebar-collapse)
+  - [2.2a Mobile swipe-from-left to open](#22a-mobile-swipe-from-left-to-open)
   - [2.3 Sidebar width adjustment](#23-sidebar-width-adjustment)
   - [2.4 Session row (Sidebar)](#24-session-row-sidebar)
 - [3. Top bar](#3-top-bar)
@@ -52,6 +53,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
   - [9.13 DEC 2026 synchronized updates](#913-dec-2026-synchronized-updates)
   - [9.14 Terminal toolbar](#914-terminal-toolbar)
   - [9.15 Scroll scrubber](#915-scroll-scrubber)
+  - [9.16 Wiki Panel mobile](#916-wiki-panel-mobile)
 - [10. Session Lifecycle & Status](#10-session-lifecycle-status)
   - [10.1 Session states](#101-session-states)
   - [10.2 Tool events & agent tracking](#102-tool-events-agent-tracking)
@@ -171,6 +173,14 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 **Why it matters:** The collapse keyboard shortcut and per-group/host toggles enable flexible space management; removing them would lock the UI layout.
 
 **Verification pointer:** `web/src/components/Sidebar.tsx`
+
+### 2.2a Mobile swipe-from-left to open
+
+**Contract:** On touch devices, swiping from the left edge of the screen opens the sidebar if collapsed. Gesture: single-touch `touchstart` at `clientX < 24`, then `touchmove` with `dx > 60` and `|dy| < 40` triggers `setSidebarCollapsed(false)` once per gesture. Fired only for gestures starting at the left edge; middle/right-edge swipes ignored. Passive listeners (no preventDefault). Gesture tracking cleared on `touchend`.
+
+**Why it matters:** Mobile users with collapsed sidebars need an accessible way to reopen it without requiring UI screen real estate for a persistent button.
+
+**Verification pointer:** `web/src/App.tsx` (swipe touch effect)
 
 ### 2.3 Sidebar width adjustment
 
@@ -304,7 +314,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ### 9.5 Mobile key bar
 
-**Contract:** Appears on coarse-pointer or viewport width <900px (visible only when terminal `keyBarEnabled = true`, i.e., pane is active). Portal-rendered into fixed bottom bar. 9 buttons: **Clipboard menu toggle**, **Compose input** (opens native textarea modal; Send types the text into the terminal without pressing Enter), **Ctrl sticky** (toggles, next letter → Ctrl+letter), **Alt sticky** (toggles, next letter → Alt+letter), **Esc** (sends ESC, 0x1b), **Tab** (sends TAB), **Backspace** (sends DEL, 0x7f), **Page Up/Down** (swipeable gesture key, vertical arrows), **Arrow cross** (swipeable gesture key, 4-direction). Sticky modifiers clear on next input; gesture keys auto-repeat if held >260ms, then every 80ms. Dead zone for swipe: 18px threshold before direction fires.
+**Contract:** Appears on coarse-pointer or viewport width <900px (visible only when terminal `keyBarEnabled = true`, i.e., pane is active). Portal-rendered into fixed bottom bar. 9 buttons: **Clipboard menu toggle**, **Compose input** (opens native textarea modal; Send types the text into the terminal without pressing Enter), **Ctrl sticky** (toggles, next letter → Ctrl+letter), **Alt sticky** (toggles, next letter → Alt+letter), **Esc** (sends ESC, 0x1b), **Tab** (sends TAB), **Backspace** (sends DEL, 0x7f), **Page Up/Down** (swipeable gesture key, vertical arrows), **Arrow cross** (swipeable gesture key, 4-direction). Sticky modifiers clear on next input; gesture keys auto-repeat if held >260ms, then every 80ms. Dead zone for swipe: 18px threshold before direction fires. **Keyboard visibility tracking:** Bar bottom padding adapts to on-screen keyboard: when `window.visualViewport.height < window.innerHeight * 0.8` (keyboard visible), padding-bottom is 3px; otherwise, padding-bottom is `calc(env(safe-area-inset-bottom, 0px) + 12px)` to avoid home indicator overlap.
 
 **Why it matters:** The 260ms hold delay, 80ms repeat, and 18px dead zone are measurable UX parameters; changing them would affect mobile usability.
 
@@ -364,7 +374,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ### 9.12 Terminal fonts / rendering
 
-**Contract:** Font family control: select from 9 presets (Space Mono [default], JetBrains Mono, Fira Code, Menlo, Monaco, Consolas, Courier New, Inconsolata, monospace) **or choose "Custom…" to reveal a free-text input** for any font family string (e.g. Cascadia Code, Berkeley Mono), with a live preview sample rendered in the chosen font. The `terminal.font_family` preference was already a free-form string server-side — this is a frontend-only UX addition, no new preference key. Font size 8–32px (default 13, clamped). Unicode grapheme clustering (`@xterm/addon-unicode-graphemes`) is always loaded, unconditionally, for every terminal — there is no user toggle. All settings apply instantly, xterm re-renders.
+**Contract:** Font family control: select from 10 presets (Space Mono [default], JetBrains Mono, Roboto Mono, Fira Code, Menlo, Monaco, Consolas, Courier New, Inconsolata, monospace) **or choose "Custom..." to reveal a free-text input** for any font family string (e.g. Cascadia Code, Berkeley Mono), with a live preview sample rendered in the chosen font. The `terminal.font_family` preference was already a free-form string server-side - this is a frontend-only UX addition, no new preference key. Font size 8-32px (default 13, clamped). Unicode grapheme clustering (`@xterm/addon-unicode-graphemes`) is always loaded, unconditionally, for every terminal - there is no user toggle. All settings apply instantly, xterm re-renders.
 
 **Renderer:** WebGL is now the only rendering path attempted (default changed from DOM to WebGL); the DOM/WebGL Settings toggle has been **removed** — there is no more user-facing renderer choice. WebGL is attempted unconditionally on cold terminal checkout (and opportunistically on reconfigure if not yet loaded); if `WebglAddon` construction or `loadAddon` throws (no GPU/WebGL2 support), the terminal silently continues on xterm's default DOM/canvas renderer with no user-visible error. If the GPU context is lost at runtime, the addon's `onContextLoss` handler disposes it, which causes xterm to fall back to DOM rendering automatically and silently — this fallback path already existed and is preserved unchanged. The backend `renderer` preference key is kept (default changed from `"dom"` to `"webgl"`) for backward-compat with persisted preferences and the API contract, but is no longer read by any rendering-decision code on the frontend.
 
@@ -399,6 +409,14 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 **Why it matters:** xterm's native scrollbar is nearly unusable on mobile for deep (50k-line) scrollback; the scrubber is the fast-navigation path.
 
 **Verification pointer:** `web/src/components/terminal/ScrollScrubber.tsx`
+
+### 9.16 Wiki Panel mobile
+
+**Contract:** On mobile/coarse-pointer (viewport <900px or touch device), wiki panel enters full-screen modal mode: `fixed inset-0 z-40 bg-canvas flex flex-row`. The drag-resize handle is hidden. The close button in the header remains visible, allowing dismissal. All other UI is hidden behind the panel. On desktop, panel renders as a side dock (resizable, collapsible as before).
+
+**Why it matters:** Mobile screens lack space for a docked file viewer; full-screen modal is the only usable layout on small viewports.
+
+**Verification pointer:** `web/src/components/WikiPanel.tsx` (isMobile state, conditional className)
 
 ## 10. Session Lifecycle & Status
 

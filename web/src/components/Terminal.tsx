@@ -96,6 +96,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
 
   const { prefs } = usePreferences()
   const [showMobileKeyBar, setShowMobileKeyBar] = useState(false)
+  const [keyboardVisible, setKeyboardVisible] = useState(false)
   const [composeOpen, setComposeOpen] = useState(false)
   const [composeText, setComposeText] = useState('')
   const [artifactsOpen, setArtifactsOpen] = useState(false)
@@ -170,6 +171,17 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     sync()
     media.addEventListener('change', sync)
     return () => media.removeEventListener('change', sync)
+  }, [])
+
+  useEffect(() => {
+    if (!window.visualViewport) return
+    const checkKeyboardVisible = () => {
+      const visible = window.visualViewport!.height < window.innerHeight * 0.8
+      setKeyboardVisible(visible)
+    }
+    checkKeyboardVisible()
+    window.visualViewport.addEventListener('resize', checkKeyboardVisible)
+    return () => window.visualViewport?.removeEventListener('resize', checkKeyboardVisible)
   }, [])
 
   useEffect(() => {
@@ -632,7 +644,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
         </div>
         </div>
         {showMobileKeyBar && keyBarEnabled && keyBarSlot && createPortal(
-          <div className="flex-none pt-1 px-[3px] pb-[3px]">
+          <div className="flex-none pt-1 px-[3px]" style={{ paddingBottom: keyboardVisible ? '3px' : 'calc(env(safe-area-inset-bottom, 0px) + 12px)' }}>
             <div className="grid grid-cols-9 gap-1.5 p-1.5 bg-surface border border-hairline rounded-md">
               <div className="relative">
                 <button

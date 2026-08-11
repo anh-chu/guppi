@@ -13,6 +13,7 @@ import { WikiViewerSection } from './settings/WikiViewerSection'
 const terminalFontFamilies = [
   'Space Mono',
   'JetBrains Mono',
+  'Roboto Mono',
   'Fira Code',
   'Menlo',
   'Monaco',
