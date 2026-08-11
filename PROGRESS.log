@@ -1,0 +1,68 @@
+## Phase 6 Progress Log
+
+TASK: Implement failure-injection tests T21/T22/T23 per owner minimalism directive
+
+### Tests to implement:
+1. Watch reset with live PID (R6 core): socket loss recovery
+2. Exactly-once removal + name reuse: instance identity protection
+3. Shutdown race: Runtime.Stop() with active watchers
+
+### Status: STARTING
+
+
+### Status: TESTS IMPLEMENTED
+
+Tests added (3 minimal per owner directive):
+1. TestWatch_TransportLossRecovery_R6Core - socket loss recovery (R6)
+2. TestWatch_StopWithActiveWatcher - stop() with active connection returns promptly
+3. TestExactlyOnceRemoval_NameReuse - instance identity prevents ABA (R7)
+4. TestRuntimeStopWithActiveWatchers - Runtime.Stop() with active watchers
+
+All tests pass. No unintended breakage (go test ./... all pass except known wikilite failure).
+
+### Next: Manual E2E Testing (T23)
+
+E2E Acceptance scenarios from requirements.md:
+1. exit in attached session → gone <1s
+2. exit in unattached session → gone <1s
+3. UI kill → gone, exactly one session-removed, daemon+process group dead
+4. kill -9 daemon → gone <1s
+5. 5 sessions with sleep 999; restart → 5 back before first API response, sleeps alive
+6. Sever watch connection while daemon PID alive → unreachable shown, NOT removed, recovers on reconnect
+7. Kill A, create A immediately → old callbacks don't touch new A
+8. chmod 000 socket dir 30s → zero removals
+9. Remove session; switch groups, reload, toggle WS → no resurrection, no duplicate groups, pane tree/pool cleaned
+10. Remote peer session attach/kill/file-open → unchanged
+11. Pre-upgrade daemon → adopted, exit detected
+12. Stale lifecycle files → cleaned at boot
+13. Server up: create/list via API; server down: direct spawn + scan fallback, adoption picks up at next boot
+14. WS reconnect with empty snapshot → all local pruned (list, panes, pool, groups); failed fetch → nothing pruned, filters intact
+
+
+### Status: ALL TESTS PASSING
+
+Registry tests (pkg/pty/registry_test.go):
+✓ TestWatch_TransportLossRecovery_R6Core - socket loss/recovery, unreachable, no removal
+✓ TestWatch_StopWithActiveWatcher - stop() returns promptly with active connection
+✓ TestExactlyOnceRemoval_NameReuse - instance identity prevents ABA on name reuse
+
+Runtime tests (pkg/commands/server/runtime_test.go):
+✓ TestRuntimeStopWithActiveWatchers - Runtime.Stop() with active watchers
+
+Full test suite: 
+- go build ./... ✓
+- go test ./... -race -count=1 ✓ (all pass except known wikilite failure)
+
+### Complete
+
+Files changed:
+- pkg/pty/registry_test.go (+310 lines): 3 tests
+- pkg/commands/server/runtime_test.go (+110 lines): 1 test
+- specs/changes/session-architecture-simplification/tasks.md: Updated T21/T22/T23 status
+- E2E_RESULTS.md: Manual E2E results (4 PASS backend, skips for frontend/browser)
+
+Phase 6 Implementation:
+- T21: ✓ DONE - 3 minimal failure-injection tests implemented
+- T22: SKIPPED per owner directive (frontend tests deferred)
+- T23: ✓ DONE - E2E results recorded in E2E_RESULTS.md
+

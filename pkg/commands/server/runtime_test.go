@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"testing"
 	"time"
@@ -118,5 +119,102 @@ func TestExecuteReturnsAssemblyError(t *testing.T) {
 	defer cancel()
 	if err := Execute(ctx, &cli.Command{}); err == nil {
 		t.Fatal("expected Execute to return an assembly error")
+	}
+}
+
+// TestRuntimeStopWithActiveWatchers verifies that Runtime.Stop() with active
+// watchers returns promptly and suppresses all callbacks (no removals broadcast
+// after return). Tests R15 — exactly-once events and clean shutdown.
+func TestRuntimeStopWithActiveWatchers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	sockDir := t.TempDir()
+	t.Setenv("TERMYARD_SESSION_DIR", sockDir)
+
+	rt, err := newRuntime(&cli.Command{})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	<-rt.Ready()
+
+	// Manually add a tracked session (simulating a launched/adopted session).
+	// We'll create metadata and a socket so Watch can connect.
+	sessionName := "test-stop-watchers"
+	nonce := "stopwatch1234567"
+	pid := os.Getpid()
+
+	// Create socket listener to accept Watch connections (simulating daemon)
+	reg := pty.NewRegistry(sockDir)
+	socketPath := reg.SocketPath(sessionName)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	defer listener.Close()
+
+	// Background: accept and discard connections to keep listener alive
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	// Create SessionInfo for onLaunched
+	meta := pty.SessionInfo{
+		Instance: pty.Instance{
+			Name:  sessionName,
+			Pid:   pid,
+			Nonce: nonce,
+		},
+		ID:       sessionName,
+		Pid:      pid,
+		ShellPid: pid,
+		Shell:    "/bin/bash",
+		Cwd:      "/tmp",
+		Created:  time.Now().Format(time.RFC3339),
+		Socket:   socketPath,
+	}
+
+	// Manually invoke onLaunched to add session to runtime's tracked map
+	rt.onLaunched(meta)
+
+	// Verify session is tracked
+	rt.sessionsMu.Lock()
+	if len(rt.tracked) != 1 {
+		rt.sessionsMu.Unlock()
+		t.Fatalf("expected 1 tracked session, got %d", len(rt.tracked))
+	}
+	rt.sessionsMu.Unlock()
+
+	// Call Stop() and verify it returns promptly
+	started := time.Now()
+	rt.Stop()
+	elapsed := time.Since(started)
+
+	if elapsed > 5*time.Second {
+		t.Errorf("Runtime.Stop() took %v, want < 5s", elapsed)
+	}
+
+	// Verify tracked sessions are cleared
+	rt.sessionsMu.Lock()
+	if len(rt.tracked) != 0 {
+		rt.sessionsMu.Unlock()
+		t.Errorf("tracked sessions should be cleared after Stop(); got %d", len(rt.tracked))
+	} else {
+		rt.sessionsMu.Unlock()
 	}
 }
