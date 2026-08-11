@@ -833,11 +833,11 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     const targetKey = (focusKey && findLeaf(targetGroup.tree, focusKey))
       ? focusKey
       : (activeGroupId === groupId && activeKey ? activeKey : getLeaves(targetGroup.tree)[0] ?? null)
-    setPaneTree(targetGroup.tree)
-    setActiveKey(targetKey)
-    setActiveGroupId(groupId)
-    setSingleView(null)
-    setCurrentView('session')
+    // Single dispatch: view/setActiveGroup sets tree, activeKey, clears
+    // singleView, and switches to session view. Separate setters raced here
+    // before -- setActiveGroupId (no focusKey) nulled the just-set activeKey,
+    // leaving no sidebar session highlighted after a group switch.
+    workspaceActions.setActiveGroup(groupId, targetGroup.tree, targetKey)
     if (targetKey) {
       const { host, name } = parseSessionKey(targetKey)
       const path = host
@@ -846,7 +846,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       if (window.location.pathname !== path) window.history.pushState(null, '', path)
     }
     setTimeout(refocusTerminal, 150)
-  }, [syncedGroups, activeGroupId, paneTree, activeKey, refocusTerminal, setGroupTree])
+  }, [syncedGroups, activeGroupId, paneTree, activeKey, refocusTerminal, setGroupTree, workspaceActions])
   switchToGroupRef.current = switchToGroup
 
   const renameGroup = useCallback((groupId: string, name: string) => {
