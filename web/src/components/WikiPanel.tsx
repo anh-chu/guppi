@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { resolveFilePath, pickEmbedRoot, buildWikiSrc } from '../lib/wikiRoot'
+import { pickEmbedRoot, buildWikiSrc } from '../lib/wikiRoot'
 
 interface WikiStatus {
   installed: boolean
@@ -97,10 +97,12 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
       let file: string | null = null
       let error: string | null = null
 
-      if (hostId) {
-        // Non-local: materialise the file locally through the grant endpoint,
-        // then point wiki-viewer at the local copy.
-        const qs = `path=${encodeURIComponent(filePath || '')}&session=${encodeURIComponent(session || '')}&host=${encodeURIComponent(hostId)}`
+      if (filePath) {
+        // Resolve the file path server-side through the grant endpoint.
+        // Handles relative paths against session cwd and ~ expansion.
+        // For remote peers (hostId set), materialises the file locally.
+        // For local files, returns {token, path} with no root.
+        const qs = `path=${encodeURIComponent(filePath)}&session=${encodeURIComponent(session || '')}&host=${encodeURIComponent(hostId || '')}`
         try {
           const gr = await fetch(`/file/grant?${qs}`, { method: 'POST' })
           if (gr.ok) {
@@ -117,15 +119,10 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
         // A grant only carries a root when it materialised the file into a
         // private temp dir, which happens for genuinely remote peers. A local
         // host returns {token, path}: the path is already a real local file,
-        // so no root comes back. Every session is stamped with the local
-        // fingerprint, so this branch runs for local files too, and without
-        // this fallback the !root guard below drops the open request
-        // entirely, leaving the panel on its empty state permanently.
+        // so no root comes back. When no root is returned by the grant,
+        // fall back to the usual cwd/file-dir logic: cwd when it contains
+        // the file, file dir otherwise.
         if (!root && file) root = pickEmbedRoot(file, sessionCwd)
-      } else if (filePath) {
-        const resolved = resolveFilePath(filePath, sessionCwd)
-        root = pickEmbedRoot(resolved, sessionCwd)
-        file = resolved
       } else {
         // No file: root the panel at the configured default so the user can
         // browse. Fetch status inline; the overlay fetches it independently.

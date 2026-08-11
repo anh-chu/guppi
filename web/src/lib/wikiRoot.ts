@@ -16,27 +16,6 @@ export function normalizePath(path: string): string {
   return (absolute ? '/' : '') + out.join('/')
 }
 
-/**
- * Make a path from terminal output absolute, which is what wiki-viewer needs:
- * its navigateToPath treats a NON-absolute path as already root-relative, so a
- * relative path is silently reinterpreted against whatever root we happened to
- * send, and a relative path with no root at all is looked up inside
- * wiki-viewer's own configured workspace and reported as File not found.
- *
- * Every non-absolute form is joined against the cwd, not just ./ and ../ .
- * Bare relative paths like app/(public)/sign-in.tsx are the common shape in
- * terminal output and were previously passed through untouched.
- *
- * ~/ is left alone: only a shell can expand it, and guessing $HOME from the cwd
- * would be wrong for any session outside the user's home.
- */
-export function resolveFilePath(path: string, cwd?: string): string {
-  if (path.startsWith('/')) return normalizePath(path)
-  if (path.startsWith('~/')) return path
-  if (cwd && cwd.startsWith('/')) return normalizePath(cwd + '/' + path)
-  return path
-}
-
 /** True when `abs` is `dir` itself or sits beneath it. */
 export function isInside(dir: string, abs: string): boolean {
   const d = dir.replace(/\/+$/, '')
