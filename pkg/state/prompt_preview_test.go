@@ -63,6 +63,12 @@ func sessionNamed(name string) *model.Session {
 	return &model.Session{Name: name}
 }
 
+// enrich runs the production enrichment path on a session, which applies the
+// cached preview and kicks an async refresh when due.
+func enrich(m *Manager, s *model.Session) {
+	m.enrichSessionInPlaceWithMeta(s, &pty.SessionInfo{ID: s.Name}, SessionMetadata{})
+}
+
 func TestPreview_TailCapturerBoundedTo64KiB(t *testing.T) {
 	const big = 200_000
 	const wantMax = promptPreviewTailBytes
@@ -78,10 +84,10 @@ func TestPreview_TailCapturerBoundedTo64KiB(t *testing.T) {
 	m := newManagerWithPreview(reg)
 	s := sessionNamed("s1")
 
-	m.loadDaemonSessionDetails(s)
+	enrich(m, s)
 	m.refreshPreviewSync("s1")
 	// The cache is populated; apply it to the session object.
-	m.loadDaemonSessionDetails(s)
+	enrich(m, s)
 
 	if gotMax != wantMax {
 		t.Fatalf("CaptureTail maxBytes = %d, want %d", gotMax, wantMax)
@@ -193,7 +199,7 @@ func TestPreview_EmptyStreakClearsCache(t *testing.T) {
 	}
 }
 
-func TestPreview_LoadDetailsIsNonBlocking(t *testing.T) {
+func TestPreview_EnrichIsNonBlocking(t *testing.T) {
 	block := make(chan struct{})
 	started := make(chan struct{})
 	reg := &fakePreviewRegistry{
@@ -208,15 +214,15 @@ func TestPreview_LoadDetailsIsNonBlocking(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		m.loadDaemonSessionDetails(s)
+		enrich(m, s)
 		close(done)
 	}()
 
 	select {
 	case <-done:
-		// expected: loadDaemonSessionDetails returns immediately
+		// expected: enrichment returns immediately
 	case <-time.After(2 * time.Second):
-		t.Fatal("loadDaemonSessionDetails blocked on capture")
+		t.Fatal("enrichment blocked on capture")
 	}
 
 	<-started
@@ -227,15 +233,15 @@ func TestPreview_LoadDetailsIsNonBlocking(t *testing.T) {
 	})
 }
 
-func TestPreview_RepeatedLoadDetailsDoesOneCapture(t *testing.T) {
+func TestPreview_RepeatedEnrichDoesOneCapture(t *testing.T) {
 	reg := &fakePreviewRegistry{
 		tailHook: func(string, int) (string, error) { return "$ p", nil },
 	}
 	m := newManagerWithPreview(reg)
 	s := sessionNamed("s1")
 
-	m.loadSessionDetails(s)
-	m.loadSessionDetails(s)
+	enrich(m, s)
+	enrich(m, s)
 
 	// Complete the one background refresh.
 	m.refreshPreviewSync(s.Name)
@@ -306,9 +312,9 @@ func TestPreview_UnattachedSessionStillRefreshed(t *testing.T) {
 	m := newManagerWithPreview(reg)
 	s := sessionNamed("orphan")
 
-	m.loadDaemonSessionDetails(s)
+	enrich(m, s)
 	m.refreshPreviewSync("orphan")
-	m.loadDaemonSessionDetails(s)
+	enrich(m, s)
 
 	if s.PromptPreview != "unattached" {
 		t.Fatalf("PromptPreview = %q, want unattached", s.PromptPreview)
@@ -345,19 +351,6 @@ func TestPreview_NoResurrectIfEvictedDuringRefresh(t *testing.T) {
 
 	if got := m.preview("s1"); got != "" {
 		t.Fatalf("preview resurrected after eviction = %q, want empty", got)
-	}
-}
-
-func TestPreview_MissingCacheEntrySafe(t *testing.T) {
-	m := &Manager{
-		sessions:  make(map[string]*model.Session),
-		meta:      make(map[string]SessionMetadata),
-		daemonReg: nil,
-	}
-	s := sessionNamed("new")
-	m.loadDaemonSessionDetails(s)
-	if s.PromptPreview != "" {
-		t.Fatalf("PromptPreview = %q, want empty", s.PromptPreview)
 	}
 }
 

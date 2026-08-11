@@ -44,8 +44,7 @@ type Manager struct {
 	meta     map[string]SessionMetadata
 	namer    *namer.Namer
 
-	// daemonReg provides metadata lookup for daemon sessions so
-	// loadSessionDetails can populate CWD, PID, and synthetic panes.
+	// daemonReg provides capture access for daemon sessions (prompt previews).
 	daemonReg DaemonRegistry
 
 	// previewCache holds debounced prompt-preview snapshots so the 2-second

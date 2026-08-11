@@ -215,7 +215,7 @@ func TestEnrichmentClearsStaleAgentMetadata(t *testing.T) {
 	}
 
 	// Enrich - should detect agent is not alive and clear stale metadata
-	m.EnrichSessionInPlace(session, info)
+	m.EnrichSessionInPlaceWithMetaCallback(sessionName, info)
 
 	// Verify stale agent metadata was cleared from m.meta
 	m.mu.RLock()
@@ -274,16 +274,5 @@ func TestEnrichmentClearsGeneratedDisplayNameOnly(t *testing.T) {
 
 	if sess.DisplayName != "" || meta.DisplayName != "" {
 		t.Fatalf("generated display name not cleared: session=%q meta=%q", sess.DisplayName, meta.DisplayName)
-	}
-
-	// User-set names must survive.
-	m.mu.Lock()
-	m.sessions[name].DisplayName = "user name"
-	m.meta[name] = SessionMetadata{DisplayName: "user name", UserSetName: true}
-	m.clearStaleAgentMetadataIfNeeded(name)
-	kept := m.sessions[name].DisplayName
-	m.mu.Unlock()
-	if kept != "user name" {
-		t.Fatalf("user-set display name was cleared")
 	}
 }

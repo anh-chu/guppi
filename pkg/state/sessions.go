@@ -13,96 +13,6 @@ import (
 	"github.com/anh-chu/termyard/pkg/toolevents"
 )
 
-// loadSessionDetails fills in windows and panes for a session.
-func (m *Manager) loadSessionDetails(session *model.Session) error {
-	// All sessions are daemon-backed now.
-	m.loadDaemonSessionDetails(session)
-
-	// Detect linked git worktrees so the UI can offer cleanup on kill.
-	if session.ProjectPath != "" {
-		if ok, err := git.IsWorktree(session.ProjectPath); err == nil {
-			session.IsWorktree = ok
-			if ok {
-				if root, err := git.FindMainWorktreeRoot(session.ProjectPath); err == nil {
-					session.WorktreeParent = root
-				}
-			}
-		} else {
-			logrus.WithError(err).WithField("path", session.ProjectPath).Debug("git worktree check failed")
-		}
-	}
-
-	return nil
-}
-
-// loadDaemonSessionDetails populates a daemon session with a synthetic
-// single-window, single-pane structure using daemon registry metadata.
-func (m *Manager) loadDaemonSessionDetails(session *model.Session) {
-	if m.daemonReg == nil {
-		m.applyMetadata(session)
-		return
-	}
-
-	// Find this session's daemon metadata.
-	var info *pty.SessionInfo
-	for _, di := range m.daemonReg.List() {
-		if di.ID == session.Name {
-			info = &di
-			break
-		}
-	}
-
-	cwd := ""
-	pid := 0
-	shell := ""
-	if info != nil {
-		cwd = info.Cwd
-		pid = info.ShellPid
-		if pid == 0 {
-			pid = info.Pid
-		}
-		shell = info.Shell
-		// Try to read live CWD from the shell process.
-		if pid > 0 {
-			if liveCwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid)); err == nil && liveCwd != "" {
-				cwd = liveCwd
-			}
-		}
-	}
-
-	// Build synthetic pane.
-	pane := &model.Pane{
-		ID:             session.Name + ":0.0",
-		Active:         true,
-		CurrentCommand: shell,
-		CurrentPath:    cwd,
-		PID:            pid,
-	}
-	win := &model.Window{
-		ID:     session.Name + ":0",
-		Name:   session.Name,
-		Index:  0,
-		Active: true,
-		Panes:  []*model.Pane{pane},
-	}
-	session.Windows = []*model.Window{win}
-
-	if cwd != "" {
-		session.ProjectPath = cwd
-	}
-
-	// Use cached prompt preview; refresh asynchronously so discovery never
-	// waits on an expensive full ring capture.
-	if preview := m.preview(session.Name); preview != "" {
-		session.PromptPreview = preview
-	}
-	if m.shouldRefreshPreview(session.Name) {
-		go m.refreshPreview(session.Name)
-	}
-
-	m.applyMetadata(session)
-}
-
 // sessionHasLiveAgent reports whether any pane in the session currently has a
 // recognized coding agent process running in its tree. Used to distinguish a
 // live agent (keep its identity) from a session that used to run one but has
@@ -119,13 +29,6 @@ func sessionHasLiveAgent(windows []*model.Window) bool {
 		}
 	}
 	return false
-}
-
-func (m *Manager) applyMetadata(session *model.Session) {
-	m.mu.RLock()
-	meta := m.meta[session.Name]
-	m.mu.RUnlock()
-	m.applyMetadataUnlocked(session, meta)
 }
 
 // applyMetadataUnlocked applies metadata to a session without acquiring locks.
@@ -151,12 +54,8 @@ func (m *Manager) applyMetadataUnlocked(session *model.Session, meta SessionMeta
 		return agentPresent
 	}
 
-	if session.AgentType == "" && meta.AgentType != "" {
-		if agentAlive() {
-			session.AgentType = model.NormalizeAgentType(meta.AgentType)
-		}
-		// Note: stale agent metadata cleanup (when agent is gone but stored meta persists)
-		// is deferred to be handled separately outside this method, as it requires locking.
+	if session.AgentType == "" && meta.AgentType != "" && agentAlive() {
+		session.AgentType = model.NormalizeAgentType(meta.AgentType)
 	}
 	if meta.PromptPreview != "" && session.PromptPreview == "" {
 		session.PromptPreview = meta.PromptPreview
@@ -178,60 +77,21 @@ func (m *Manager) applyMetadataUnlocked(session *model.Session, meta SessionMeta
 	session.UserSetName = meta.UserSetName
 }
 
-// EnrichSessionInPlace reapplies full enrichment logic (panes, metadata, preview,
-// worktree) to an existing session using daemon registry metadata. Called by the
-// event-driven runtime during onLaunched, adoptSessionsAtBoot, and enrichment ticks.
-// Does NOT modify session membership, only enriches fields within an existing session.
-// May be called with or without holding m.mu; if called from a lock-protected context,
-// pass the pre-fetched metadata to avoid nested lock acquisition.
-func (m *Manager) EnrichSessionInPlace(session *model.Session, info *pty.SessionInfo) {
-	if session == nil || info == nil {
-		return
-	}
-
-	// Fetch metadata once, outside of enrichment loop.
-	m.mu.RLock()
-	meta := m.meta[session.Name]
-	m.mu.RUnlock()
-
-	m.enrichSessionInPlaceWithMeta(session, info, meta)
-
-	// After enrichment, clear stale agent metadata if the agent is not alive.
-	// This requires the lock to update m.meta.
-	m.mu.Lock()
-	m.clearStaleAgentMetadataIfNeeded(session.Name)
-	m.mu.Unlock()
-}
-
-// EnrichSessionInPlaceWithMetaCallback enriches a session and broadcasts changes
-// if any fields changed. Wraps UpdateSessionFields to ensure proper locking.
-// Safe to call from anywhere; handles metadata fetching and comparison internally.
+// EnrichSessionInPlaceWithMetaCallback reapplies full enrichment (panes,
+// metadata, preview, worktree, stale-agent cleanup) to an existing session
+// using daemon registry metadata, broadcasting only if fields changed. Does
+// NOT modify session membership.
 func (m *Manager) EnrichSessionInPlaceWithMetaCallback(name string, info *pty.SessionInfo) {
 	m.UpdateSessionFields(name, func(sess *model.Session) {
-		// Fetch metadata while lock is held (will be used by enrichSessionInPlaceWithMeta).
-		meta := m.meta[name]
-		m.enrichSessionInPlaceWithMeta(sess, info, meta)
-		// Clear stale agent metadata if needed. Already under lock via UpdateSessionFields.
+		// m.mu is held via UpdateSessionFields.
+		m.enrichSessionInPlaceWithMeta(sess, info, m.meta[name])
 		m.clearStaleAgentMetadataIfNeeded(name)
 	})
 }
 
-// EnrichSessionInPlaceInCallback enriches a session when called from within a
-// lock-protected callback (e.g., from UpdateSessionFields). Does not attempt to
-// acquire locks; assumes caller holds the lock. Fetch metadata before calling.
-func (m *Manager) EnrichSessionInPlaceInCallback(session *model.Session, info *pty.SessionInfo, meta SessionMetadata) {
-	m.enrichSessionInPlaceWithMeta(session, info, meta)
-	// Clear stale agent metadata if needed. Caller must hold m.mu.
-	m.clearStaleAgentMetadataIfNeeded(session.Name)
-}
-
-// enrichSessionInPlaceWithMeta does the actual enrichment work with metadata already in hand.
-// Safe to call from lock-protected contexts (callback, already-locked enrich tick).
+// enrichSessionInPlaceWithMeta does the actual enrichment work with metadata
+// already in hand. Safe to call from lock-protected contexts.
 func (m *Manager) enrichSessionInPlaceWithMeta(session *model.Session, info *pty.SessionInfo, meta SessionMetadata) {
-	if session == nil || info == nil {
-		return
-	}
-
 	// Rebuild synthetic pane/window structure from daemon metadata.
 	cwd := info.Cwd
 	pid := info.ShellPid
@@ -291,66 +151,36 @@ func (m *Manager) enrichSessionInPlaceWithMeta(session *model.Session, info *pty
 		}
 	}
 
-	// Apply metadata (agent type, prompts, display name, user-set tracking).
-	// Use the unlocked version since metadata is already in hand.
 	m.applyMetadataUnlocked(session, meta)
 }
 
-// clearStaleAgentMetadataIfNeeded checks if the agent is dead but metadata persists,
-// and if so, clears stale agent-derived fields from m.meta under the lock.
-// Called after enrichment when we've just updated the session.Windows structure.
+// clearStaleAgentMetadataIfNeeded clears agent-derived metadata and session
+// fields once the agent process is gone, preserving user-set display names.
 // Must be called while holding m.mu.
 func (m *Manager) clearStaleAgentMetadataIfNeeded(sessionName string) {
-	// Caller must hold m.mu
 	sess, ok := m.sessions[sessionName]
-	if !ok {
+	if !ok || sessionHasLiveAgent(sess.Windows) {
 		return
 	}
 
-	// Check if agent is alive in the current session structure
-	agentAlive := sessionHasLiveAgent(sess.Windows)
-	if agentAlive {
-		return // Agent still running, don't clear
-	}
-
-	// Agent is not alive. Check if metadata has agent-derived fields.
-	// If so, clear them.
 	meta := m.meta[sessionName]
 	generatedName := meta.DisplayName != "" && !meta.UserSetName
 	if meta.AgentType == "" && meta.UserPrompt == "" && meta.LastAgentMessage == "" && !generatedName {
-		return // No stale metadata to clear
+		return
 	}
 
-	// Clear stale agent-derived fields from metadata
-	if meta.AgentType != "" {
-		meta.AgentType = ""
-	}
-	if meta.UserPrompt != "" {
-		meta.UserPrompt = ""
-	}
-	if meta.LastAgentMessage != "" {
-		meta.LastAgentMessage = ""
-	}
-	// Clear AI-generated display name (but preserve user-set names)
-	if meta.DisplayName != "" && !meta.UserSetName {
+	meta.AgentType = ""
+	meta.UserPrompt = ""
+	meta.LastAgentMessage = ""
+	if generatedName {
 		meta.DisplayName = ""
 	}
-
-	// Update metadata in store
 	m.meta[sessionName] = meta
 
-	// Also clear corresponding fields on the session itself
-	if sess.AgentType != "" {
-		sess.AgentType = ""
-	}
-	if sess.UserPrompt != "" {
-		sess.UserPrompt = ""
-	}
-	if sess.LastAgentMessage != "" {
-		sess.LastAgentMessage = ""
-	}
-	// Clear AI-generated display name on session (preserve user-set names)
-	if sess.DisplayName != "" && !meta.UserSetName {
+	sess.AgentType = ""
+	sess.UserPrompt = ""
+	sess.LastAgentMessage = ""
+	if !meta.UserSetName {
 		sess.DisplayName = ""
 	}
 }
@@ -474,14 +304,6 @@ func (m *Manager) SetSessionAgentType(sessionName, agentType string) {
 		session.AgentType = agentType
 	}
 	m.mu.Unlock()
-}
-
-// GetSessionMetadata returns the metadata for a session.
-func (m *Manager) GetSessionMetadata(name string) SessionMetadata {
-	m.mu.RLock()
-	meta := m.meta[name]
-	m.mu.RUnlock()
-	return meta
 }
 
 // GetSessionProjectPath returns the ProjectPath for a session, or empty string if unknown.

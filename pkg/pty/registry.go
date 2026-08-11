@@ -62,20 +62,6 @@ func generateNonce() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// validSessionID returns true if id is safe for use in file paths.
-// Rejects empty, contains path separators, dots-only, or control chars.
-func validSessionID(id string) bool {
-	if id == "" || id == "." || id == ".." {
-		return false
-	}
-	for _, c := range id {
-		if c == '/' || c == '\\' || c == '\x00' {
-			return false
-		}
-	}
-	return true
-}
-
 // Registry manages session daemon lifecycle: create, kill, capture.
 type Registry struct {
 	dir string // socket directory
@@ -177,9 +163,6 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) (SessionIn
 		"--socket-dir", r.dir,
 		"--nonce", nonce,
 	}
-
-	// State dir is no longer used for lifecycle persistence.
-	// Omit the argument for new-style sessions.
 
 	// Try to wrap in a systemd user scope for cgroup isolation.
 	// Falls back to direct spawn if systemd-run is unavailable or
@@ -334,35 +317,8 @@ readiness_poll:
 		}
 		conn.Close() // Immediately close; this was just a probe
 
-		// Daemon is ready. Release the claim (name is now taken by actual daemon).
-		_ = os.Remove(claimPath)
-		err = nil // Clear error so deferred cleanup won't remove files on success.
-
-		// Build SessionInfo.
-		startTime := meta.ProcStartTime
-		if startTime <= 0 {
-			// Sidecar lacks a start time; capture from /proc so identity is
-			// always verifiable.
-			startTime = procStartTime(meta.Pid)
-		}
-		info = SessionInfo{
-			Instance: Instance{
-				Name:          name,
-				Pid:           meta.Pid,
-				Nonce:         meta.Nonce,
-				ProcStartTime: startTime,
-				SystemdUnit:   meta.SystemdUnit,
-			},
-			ID:       name,
-			Pid:      meta.Pid,
-			ShellPid: meta.ShellPid,
-			Shell:    meta.Shell,
-			Cwd:      meta.Cwd,
-			Created:  meta.Created,
-			Cols:     meta.Cols,
-			Rows:     meta.Rows,
-			Socket:   socketPath,
-		}
+		// Daemon is ready; the deferred claim removal releases the name.
+		info = sessionInfoFromMeta(name, socketPath, meta)
 		break
 	}
 
@@ -389,35 +345,26 @@ func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable fun
 		"nonce":     inst.Nonce[:min(8, len(inst.Nonce))],
 	})
 
-	// Channel to signal stop
 	stopCh := make(chan struct{})
-	// WaitGroup to track goroutine completion
-	var wg sync.WaitGroup
-	// WaitGroup to track in-flight callbacks
-	var cbWg sync.WaitGroup
-	// Flag to suppress callbacks after stop is called
+	var wg sync.WaitGroup   // watch goroutine
+	var cbWg sync.WaitGroup // in-flight callbacks
 	var suppressMu sync.Mutex
-	suppress := false
-	// Ensure onExit is called at most once
+	suppress := false // set by stop() before anything else; blocks new callbacks
 	var exitOnce sync.Once
-	// Track active connection for stop to close
 	var connMu sync.Mutex
 	var activeConn net.Conn
 	var stopping bool // guarded by connMu; set by stop() before closing activeConn
-	// Make stop idempotent
 	var stopOnce sync.Once
 
-	// Helper to call callbacks only if not suppressed.
-	// Increments callback WaitGroup before invoking, decrements after.
-	// Checks suppression under mutex, releases, THEN invokes callback.
-	// This prevents callbacks from being blocked by locks that stop() holds.
+	// Callback wrappers check suppression under mutex, register with cbWg,
+	// release, THEN invoke. Invoking outside the mutex prevents callbacks from
+	// deadlocking against locks that stop() holds.
 	callOnExit := func() {
 		suppressMu.Lock()
 		if suppress {
 			suppressMu.Unlock()
 			return
 		}
-		// Increment callback counter before releasing lock
 		cbWg.Add(1)
 		suppressMu.Unlock()
 
@@ -435,7 +382,6 @@ func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable fun
 			suppressMu.Unlock()
 			return
 		}
-		// Increment callback counter before releasing lock
 		cbWg.Add(1)
 		cb := onUnreachable
 		suppressMu.Unlock()
@@ -608,7 +554,6 @@ func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable fun
 		}
 	}()
 
-	// Return stop function (idempotent)
 	stopFn := func() {
 		stopOnce.Do(func() {
 			// Set suppression FIRST (covers in-flight callbacks)
@@ -627,26 +572,41 @@ func (r *Registry) Watch(inst Instance, onExit func(Instance), onUnreachable fun
 			}
 			connMu.Unlock()
 
-			// Signal stop
 			close(stopCh)
-
-			// Wait for goroutine to exit
-			wg.Wait()
-
-			// Wait for any in-flight callbacks to complete
-			cbWg.Wait()
+			wg.Wait()   // watch goroutine exits
+			cbWg.Wait() // in-flight callbacks drain
 		})
 	}
 
 	return stopFn, nil
 }
 
-// min returns the minimum of two integers.
-func min(a, b int) int {
-	if a < b {
-		return a
+// sessionInfoFromMeta builds SessionInfo from a sidecar. When the sidecar
+// lacks a /proc start time it is captured now so identity is always verifiable
+// (applies to legacy and nonce daemons alike).
+func sessionInfoFromMeta(name, socketPath string, meta sessionMeta) SessionInfo {
+	startTime := meta.ProcStartTime
+	if startTime <= 0 {
+		startTime = procStartTime(meta.Pid)
 	}
-	return b
+	return SessionInfo{
+		Instance: Instance{
+			Name:          name,
+			Pid:           meta.Pid,
+			Nonce:         meta.Nonce,
+			ProcStartTime: startTime,
+			SystemdUnit:   meta.SystemdUnit,
+		},
+		ID:       name,
+		Pid:      meta.Pid,
+		ShellPid: meta.ShellPid,
+		Shell:    meta.Shell,
+		Cwd:      meta.Cwd,
+		Created:  meta.Created,
+		Cols:     meta.Cols,
+		Rows:     meta.Rows,
+		Socket:   socketPath,
+	}
 }
 
 // processPIDAlive checks if the daemon process instance is alive by verifying:
@@ -697,12 +657,6 @@ func (r *Registry) TryAcquireAdoptionLock() (func(), bool) {
 		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 		_ = lockFile.Close()
 	}, true
-}
-
-// instanceAlive checks if the daemon PID is alive, using instance identity matching.
-// Deprecated: use processPIDAlive() instead. This method is kept for compatibility.
-func (r *Registry) instanceAlive(inst Instance) bool {
-	return r.processPIDAlive(inst)
 }
 
 // instanceMatches checks if the current sidecar matches the instance identity.
@@ -760,33 +714,7 @@ func (r *Registry) Scan() []SessionInfo {
 			continue
 		}
 
-		// Capture ProcStartTime from /proc if not set (legacy daemon support)
-		startTime := meta.ProcStartTime
-		if startTime <= 0 {
-			// No recorded start time; capture from /proc so identity is always
-			// verifiable (applies to legacy and nonce daemons alike).
-			startTime = procStartTime(meta.Pid)
-		}
-
-		info := SessionInfo{
-			Instance: Instance{
-				Name:          name,
-				Pid:           meta.Pid,
-				Nonce:         meta.Nonce,
-				ProcStartTime: startTime,
-				SystemdUnit:   meta.SystemdUnit,
-			},
-			ID:       name,
-			Pid:      meta.Pid,
-			ShellPid: meta.ShellPid,
-			Shell:    meta.Shell,
-			Cwd:      meta.Cwd,
-			Created:  meta.Created,
-			Cols:     meta.Cols,
-			Rows:     meta.Rows,
-			Socket:   sockPath,
-		}
-		out = append(out, info)
+		out = append(out, sessionInfoFromMeta(name, sockPath, meta))
 	}
 
 	return out
@@ -825,33 +753,7 @@ func (r *Registry) Adopt() []SessionInfo {
 		// Check if PID is alive
 		if meta.Pid > 0 && processAlive(meta.Pid) {
 			// Alive; adopt even if probe dial fails
-			// Capture ProcStartTime from /proc if not set (legacy daemon support)
-			startTime := meta.ProcStartTime
-			if startTime <= 0 {
-				// No recorded start time; capture from /proc so identity is always
-				// verifiable (applies to legacy and nonce daemons alike).
-				startTime = procStartTime(meta.Pid)
-			}
-
-			info := SessionInfo{
-				Instance: Instance{
-					Name:          name,
-					Pid:           meta.Pid,
-					Nonce:         meta.Nonce,
-					ProcStartTime: startTime,
-					SystemdUnit:   meta.SystemdUnit,
-				},
-				ID:       name,
-				Pid:      meta.Pid,
-				ShellPid: meta.ShellPid,
-				Shell:    meta.Shell,
-				Cwd:      meta.Cwd,
-				Created:  meta.Created,
-				Cols:     meta.Cols,
-				Rows:     meta.Rows,
-				Socket:   sockPath,
-			}
-			out = append(out, info)
+			out = append(out, sessionInfoFromMeta(name, sockPath, meta))
 		} else {
 			// PID dead; mark for stale-file cleanup
 			stale = append(stale, struct {
@@ -928,21 +830,6 @@ func (r *Registry) Adopt() []SessionInfo {
 	}
 
 	return out
-}
-
-// readDaemonPID reads the metadata JSON sidecar and returns the daemon PID,
-// or 0 if the file cannot be read or parsed.
-func (r *Registry) readDaemonPID(name string) int {
-	metaPath := r.metadataPath(name)
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		return 0
-	}
-	var meta sessionMeta
-	if json.Unmarshal(data, &meta) != nil {
-		return 0
-	}
-	return meta.Pid
 }
 
 // processAlive returns true if the process with the given PID exists and is not a zombie.
@@ -1325,26 +1212,6 @@ func (r *Registry) AcquireAdoptionLock() (func(), error) {
 		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 		_ = lockFile.Close()
 	}, nil
-}
-
-// CheckAdoptionLockHeld checks whether the adoption lock is currently held.
-// Returns true if the lock is held by another process (server booting).
-func (r *Registry) CheckAdoptionLockHeld() bool {
-	lockPath := r.SocketDirLockPath()
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return false // Can't check; assume not held
-	}
-	defer lockFile.Close()
-
-	// Try non-blocking lock
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
-		// Got the lock; release it immediately and return false (not held)
-		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-		return false
-	}
-	// Lock held; another process has exclusive lock
-	return true
 }
 
 // CleanupLegacyStateDir removes lifecycle record files left behind by older

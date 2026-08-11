@@ -5,8 +5,7 @@ import {
   sessionKey,
   planLegacyMigration,
   type WorkspaceAction,
-  type WorkspaceStateWithStreaks,
-  type SessionEvent,
+  type WorkspaceState,
   type LegacyMigrationInput,
 } from './workspaceReducer'
 import type { Session } from '../hooks/useSessions'
@@ -21,7 +20,7 @@ function sess(name: string, host = ''): Session {
   }
 }
 
-function reduce(state: WorkspaceStateWithStreaks, ...actions: WorkspaceAction[]): WorkspaceStateWithStreaks {
+function reduce(state: WorkspaceState, ...actions: WorkspaceAction[]): WorkspaceState {
   return actions.reduce((s, a) => workspaceReducer(s, a), state)
 }
 
@@ -157,19 +156,6 @@ describe('workspaceReducer', () => {
     expect(s2g1Tree && s2g1Tree.type === 'leaf' && s2g1Tree.sessionKey).toBe('alpha')
     // g2's tree is pruned away, and the group is deleted
     expect(s2.groups.g2).toBeUndefined()
-  })
-
-  it('ignores snapshot older than a newer event', () => {
-    const s0 = createInitialWorkspaceState()
-    const s1 = reduce(
-      s0,
-      snapshot([sess('alpha')], 1, 0),
-      { type: 'sessions/event', event: { type: 'session-removed', session: 'alpha' }, generation: 2 },
-    )
-    expect(s1.sessions).toHaveLength(0)
-    const stale = workspaceReducer(s1, snapshot([sess('alpha')], 1, 0))
-    expect(stale.sessions).toHaveLength(0)
-    expect(stale.transportGeneration).toBe(2)
   })
 
   it('renames a session across sessions, view, and wiki state', () => {
@@ -314,7 +300,7 @@ describe('workspaceReducer', () => {
   })
 })
 
-function sessionKeyFromLeaves(state: WorkspaceStateWithStreaks): string[] {
+function sessionKeyFromLeaves(state: WorkspaceState): string[] {
   const tree = state.view.paneTree
   if (!tree) return []
   const leaves: string[] = []

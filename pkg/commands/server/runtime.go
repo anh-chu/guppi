@@ -455,10 +455,7 @@ func (rt *Runtime) Ready() <-chan struct{} {
 }
 
 // Stop cancels the runtime context and synchronously stops all watchers.
-// Stop cancels the runtime context and synchronously stops all watchers.
 func (rt *Runtime) Stop() {
-	// Release adoption lock if held (should have been released in Start,
-	// but ensure it's cleaned up on abnormal shutdown).
 	// Detach and stop all watchers synchronously before canceling context.
 	// This ensures callback suppression covers in-flight callbacks.
 	rt.sessionsMu.Lock()
@@ -723,37 +720,13 @@ func (rt *Runtime) runEnrichmentTick(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			rt.sessionsMu.Lock()
-			names := make([]string, 0, len(rt.tracked))
-			for name := range rt.tracked {
-				names = append(names, name)
-			}
-			rt.sessionsMu.Unlock()
-
-			// Update each tracked session's fields via enrichment callback.
-			for _, name := range names {
-				// Fetch daemon info before the callback to avoid double-lookup.
-				var info *pty.SessionInfo
-				for _, di := range rt.adapter.List() {
-					if di.ID == name {
-						info = &di
-						break
-					}
-				}
-
-				if info != nil {
-					// Fetch metadata outside callback to avoid nested lock in callback.
-					meta := rt.stateMgr.GetSessionMetadata(name)
-					rt.stateMgr.UpdateSessionFields(name, func(sess *model.Session) {
-						// Re-populate daemon details (cwd, pane PID, preview, worktree, metadata).
-						rt.enrichSession(sess, info, meta)
-					})
-				}
+			// Enrich sessions from the last snapshot; missing sessions no-op
+			// inside UpdateSessionFields.
+			for _, info := range rt.adapter.List() {
+				rt.stateMgr.EnrichSessionInPlaceWithMetaCallback(info.ID, &info)
 			}
 
-			// Build adapter snapshot from current tracked sessions + enriched state.
-			snapshot := rt.buildAdapterSnapshot()
-			rt.adapter.refresh(snapshot)
+			rt.adapter.refresh(rt.buildAdapterSnapshot())
 		}
 	}
 }
@@ -763,10 +736,9 @@ func (rt *Runtime) buildAdapterSnapshot() []pty.SessionInfo {
 	rt.sessionsMu.Lock()
 	defer rt.sessionsMu.Unlock()
 
+	sessions := rt.stateMgr.GetSessions()
 	var out []pty.SessionInfo
 	for name, tracked := range rt.tracked {
-		// Get enriched session from state manager.
-		sessions := rt.stateMgr.GetSessions()
 		var sess *model.Session
 		for _, s := range sessions {
 			if s.Name == name {
@@ -797,17 +769,6 @@ func (rt *Runtime) buildAdapterSnapshot() []pty.SessionInfo {
 	}
 
 	return out
-}
-
-// enrichSession populates a session with live daemon metadata for enrichment.
-// Called by the enrichment tick's callback to update cwd, pane PID, preview, worktree, etc.
-// Takes pre-fetched metadata to avoid nested lock acquisition.
-// Safe to call from UpdateSessionFields callback context.
-func (rt *Runtime) enrichSession(session *model.Session, info *pty.SessionInfo, meta state.SessionMetadata) {
-	if session == nil || info == nil {
-		return
-	}
-	rt.stateMgr.EnrichSessionInPlaceInCallback(session, info, meta)
 }
 
 // listPanes returns the current daemon panes for the agent detector, using the

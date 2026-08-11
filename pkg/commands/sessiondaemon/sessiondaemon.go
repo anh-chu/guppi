@@ -79,13 +79,7 @@ func executeSessionCreate(ctx context.Context, c *cli.Command) error {
 	}
 
 	// Try server API first (unix socket, then HTTP)
-	ctx = context.WithValue(ctx, "sessionName", name)
-	ctx = context.WithValue(ctx, "shell", shell)
-	ctx = context.WithValue(ctx, "cwd", cwd)
-	ctx = context.WithValue(ctx, "cols", uint16(cols))
-	ctx = context.WithValue(ctx, "rows", uint16(rows))
-
-	if err := attemptServerCreate(ctx); err == nil {
+	if err := attemptServerCreate(ctx, name, shell, cwd, uint16(cols), uint16(rows)); err == nil {
 		fmt.Printf("Session %q created via server API.\n", name)
 		return nil
 	} else if !isServerConfirmedAbsent(err) {
@@ -118,7 +112,7 @@ func executeSessionCreate(ctx context.Context, c *cli.Command) error {
 		// Lock held; server is booting. Wait and retry API path.
 		if retries < 4 {
 			time.Sleep(time.Duration((retries+1)*250) * time.Millisecond)
-			if err := attemptServerCreate(ctx); err == nil {
+			if err := attemptServerCreate(ctx, name, shell, cwd, uint16(cols), uint16(rows)); err == nil {
 				fmt.Printf("Session %q created via server API (after boot).\n", name)
 				return nil
 			}
@@ -130,18 +124,7 @@ func executeSessionCreate(ctx context.Context, c *cli.Command) error {
 
 // attemptServerCreate tries to create a session via the server API.
 // Returns nil on success, or an error marking whether the server is confirmed absent.
-func attemptServerCreate(ctx context.Context) error {
-	val := ctx.Value("sessionName")
-	if val == nil {
-		return &serverAbsentError{inner: fmt.Errorf("session context missing")}
-	}
-
-	name := val.(string)
-	shell := ctx.Value("shell").(string)
-	cwd := ctx.Value("cwd").(string)
-	cols := ctx.Value("cols").(uint16)
-	rows := ctx.Value("rows").(uint16)
-
+func attemptServerCreate(ctx context.Context, name, shell, cwd string, cols, rows uint16) error {
 	req := map[string]interface{}{
 		"name":    name,
 		"path":    cwd,

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import {
   workspaceReducer,
   createInitialWorkspaceState,
-  type WorkspaceStateWithStreaks,
+  type WorkspaceState,
   type WorkspaceView,
   type WikiTarget,
   type View,
@@ -68,7 +68,7 @@ function loadInitialView(urlKey: string | null, activeGroupId: string): Partial<
   }
 }
 
-function initState(): WorkspaceStateWithStreaks {
+function initState(): WorkspaceState {
   let activeGroupId = ''
   try {
     activeGroupId = window.localStorage.getItem('termyard:active-group-id') || ''
@@ -185,7 +185,7 @@ export function useWorkspace(authenticated: boolean) {
       renameSession: (oldKey: string, newKey: string) => dispatch({ type: 'rename', oldKey, newKey }),
       addOptimistic: (session: Session, now?: number) => dispatch({ type: 'optimistic/add', session, now }),
       removeOptimistic: (name: string, host?: string) => dispatch({ type: 'optimistic/remove', name, host }),
-      restore: (snapshot: Partial<WorkspaceStateWithStreaks>) => dispatch({ type: 'restore', snapshot }),
+      restore: (snapshot: Partial<WorkspaceState>) => dispatch({ type: 'restore', snapshot }),
     }),
     [dispatch],
   )

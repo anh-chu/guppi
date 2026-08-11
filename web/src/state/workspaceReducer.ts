@@ -56,7 +56,6 @@ export interface WorkspaceState {
 export type WorkspaceAction =
   | { type: 'connection'; live: boolean; livenessUnknown: boolean }
   | { type: 'sessions/snapshot'; sessions: Session[]; generation: number; now: number; authoritative?: boolean }
-  | { type: 'sessions/event'; event: SessionEvent; generation: number }
   | { type: 'optimistic/add'; session: Session; now?: number }
   | { type: 'optimistic/remove'; name: string; host?: string }
   | { type: 'sessions/remove'; key: string }
@@ -81,14 +80,6 @@ export type WorkspaceAction =
   | { type: 'wiki/open'; target: WikiTarget }
   | { type: 'wiki/close' }
   | { type: 'restore'; snapshot: Partial<WorkspaceState> }
-  | { type: 'legacy/migrate'; legacy: LegacyMigrationInput }
-
-export interface SessionEvent {
-  type: string
-  session?: string
-  host?: string
-  data?: { new_name?: string } | null
-}
 
 export interface LegacyGroup {
   id: string
@@ -116,13 +107,10 @@ export function parseSessionKey(key: string): { host: string; name: string } {
   return { host: key.substring(0, idx), name: key.substring(idx + 1) }
 }
 
-// Type alias for backward compatibility (missingStreaks was removed).
-export type WorkspaceStateWithStreaks = WorkspaceState
-
 export function createInitialWorkspaceState(input?: {
   view?: Partial<WorkspaceView>
   activeGroupId?: string
-}): WorkspaceStateWithStreaks {
+}): WorkspaceState {
   const groupId = input?.activeGroupId ?? randomId()
   return {
     sessions: [],
@@ -153,10 +141,6 @@ export function createInitialWorkspaceState(input?: {
 
 function randomId() {
   return Math.random().toString(36).slice(2)
-}
-
-function matchesKey(s: Session, key: string): boolean {
-  return sessionKey(s) === key
 }
 
 function matchesNameHost(s: Session, name: string, host?: string): boolean {
@@ -321,17 +305,10 @@ function reconcilePaneTree(
   let activeKey = view.activeKey
   if (tree) {
     const leaves = getLeaves(tree)
-    const toRemove = leaves.filter(key => !validKeys.has(key))
-    if (toRemove.length > 0) {
-      for (const key of toRemove) {
-        if (tree === null) break
-        tree = removeLeaf(tree, key)
-      }
-      // Repair activeKey: if it was removed, pick first remaining leaf.
-      const remainingLeaves = tree ? getLeaves(tree) : []
-      if (activeKey && toRemove.includes(activeKey)) {
-        activeKey = remainingLeaves[0] ?? null
-      }
+    tree = pruneMissingFromTree(tree, validKeys)
+    // Repair activeKey: if its leaf was removed, pick first remaining leaf.
+    if (activeKey && !validKeys.has(activeKey) && leaves.includes(activeKey)) {
+      activeKey = tree ? getLeaves(tree)[0] ?? null : null
     }
   }
   // If tree became null after pruning, clear activeKey.
@@ -435,61 +412,6 @@ export function workspaceReducer(
         view: nextView,
         groups: nextGroups,
       }
-    }
-
-    case 'sessions/event': {
-      const { event } = action
-      if (event.type === 'session-added') {
-        const name = event.session || ''
-        const existing = state.sessions.find(s => s.name === name && (s.host || '') === (event.host || ''))
-        if (existing) return state
-        const stub = state.sessions.find(
-          s => s.name === name && (s.host || '') === (event.host || '') && !s.id,
-        )
-        if (stub) return state
-        return state
-      }
-      if (event.type === 'session-removed') {
-        const key = event.host ? `${event.host}/${event.session}` : event.session || ''
-        return {
-          ...state,
-          sessions: removeSessionByKey(state.sessions, key),
-        }
-      }
-      if (event.type === 'session-renamed') {
-        const oldName = event.session || ''
-        const newName = event.data?.new_name || ''
-        if (!oldName || !newName) return state
-        const oldKey = event.host ? `${event.host}/${oldName}` : oldName
-        const newKey = event.host ? `${event.host}/${newName}` : newName
-        const idx = state.sessions.findIndex(s => sessionKey(s) === oldKey)
-        if (idx === -1) return state
-        const renamed = { ...state.sessions[idx], name: newName }
-        const sessions = [...state.sessions.slice(0, idx), renamed, ...state.sessions.slice(idx + 1)]
-        let view = state.view
-        if (view.paneTree && findLeaf(view.paneTree, oldKey)) {
-          if (findLeaf(view.paneTree, newKey)) {
-            view = { ...view, paneTree: removeLeaf(view.paneTree, oldKey) ?? view.paneTree }
-          } else {
-            view = { ...view, paneTree: replaceLeaf(view.paneTree, oldKey, newKey) }
-          }
-        }
-        view = {
-          ...view,
-          activeKey: view.activeKey === oldKey ? newKey : view.activeKey,
-          singleView: view.singleView === oldKey ? newKey : view.singleView,
-        }
-        return {
-          ...state,
-          sessions,
-          view,
-          wiki: applyRenameToWiki(state.wiki, oldKey, newKey),
-        }
-      }
-      if (event.type === 'sessions-changed') {
-        return state
-      }
-      return state
     }
 
     case 'optimistic/add': {
@@ -698,10 +620,6 @@ export function workspaceReducer(
         view: { ...state.view, ...(s.view ?? {}) },
         wiki: { ...state.wiki, ...(s.wiki ?? {}) },
       }
-    }
-
-    case 'legacy/migrate': {
-      return state
     }
 
     default:
