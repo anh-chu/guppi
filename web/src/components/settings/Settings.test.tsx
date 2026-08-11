@@ -252,7 +252,7 @@ test('Font Family: typing custom value calls updatePrefs', async () => {
   )
 })
 
-test('theme picker: deleted presets are gone, only Raycast/Dark/Light/Custom shown', async () => {
+test('theme picker: deleted presets are gone, only Default/Dark/Light/Custom shown', async () => {
   render(
     <Settings
       pushState="unsupported"
@@ -262,9 +262,9 @@ test('theme picker: deleted presets are gone, only Raycast/Dark/Light/Custom sho
     />,
   )
 
-  await waitFor(() => expect(screen.getByText('Raycast')).toBeTruthy())
+  await waitFor(() => expect(screen.getByText('Default')).toBeTruthy())
 
-  expect(screen.getByText('Raycast')).toBeTruthy()
+  expect(screen.getByText('Default')).toBeTruthy()
   expect(screen.getByText('Dark')).toBeTruthy()
   expect(screen.getByText('Light')).toBeTruthy()
   expect(screen.getByText('Custom')).toBeTruthy()
@@ -312,7 +312,7 @@ test('theme picker: editing a custom color persists via updatePrefs', async () =
   await waitFor(() => expect(screen.getByText('Custom Palette')).toBeTruthy())
 
   const backgroundRow = screen.getByText('Background').parentElement!.parentElement!
-  const backgroundText = within(backgroundRow).getAllByDisplayValue('#07080a').find(el => (el as HTMLInputElement).type === 'text') as HTMLInputElement
+  const backgroundText = within(backgroundRow).getAllByDisplayValue('#0a0a09').find(el => (el as HTMLInputElement).type === 'text') as HTMLInputElement
 
   fireEvent.change(backgroundText, { target: { value: '#123456' } })
 
