@@ -1,0 +1,15 @@
+[tools]
+watchexec = "latest"
+
+[tasks."dev:server"]
+description = "Go backend with auto-restart on .go changes"
+run = "watchexec -r -e go -- go run . server"
+
+[tasks."dev:web"]
+description = "Vite frontend with HMR (proxies to :7654)"
+dir = "web"
+run = "npm run dev"
+
+[tasks.dev]
+description = "Full live-reload dev: backend + frontend"
+depends = ["dev:server", "dev:web"]
