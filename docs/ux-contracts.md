@@ -43,6 +43,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
   - [9.3 Clipboard menu (mobile)](#93-clipboard-menu-mobile)
   - [9.4 Drag-drop / file uploads](#94-drag-drop-file-uploads)
   - [9.5 Mobile key bar](#95-mobile-key-bar)
+  - [9.5a Compose Input Modal](#95a-compose-input-modal)
   - [9.6 Predictive echo](#96-predictive-echo)
   - [9.7 File links in terminal](#97-file-links-in-terminal)
   - [9.8 Artifacts / detected files](#98-artifacts-detected-files)
@@ -314,11 +315,23 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ### 9.5 Mobile key bar
 
-**Contract:** Appears on coarse-pointer or viewport width <900px (visible only when terminal `keyBarEnabled = true`, i.e., pane is active). Portal-rendered into fixed bottom bar. 9 buttons: **Clipboard menu toggle**, **Compose input** (opens native textarea modal; Send types the text into the terminal without pressing Enter), **Ctrl sticky** (toggles, next letter → Ctrl+letter), **Alt sticky** (toggles, next letter → Alt+letter), **Esc** (sends ESC, 0x1b), **Tab** (sends TAB), **Backspace** (sends DEL, 0x7f), **Page Up/Down** (swipeable gesture key, vertical arrows), **Arrow cross** (swipeable gesture key, 4-direction). Sticky modifiers clear on next input; gesture keys auto-repeat if held >260ms, then every 80ms. Dead zone for swipe: 18px threshold before direction fires. **Keyboard visibility tracking:** Bar bottom padding adapts to on-screen keyboard: when `window.visualViewport.height < window.innerHeight * 0.8` (keyboard visible), padding-bottom is 3px; otherwise, padding-bottom is `calc(env(safe-area-inset-bottom, 0px) + 12px)` to avoid home indicator overlap.
+**Contract:** Appears on coarse-pointer or viewport width <900px (visible only when terminal `keyBarEnabled = true`, i.e., pane is active). Portal-rendered into fixed bottom bar. 9 buttons: **Clipboard menu toggle**, **Compose input** (opens textarea modal on both mobile and desktop), **Ctrl sticky** (toggles, next letter → Ctrl+letter), **Alt sticky** (toggles, next letter → Alt+letter), **Esc** (sends ESC, 0x1b), **Tab** (sends TAB), **Backspace** (sends DEL, 0x7f), **Page Up/Down** (swipeable gesture key, vertical arrows), **Arrow cross** (swipeable gesture key, 4-direction). Sticky modifiers clear on next input; gesture keys auto-repeat if held >260ms, then every 80ms. Dead zone for swipe: 18px threshold before direction fires. **Keyboard visibility tracking:** Bar bottom padding adapts to on-screen keyboard: when `window.visualViewport.height < window.innerHeight * 0.8` (keyboard visible), padding-bottom is 3px; otherwise, padding-bottom is `calc(env(safe-area-inset-bottom, 0px) + 12px)` to avoid home indicator overlap.
 
 **Why it matters:** The 260ms hold delay, 80ms repeat, and 18px dead zone are measurable UX parameters; changing them would affect mobile usability.
 
 **Verification pointer:** `web/src/components/terminal/MobileKeys.tsx`
+
+### 9.5a Compose Input Modal
+
+**Contract:** Compose input modal allows composing multi-line terminal input without requiring Enter to submit. Accessible via:
+  - **Mobile:** Compose button in key bar (keyboard icon, 2nd button from left).
+  - **Desktop:** Compose button in terminal toolbar (top-right, keyboard icon) or keyboard shortcut `$mod+Shift+U`.
+
+Modal behavior (both mobile and desktop): **Textarea** with monospace font, 160px height, word-wrap off. **Keyboard interactions:** Escape closes modal (refocuses terminal). Enter sends text with trailing newline (`\r`), closes modal, clears text. Shift+Enter inserts newline in textarea. **Two buttons:** "Fill" (sends text without newline), "Send" (sends text with newline). Textarea autofocus on open. Modal uses fixed inset-0 overlay (black/70% background), centered dialog with max-width 2xl.
+
+**Why it matters:** Multi-line input is a contract for pasted scripts and structured commands; modal behavior (Escape closes, Enter sends) is a consistency contract with other app modals.
+
+**Verification pointer:** `web/src/components/Terminal.tsx` (composeOpen, composeText state; modal markup; keyboard handlers)
 
 ### 9.6 Predictive echo
 
@@ -358,7 +371,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ### 9.10 Terminal keyboard shortcuts
 
-**Contract:** `$mod+Shift+F` (Ctrl/Cmd+Shift+F) → toggle fullscreen (only when active pane and `onToggleFullscreen` provided). Esc → exit fullscreen (only when fullscreen mode and quick-switcher not open). `$mod+C` → copy-or-SIGINT. `$mod+B` → Ctrl+B (tmux prefix). `$mod+V` → paste. Fullscreen window-level capture (capture-phase) intercepts keydown; suppresses to terminal only if fullscreen active.
+**Contract:** `$mod+Shift+F` (Ctrl/Cmd+Shift+F) → toggle fullscreen (only when active pane and `onToggleFullscreen` provided). `$mod+Shift+U` → open compose input modal on the active pane (Esc to close, Enter to send with newline, Shift+Enter for newline in textarea). Esc → exit fullscreen (only when fullscreen mode and quick-switcher not open). `$mod+C` → copy-or-SIGINT. `$mod+B` → Ctrl+B (tmux prefix). `$mod+V` → paste. Fullscreen window-level capture (capture-phase) intercepts keydown; suppresses to terminal only if fullscreen active.
 
 **Why it matters:** Keyboard shortcuts are muscle-memory contracts; adding/removing one breaks workflows.
 
@@ -394,7 +407,7 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 ### 9.14 Terminal toolbar
 
-**Contract:** Session name shown. Ctrl/Alt sticky modifier buttons (mobile only). Artifact count badge (toggles preview panel). Fullscreen toggle button. Mobile key-bar toggle. Pop-out button (absolute positioned top-right, opacity-0 on hover/focus). Disconnect overlay: pulsing red dot + "Disconnected — Reconnecting" when not connected (position: absolute inset-0 z-10, pointer-events-none, doesn't block input).
+**Contract:** Session name shown. Ctrl/Alt sticky modifier buttons (mobile only). **Compose button** (keyboard icon, top-right toolbar; opens compose input modal; keyboard shortcut $mod+Shift+U). Artifact count badge (toggles preview panel). Fullscreen toggle button. Mobile key-bar toggle. Pop-out button (absolute positioned top-right, opacity-0 on hover/focus). Disconnect overlay: pulsing red dot + "Disconnected — Reconnecting" when not connected (position: absolute inset-0 z-10, pointer-events-none, doesn't block input).
 
 **Why it matters:** Toolbar buttons and disconnect overlay are observable; removing them hides status and controls.
 
@@ -491,6 +504,7 @@ All context: terminal or global App.tsx.
 | `$mod+\` | Global | Toggle sidebar |
 | `$mod+Shift+G` | Global | Toggle wiki panel (wiki enabled only) |
 | `$mod+Shift+F` | Terminal | Toggle fullscreen |
+| `$mod+Shift+U` | Terminal | Open compose input modal |
 | `Esc` | Terminal (fullscreen) | Exit fullscreen (skip if quick-switcher open) |
 | `$mod+C` | Terminal | Copy selection or send SIGINT (0x03) |
 | `$mod+B` | Terminal | Tmux prefix (0x02) |

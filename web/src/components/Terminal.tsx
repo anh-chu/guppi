@@ -31,9 +31,11 @@ interface TerminalProps {
    * new-tab viewer that does work off-machine.
    */
   onOpenFile?: (path: string) => boolean
+  composeTarget?: { key: string; nonce: number } | null
+  currentKey?: string
 }
 
-export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFullscreen, keyBarEnabled = true, onOpenFile }: TerminalProps) {
+export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFullscreen, keyBarEnabled = true, onOpenFile, composeTarget, currentKey }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const onOpenFileRef = useRef(onOpenFile)
   onOpenFileRef.current = onOpenFile
@@ -99,6 +101,17 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
   const [keyboardVisible, setKeyboardVisible] = useState(false)
   const [composeOpen, setComposeOpen] = useState(false)
   const [composeText, setComposeText] = useState('')
+  const composeTextareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Open compose modal when the shortcut targets this terminal's key. The
+  // nonce distinguishes repeated invocations, so closing the modal doesn't
+  // immediately reopen it and the shortcut works again afterwards.
+  useEffect(() => {
+    if (composeTarget && composeTarget.key === currentKey) {
+      setComposeOpen(true)
+      setComposeText('')
+    }
+  }, [composeTarget, currentKey])
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [expandedPreviewPath, setExpandedPreviewPath] = useState<string | null>(null)
   const { artifacts: serverArtifacts, refresh: refreshArtifacts } = useArtifacts(sessionName, hostId)
@@ -448,6 +461,44 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     }
   }, [sessionName])
 
+  // Keyboard shortcuts for compose modal (Escape closes, Enter sends with newline, Shift+Enter adds newline)
+  useEffect(() => {
+    if (!composeOpen) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setComposeOpen(false)
+        focus()
+      } else if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        if (composeText) {
+          sendText(composeText + '\r')
+        } else {
+          sendText('\r')
+        }
+        setComposeOpen(false)
+        setComposeText('')
+        focus()
+      } else if (e.key === 'Enter' && e.shiftKey) {
+        e.preventDefault()
+        const textarea = composeTextareaRef.current
+        if (textarea) {
+          const start = textarea.selectionStart
+          const end = textarea.selectionEnd
+          setComposeText(prev => prev.slice(0, start) + '\n' + prev.slice(end))
+          setTimeout(() => {
+            if (textarea) textarea.selectionStart = textarea.selectionEnd = start + 1
+          }, 0)
+        }
+      }
+    }
+    const textarea = composeTextareaRef.current
+    if (textarea) {
+      textarea.addEventListener('keydown', handleKeyDown)
+      return () => textarea.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [composeOpen, composeText, sendText, focus])
+
   // Refocus terminal after fullscreen toggle (especially needed on iPad where tapping the button steals focus)
   useEffect(() => {
     if (!fullscreen) return
@@ -538,6 +589,20 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
               )}
             </button>
           )}
+          {/* Compose button (desktop + mobile) */}
+          <button
+            onClick={() => {
+              setClipboardMenuOpen(false)
+              setComposeText('')
+              setComposeOpen(true)
+            }}
+            title="Compose Input (Cmd/Ctrl+Shift+U)"
+            className="absolute top-2.5 right-[124px] z-20 p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" />
+            </svg>
+          </button>
           {serverArtifacts.length > 0 && (
             <button
               onClick={() => {
@@ -791,19 +856,37 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
               </button>
             </div>
             <textarea
+              ref={composeTextareaRef}
               autoFocus
               value={composeText}
               onChange={(e) => setComposeText(e.target.value)}
-              placeholder="Type here, then Send to fill the terminal…"
+              placeholder="Type here. Enter to send with newline, Shift+Enter to add newline, Esc to close."
               className="h-40 resize-none bg-canvas px-4 py-3 font-mono text-[13px] text-ink outline-none"
               spellCheck={false}
             />
-            <div className="flex justify-end border-t border-hairline px-4 py-2.5 bg-surface-elevated/30">
+            <div className="flex justify-end gap-2 border-t border-hairline px-4 py-2.5 bg-surface-elevated/30">
               <button
                 type="button"
                 onClick={() => {
                   if (composeText) sendText(composeText)
                   setComposeOpen(false)
+                  setComposeText('')
+                  focus()
+                }}
+                className="rounded-sm bg-surface-elevated px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-ink hover:bg-primary hover:text-primary-foreground transition-all"
+              >
+                Fill
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (composeText) {
+                    sendText(composeText + '\r')
+                  } else {
+                    sendText('\r')
+                  }
+                  setComposeOpen(false)
+                  setComposeText('')
                   focus()
                 }}
                 className="rounded-sm bg-primary px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-primary-foreground transition-all"

@@ -158,6 +158,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
   const [portForwardsOpen, setPortForwardsOpen] = useState(false)
   const [schedulesOpen, setSchedulesOpen] = useState(false)
+  const [composeTarget, setComposeTarget] = useState<{ key: string; nonce: number } | null>(null)
   const [mainDragOver, setMainDragOver] = useState<{ type: 'new-session' | 'sidebar'; zone: 'left' | 'right' | 'top' | 'bottom' | 'center' } | null>(null)
   const mainDragOverRef = useRef<{ type: 'new-session' | 'sidebar'; zone: 'left' | 'right' | 'top' | 'bottom' | 'center' } | null>(null)
   const pendingSessionRef = useRef<string | null>(null)
@@ -563,11 +564,16 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       // opens Firefox's network monitor, Shift+D bookmarks every tab, and
       // Shift+F is already terminal fullscreen here.
       '$mod+Shift+g': handler(() => { if (wikiEnabledRef.current) wiki.togglePanel() }),
+      // Compose input: Cmd/Ctrl + Shift + U (Shift+I opens devtools in both
+      // Chrome and Firefox, so it never reaches the page).
+      '$mod+Shift+u': handler(() => {
+        if (activeKeyRef.current) setComposeTarget({ key: activeKeyRef.current, nonce: Date.now() })
+      }),
       // Cycle sessions: Cmd/Ctrl + Shift + Arrow (Shift+[ / ] switches browser tabs)
       '$mod+Shift+ArrowRight': handler(() => cycle(1)),
       '$mod+Shift+ArrowLeft': handler(() => cycle(-1)),
     }, { ignore })
-  }, [navigateTo, activeKey, openNewSessionModal, openNewSessionPlain, wiki.togglePanel])
+  }, [navigateTo, activeKey, openNewSessionModal, openNewSessionPlain, wiki.togglePanel, setComposeTarget])
 
   // Backend notices (silent failures surfaced to the UI as toasts)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -1376,6 +1382,8 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
                   sessions.find(s => sessionKey(s) === singleView)?.host,
                   singleView ? parseSessionKey(singleView).name : undefined,
                 )}
+                composeTarget={composeTarget}
+                currentKey={singleView}
               />
             </div>
           ) : currentView === 'session' && paneTree ? (
@@ -1408,6 +1416,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
               getBackend={(key) => sessions.find(s => sessionKey(s) === key)?.backend}
               getCwd={cwdForKey}
               onOpenFile={wiki.openFile}
+              composeTarget={composeTarget}
             />
           ) : (
             <Overview
