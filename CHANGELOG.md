@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.8] — File Link Highlight Fix
+
+### Bug Fixes
+- **web:** terminal file-path link highlight had an off-by-one in its end column; a trailing quote or closing paren after the path is no longer visually highlighted.
+
 ## [4.4.7] — Server-Authoritative Group Membership
 
 ### Bug Fixes
