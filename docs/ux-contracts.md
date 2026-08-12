@@ -404,7 +404,7 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 ### 9.15 Scroll scrubber
 
-**Contract:** When the buffer is scrollable (length > rows), a thin scrubber track overlays the terminal's right edge. Thumb reflects viewport position/size; dragging (pointer or touch) maps track fraction linearly to the full scrollback via `scrollToLine`, so any depth is reachable in one gesture. Appears while scrolling or dragging, fades out ~1.2s after scrolling stops. Thumb minimum height 10% of track; highlighted while dragging.
+**Contract:** When the buffer is scrollable (length > rows), a thin scrubber track overlays the terminal's right edge. Thumb reflects viewport position/size; dragging (pointer or touch) maps track fraction linearly to the full scrollback via `scrollToLine`, so any depth is reachable in one gesture. Always visible at 50% opacity while scrollable; full opacity while scrolling/dragging (dims back ~1.2s after scrolling stops). 40px touch target; thumb widens and highlights while dragging, follows the finger immediately with scroll jumps coalesced to one `scrollToLine` per frame. Thumb minimum height 10% of track (24px floor).
 
 **Why it matters:** xterm's native scrollbar is nearly unusable on mobile for deep (50k-line) scrollback; the scrubber is the fast-navigation path.
 

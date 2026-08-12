@@ -10,8 +10,8 @@ interface ScrollScrubberProps {
 
 // Touch-friendly scroll scrubber overlaying the terminal's right edge.
 // Dragging maps track position linearly onto the full scrollback, so deep
-// buffers (50k lines) are reachable in one gesture. Appears only while the
-// buffer is scrollable; fades out after scrolling stops unless dragging.
+// buffers (50k lines) are reachable in one gesture. Always visible (dimmed)
+// while the buffer is scrollable; brightens while scrolling or dragging.
 export function ScrollScrubber({ termRef, connected }: ScrollScrubberProps) {
   const trackRef = useRef<HTMLDivElement>(null)
   const [thumb, setThumb] = useState<{ top: number; height: number } | null>(null)
@@ -19,6 +19,9 @@ export function ScrollScrubber({ termRef, connected }: ScrollScrubberProps) {
   const [active, setActive] = useState(false)
   const fadeTimerRef = useRef<number | null>(null)
   const rafRef = useRef<number | null>(null)
+  const dragRafRef = useRef<number | null>(null)
+  const pendingLineRef = useRef<number | null>(null)
+  const draggingRef = useRef(false)
   const lastViewportYRef = useRef(-1)
 
   const update = useCallback(() => {
@@ -27,9 +30,13 @@ export function ScrollScrubber({ termRef, connected }: ScrollScrubberProps) {
     const buf = term.buffer.active
     const scrollableRows = buf.length - term.rows
     if (scrollableRows <= 0) { setThumb(null); return }
-    const height = Math.max(10, (term.rows / buf.length) * 100)
-    const top = (buf.viewportY / scrollableRows) * (100 - height)
-    setThumb({ top, height })
+    // While dragging, the thumb tracks the pointer directly — don't fight it
+    // with viewport-derived positions that lag a frame behind.
+    if (!draggingRef.current) {
+      const height = Math.max(10, (term.rows / buf.length) * 100)
+      const top = (buf.viewportY / scrollableRows) * (100 - height)
+      setThumb({ top, height })
+    }
     if (buf.viewportY !== lastViewportYRef.current) {
       lastViewportYRef.current = buf.viewportY
       setActive(true)
@@ -65,9 +72,35 @@ export function ScrollScrubber({ termRef, connected }: ScrollScrubberProps) {
     if (!term || !track) return
     const rect = track.getBoundingClientRect()
     const fraction = Math.min(1, Math.max(0, (clientY - rect.top) / rect.height))
-    const scrollableRows = term.buffer.active.length - term.rows
+    const buf = term.buffer.active
+    const scrollableRows = buf.length - term.rows
     if (scrollableRows <= 0) return
-    term.scrollToLine(Math.round(fraction * scrollableRows))
+    // Thumb follows the finger immediately; the actual jump is coalesced to
+    // one scrollToLine per frame so a fast drag doesn't queue dozens of
+    // full-viewport repaints and feel like slow scrolling.
+    const height = Math.max(10, (term.rows / buf.length) * 100)
+    setThumb({ top: fraction * (100 - height), height })
+    pendingLineRef.current = Math.round(fraction * scrollableRows)
+    if (dragRafRef.current !== null) return
+    dragRafRef.current = requestAnimationFrame(() => {
+      dragRafRef.current = null
+      const line = pendingLineRef.current
+      pendingLineRef.current = null
+      const t = termRef.current
+      if (t && line !== null) t.scrollToLine(line)
+    })
+  }, [termRef])
+
+  const endDrag = useCallback(() => {
+    draggingRef.current = false
+    setDragging(false)
+    if (dragRafRef.current !== null) {
+      cancelAnimationFrame(dragRafRef.current)
+      dragRafRef.current = null
+    }
+    const line = pendingLineRef.current
+    pendingLineRef.current = null
+    if (line !== null) termRef.current?.scrollToLine(line)
   }, [termRef])
 
   if (!thumb) return null
@@ -76,35 +109,36 @@ export function ScrollScrubber({ termRef, connected }: ScrollScrubberProps) {
     <div
       ref={trackRef}
       className={cn(
-        'absolute right-0 top-1 bottom-1 w-7 z-20 flex justify-end pr-0.5 transition-opacity duration-300',
-        dragging || active ? 'opacity-100' : 'opacity-0',
+        'absolute right-0 top-1 bottom-1 w-10 z-20 flex justify-end pr-1 transition-opacity duration-300',
+        dragging || active ? 'opacity-100' : 'opacity-50',
       )}
       style={{ touchAction: 'none' }}
       onPointerDown={(e) => {
         e.preventDefault()
         e.currentTarget.setPointerCapture(e.pointerId)
+        draggingRef.current = true
         setDragging(true)
         scrollToPointer(e.clientY)
       }}
       onPointerMove={(e) => {
-        if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+        if (!draggingRef.current) return
         scrollToPointer(e.clientY)
       }}
       onPointerUp={(e) => {
         e.currentTarget.releasePointerCapture(e.pointerId)
-        setDragging(false)
+        endDrag()
       }}
-      onPointerCancel={() => setDragging(false)}
+      onPointerCancel={endDrag}
       aria-hidden="true"
     >
-      <div className="relative h-full w-1.5">
-        <div className="absolute inset-0 rounded-full bg-surface-elevated/40" />
+      <div className={cn('relative h-full transition-all', dragging ? 'w-3' : 'w-1.5')}>
+        <div className="absolute inset-0 rounded-full bg-surface-elevated/50" />
         <div
           className={cn(
             'absolute left-0 right-0 rounded-full transition-colors',
-            dragging ? 'bg-primary' : 'bg-mute/60',
+            dragging ? 'bg-primary' : 'bg-mute/70',
           )}
-          style={{ top: `${thumb.top}%`, height: `${thumb.height}%` }}
+          style={{ top: `${thumb.top}%`, height: `${thumb.height}%`, minHeight: 24 }}
         />
       </div>
     </div>
