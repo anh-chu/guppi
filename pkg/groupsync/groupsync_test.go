@@ -512,6 +512,38 @@ func TestRemoveSessionKey(t *testing.T) {
 	}
 }
 
+func TestRemoveSessionKeyDedupesDuplicates(t *testing.T) {
+	// Pruning "a" from g2 leaves g1 and g2 with identical membership {b};
+	// the older duplicate must be tombstoned so the sidebar shows it once.
+	s := &Store{path: filepath.Join(t.TempDir(), "groups.json"), groups: map[string]Group{
+		"g1": {
+			Tree:          json.RawMessage(`{"type":"leaf","sessionKey":"b"}`),
+			TreeUpdatedAt: mustTime(10),
+		},
+		"g2": {
+			Tree:          json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"a"},"second":{"type":"leaf","sessionKey":"b"}}`),
+			TreeUpdatedAt: mustTime(20),
+		},
+	}}
+
+	changed, prior, err := s.RemoveSessionKey("a")
+	if err != nil {
+		t.Fatalf("RemoveSessionKey: %v", err)
+	}
+	if len(changed) != 2 || len(prior) != 2 {
+		t.Fatalf("changed=%d prior=%d, want 2/2", len(changed), len(prior))
+	}
+	if s.groups["g1"].DeletedAt.IsZero() {
+		t.Fatal("g1 should be tombstoned as older duplicate")
+	}
+	if !s.groups["g2"].DeletedAt.IsZero() {
+		t.Fatal("g2 should stay live")
+	}
+	if !prior["g1"].DeletedAt.IsZero() {
+		t.Fatal("prior[g1] must capture pre-dedupe live state")
+	}
+}
+
 func TestSetNameUnknownGroup(t *testing.T) {
 	s := newTestStore(t)
 	if _, err := s.SetName("ghost", "AI Name", NameModeAuto); !errors.Is(err, ErrUnknownGroup) {

@@ -487,6 +487,19 @@ func (s *Store) RemoveSessionKey(key string) (changed map[string]Group, prior ma
 		s.groups[id] = g
 	}
 
+	// Pruning can leave two live groups with identical memberships; tombstone
+	// the duplicates so the sidebar does not show the same sessions twice.
+	preDedupe := make(map[string]Group, len(s.groups))
+	for id, g := range s.groups {
+		preDedupe[id] = g
+	}
+	for _, id := range s.dedupeLiveGroups(now) {
+		if _, ok := prior[id]; !ok {
+			prior[id] = preDedupe[id]
+		}
+		pruned[id] = s.groups[id]
+	}
+
 	if err := s.save(); err != nil {
 		// Restore prior entries to s.groups before returning error
 		for id, g := range prior {
