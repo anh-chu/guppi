@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.9] — New Group Creation Fix
+
+### Bug Fixes
+- **groups:** dropping the new-session button onto a standalone session pushed the group tree before the session existed, so the server pruned the one-leaf group and tombstoned it. The tree and rank push now happens after the session create resolves, and a guard clears stale snapshots during the pending window.
+
 ## [4.4.8] — File Link Highlight Fix
 
 ### Bug Fixes
