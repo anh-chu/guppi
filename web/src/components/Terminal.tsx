@@ -571,62 +571,62 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
           />
           <ScrollScrubber termRef={termRef} connected={termConnected} />
           <UploadStatus uploads={uploads} onCancel={cancelUpload} onDismiss={dismissUpload} />
-        {/* Pop-out (PiP) toggle */}
-          <button
-            onClick={handlePopOut}
-            title={poppedOut ? 'Return pane to tab' : 'Pop out to floating window'}
-            className="absolute top-2.5 right-11 z-20 p-1.5 rounded-sm bg-surface/40 backdrop-blur-md border border-hairline/60 text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="4" width="20" height="16" rx="2" /><rect x="12" y="11" width="8" height="6" rx="1" fill="currentColor" />
-            </svg>
-          </button>
-        {/* Fullscreen toggle */}
-          {onToggleFullscreen && (
-            <button
-              onClick={onToggleFullscreen}
-              title={fullscreen ? 'Exit fullscreen (Esc / Cmd+Shift+F)' : 'Fullscreen (Cmd+Shift+F)'}
-              className="absolute top-2.5 right-2.5 z-20 p-1.5 rounded-sm bg-surface/40 backdrop-blur-md border border-hairline/60 text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
-            >
-              {fullscreen ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" /><line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" />
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
-                </svg>
-              )}
-            </button>
-          )}
-          {/* Compose button (desktop + mobile) */}
-          <button
-            onClick={() => {
-              setClipboardMenuOpen(false)
-              setComposeText('')
-              setComposeOpen(true)
-            }}
-            title="Compose Input (Cmd/Ctrl+Shift+U)"
-            className="absolute top-2.5 right-[124px] z-20 p-1.5 rounded-sm bg-surface/40 backdrop-blur-md border border-hairline/60 text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" />
-            </svg>
-          </button>
-          {serverArtifacts.length > 0 && (
+          {/* Toolbar cluster: one glassy pill holding compose / artifacts / pop-out / fullscreen */}
+          <div className="absolute top-2.5 right-2.5 z-20 flex items-center gap-0.5 rounded-md bg-surface/40 backdrop-blur-md border border-hairline/60 p-0.5 transition-opacity opacity-60 group-hover:opacity-100 focus-within:opacity-100">
             <button
               onClick={() => {
-                setArtifactsOpen((v) => !v)
+                setClipboardMenuOpen(false)
+                setComposeText('')
+                setComposeOpen(true)
               }}
-              title="Detected files"
-              className="absolute top-2.5 right-[74px] z-20 flex items-center gap-1 px-1.5 py-1 rounded-sm bg-surface/40 backdrop-blur-md border border-hairline/60 text-mute hover:text-primary transition-all"
+              title="Compose Input (Cmd/Ctrl+Shift+U)"
+              className="p-1.5 rounded-sm text-mute hover:text-primary hover:bg-surface-elevated/60 transition-all"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><polyline points="13 2 13 9 20 9" />
+                <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" />
               </svg>
-              <span className="text-[10px] font-bold">{serverArtifacts.length}</span>
             </button>
-          )}
+            {serverArtifacts.length > 0 && (
+              <button
+                onClick={() => {
+                  setArtifactsOpen((v) => !v)
+                }}
+                title="Detected files"
+                className="flex items-center gap-1 px-1.5 py-1 rounded-sm text-mute hover:text-primary hover:bg-surface-elevated/60 transition-all"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><polyline points="13 2 13 9 20 9" />
+                </svg>
+                <span className="text-[10px] font-bold">{serverArtifacts.length}</span>
+              </button>
+            )}
+            <button
+              onClick={handlePopOut}
+              title={poppedOut ? 'Return pane to tab' : 'Pop out to floating window'}
+              className="p-1.5 rounded-sm text-mute hover:text-primary hover:bg-surface-elevated/60 transition-all"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="4" width="20" height="16" rx="2" /><rect x="12" y="11" width="8" height="6" rx="1" fill="currentColor" />
+              </svg>
+            </button>
+            {onToggleFullscreen && (
+              <button
+                onClick={onToggleFullscreen}
+                title={fullscreen ? 'Exit fullscreen (Esc / Cmd+Shift+F)' : 'Fullscreen (Cmd+Shift+F)'}
+                className="p-1.5 rounded-sm text-mute hover:text-primary hover:bg-surface-elevated/60 transition-all"
+              >
+                {fullscreen ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" /><line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                )}
+              </button>
+            )}
+          </div>
           {artifactsOpen && (
             <>
               <div className="fixed inset-0 z-40" onMouseDown={() => setArtifactsOpen(false)} />
