@@ -407,7 +407,7 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 ### 9.14 Terminal toolbar
 
-**Contract:** Session name shown. Ctrl/Alt sticky modifier buttons (mobile only). **Compose button** (keyboard icon, top-right toolbar; opens compose input modal; keyboard shortcut $mod+Shift+U). Artifact count badge (toggles preview panel). Fullscreen toggle button. Mobile key-bar toggle. Pop-out button (absolute positioned top-right). Compose/fullscreen/pop-out buttons idle at 60% opacity, full opacity on pane hover or keyboard focus. Disconnect overlay: pulsing red dot + "Disconnected — Reconnecting" when not connected (position: absolute inset-0 z-10, pointer-events-none, doesn't block input).
+**Contract:** Session name shown. Ctrl/Alt sticky modifier buttons (mobile only). **Compose button** (keyboard icon, top-right toolbar; opens compose input modal; keyboard shortcut $mod+Shift+U). Artifact count badge (toggles preview panel). Fullscreen toggle button. Mobile key-bar toggle. Pop-out button (absolute positioned top-right). Compose, artifact badge, pop-out, and fullscreen buttons sit in a single glassy pill cluster (top-right, translucent blurred background); cluster idles at 60% opacity, full opacity on pane hover or keyboard focus. Disconnect overlay: pulsing red dot + "Disconnected — Reconnecting" when not connected (position: absolute inset-0 z-10, pointer-events-none, doesn't block input).
 
 **Why it matters:** Toolbar buttons and disconnect overlay are observable; removing them hides status and controls.
 
