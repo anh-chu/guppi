@@ -25,14 +25,17 @@ func TestResolveFilePath(t *testing.T) {
 		{"relative", "hello.txt", http.StatusBadRequest},
 		{"empty", "", http.StatusBadRequest},
 		{"missing", filepath.Join(dir, "nope.txt"), http.StatusNotFound},
-		{"dir", dir, http.StatusBadRequest},
+		{"dir", dir, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, "/x", nil)
-			_, status, _ := resolveFilePath(c.path, &Options{}, r)
+			_, isDir, status, _ := resolveFilePath(c.path, &Options{}, r)
 			if status != c.want {
 				t.Fatalf("path=%q got %d want %d", c.path, status, c.want)
+			}
+			if c.name == "dir" && !isDir {
+				t.Fatalf("path=%q got isDir=false want true", c.path)
 			}
 		})
 	}

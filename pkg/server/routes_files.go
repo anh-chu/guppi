@@ -283,13 +283,14 @@ func (g *fileGrants) resolve(tok string) (string, bool) {
 	return v.path, true
 }
 
-// resolveFilePath turns a user-selected path into an absolute, existing file
+// resolveFilePath turns a user-selected path into an absolute, existing
 // path. Relative paths resolve against the active pane's cwd (see
-// toolevents.ResolveSessionCWD) -- no fallback to other panes. Returns an HTTP
-// status + message on failure.
-func resolveFilePath(p string, opts *Options, r *http.Request) (string, int, string) {
+// toolevents.ResolveSessionCWD) -- no fallback to other panes. Directories
+// resolve successfully with isDir=true; callers decide how to handle them.
+// Returns an HTTP status + message on failure.
+func resolveFilePath(p string, opts *Options, r *http.Request) (path string, isDir bool, status int, msg string) {
 	if p == "" {
-		return "", http.StatusBadRequest, "path required"
+		return "", false, http.StatusBadRequest, "path required"
 	}
 	// ~ / ~/foo only a shell can expand in general, but the server has one
 	// concrete, correct interpretation: its own process's home dir. Without
@@ -313,7 +314,7 @@ func resolveFilePath(p string, opts *Options, r *http.Request) (string, int, str
 			base = toolevents.ResolveSessionCWD(opts.CWDResolver, session)
 		}
 		if base == "" {
-			return "", http.StatusBadRequest, "cannot resolve relative path: no active pane cwd"
+			return "", false, http.StatusBadRequest, "cannot resolve relative path: no active pane cwd"
 		}
 		p = filepath.Clean(filepath.Join(base, p))
 	} else {
@@ -321,12 +322,9 @@ func resolveFilePath(p string, opts *Options, r *http.Request) (string, int, str
 	}
 	info, err := os.Stat(p)
 	if err != nil {
-		return "", http.StatusNotFound, "not found"
+		return "", false, http.StatusNotFound, "not found"
 	}
-	if info.IsDir() {
-		return "", http.StatusBadRequest, "path is a directory"
-	}
-	return p, 0, ""
+	return p, info.IsDir(), 0, ""
 }
 
 // handleFileGrant resolves and validates a user-selected path, then mints a
@@ -343,12 +341,18 @@ func handleFileGrant(w http.ResponseWriter, r *http.Request, opts *Options, gran
 		return
 	}
 
-	p, status, msg := resolveFilePath(r.URL.Query().Get("path"), opts, r)
+	p, isDir, status, msg := resolveFilePath(r.URL.Query().Get("path"), opts, r)
 	if status != 0 {
 		http.Error(w, msg, status)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if isDir {
+		// Directories are not readable capabilities: no token. The client
+		// opens the wiki panel in browse mode rooted at this directory.
+		_ = json.NewEncoder(w).Encode(map[string]any{"path": p, "is_dir": true})
+		return
+	}
 	_ = json.NewEncoder(w).Encode(map[string]string{"token": grants.grant(p), "path": p})
 }
 
@@ -370,7 +374,7 @@ func handleFileExists(w http.ResponseWriter, r *http.Request, opts *Options) {
 		_ = json.NewEncoder(w).Encode(map[string]bool{"exists": true})
 		return
 	}
-	_, status, _ := resolveFilePath(r.URL.Query().Get("path"), opts, r)
+	_, _, status, _ := resolveFilePath(r.URL.Query().Get("path"), opts, r)
 	_ = json.NewEncoder(w).Encode(map[string]bool{"exists": status == 0})
 }
 

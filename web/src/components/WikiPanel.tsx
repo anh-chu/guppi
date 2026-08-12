@@ -115,9 +115,14 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
         try {
           const gr = await fetch(`/file/grant?${qs}`, { method: 'POST' })
           if (gr.ok) {
-            const grant: { token?: string; path?: string; root?: string } = await gr.json()
-            if (grant.root) root = grant.root
-            if (grant.path) file = grant.path
+            const grant: { token?: string; path?: string; root?: string; is_dir?: boolean } = await gr.json()
+            if (grant.is_dir && grant.path) {
+              // Directory: open browse mode rooted at it, no file target.
+              root = grant.path
+            } else {
+              if (grant.root) root = grant.root
+              if (grant.path) file = grant.path
+            }
           } else {
             error = (await gr.text().catch(() => '')).trim() || `could not open file (${gr.status})`
           }
