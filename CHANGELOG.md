@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.4.5] — Mobile UX & Group Sync
+
+### Features
+- **terminal:** scroll scrubber on the right edge for fast scrollback navigation; drag maps directly onto the full buffer, always visible while scrollable.
+- **mobile:** compose input button in the key bar opens a textarea modal; Send fills the terminal without pressing Enter.
+- **mobile:** long-press on the terminal opens the capture modal for text selection.
+- **mobile:** swipe from the left edge opens the sidebar.
+- **settings:** Roboto Mono terminal font preset.
+
+### Bug Fixes
+- **groups:** reinstated membership-fingerprint dedupe backstop; duplicate groups with identical sessions are healed on every sync.
+- **groups:** name/rank updates for unknown group ids are rejected instead of materializing phantom empty groups (late AI-naming race).
+- **mobile:** wiki panel renders as a full-screen overlay instead of overflowing off the right edge.
+- **mobile:** key bar keeps safe-area bottom padding when the on-screen keyboard is hidden, avoiding the navigation pill.
+
 ## [4.4.4] — Bug Fixes
 
 ### Bug Fixes
