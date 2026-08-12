@@ -86,7 +86,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
 
   const refresh = workspaceActions.refresh
   const refreshGroups = groupSync.refresh
-  const { setTree: setGroupTree, setName: setGroupName, setRank: setGroupRank, deleteGroup, forceAiName, namingGroupId } = groupSync
+  const { setTree: setGroupTree, setName: setGroupName, setRank: setGroupRank, deleteGroup, forceAiName, namingGroupId, markGroupPending, clearGroupPending } = groupSync
 
   const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
   const { getSessionActivity, handleActivityEvent } = useActivity()
@@ -129,6 +129,10 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (!authenticatedRef.current || !groupsLoaded || currentView !== 'session' || singleView) return
     // Skip if we already pushed this revision (handles guard-flip re-runs)
     if (rev === lastPushedRevRef.current) return
+    // A drop-created group is deferred until its session-create POST resolves;
+    // pushing its tree now would reference a session the server doesn't know
+    // yet and the server would drop the group.
+    if (pendingNewGroupRef.current?.groupId === activeGroupIdRef.current) return
     const id = window.setTimeout(() => {
       if (paneTreeRef.current && authenticatedRef.current) {
         void setGroupTree(activeGroupIdRef.current, paneTreeRef.current, rev)
@@ -459,6 +463,8 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   authenticatedRef.current = authenticated
   const paneTreeRef = useRef(paneTree)
   paneTreeRef.current = paneTree
+  const paneTreeRevRef = useRef(view.paneTreeRev)
+  paneTreeRevRef.current = view.paneTreeRev
   const groupsLoadedRef = useRef(groupsLoaded)
   groupsLoadedRef.current = groupsLoaded
   const currentViewRef = useRef(currentView)
@@ -466,6 +472,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const singleViewRef = useRef(singleView)
   singleViewRef.current = singleView
   const lastPushedRevRef = useRef<number>(-1)
+  // Group created by drop-on-standalone whose server push is deferred until
+  // the session-create POST resolves (server rejects trees with unknown sessions).
+  const pendingNewGroupRef = useRef<{ groupId: string; rank: string; optimisticKey: string } | null>(null)
   
   const switchToGroupRef = useRef<((id: string) => void) | null>(null)
 
@@ -979,6 +988,13 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         if (!worktreeBranch) {
           workspaceActions.removeOptimistic(name, hostId || localHostId)
           if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
+          const pending = pendingNewGroupRef.current
+          // Only the matching create may clear the pending group; unrelated
+          // concurrent creates must leave it for the drop-created session.
+          if (pending && pending.optimisticKey === optimisticKey) {
+            pendingNewGroupRef.current = null
+            clearGroupPending(pending.groupId)
+          }
         }
         if (worktreeBranch) {
           const msg = await res.text().catch(() => 'Failed to create worktree')
@@ -998,6 +1014,32 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         workspaceActions.renameSession(optimisticKey, resolvedKey)
         pendingSessionRef.current = resolvedKey
       }
+      // Deferred push for a group created by drop-on-standalone: the session
+      // now exists server-side, so the tree (with the server-resolved key) and
+      // rank can be persisted without the server dropping the group.
+      if (!worktreeBranch) {
+        const pending = pendingNewGroupRef.current
+        // Only consume the pending entry for the create it belongs to.
+        if (pending && pending.optimisticKey === optimisticKey) {
+          pendingNewGroupRef.current = null
+          const localTree = paneTreeRef.current
+          // Guard against the user switching groups during the pending window:
+          // paneTreeRef would then hold a different group's tree.
+          if (localTree && activeGroupIdRef.current === pending.groupId) {
+            const resolvedKey = hostId ? `${hostId}/${resolvedName}` : resolvedName
+            const treeToPush = resolvedName !== name
+              ? replaceLeaf(localTree, optimisticKey, resolvedKey)
+              : localTree
+            const rev = paneTreeRevRef.current
+            void setGroupTree(pending.groupId, treeToPush, rev)
+            lastPushedRevRef.current = rev
+            void setGroupRank(pending.groupId, pending.rank)
+          }
+          // setGroupTree bumps the in-flight counter synchronously before this
+          // release, so snapshot adoption stays guarded without a gap.
+          clearGroupPending(pending.groupId)
+        }
+      }
       // Reconcile with the real server record; clears the optimistic stub.
       workspaceActions.refresh()
     } catch (err) {
@@ -1005,10 +1047,15 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       if (!worktreeBranch) {
         workspaceActions.removeOptimistic(name, hostId || localHostId)
         if (pendingSessionRef.current === optimisticKey) pendingSessionRef.current = null
+        const pending = pendingNewGroupRef.current
+        if (pending && pending.optimisticKey === optimisticKey) {
+          pendingNewGroupRef.current = null
+          clearGroupPending(pending.groupId)
+        }
       }
     }
     return null
-  }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions])
+  }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions, setGroupTree, setGroupRank, clearGroupPending])
 
   const handleQuickShell = useCallback(() => {
     const name = `shell-${Date.now()}`
@@ -1047,8 +1094,18 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     // instead of silently spawning a standalone session ("refuse to split").
     let key = targetKey || activeKey || (paneTree ? getLeaves(paneTree)[0] ?? null : null)
 
+    // Unique name so the optimistic pane-tree key can't collide with an
+    // existing leaf. A literal 'shell' would duplicate any live 'shell' leaf
+    // (shared pool entry) and get mangled when the server dedup migrates it.
+    const existingNames = new Set(sessionsRef.current.map(s => s.name))
+    let name = 'shell'
+    for (let n = 2; existingNames.has(name); n++) name = `shell-${n}`
+
     // Dropping onto a singleView session (standalone, not in any group):
-    // save current group to background and start a new group from singleView
+    // save current group to background and start a new group from singleView.
+    // The new group's tree/rank push is DEFERRED until the session-create POST
+    // resolves (server drops groups whose trees reference unknown sessions);
+    // local UI is optimistic and skipTreeAdoptFor guards the pending window.
     if (!targetKey && singleView) {
       key = singleView
       const newGroupId = Math.random().toString(36).slice(2)
@@ -1060,12 +1117,19 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         if (!currentRank) void setGroupRank(activeGroupId, generateKeyBetween(null, generateKeyBetween(currentRank, null)))
       }
       const newRank = generateKeyBetween(currentRank, null)
-      void setGroupTree(newGroupId, popOut(singleView))
-      void setGroupRank(newGroupId, newRank)
-      setPaneTree(popOut(singleView))
-      setActiveKey(singleView)
-      setActiveGroupId(newGroupId)
-      setSingleView(null)
+      const base = popOut(singleView)
+      // Guard the new group id against snapshot absent-group clearing until the
+      // deferred tree POST is issued from handleCreateSession.
+      markGroupPending(newGroupId)
+      const { host: dropHost } = parseSessionKey(singleView)
+      pendingNewGroupRef.current = {
+        groupId: newGroupId,
+        rank: newRank,
+        optimisticKey: dropHost ? `${dropHost}/${name}` : name,
+      }
+      // Single dispatch: separate setPaneTree/setActiveKey/setActiveGroupId
+      // raced -- setActiveGroupId (no focusKey) nulled the just-set activeKey.
+      workspaceActions.setActiveGroup(newGroupId, base, singleView)
     }
 
     let splitTarget: { key: string; direction: 'h' | 'v'; newFirst?: boolean } | undefined
@@ -1081,15 +1145,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     const sess = key ? sessionsRef.current.find(s => sessionKey(s) === key) : undefined
     const panes = sess?.windows.flatMap(w => w.panes) ?? []
     const cwd = panes.find(p => p.active)?.current_path || sess?.project_path || '~'
-    // Unique name so the optimistic pane-tree key can't collide with an
-    // existing leaf. A literal 'shell' would duplicate any live 'shell' leaf
-    // (shared pool entry) and get mangled when the server dedup migrates it.
-    const existingNames = new Set(sessionsRef.current.map(s => s.name))
-    let name = 'shell'
-    for (let n = 2; existingNames.has(name); n++) name = `shell-${n}`
     // Pass splitTarget directly — avoids ref race when event fires on both pane and container
     handleCreateSession(name, cwd, '', host || undefined, undefined, undefined, splitTarget)
-  }, [singleView, activeKey, activeGroupId, paneTree, deleteGroup, handleCreateSession, syncedGroups, setGroupTree, setGroupRank])
+  }, [singleView, activeKey, activeGroupId, paneTree, deleteGroup, handleCreateSession, syncedGroups, setGroupTree, setGroupRank, markGroupPending, workspaceActions])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)

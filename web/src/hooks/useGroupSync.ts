@@ -114,6 +114,19 @@ export function useGroupSync(
   const setRank = useCallback((id: string, rank: string) => mutate({ id, op: 'rank', rank }), [mutate])
   const deleteGroup = useCallback((id: string) => mutate({ id, op: 'delete' }), [mutate])
 
+  // Mark a group id as pending so groups/snapshot dispatches include it in
+  // skipTreeAdoptFor while its first tree POST has not been sent yet (e.g. a
+  // new group whose session-create POST must resolve before the tree push).
+  const markGroupPending = useCallback((id: string) => {
+    const count = inFlightCounterRef.current.get(id) ?? 0
+    inFlightCounterRef.current.set(id, count + 1)
+  }, [])
+  const clearGroupPending = useCallback((id: string) => {
+    const count = inFlightCounterRef.current.get(id) ?? 0
+    if (count > 1) inFlightCounterRef.current.set(id, count - 1)
+    else inFlightCounterRef.current.delete(id)
+  }, [])
+
   const forceAiName = useCallback(async (id: string): Promise<boolean> => {
     setNamingGroupId(id)
     try {
@@ -142,5 +155,5 @@ export function useGroupSync(
     }
   }, [dispatch])
 
-  return { refresh, setTree, setName, setRank, deleteGroup, forceAiName, namingGroupId }
+  return { refresh, setTree, setName, setRank, deleteGroup, forceAiName, namingGroupId, markGroupPending, clearGroupPending }
 }

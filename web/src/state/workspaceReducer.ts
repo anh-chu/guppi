@@ -477,8 +477,11 @@ export function workspaceReducer(
             nextView.activeKey = leaves[0] ?? null
           }
         }
-      } else {
+      } else if (!skipTreeAdoptFor.includes(state.view.activeGroupId)) {
         // Active group is absent from snapshot: clear paneTree/activeGroupId.
+        // Skip when the group's tree POST is still in flight (skipTreeAdoptFor):
+        // a snapshot from a racing POST may predate the just-created group's
+        // persistence; clearing here would dissolve the new group.
         nextView.paneTree = null
         nextView.activeKey = null
       }
@@ -653,10 +656,13 @@ export function workspaceReducer(
       }
       let view = state.view
       if (view.paneTree && findLeaf(view.paneTree, oldKey)) {
+        // Bump paneTreeRev so the corrected tree (server-resolved session key)
+        // is pushed to the server, replacing any tree persisted with the
+        // optimistic key (which sessions reconcile would otherwise prune).
         if (findLeaf(view.paneTree, newKey)) {
-          view = { ...view, paneTree: removeLeaf(view.paneTree, oldKey) ?? view.paneTree }
+          view = { ...view, paneTree: removeLeaf(view.paneTree, oldKey) ?? view.paneTree, paneTreeRev: view.paneTreeRev + 1 }
         } else {
-          view = { ...view, paneTree: replaceLeaf(view.paneTree, oldKey, newKey) }
+          view = { ...view, paneTree: replaceLeaf(view.paneTree, oldKey, newKey), paneTreeRev: view.paneTreeRev + 1 }
         }
       }
       view = {

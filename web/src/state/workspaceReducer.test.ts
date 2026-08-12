@@ -402,6 +402,73 @@ describe('workspaceReducer', () => {
       expect(s2.view.paneTree).toEqual(localTree) // NOT adopted due to skipTreeAdoptFor
     })
 
+    it('does NOT clear paneTree when active group absent but covered by skipTreeAdoptFor (in-flight tree POST)', () => {
+      const localTree: PaneTree = { type: 'leaf', sessionKey: 'local' }
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('local')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree: localTree },
+      )
+      const activeId = s1.view.activeGroupId
+      // Snapshot from a racing POST that predates the new group's persistence.
+      const s2 = workspaceReducer(s1, {
+        type: 'groups/snapshot',
+        groups: {},
+        skipTreeAdoptFor: [activeId],
+      })
+      expect(s2.view.paneTree).toEqual(localTree)
+      expect(s2.view.activeKey).toBe(s1.view.activeKey)
+    })
+
+    it('clears paneTree when active group absent and not in-flight', () => {
+      const localTree: PaneTree = { type: 'leaf', sessionKey: 'local' }
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('local')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree: localTree },
+      )
+      const s2 = workspaceReducer(s1, { type: 'groups/snapshot', groups: {} })
+      expect(s2.view.paneTree).toBeNull()
+      expect(s2.view.activeKey).toBeNull()
+    })
+
+    it('rename bumps paneTreeRev when the pane tree references the old key', () => {
+      const tree: PaneTree = {
+        type: 'split', direction: 'h', ratio: 0.5,
+        first: { type: 'leaf', sessionKey: 'a' },
+        second: { type: 'leaf', sessionKey: 'shell' },
+      }
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('a'), sess('shell')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree },
+      )
+      const revBefore = s1.view.paneTreeRev
+      const s2 = workspaceReducer(s1, { type: 'rename', oldKey: 'shell', newKey: 'shell-3' })
+      expect(s2.view.paneTreeRev).toBe(revBefore + 1)
+      expect(s2.view.paneTree).toEqual({
+        type: 'split', direction: 'h', ratio: 0.5,
+        first: { type: 'leaf', sessionKey: 'a' },
+        second: { type: 'leaf', sessionKey: 'shell-3' },
+      })
+    })
+
+    it('rename does not bump paneTreeRev when the tree does not reference the old key', () => {
+      const tree: PaneTree = { type: 'leaf', sessionKey: 'a' }
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('a'), sess('b')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree },
+      )
+      const revBefore = s1.view.paneTreeRev
+      const s2 = workspaceReducer(s1, { type: 'rename', oldKey: 'b', newKey: 'b-2' })
+      expect(s2.view.paneTreeRev).toBe(revBefore)
+    })
+
     it('does NOT adopt tree when paneTreeRev > paneTreeRevSynced (pending local edit)', () => {
       const localTree: PaneTree = { type: 'leaf', sessionKey: 'local' }
       const serverTree: PaneTree = { type: 'leaf', sessionKey: 'server' }
