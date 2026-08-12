@@ -80,8 +80,8 @@ type groupStoreAdapter struct {
 	store *groupsync.Store
 }
 
-func (a groupStoreAdapter) ApplyRemoteDelta(id string, group peer.Group) (bool, error) {
-	_, accepted, err := a.store.ApplyRemote(id, groupsync.Group{
+func (a groupStoreAdapter) ApplyRemoteDelta(id string, group peer.Group) (bool, map[string]peer.Group, map[string]peer.Group, error) {
+	_, accepted, enforced, enforcedPrior, err := a.store.ApplyRemote(id, groupsync.Group{
 		Tree:              append(json.RawMessage(nil), group.Tree...),
 		TreeUpdatedAt:     group.TreeUpdatedAt,
 		Name:              group.Name,
@@ -92,10 +92,43 @@ func (a groupStoreAdapter) ApplyRemoteDelta(id string, group peer.Group) (bool, 
 		RankUpdatedAt:     group.RankUpdatedAt,
 		DeletedAt:         group.DeletedAt,
 	})
-	return accepted, err
+	if err != nil {
+		return accepted, nil, nil, err
+	}
+	// Convert enforced groups to peer.Group format
+	enforcedPeer := make(map[string]peer.Group, len(enforced))
+	for eid, eg := range enforced {
+		enforcedPeer[eid] = peer.Group{
+			Tree:              append(json.RawMessage(nil), eg.Tree...),
+			TreeUpdatedAt:     eg.TreeUpdatedAt,
+			Name:              eg.Name,
+			NameUpdatedAt:     eg.NameUpdatedAt,
+			NameMode:          string(eg.NameMode),
+			NameModeUpdatedAt: eg.NameModeUpdatedAt,
+			Rank:              eg.Rank,
+			RankUpdatedAt:     eg.RankUpdatedAt,
+			DeletedAt:         eg.DeletedAt,
+		}
+	}
+	// Convert prior groups to peer.Group format
+	enforcedPriorPeer := make(map[string]peer.Group, len(enforcedPrior))
+	for pid, pg := range enforcedPrior {
+		enforcedPriorPeer[pid] = peer.Group{
+			Tree:              append(json.RawMessage(nil), pg.Tree...),
+			TreeUpdatedAt:     pg.TreeUpdatedAt,
+			Name:              pg.Name,
+			NameUpdatedAt:     pg.NameUpdatedAt,
+			NameMode:          string(pg.NameMode),
+			NameModeUpdatedAt: pg.NameModeUpdatedAt,
+			Rank:              pg.Rank,
+			RankUpdatedAt:     pg.RankUpdatedAt,
+			DeletedAt:         pg.DeletedAt,
+		}
+	}
+	return accepted, enforcedPeer, enforcedPriorPeer, nil
 }
 
-func (a groupStoreAdapter) ApplyRemoteSnapshot(groups map[string]peer.Group) ([]string, error) {
+func (a groupStoreAdapter) ApplyRemoteSnapshot(groups map[string]peer.Group) ([]string, map[string]peer.Group, map[string]peer.Group, error) {
 	conv := make(map[string]groupsync.Group, len(groups))
 	for id, g := range groups {
 		conv[id] = groupsync.Group{
@@ -110,7 +143,41 @@ func (a groupStoreAdapter) ApplyRemoteSnapshot(groups map[string]peer.Group) ([]
 			DeletedAt:         g.DeletedAt,
 		}
 	}
-	return a.store.ApplySnapshot(conv)
+	changed, enforced, enforcedPrior, err := a.store.ApplySnapshot(conv)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// Convert enforced groups to peer.Group format
+	enforcedPeer := make(map[string]peer.Group, len(enforced))
+	for eid, eg := range enforced {
+		enforcedPeer[eid] = peer.Group{
+			Tree:              append(json.RawMessage(nil), eg.Tree...),
+			TreeUpdatedAt:     eg.TreeUpdatedAt,
+			Name:              eg.Name,
+			NameUpdatedAt:     eg.NameUpdatedAt,
+			NameMode:          string(eg.NameMode),
+			NameModeUpdatedAt: eg.NameModeUpdatedAt,
+			Rank:              eg.Rank,
+			RankUpdatedAt:     eg.RankUpdatedAt,
+			DeletedAt:         eg.DeletedAt,
+		}
+	}
+	// Convert prior groups to peer.Group format
+	enforcedPriorPeer := make(map[string]peer.Group, len(enforcedPrior))
+	for pid, pg := range enforcedPrior {
+		enforcedPriorPeer[pid] = peer.Group{
+			Tree:              append(json.RawMessage(nil), pg.Tree...),
+			TreeUpdatedAt:     pg.TreeUpdatedAt,
+			Name:              pg.Name,
+			NameUpdatedAt:     pg.NameUpdatedAt,
+			NameMode:          string(pg.NameMode),
+			NameModeUpdatedAt: pg.NameModeUpdatedAt,
+			Rank:              pg.Rank,
+			RankUpdatedAt:     pg.RankUpdatedAt,
+			DeletedAt:         pg.DeletedAt,
+		}
+	}
+	return changed, enforcedPeer, enforcedPriorPeer, nil
 }
 
 func (a groupStoreAdapter) SnapshotGroups() map[string]peer.Group {
@@ -140,6 +207,106 @@ func sessionKey(host, name string) string {
 		return host + "/" + name
 	}
 	return name
+}
+
+// pruneGroupSessions garbage-collects group membership by removing session keys
+// whose owning host is online but whose session is genuinely gone from the
+// authoritative mesh. Enforces membership exclusivity (each key owned by at most
+// one group). Changed groups are broadcast + fanned out to peers; tombstoned
+// groups trigger naming coordinator cancellation. No-op when peer mode is
+// unavailable or group store is absent.
+func pruneGroupSessions(opts *Options, hub *ws.Hub, coordinator *groupNamingCoordinator) {
+	if opts.GroupStore == nil || opts.PeerMgr == nil {
+		return
+	}
+
+	sessions := opts.PeerMgr.GetAllSessions()
+	liveKeys := make(map[string]bool, len(sessions)*2)
+	// Track how many sessions we've received from each remote host
+	hostSessions := make(map[string]int)
+	for _, s := range sessions {
+		// Both bare name (local) and host/name forms
+		if s.Host != "" {
+			liveKeys[s.Host+"/"+s.Name] = true
+			hostSessions[s.Host]++
+		} else {
+			hostSessions[""]++ // local host
+		}
+		liveKeys[s.Name] = true
+	}
+
+	onlineHosts := make(map[string]bool)
+	for _, h := range opts.PeerMgr.GetHosts() {
+		if h.Online {
+			onlineHosts[h.ID] = true
+		}
+	}
+
+	// gone predicate: key is absent from live sessions AND the owner is provably gone.
+	// For local keys, we check StateMgr. For remote keys, we require that the host is
+	// online AND we have received at least one session from it (hostSessions[host] > 0).
+	// If a remote host has zero known sessions, we haven't received data from it yet, so
+	// absence of a key is not proof of deletion (prune race hardening).
+	gone := func(key string) bool {
+		if liveKeys[key] {
+			return false // key is live
+		}
+
+		// Check owner status
+		host, name := splitSessionKey(key)
+		if host == "" {
+			// Local key: owned by this host
+			// Double-check against StateMgr if available
+			if opts.StateMgr != nil {
+				for _, s := range opts.StateMgr.GetSessions() {
+					if s.Name == name {
+						return false // found locally, not gone
+					}
+				}
+			}
+			return true // local key and session absent
+		}
+
+		// Remote key: check if owner host is online AND we've heard from it
+		if !onlineHosts[host] {
+			return false // owner offline, can't confirm gone
+		}
+		if hostSessions[host] == 0 {
+			return false // no known sessions from host yet; absence is not proof
+		}
+		return true // owner online, we've received sessions, and key absent
+	}
+
+	changed, prior, err := opts.GroupStore.Reconcile(gone)
+	if err != nil || len(changed) == 0 {
+		return
+	}
+
+	// Broadcast and fanout each changed group
+	for id, g := range changed {
+		if !g.DeletedAt.IsZero() {
+			// Tombstoned: cancel naming if active
+			if coordinator != nil {
+				coordinator.Cancel(id)
+			}
+		} else {
+			// Live: observe mutation for potential re-naming
+			if coordinator != nil {
+				priorState := prior[id]
+				coordinator.ObserveTreeMutation(id, priorState, g)
+			}
+		}
+		// Broadcast to browser tabs
+		if hub != nil {
+			hub.BroadcastJSON(map[string]interface{}{
+				"type": "groups-updated",
+				"id":   id,
+				"op":   "tree",
+			})
+		}
+		// Fanout to peers
+		fanoutGroupDeltaToPeers(opts, id, g)
+	}
 }
 
 // pruneSessionAttrs garbage-collects session-attribute keys whose owning host
@@ -240,6 +407,32 @@ func fanoutGroupDeltaToPeers(opts *Options, id string, g groupsync.Group) {
 	}
 	for _, pc := range opts.PeerMgr.ConnectedPeers() {
 		pc.Enqueue(msg)
+	}
+}
+
+// fanoutGroupPeerDelta fanouts a peer.Group (from remote enforcement) to all peers.
+func fanoutGroupPeerDelta(opts *Options, id string, g peer.Group) {
+	if opts.PeerMgr == nil || opts.Identity == nil {
+		return
+	}
+	msg, err := peer.NewMessage(peer.MsgGroupDelta, peer.GroupDeltaPayload{
+		Origin: opts.Identity.Fingerprint(),
+		ID:     id,
+		Group:  g,
+	})
+	if err != nil {
+		return
+	}
+	for _, pc := range opts.PeerMgr.ConnectedPeers() {
+		pc.Enqueue(msg)
+	}
+}
+
+// MakeGroupFanoutCallback creates a callback for peer group enforcement propagation.
+// Used by the peer handlers to fanout loser records when enforcement occurs.
+func MakeGroupFanoutCallback(opts *Options) func(id string, g peer.Group) {
+	return func(id string, g peer.Group) {
+		fanoutGroupPeerDelta(opts, id, g)
 	}
 }
 

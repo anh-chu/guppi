@@ -22,7 +22,7 @@ func TestGroupNaming_CreationAtTwoMembersTriggersGeneration(t *testing.T) {
 	defer srv.Close()
 
 	addTestSessions(stateMgr, "alpha", "beta")
-	after, _ := store.SetTree("g1", tree("alpha", "beta"))
+	after, _, _, _ := store.SetTree("g1", tree("alpha", "beta"))
 
 	c.ObserveTreeMutation("g1", groupsync.Group{}, after)
 
@@ -40,10 +40,10 @@ func TestGroupNaming_RatioReorderRankMetadataDoNotTrigger(t *testing.T) {
 	defer srv.Close()
 
 	addTestSessions(stateMgr, "alpha", "beta")
-	_, _ = store.SetTree("g1", tree("alpha", "beta"))
+	_, _, _, _ = store.SetTree("g1", tree("alpha", "beta"))
 	before, _ := store.Get("g1")
 	// Swapped leaf order and different split direction/ratio; membership identical.
-	after, _ := store.SetTree("g1", json.RawMessage(`{"type":"split","direction":"v","ratio":0.25,"first":{"type":"leaf","sessionKey":"beta"},"second":{"type":"leaf","sessionKey":"alpha"}}`))
+	after, _, _, _ := store.SetTree("g1", json.RawMessage(`{"type":"split","direction":"v","ratio":0.25,"first":{"type":"leaf","sessionKey":"beta"},"second":{"type":"leaf","sessionKey":"alpha"}}`))
 
 	c.ObserveTreeMutation("g1", before, after)
 	time.Sleep(150 * time.Millisecond)
@@ -58,13 +58,13 @@ func TestGroupNaming_AddRemoveMembershipTriggersRefresh(t *testing.T) {
 	defer srv.Close()
 
 	addTestSessions(stateMgr, "alpha", "beta")
-	g, _ := store.SetTree("g1", tree("alpha", "beta"))
+	g, _, _, _ := store.SetTree("g1", tree("alpha", "beta"))
 	c.ObserveTreeMutation("g1", groupsync.Group{}, g)
 	waitForNamed(t, store, "g1", "name-2")
 
 	addTestSessions(stateMgr, "alpha", "beta", "gamma")
 	before, _ := store.Get("g1")
-	after, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
+	after, _, _, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
 	c.ObserveTreeMutation("g1", before, after)
 	waitForNamed(t, store, "g1", "name-3")
 
@@ -82,7 +82,7 @@ func TestGroupNaming_ManualModeBlocksAutomaticTrigger(t *testing.T) {
 	defer srv.Close()
 
 	addTestSessions(stateMgr, "alpha", "beta")
-	g, _ := store.SetTree("g1", tree("alpha", "beta"))
+	g, _, _, _ := store.SetTree("g1", tree("alpha", "beta"))
 	g, _ = store.SetName("g1", "user-name", groupsync.NameModeManual)
 
 	c.ObserveTreeMutation("g1", groupsync.Group{}, g)
@@ -93,7 +93,7 @@ func TestGroupNaming_ManualModeBlocksAutomaticTrigger(t *testing.T) {
 
 	// Membership change should also be ignored.
 	before := g
-	after, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
+	after, _, _, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
 	c.ObserveTreeMutation("g1", before, after)
 	time.Sleep(150 * time.Millisecond)
 	if count.Load() != 0 {
@@ -106,19 +106,19 @@ func TestGroupNaming_BurstCoalescesToLatestFingerprint(t *testing.T) {
 	defer srv.Close()
 
 	addTestSessions(stateMgr, "alpha", "beta", "gamma", "delta")
-	g, _ := store.SetTree("g1", tree("alpha", "beta"))
+	g, _, _, _ := store.SetTree("g1", tree("alpha", "beta"))
 	c.ObserveTreeMutation("g1", groupsync.Group{}, g)
 	waitForNamed(t, store, "g1", "name-2")
 	waitForCount(t, count, 1)
 	count.Store(0)
 
 	before, _ := store.Get("g1")
-	mid, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
+	mid, _, _, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
 	c.ObserveTreeMutation("g1", before, mid)
 
 	time.Sleep(10 * time.Millisecond)
 
-	after, _ := store.SetTree("g1", tree("alpha", "beta", "delta"))
+	after, _, _, _ := store.SetTree("g1", tree("alpha", "beta", "delta"))
 	c.ObserveTreeMutation("g1", mid, after)
 
 	waitForNamed(t, store, "g1", "name-3")
@@ -147,19 +147,19 @@ func TestGroupNaming_StaleResultDiscarded(t *testing.T) {
 	c.debounce = 200 * time.Millisecond
 
 	addTestSessions(stateMgr, "alpha", "beta", "gamma", "delta")
-	g, _ := store.SetTree("g1", tree("alpha", "beta"))
+	g, _, _, _ := store.SetTree("g1", tree("alpha", "beta"))
 	c.ObserveTreeMutation("g1", groupsync.Group{}, g)
 	waitName(t, store, "g1")
 
 	// Next request will block so we can race a membership change before it completes.
 	before, _ := store.Get("g1")
-	after, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
+	after, _, _, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
 	c.ObserveTreeMutation("g1", before, after)
 
 	waitForCount(t, count, 2)
 
 	// While the namer is still responding for {alpha,beta,gamma}, change membership.
-	_, _ = store.SetTree("g1", tree("alpha", "beta", "delta"))
+	_, _, _, _ = store.SetTree("g1", tree("alpha", "beta", "delta"))
 
 	close(blockCh)
 	waitForCount(t, count, 2)
@@ -175,7 +175,7 @@ func TestGroupNaming_ForceBypassesGateAndSwitchesToAuto(t *testing.T) {
 	defer srv.Close()
 
 	addTestSessions(stateMgr, "alpha", "beta", "gamma")
-	_, _ = store.SetTree("g1", tree("alpha", "beta"))
+	_, _, _, _ = store.SetTree("g1", tree("alpha", "beta"))
 	_, _ = store.SetName("g1", "manual", groupsync.NameModeManual)
 
 	// Lock the gate so automatic attempts would be blocked.
@@ -200,7 +200,7 @@ func TestGroupNaming_ForceBypassesGateAndSwitchesToAuto(t *testing.T) {
 	// After the forced success the gate is reset, so a subsequent automatic
 	// mutation should still be able to run.
 	before := g
-	after, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
+	after, _, _, _ := store.SetTree("g1", tree("alpha", "beta", "gamma"))
 	c.ObserveTreeMutation("g1", before, after)
 	waitForNamed(t, store, "g1", "name-3")
 

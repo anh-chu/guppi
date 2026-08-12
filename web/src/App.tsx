@@ -120,14 +120,23 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const activeGroup = syncedGroups[activeGroupId]
   const activeGroupName = activeGroup?.name ?? ''
 
+  // Debounced paneTree sync: push whenever paneTreeRev changes or guards flip to allow pushing.
+  // The effect is keyed on paneTreeRev to debounce tree changes from user edits;
+  // snapshot adoption does not bump the rev so it won't trigger unnecessary pushes.
+  // Guards are included in deps so re-runs from guard flips attempt push if rev !== lastPushedRev.
   useEffect(() => {
-    if (!authenticated || !groupsLoaded || !activeGroup || !paneTree || currentView !== 'session' || singleView) return
+    const rev = view.paneTreeRev
+    if (!authenticatedRef.current || !groupsLoaded || currentView !== 'session' || singleView) return
+    // Skip if we already pushed this revision (handles guard-flip re-runs)
+    if (rev === lastPushedRevRef.current) return
     const id = window.setTimeout(() => {
-      if (JSON.stringify(activeGroup.tree) === JSON.stringify(paneTree)) return
-      void setGroupTree(activeGroupId, paneTree)
+      if (paneTreeRef.current && authenticatedRef.current) {
+        void setGroupTree(activeGroupIdRef.current, paneTreeRef.current, rev)
+        lastPushedRevRef.current = rev
+      }
     }, 250)
     return () => window.clearTimeout(id)
-  }, [authenticated, groupsLoaded, activeGroup, activeGroupId, currentView, paneTree, singleView, setGroupTree])
+  }, [view.paneTreeRev, groupsLoaded, currentView, singleView, setGroupTree])
   const hasMultipleHosts = hosts.length > 1
   const localHost = hosts.find(h => h.local)
   const localHostId = localHost?.id
@@ -273,28 +282,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     workspaceActions.navigate(view as any, sessKey)
   }, [workspaceActions])
 
-  // Remove a session leaf from every saved group EXCEPT the active one. Dropping
-  // a session into the current view must not leave a duplicate leaf lingering in
-  // its previous group: leaves are keyed by session name and the terminal pool
-  // is keyed the same, so a cross-group duplicate mirrors one terminal into two
-  // groups and the split appears to "land" in the wrong (old) group.
-  const detachFromOtherGroups = useCallback((sessKey: string) => {
-    const active = activeGroupIdRef.current
-    for (const [id, g] of Object.entries(syncedGroupsRef.current)) {
-      if (id === active || !findLeaf(g.tree, sessKey)) continue
-      const pruned = removeLeaf(g.tree, sessKey)
-      if (pruned === null) {
-        void deleteGroup(id)
-      } else {
-        const prunedLeaves = getLeaves(pruned)
-        if (prunedLeaves.length < 2) {
-          void deleteGroup(id)
-        } else {
-          void setGroupTree(id, pruned)
-        }
-      }
-    }
-  }, [deleteGroup, setGroupTree])
+
 
   const handleDropSession = useCallback((sessKey: string, targetKey: string, edge: 'left'|'right'|'top'|'bottom'|'center') => {
     // Dropping onto a standalone (singleView) session pairs the two into their
@@ -303,8 +291,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     // dump the dragged session into that background group.
     if (singleView && (targetKey === singleView || targetKey === '')) {
       const anchor = singleView
-      detachFromOtherGroups(sessKey)
-      detachFromOtherGroups(anchor)
       const direction: 'h' | 'v' = (edge === 'top' || edge === 'bottom') ? 'v' : 'h'
       const newFirst = edge === 'left' || edge === 'top'
       const base = popOut(anchor)
@@ -328,7 +314,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       return
     }
     setSingleView(null)
-    detachFromOtherGroups(sessKey)
     const currentActive = activeKeyRef.current
     setPaneTree((prev: PaneTree | null) => {
       // Standalone session: target is the anchor, dragged session always second
@@ -353,7 +338,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         : splitLeaf(prev, key, direction, sessKey)
     })
     setActiveKey(sessKey)
-  }, [detachFromOtherGroups, singleView, paneTree, activeGroupId, syncedGroups, setGroupTree, setGroupRank, deleteGroup])
+  }, [singleView, paneTree, activeGroupId, syncedGroups, setGroupTree, setGroupRank, deleteGroup])
 
   const closePane = useCallback((sessKey: string) => {
     workspaceActions.closePane(sessKey)
@@ -368,12 +353,11 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   // the active tree, any background group, and singleView at once, so the pane
   // disappears immediately instead of on the next session refresh.
   const removeSessionFromLayout = useCallback((sessKey: string) => {
-    detachFromOtherGroups(sessKey)
     workspaceActions.removeFromLayout(sessKey)
     // Explicit kill: dispose the pool entry so terminal/WS tear down.
     const { host, name } = parseSessionKey(sessKey)
     terminalPool.dispose(poolKeyFor(name, host || undefined))
-  }, [detachFromOtherGroups, workspaceActions])
+  }, [workspaceActions])
 
   const popOutPane = useCallback((sessKey: string) => {
     setSingleView(null)
@@ -469,6 +453,20 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   activeGroupIdRef.current = activeGroupId
   const setActiveKeyRef = useRef(setActiveKey)
   setActiveKeyRef.current = setActiveKey
+  
+  // Refs for push effect debouncing
+  const authenticatedRef = useRef(authenticated)
+  authenticatedRef.current = authenticated
+  const paneTreeRef = useRef(paneTree)
+  paneTreeRef.current = paneTree
+  const groupsLoadedRef = useRef(groupsLoaded)
+  groupsLoadedRef.current = groupsLoaded
+  const currentViewRef = useRef(currentView)
+  currentViewRef.current = currentView
+  const singleViewRef = useRef(singleView)
+  singleViewRef.current = singleView
+  const lastPushedRevRef = useRef<number>(-1)
+  
   const switchToGroupRef = useRef<((id: string) => void) | null>(null)
 
   const openNewSessionModal = useCallback(() => {
@@ -813,8 +811,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
 
   const handlePairSessions = useCallback((draggedKey: string, targetKey: string) => {
     setSingleView(null)
-    detachFromOtherGroups(draggedKey)
-    detachFromOtherGroups(targetKey)
     const inCurrentTree = paneTree && (findLeaf(paneTree, draggedKey) || findLeaf(paneTree, targetKey))
     if (!inCurrentTree) {
       // Neither session is in the active group — create a new background group
@@ -823,10 +819,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
         first: { type: 'leaf', sessionKey: targetKey },
         second: { type: 'leaf', sessionKey: draggedKey } }
       const currentRank = syncedGroups[activeGroupId]?.rank ?? null
-      if (paneTree) {
-        void setGroupTree(activeGroupId, paneTree)
-        if (!currentRank) void setGroupRank(activeGroupId, generateKeyBetween(null, generateKeyBetween(currentRank, null)))
-      }
+      if (!currentRank) void setGroupRank(activeGroupId, generateKeyBetween(null, generateKeyBetween(currentRank, null)))
       const nextRank = generateKeyBetween(currentRank, null)
       void setGroupTree(newId, newTree)
       void setGroupRank(newId, nextRank)
@@ -854,7 +847,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     const path = host ? `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}` : `/session/${encodeURIComponent(name)}`
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
     setCurrentView('session')
-  }, [paneTree, activeGroupId, syncedGroups, setGroupRank, setGroupTree, detachFromOtherGroups])
+  }, [paneTree, activeGroupId, syncedGroups, setGroupRank, setGroupTree])
 
   const switchToGroup = useCallback((groupId: string, focusKey?: string) => {
     // If re-selecting the already-active group (e.g. after navigating to a standalone session),
@@ -875,9 +868,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     }
     const targetGroup = syncedGroups[groupId]
     if (!targetGroup) return
-    if (paneTree) {
-      void setGroupTree(activeGroupId, paneTree)
-    }
     const targetKey = (focusKey && findLeaf(targetGroup.tree, focusKey))
       ? focusKey
       : (activeGroupId === groupId && activeKey ? activeKey : getLeaves(targetGroup.tree)[0] ?? null)
@@ -1061,7 +1051,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     // save current group to background and start a new group from singleView
     if (!targetKey && singleView) {
       key = singleView
-      detachFromOtherGroups(singleView)
       const newGroupId = Math.random().toString(36).slice(2)
       const currentRank = syncedGroups[activeGroupId]?.rank ?? null
       if (paneTree) {
@@ -1100,7 +1089,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     for (let n = 2; existingNames.has(name); n++) name = `shell-${n}`
     // Pass splitTarget directly — avoids ref race when event fires on both pane and container
     handleCreateSession(name, cwd, '', host || undefined, undefined, undefined, splitTarget)
-  }, [detachFromOtherGroups, singleView, activeKey, activeGroupId, paneTree, deleteGroup, handleCreateSession, syncedGroups, setGroupTree, setGroupRank])
+  }, [singleView, activeKey, activeGroupId, paneTree, deleteGroup, handleCreateSession, syncedGroups, setGroupTree, setGroupRank])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)

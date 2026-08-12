@@ -60,7 +60,9 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
   - [10.2 Tool events & agent tracking](#102-tool-events-agent-tracking)
   - [10.3 Activity tracking](#103-activity-tracking)
   - [10.4 Session discovery & pruning](#104-session-discovery-pruning)
+  - [10.4a Session "unreachable" state](#104a-session-unreachable-state)
   - [10.5 Session attributes (background / hidden)](#105-session-attributes-background-hidden)
+  - [10.5a Groups sync & exclusive membership](#105a-groups-sync--exclusive-membership)
   - [10.6 Crash & recovery](#106-crash-recovery)
 - [11. Keyboard Shortcuts (complete)](#11-keyboard-shortcuts-complete)
 - [12. Auth & Lock](#12-auth-lock)
@@ -161,11 +163,13 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
 
 ### 2.1a Layout group dissolution
 
-**Contract:** A layout group (custom pane grouping) is dissolved when its member count drops below 2. When a session is killed or removed, if its group is left with a single remaining member (or none), the group is deleted: its server record is removed, and the Sidebar no longer displays it as a group header. The remaining session returns to standalone display (not under a group header). This applies to both active and background groups.
+**Contract:** A layout group (custom pane grouping) is dissolved when its member count drops below 2. When a session is killed or removed, if its group is left with a single remaining member (or none), the group is tombstoned: its server record is marked deleted (persisted with updated timestamp), the Sidebar no longer displays it as a group header, and no group ever has exactly 1 leaf in a live tree. The remaining session returns to standalone display (not under a group header). This applies to both active and background groups.
 
-**Why it matters:** Single-leaf groups are UI clutter and confuse the grouping model (a group by definition has multiple members); dissolving them keeps the UI consistent and prevents stale group records from lingering after kills.
+**Exclusive membership:** After any group tree write (SetTree/ApplyRemote/ApplySnapshot/MigrateKey), a session key is an exclusive leaf in at most one live group — the most-recently-written group wins, and all other groups' references to that session are pruned immediately. This enforcement is server-side and automatic; clients adopt the server's exclusive membership via snapshot and never push partial divergent state back.
 
-**Verification pointer:** `web/src/state/workspaceReducer.ts` (reconcilePaneTree, sessions/remove case), `web/src/App.tsx` (detachFromOtherGroups, removeSessionFromLayout, layoutGroups memo)
+**Why it matters:** Single-leaf groups are UI clutter and confuse the grouping model (a group by definition has multiple members); dissolving them keeps the UI consistent and prevents stale group records from lingering after kills. Exclusive membership eliminates membership ambiguity and corruption that arises when a session appears in multiple groups, and ensures that the server is the single authoritative source of truth for group structure.
+
+**Verification pointer:** `pkg/groupsync/groupsync.go` (enforce method, SetTree/ApplyRemote/ApplySnapshot/MigrateKey callers), `web/src/state/workspaceReducer.ts` (groups/snapshot case, push gating)
 
 ### 2.2 Sidebar collapse
 
@@ -482,6 +486,14 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 **Why it matters:** Background/hidden persistence is a contract; losing it would reset user organizational choices on peer reconnect. Backgrounding a tiled session is an atomic cross-store operation; losing atomicity would orphan sessions in dead layout positions or inconsistently set bits across peers.
 
 **Verification pointer:** `web/src/hooks/useSessionAttrs.ts`, `pkg/sessionattrs/sessionattrs.go`, `pkg/groupsync/groupsync.go`
+
+### 10.5a Groups sync & exclusive membership
+
+**Contract:** Group trees are server-authoritative; enforcement of exclusive membership and dissolution happens on the backend on every write path (SetTree, ApplyRemote, ApplySnapshot, MigrateKey). After any write, a session key is a leaf in at most one live group — the most-recently-written group wins, others' leaves are pruned, and groups falling below 2 leaves are tombstoned (marked deleted, timestamp updated, persisted to `groups.json` but not removed). Peer tree deltas with timestamps older than a tombstone timestamp are rejected by last-write-wins comparison, ensuring tombstones are never resurrected. Clients adopt the server's exclusive membership via `groups/snapshot` (authoritative) and never push partial divergent state back; only user-initiated edits (split/close/resize/drag/pair) trigger PUTs, not group switches or passive reconciliation. Dead sessions (owner host online, session absent from `/api/sessions`) are pruned opportunistically on GET `/api/groups`, healing corrupt group trees. When a group's membership is enforced (exclusive winner chosen, other groups' leaves pruned), the naming coordinator is notified via `ObserveTreeMutation` to detect and clean up stale UNNAMED placeholder names.
+
+**Why it matters:** Exclusive membership eliminates ambiguity (session in multiple groups), corruption (stale state on peers), and ghosts (dead sessions lingering in trees). Server-authoritative enforcement and LWW tombstoning ensure all peers converge to the same group structure. Opportunistic dead-session healing maintains correctness over time without requiring administrative intervention. Client push gating prevents local reconciliation from being misinterpreted as user edits, avoiding amplification of stale state across the mesh.
+
+**Verification pointer:** `pkg/groupsync/groupsync.go` (enforce method, Reconcile method, SetTree/ApplyRemote/ApplySnapshot/MigrateKey), `pkg/server/routes_groups.go` (GET /api/groups calls Reconcile), `web/src/state/workspaceReducer.ts` (groups/snapshot case, push gating on user edits, skipTreeAdoptFor guard)
 
 ### 10.6 Crash & recovery
 

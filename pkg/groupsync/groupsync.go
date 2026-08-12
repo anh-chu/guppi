@@ -111,22 +111,33 @@ func (s *Store) Get(id string) (Group, bool) {
 	return g, ok
 }
 
-// SetTree applies a local tree update.
-func (s *Store) SetTree(id string, tree json.RawMessage) (Group, error) {
+// SetTree applies a local tree update, returning the updated group, enforcement-changed
+// groups with their prior states, and any error. Resurrection guard: if the group is
+// tombstoned, SetTree is a no-op (returns existing group, no enforcement) — tombstones
+// are permanent and cannot be resurrected.
+func (s *Store) SetTree(id string, tree json.RawMessage) (Group, map[string]Group, map[string]Group, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	g := s.groups[id]
+	isTombstoned := !g.DeletedAt.IsZero()
+
+	// Resurrection guard: tombstones are permanent, cannot be resurrected
+	if isTombstoned {
+		// Stale SetTree on dead id = reject explicitly (no enforcement, no state change)
+		return g, nil, nil, ErrTombstoned
+	}
+
 	g.Tree = append(json.RawMessage(nil), tree...)
 	g.TreeUpdatedAt = time.Now()
-	// A local edit resurrects a tombstoned group: without clearing DeletedAt a
-	// re-created id stays invisible because Live() filters non-zero DeletedAt.
+	// New local tree: fresh group, starts live (not tombstoned)
 	g.DeletedAt = time.Time{}
 	s.groups[id] = g
-	s.dedupeLiveGroups(g.TreeUpdatedAt)
+	enforcedChanged, enforcedPrior := s.enforce(g.TreeUpdatedAt, id)
 	if err := s.save(); err != nil {
-		return Group{}, err
+		return Group{}, nil, nil, err
 	}
-	return s.groups[id], nil
+	return s.groups[id], enforcedChanged, enforcedPrior, nil
 }
 
 // ErrUnknownGroup is returned by name/rank updates targeting an id that was
@@ -134,6 +145,10 @@ func (s *Store) SetTree(id string, tree json.RawMessage) (Group, error) {
 // (e.g. AI naming finishing after the group was deleted or deduped away)
 // would materialize a phantom empty-tree group record.
 var ErrUnknownGroup = errors.New("unknown group")
+
+// ErrTombstoned is returned by SetTree when the group id is tombstoned.
+// Tombstones are permanent; SetTree is a no-op on dead ids.
+var ErrTombstoned = errors.New("group is tombstoned")
 
 // SetName applies a local name update.
 func (s *Store) SetName(id, name string, mode NameMode) (Group, error) {
@@ -184,18 +199,22 @@ func (s *Store) Delete(id string) (Group, error) {
 	return g, nil
 }
 
-// ApplyRemote merges one remote group using field-level LWW.
-func (s *Store) ApplyRemote(id string, in Group) (Group, bool, error) {
+// ApplyRemote merges one remote group using field-level LWW, returning the
+// merged group, whether it was accepted, and any enforcement-changed groups
+// with their prior states.
+func (s *Store) ApplyRemote(id string, in Group) (Group, bool, map[string]Group, map[string]Group, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.groups[id]
 	merged := cur
 	accepted := false
+	treeAccepted := false
 
 	if in.TreeUpdatedAt.After(cur.TreeUpdatedAt) {
 		merged.Tree = append(json.RawMessage(nil), in.Tree...)
 		merged.TreeUpdatedAt = in.TreeUpdatedAt
 		accepted = true
+		treeAccepted = true
 	}
 	if in.NameUpdatedAt.After(cur.NameUpdatedAt) {
 		merged.Name = in.Name
@@ -218,18 +237,23 @@ func (s *Store) ApplyRemote(id string, in Group) (Group, bool, error) {
 	}
 
 	if !accepted {
-		return cur, false, nil
+		return cur, false, nil, nil, nil
 	}
 	s.groups[id] = merged
-	s.dedupeLiveGroups(time.Now())
-	if err := s.save(); err != nil {
-		return Group{}, false, err
+	winnerID := ""
+	if treeAccepted {
+		winnerID = id
 	}
-	return s.groups[id], true, nil
+	enforcedChanged, enforcedPrior := s.enforce(time.Now(), winnerID)
+	if err := s.save(); err != nil {
+		return Group{}, false, nil, nil, err
+	}
+	return s.groups[id], true, enforcedChanged, enforcedPrior, nil
 }
 
-// ApplySnapshot merges a remote snapshot using field-level LWW.
-func (s *Store) ApplySnapshot(snap map[string]Group) ([]string, error) {
+// ApplySnapshot merges a remote snapshot using field-level LWW, returning changed ids,
+// enforcement-changed groups, their prior states, and any error.
+func (s *Store) ApplySnapshot(snap map[string]Group) ([]string, map[string]Group, map[string]Group, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	changed := make([]string, 0, len(snap))
@@ -269,14 +293,15 @@ func (s *Store) ApplySnapshot(snap map[string]Group) ([]string, error) {
 		changed = append(changed, id)
 	}
 	if len(changed) == 0 {
-		return nil, nil
+		return nil, nil, nil, nil
 	}
-	if tombstoned := s.dedupeLiveGroups(time.Now()); len(tombstoned) > 0 {
+	enforcedChanged, enforcedPrior := s.enforce(time.Now(), "")
+	if len(enforcedChanged) > 0 {
 		seen := make(map[string]struct{}, len(changed))
 		for _, id := range changed {
 			seen[id] = struct{}{}
 		}
-		for _, id := range tombstoned {
+		for id := range enforcedChanged {
 			if _, ok := seen[id]; !ok {
 				changed = append(changed, id)
 			}
@@ -284,9 +309,9 @@ func (s *Store) ApplySnapshot(snap map[string]Group) ([]string, error) {
 	}
 	sort.Strings(changed)
 	if err := s.save(); err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	return changed, nil
+	return changed, enforcedChanged, enforcedPrior, nil
 }
 
 // MigrateKey rewrites owned session-key leaves inside every tree blob.
@@ -330,12 +355,13 @@ func (s *Store) MigrateKey(localHost, oldName, newName string) ([]string, error)
 	if len(changed) == 0 {
 		return nil, nil
 	}
-	if tombstoned := s.dedupeLiveGroups(time.Now()); len(tombstoned) > 0 {
+	enforcedChanged, _ := s.enforce(time.Now(), "")
+	if len(enforcedChanged) > 0 {
 		seen := make(map[string]struct{}, len(changed))
 		for _, id := range changed {
 			seen[id] = struct{}{}
 		}
-		for _, id := range tombstoned {
+		for id := range enforcedChanged {
 			if _, ok := seen[id]; !ok {
 				changed = append(changed, id)
 			}
@@ -348,52 +374,146 @@ func (s *Store) MigrateKey(localHost, oldName, newName string) ([]string, error)
 	return changed, nil
 }
 
-// dedupeLiveGroups heals duplicate-content group records: when two live
-// (non-tombstoned) groups share the exact same set of session leaves (same
-// MembershipFingerprint, ignoring split direction/order/ratios), only the one
-// with the most recently updated tree is kept and the rest are tombstoned.
-//
-// Two independent clients (browser tabs, hosts, or a racing peer sync) can
-// each mint their own random group id for what is actually the same set of
-// sessions. Without this pass both records linger forever, each may get its
-// own AI-generated name, and the sidebar shows the same sessions twice under
-// two different names. Callers must hold s.mu.
-func (s *Store) dedupeLiveGroups(now time.Time) []string {
-	byFingerprint := make(map[string][]string)
+// enforce ensures membership exclusivity: each session key is owned by at most
+// one live group. Live groups are ordered winnerID-first, then by TreeUpdatedAt
+// (descending), then by id. The first group in this order to own a key keeps it;
+// later groups have that key removed via removeLeafAny. Groups that become empty,
+// fall below 2 leaves due to key removal, or arrive with fewer than 2 leaves
+// (e.g., remote 1-leaf trees) are tombstoned (DeletedAt=now).
+// Still-live pruned groups get TreeUpdatedAt=now. Returns the maps of changed
+// ids and their prior states. Callers must hold s.mu.
+func (s *Store) enforce(now time.Time, winnerID string) (map[string]Group, map[string]Group) {
+	changed := make(map[string]Group)
+	prior := make(map[string]Group)
+
+	// Collect all live groups and sort by priority.
+	var liveIDs []string
 	for id, g := range s.groups {
-		if !g.DeletedAt.IsZero() {
-			continue
+		if g.DeletedAt.IsZero() {
+			liveIDs = append(liveIDs, id)
 		}
-		fp, keys, err := MembershipFingerprint(g.Tree)
-		if err != nil || len(keys) == 0 {
-			continue
-		}
-		byFingerprint[fp] = append(byFingerprint[fp], id)
 	}
 
-	var tombstoned []string
-	for _, ids := range byFingerprint {
-		if len(ids) < 2 {
+	// Sort: winnerID first, then TreeUpdatedAt (desc), then id (asc)
+	sort.Slice(liveIDs, func(i, j int) bool {
+		idi, idj := liveIDs[i], liveIDs[j]
+		gi, gj := s.groups[idi], s.groups[idj]
+
+		// winnerID comes first
+		if idi == winnerID && idj != winnerID {
+			return true
+		}
+		if idi != winnerID && idj == winnerID {
+			return false
+		}
+
+		// TreeUpdatedAt descending
+		if !gi.TreeUpdatedAt.Equal(gj.TreeUpdatedAt) {
+			return gi.TreeUpdatedAt.After(gj.TreeUpdatedAt)
+		}
+
+		// id ascending
+		return idi < idj
+	})
+
+	// Track already-owned keys
+	ownedKeys := make(map[string]struct{})
+
+	for _, id := range liveIDs {
+		g := s.groups[id]
+		if len(g.Tree) == 0 {
 			continue
 		}
-		keep := ids[0]
-		for _, id := range ids[1:] {
-			if s.groups[id].TreeUpdatedAt.After(s.groups[keep].TreeUpdatedAt) {
-				keep = id
+
+		var tree any
+		if err := json.Unmarshal(g.Tree, &tree); err != nil {
+			continue
+		}
+
+		// Collect keys in this group's tree
+		keys, err := MemberKeys(g.Tree)
+		if err != nil {
+			continue
+		}
+
+		// Remove keys already owned by earlier groups
+		modified := false
+		for _, key := range keys {
+			if _, owned := ownedKeys[key]; owned {
+				updated, removed := removeLeafAny(tree, key)
+				if removed {
+					tree = updated
+					modified = true
+				}
 			}
 		}
-		for _, id := range ids {
-			if id == keep {
-				continue
+
+		// Compute final surviving keys and decide fate
+		var finalKeys []string
+		if tree != nil {
+			raw, _ := json.Marshal(tree)
+			finalKeys, _ = MemberKeys(raw)
+		}
+		survivor := len(finalKeys) >= 2
+
+		// Mark remaining keys as owned by this group only if it survives
+		if survivor {
+			for _, key := range finalKeys {
+				if _, owned := ownedKeys[key]; !owned {
+					ownedKeys[key] = struct{}{}
+				}
 			}
-			g := s.groups[id]
-			g.DeletedAt = now
-			s.groups[id] = g
-			tombstoned = append(tombstoned, id)
+		}
+
+		// Apply changes if any
+		if modified || !survivor {
+			if _, ok := changed[id]; !ok {
+				prior[id] = s.groups[id]
+			}
+
+			if tree == nil || !survivor {
+				// Tree emptied or <2 leaves; tombstone
+				g.DeletedAt = now
+				s.groups[id] = g
+				changed[id] = g
+			} else {
+				// Remarshal and update tree
+				raw, err := json.Marshal(tree)
+				if err == nil {
+					g.Tree = raw
+					g.TreeUpdatedAt = now
+					s.groups[id] = g
+					changed[id] = g
+				}
+			}
 		}
 	}
-	return tombstoned
+
+	// Second pass: check all live groups for <2 leaves and tombstone them
+	// (handles groups that arrived degenerate from remote merge or SetTree)
+	for id, g := range s.groups {
+		if !g.DeletedAt.IsZero() || len(g.Tree) == 0 {
+			continue
+		}
+		if _, ok := changed[id]; ok {
+			continue // already processed above
+		}
+
+		keysCount, _ := MemberKeys(g.Tree)
+		if len(keysCount) < 2 {
+			// Capture prior before mutation
+			if _, ok := prior[id]; !ok {
+				prior[id] = g
+			}
+			g.DeletedAt = now
+			s.groups[id] = g
+			changed[id] = g
+		}
+	}
+
+	return changed, prior
 }
+
 
 func replaceStrings(v any, olds, news []string) (any, bool) {
 	switch x := v.(type) {
@@ -487,17 +607,28 @@ func (s *Store) RemoveSessionKey(key string) (changed map[string]Group, prior ma
 		s.groups[id] = g
 	}
 
-	// Pruning can leave two live groups with identical memberships; tombstone
-	// the duplicates so the sidebar does not show the same sessions twice.
-	preDedupe := make(map[string]Group, len(s.groups))
-	for id, g := range s.groups {
-		preDedupe[id] = g
-	}
-	for _, id := range s.dedupeLiveGroups(now) {
-		if _, ok := prior[id]; !ok {
-			prior[id] = preDedupe[id]
+	// Check for <2 leaves in pruned groups and tombstone them
+	for id, g := range pruned {
+		if g.DeletedAt.IsZero() && len(g.Tree) > 0 {
+			keys, _ := MemberKeys(g.Tree)
+			if len(keys) < 2 {
+				if _, ok := prior[id]; !ok {
+					prior[id] = s.groups[id]
+				}
+				g.DeletedAt = now
+				s.groups[id] = g
+				pruned[id] = g
+			}
 		}
-		pruned[id] = s.groups[id]
+	}
+
+	// Enforce membership exclusivity and update enforce-changed groups
+	enforcedChanged, enforcedPrior := s.enforce(now, "")
+	for id, g := range enforcedChanged {
+		if _, ok := prior[id]; !ok {
+			prior[id] = enforcedPrior[id]
+		}
+		pruned[id] = g
 	}
 
 	if err := s.save(); err != nil {
@@ -521,6 +652,84 @@ func (s *Store) Restore(groups map[string]Group) error {
 		s.groups[id] = g
 	}
 	return s.save()
+}
+
+// Reconcile server-side heals groups by pruning leaves where gone(key) returns
+// true, then enforces membership exclusivity and checks sub-2-leaf counts.
+// Returns the map of changed groups, their prior states, and any error.
+func (s *Store) Reconcile(gone func(key string) bool) (map[string]Group, map[string]Group, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	changed := make(map[string]Group)
+	prior := make(map[string]Group)
+
+	// First pass: prune leaves where gone(key) == true
+	for id, g := range s.groups {
+		if !g.DeletedAt.IsZero() || len(g.Tree) == 0 {
+			continue
+		}
+
+		var tree any
+		if err := json.Unmarshal(g.Tree, &tree); err != nil {
+			continue
+		}
+
+		pruneChanged := false
+		keys, _ := MemberKeys(g.Tree)
+		for _, key := range keys {
+			if gone(key) {
+				updated, removed := removeLeafAny(tree, key)
+				if removed {
+					tree = updated
+					pruneChanged = true
+				}
+			}
+		}
+
+		if pruneChanged {
+			if _, ok := changed[id]; !ok {
+				prior[id] = s.groups[id]
+			}
+			if tree == nil {
+				// Tree emptied; tombstone
+				g.DeletedAt = now
+			} else {
+				// Tree still has content; update and check <2 leaf rule
+				raw, err := json.Marshal(tree)
+				if err == nil {
+					g.Tree = raw
+					g.TreeUpdatedAt = now
+					// Check if pruned tree now has <2 leaves
+					prunedKeys, _ := MemberKeys(raw)
+					if len(prunedKeys) < 2 {
+						g.DeletedAt = now
+					}
+				}
+			}
+			s.groups[id] = g
+			changed[id] = g
+		}
+	}
+
+	// Second pass: enforce membership exclusivity
+	enforcedChanged, enforcedPrior := s.enforce(now, "")
+	for id, g := range enforcedChanged {
+		if _, ok := prior[id]; !ok {
+			prior[id] = enforcedPrior[id]
+		}
+		changed[id] = g
+	}
+
+	if len(changed) == 0 {
+		return nil, nil, nil
+	}
+
+	if err := s.save(); err != nil {
+		return nil, nil, err
+	}
+	return changed, prior, nil
 }
 
 // removeLeafAny recursively removes a leaf node matching the key from any tree

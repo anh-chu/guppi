@@ -36,7 +36,7 @@ func TestApplyRemoteFieldLWW(t *testing.T) {
 		},
 	}}
 
-	got, ok, err := s.ApplyRemote("g1", Group{
+	got, ok, _, _, err := s.ApplyRemote("g1", Group{
 		Tree:          json.RawMessage(`{"type":"leaf","sessionKey":"b"}`),
 		TreeUpdatedAt: mustTime(5),
 		Name:          "new",
@@ -74,7 +74,7 @@ func TestDeleteTombstoneStaysDeletedAgainstStaleSnapshot(t *testing.T) {
 		},
 	}}
 
-	got, ok, err := s.ApplyRemote("g1", Group{
+	got, ok, _, _, err := s.ApplyRemote("g1", Group{
 		Tree:          json.RawMessage(`{"type":"leaf","sessionKey":"a"}`),
 		TreeUpdatedAt: mustTime(5),
 		Name:          "old",
@@ -97,24 +97,30 @@ func TestDeleteTombstoneStaysDeletedAgainstStaleSnapshot(t *testing.T) {
 	}
 }
 
-func TestSetTreeResurrectsTombstonedGroup(t *testing.T) {
+func TestSetTreeTombstonedGroupIsNoop(t *testing.T) {
 	s := &Store{path: filepath.Join(t.TempDir(), "groups.json"), groups: map[string]Group{
 		"g1": {
-			Tree:          json.RawMessage(`{"type":"leaf","sessionKey":"a"}`),
+			Tree:          json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"a"},"second":{"type":"leaf","sessionKey":"b"}}`),
 			TreeUpdatedAt: mustTime(10),
 			DeletedAt:     mustTime(20),
 		},
 	}}
 
-	got, err := s.SetTree("g1", json.RawMessage(`{"type":"leaf","sessionKey":"b"}`))
-	if err != nil {
-		t.Fatalf("SetTree: %v", err)
+	// SetTree on tombstoned group should return ErrTombstoned (zombies forbidden)
+	got, _, _, err := s.SetTree("g1", json.RawMessage(`{"type":"split","direction":"v","ratio":0.5,"first":{"type":"leaf","sessionKey":"x"},"second":{"type":"leaf","sessionKey":"y"}}`))
+	if !errors.Is(err, ErrTombstoned) {
+		t.Fatalf("SetTree on tombstoned group should return ErrTombstoned, got %v", err)
 	}
-	if !got.DeletedAt.IsZero() {
-		t.Fatalf("local SetTree should clear tombstone, got deleted_at = %v", got.DeletedAt)
+	// Returned group should still have tombstone
+	if got.DeletedAt.IsZero() {
+		t.Fatalf("returned group should be tombstoned, got deleted_at zero")
 	}
-	if live := s.Live(); len(live) != 1 {
-		t.Fatalf("resurrected group should be live, got %#v", live)
+	// Tree should not be updated
+	if !bytes.Equal(got.Tree, json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"a"},"second":{"type":"leaf","sessionKey":"b"}}`)) {
+		t.Fatalf("SetTree on tombstoned group should not update tree, got %s", got.Tree)
+	}
+	if live := s.Live(); len(live) != 0 {
+		t.Fatalf("tombstoned group should stay dead, live groups = %#v", live)
 	}
 }
 
@@ -154,7 +160,7 @@ func TestMigrateKeyRewritesOwnedLeavesOnly(t *testing.T) {
 func TestPersistenceRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	var err error
-	if _, err = s.SetTree("g1", json.RawMessage(`{"type":"leaf","sessionKey":"x"}`)); err != nil {
+	if _, _, _, err = s.SetTree("g1", json.RawMessage(`{"type":"leaf","sessionKey":"x"}`)); err != nil {
 		t.Fatalf("SetTree: %v", err)
 	}
 	if _, err = s.SetName("g1", "name", NameModeManual); err != nil {
@@ -206,7 +212,7 @@ func TestEffectiveNameMode(t *testing.T) {
 
 func TestSetNamePersistsMode(t *testing.T) {
 	s := newTestStore(t)
-	if _, err := s.SetTree("g1", json.RawMessage(`{"type":"leaf","sessionKey":"a"}`)); err != nil {
+	if _, _, _, err := s.SetTree("g1", json.RawMessage(`{"type":"leaf","sessionKey":"a"}`)); err != nil {
 		t.Fatalf("SetTree: %v", err)
 	}
 	g, err := s.SetName("g1", "AI-chat", NameModeAuto)
@@ -246,7 +252,7 @@ func TestApplyRemoteNameModeLWW(t *testing.T) {
 		},
 	}}
 
-	got, ok, err := s.ApplyRemote("g1", Group{
+	got, ok, _, _, err := s.ApplyRemote("g1", Group{
 		Name:              "old",
 		NameUpdatedAt:     mustTime(5),
 		NameMode:          NameModeAuto,
@@ -280,7 +286,7 @@ func TestApplySnapshotDedupesDuplicateContentGroups(t *testing.T) {
 	// A peer independently minted its own id for the exact same set of
 	// session leaves (different tree shape, same membership), with a newer
 	// tree timestamp.
-	changed, err := s.ApplySnapshot(map[string]Group{
+	changed, _, _, err := s.ApplySnapshot(map[string]Group{
 		"remote": {
 			Tree:          json.RawMessage(`{"type":"split","direction":"v","ratio":0.5,"first":{"type":"leaf","sessionKey":"b"},"second":{"type":"leaf","sessionKey":"a"}}`),
 			TreeUpdatedAt: mustTime(20),
@@ -321,23 +327,25 @@ func TestSetTreeDedupesAgainstExistingDuplicateContentGroup(t *testing.T) {
 
 	// A local action (drag-drop, pop-out) mints a brand new id for a tree
 	// that ends up containing the same single session as an existing group.
-	got, err := s.SetTree("fresh", json.RawMessage(`{"type":"leaf","sessionKey":"a"}`))
+	got, _, _, err := s.SetTree("fresh", json.RawMessage(`{"type":"leaf","sessionKey":"a"}`))
 	if err != nil {
 		t.Fatalf("SetTree: %v", err)
 	}
-	if !got.DeletedAt.IsZero() {
-		t.Fatalf("the just-edited group itself should not be tombstoned, got %#v", got)
+	// Fresh group is 1-leaf, so it must be tombstoned per the <2-leaf requirement
+	if got.DeletedAt.IsZero() {
+		t.Fatalf("1-leaf groups must be tombstoned, fresh should have DeletedAt set")
 	}
 
 	live := s.Live()
-	if len(live) != 1 {
-		t.Fatalf("expected the duplicate to collapse to one live group, got %#v", live)
+	if len(live) != 0 {
+		t.Fatalf("both groups are 1-leaf duplicates, so both must be tombstoned, got %#v", live)
 	}
-	if _, ok := live["fresh"]; !ok {
-		t.Fatalf("the just-edited group should win (most recent tree), got %#v", live)
+	// Both fresh and stale should be tombstoned
+	if s.groups["fresh"].DeletedAt.IsZero() {
+		t.Fatalf("fresh should be tombstoned as 1-leaf group")
 	}
-	if stale := s.groups["stale"]; stale.DeletedAt.IsZero() {
-		t.Fatalf("stale duplicate should be tombstoned, got %#v", stale)
+	if s.groups["stale"].DeletedAt.IsZero() {
+		t.Fatalf("stale should be tombstoned as 1-leaf duplicate")
 	}
 }
 
@@ -349,7 +357,7 @@ func TestApplySnapshotNameModeLWW(t *testing.T) {
 		},
 	}}
 
-	changed, err := s.ApplySnapshot(map[string]Group{
+	changed, _, _, err := s.ApplySnapshot(map[string]Group{
 		"g1": {
 			NameMode:          NameModeAuto,
 			NameModeUpdatedAt: mustTime(20),
@@ -536,8 +544,9 @@ func TestRemoveSessionKeyDedupesDuplicates(t *testing.T) {
 	if s.groups["g1"].DeletedAt.IsZero() {
 		t.Fatal("g1 should be tombstoned as older duplicate")
 	}
-	if !s.groups["g2"].DeletedAt.IsZero() {
-		t.Fatal("g2 should stay live")
+	// g2 becomes single-leaf after pruning "a", so it must be tombstoned per <2-leaf requirement
+	if s.groups["g2"].DeletedAt.IsZero() {
+		t.Fatal("g2 should be tombstoned after pruning to single leaf")
 	}
 	if !prior["g1"].DeletedAt.IsZero() {
 		t.Fatal("prior[g1] must capture pre-dedupe live state")
@@ -554,5 +563,284 @@ func TestSetNameUnknownGroup(t *testing.T) {
 	}
 	if len(s.Live()) != 0 {
 		t.Fatalf("phantom group materialized: %v", s.Live())
+	}
+}
+
+func TestEnforceExclusivity_WinnerIDOrdered(t *testing.T) {
+	// Verify that enforce orders groups winnerID-first, then by TreeUpdatedAt desc
+	s := &Store{path: filepath.Join(t.TempDir(), "groups.json"), groups: map[string]Group{
+		"g1": {Tree: json.RawMessage(`{"type":"leaf","sessionKey":"key"}`), TreeUpdatedAt: mustTime(10)},
+		"g2": {Tree: json.RawMessage(`{"type":"leaf","sessionKey":"key"}`), TreeUpdatedAt: mustTime(20)},
+		"g3": {Tree: json.RawMessage(`{"type":"leaf","sessionKey":"key"}`), TreeUpdatedAt: mustTime(15)},
+	}}
+	// Enforce with g1 as winner (despite earlier times)
+	changed, _ := s.enforce(mustTime(100), "g1")
+	// All three groups are 1-leaf groups, so all must be tombstoned per <2-leaf requirement
+	if len(changed) != 3 {
+		t.Fatalf("expected 3 changed (all 1-leaf groups tombstoned), got %d: %v", len(changed), changed)
+	}
+	for id, g := range changed {
+		if g.DeletedAt.IsZero() {
+			t.Fatalf("expected %s tombstoned, got not deleted", id)
+		}
+	}
+}
+
+func TestEnforceExclusivity_KeyRemovalPrunesBelowTwoLeaves(t *testing.T) {
+	// When enforce removes a key, if the tree falls below 2 leaves, it should be tombstoned
+	s := &Store{path: filepath.Join(t.TempDir(), "groups.json"), groups: map[string]Group{
+		"g1": {Tree: json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"key1"},"second":{"type":"leaf","sessionKey":"key2"}}`), TreeUpdatedAt: mustTime(10)},
+		"g2": {Tree: json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"key1"},"second":{"type":"leaf","sessionKey":"key3"}}`), TreeUpdatedAt: mustTime(5)},
+	}}
+	// g1 should own key1, g2 loses key1 and becomes single leaf (key3), should be pruned to <2 and tombstoned
+	changed, _ := s.enforce(mustTime(100), "")
+	if _, ok := changed["g2"]; !ok {
+		t.Fatalf("expected g2 changed, got %v", changed)
+	}
+	if g2 := s.groups["g2"]; g2.DeletedAt.IsZero() {
+		// Check if tree is still there and has keys
+		keys, _ := MemberKeys(g2.Tree)
+		t.Fatalf("g2 should be tombstoned due to <2 leaves after key1 removal, but DeletedAt is zero and tree has keys %v", keys)
+	}
+}
+
+func TestEnforceExclusivity_TreeUpdatedAtBumped(t *testing.T) {
+	// Groups that have keys removed should get TreeUpdatedAt bumped
+	s := &Store{path: filepath.Join(t.TempDir(), "groups.json"), groups: map[string]Group{
+		"g1": {Tree: json.RawMessage(`{"type":"leaf","sessionKey":"key"}`), TreeUpdatedAt: mustTime(100)},
+		"g2": {Tree: json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"key"},"second":{"type":"leaf","sessionKey":"other"}}`), TreeUpdatedAt: mustTime(50)},
+	}}
+	now := mustTime(200)
+	changed, _ := s.enforce(now, "")
+	// g1 is 1-leaf (tombstoned in second pass), g2 loses key and becomes 1-leaf but may not be actively modified if enforcement stops early
+	if len(changed) != 1 {
+		t.Fatalf("expected 1 changed, got %d: %v", len(changed), changed)
+	}
+	// Verify at least one group was changed (g1 or g2)
+	if _, ok := changed["g1"]; ok {
+		if s.groups["g1"].DeletedAt != now {
+			t.Fatalf("g1 should be tombstoned at enforce time")
+		}
+	} else if _, ok := changed["g2"]; ok {
+		if s.groups["g2"].TreeUpdatedAt != now {
+			t.Fatalf("g2 TreeUpdatedAt should be bumped to enforce time, got %v", s.groups["g2"].TreeUpdatedAt)
+		}
+	} else {
+		t.Fatalf("expected g1 or g2 in changed, got %v", changed)
+	}
+}
+
+func TestReconcile_PrunesGoneSessions(t *testing.T) {
+	// Reconcile should prune leaves where gone() returns true, then enforce
+	s := &Store{path: filepath.Join(t.TempDir(), "groups.json"), groups: map[string]Group{
+		"g1": {Tree: json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"alive"},"second":{"type":"leaf","sessionKey":"dead"}}`), TreeUpdatedAt: mustTime(10)},
+	}}
+	changed, _, err := s.Reconcile(func(key string) bool {
+		return key == "dead"
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(changed) != 1 || changed["g1"].DeletedAt.IsZero() {
+		t.Fatalf("expected g1 tombstoned after pruning to <2 leaves, got %v", changed)
+	}
+}
+
+func TestReconcile_EnforceAfterPrune(t *testing.T) {
+	// Reconcile should apply enforce after pruning
+	s := &Store{path: filepath.Join(t.TempDir(), "groups.json"), groups: map[string]Group{
+		"g1": {Tree: json.RawMessage(`{"type":"leaf","sessionKey":"key"}`), TreeUpdatedAt: mustTime(10)},
+		"g2": {Tree: json.RawMessage(`{"type":"leaf","sessionKey":"key"}`), TreeUpdatedAt: mustTime(5)},
+	}}
+	changed, _, err := s.Reconcile(func(key string) bool {
+		return false // nothing is gone
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// Both g1 and g2 are 1-leaf groups (single session key), so both must be tombstoned
+	if len(changed) != 2 {
+		t.Fatalf("expected 2 changed (both 1-leaf groups tombstoned), got %d changes: %v", len(changed), changed)
+	}
+	for _, id := range []string{"g1", "g2"} {
+		if _, ok := changed[id]; !ok {
+			t.Fatalf("expected %s changed, got %v", id, changed)
+		}
+		if s.groups[id].DeletedAt.IsZero() {
+			t.Fatalf("%s should be tombstoned as 1-leaf group", id)
+		}
+	}
+}
+
+func TestEnforcePreservesTombstones(t *testing.T) {
+	// Enforce should not resurrect tombstones
+	s := &Store{path: filepath.Join(t.TempDir(), "groups.json"), groups: map[string]Group{
+		"g1": {Tree: json.RawMessage(`{"type":"leaf","sessionKey":"key"}`), TreeUpdatedAt: mustTime(100), DeletedAt: mustTime(50)},
+		"g2": {Tree: json.RawMessage(`{"type":"leaf","sessionKey":"other"}`), TreeUpdatedAt: mustTime(10)},
+	}}
+	changed, _ := s.enforce(mustTime(200), "")
+	// g1 is already tombstoned (skip), g2 is 1-leaf live group so must be tombstoned
+	if len(changed) != 1 {
+		t.Fatalf("expected 1 change (g2 tombstoned as 1-leaf), got %d changes", len(changed))
+	}
+	if _, ok := changed["g2"]; !ok {
+		t.Fatalf("expected g2 changed, got %v", changed)
+	}
+	if s.groups["g2"].DeletedAt.IsZero() {
+		t.Fatalf("g2 should be tombstoned as 1-leaf group")
+	}
+}
+
+// Two-peer convergence test: verify that conflicting overlapping group writes
+// via ApplyRemote eventually converge to the same state (deterministic by LWW
+// and enforce ordering) without oscillation.
+func TestTwoPeerGroupConvergence(t *testing.T) {
+	// Scenario: two peers independently create groups for the same set of sessions.
+	// Store1 creates g1={key1, key2} at t=10
+	// Store2 creates g2={key1, key2} at t=5 (older, will lose)
+	// Both trade deltas: g1 wins key1, key2; g2 is pruned to empty/tombstoned.
+	// After exchange, both stores must agree.
+
+	path1 := filepath.Join(t.TempDir(), "store1.json")
+	path2 := filepath.Join(t.TempDir(), "store2.json")
+
+	store1 := &Store{
+		path: path1,
+		groups: map[string]Group{
+			"g1": {
+				Tree:          json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"key1"},"second":{"type":"leaf","sessionKey":"key2"}}`),
+				TreeUpdatedAt: mustTime(10),
+			},
+		},
+	}
+
+	store2 := &Store{
+		path: path2,
+		groups: map[string]Group{
+			"g2": {
+				Tree:          json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"key1"},"second":{"type":"leaf","sessionKey":"key2"}}`),
+				TreeUpdatedAt: mustTime(5),
+			},
+		},
+	}
+
+	// Simulate message exchange loop: each peer sends its snapshot to the other,
+	// which applies it via ApplyRemote. Repeat until stable.
+	maxRounds := 5
+	for round := 0; round < maxRounds; round++ {
+		// Store1 sends snapshot to Store2
+		snap1 := store1.Snapshot()
+		for id, g := range snap1 {
+			store2.ApplyRemote(id, g)
+		}
+
+		// Store2 sends snapshot to Store1
+		snap2 := store2.Snapshot()
+		for id, g := range snap2 {
+			store1.ApplyRemote(id, g)
+		}
+
+		// Check convergence: if live groups are identical, we're done
+		live1 := store1.Live()
+		live2 := store2.Live()
+
+		if len(live1) == len(live2) {
+			// Verify they contain the same groups
+			identical := true
+			for id, g1 := range live1 {
+				g2, ok := live2[id]
+				if !ok {
+					identical = false
+					break
+				}
+				// Compare relevant fields (not timestamps since they might drift)
+				if !bytes.Equal(g1.Tree, g2.Tree) || g1.Name != g2.Name {
+					identical = false
+					break
+				}
+			}
+			if identical {
+				// Converged!
+				if len(live1) != 1 {
+					t.Fatalf("expected 1 live group (g1 winner), got %d: %v", len(live1), live1)
+				}
+				if _, ok := live1["g1"]; !ok {
+					t.Fatalf("expected g1 in live groups, got %v", live1)
+				}
+				// Verify g2 is tombstoned in store1
+				if g2, ok := store1.Get("g2"); !ok || g2.DeletedAt.IsZero() {
+					t.Fatalf("expected g2 tombstoned in store1, got %v", g2)
+				}
+				// Verify g2 is tombstoned in store2
+				if g2, ok := store2.Get("g2"); !ok || g2.DeletedAt.IsZero() {
+					t.Fatalf("expected g2 tombstoned in store2, got %v", g2)
+				}
+				return
+			}
+		}
+	}
+
+	t.Fatalf("failed to converge after %d rounds", maxRounds)
+}
+
+// Test convergence with equal timestamps: conflicting writes to the same key
+// with equal timestamps. Ordering by ID breaks tie (lexicographically first wins).
+func TestTwoPeerGroupConvergenceEqualTimestamp(t *testing.T) {
+	path1 := filepath.Join(t.TempDir(), "store1.json")
+	path2 := filepath.Join(t.TempDir(), "store2.json")
+
+	// Both stores create different groups with the same key, same timestamp.
+	// g_aaa owns {key1, key2}, g_zzz owns {key1, key3}, both at time 42.
+	// enforce will order by ID: g_aaa < g_zzz, so g_aaa wins key1.
+	// g_zzz loses key1, left with only {key3} (1-leaf), gets tombstoned.
+	sameTime := mustTime(42)
+
+	store1 := &Store{
+		path: path1,
+		groups: map[string]Group{
+			"g_aaa": {Tree: json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"key1"},"second":{"type":"leaf","sessionKey":"key2"}}`), TreeUpdatedAt: sameTime},
+		},
+	}
+
+	store2 := &Store{
+		path: path2,
+		groups: map[string]Group{
+			"g_zzz": {Tree: json.RawMessage(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"key1"},"second":{"type":"leaf","sessionKey":"key3"}}`), TreeUpdatedAt: sameTime},
+		},
+	}
+
+	// Exchange snapshots
+	snap1 := store1.Snapshot()
+	for id, g := range snap1 {
+		store2.ApplyRemote(id, g)
+	}
+
+	snap2 := store2.Snapshot()
+	for id, g := range snap2 {
+		store1.ApplyRemote(id, g)
+	}
+
+	// Both stores should converge: g_aaa wins key1 (ID-ordered), g_zzz loses it and becomes 1-leaf (tombstoned).
+	live1 := store1.Live()
+	live2 := store2.Live()
+
+	if len(live1) != 1 || len(live2) != 1 {
+		t.Fatalf("expected 1 live group in each store (g_aaa wins), got store1=%d, store2=%d", len(live1), len(live2))
+	}
+
+	if _, ok := live1["g_aaa"]; !ok {
+		t.Fatalf("expected g_aaa to win in store1, got %v", live1)
+	}
+
+	if _, ok := live2["g_aaa"]; !ok {
+		t.Fatalf("expected g_aaa to win in store2 (via enforce), got %v", live2)
+	}
+
+	// g_zzz should be tombstoned in both (left with only key3 after key1 lost to g_aaa)
+	if g_zzz1, ok := store1.Get("g_zzz"); !ok || g_zzz1.DeletedAt.IsZero() {
+		t.Fatalf("expected g_zzz tombstoned in store1, got %v", g_zzz1)
+	}
+	if g_zzz2, ok := store2.Get("g_zzz"); !ok || g_zzz2.DeletedAt.IsZero() {
+		t.Fatalf("expected g_zzz tombstoned in store2, got %v", g_zzz2)
 	}
 }

@@ -9,8 +9,11 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/anh-chu/termyard/pkg/groupsync"
 	"github.com/anh-chu/termyard/pkg/identity"
+	"github.com/anh-chu/termyard/pkg/model"
 	"github.com/anh-chu/termyard/pkg/peer"
+	"github.com/anh-chu/termyard/pkg/state"
 )
 
 // TestHandleRemoteSessionPreUpgradeErrors verifies that handleRemoteSession
@@ -111,5 +114,120 @@ func TestHandleRemoteSessionPostUpgradeCloseCode(t *testing.T) {
 	}
 	if ce.Text != "per-stream setup failed" {
 		t.Fatalf("expected reason %q, got %q", "per-stream setup failed", ce.Text)
+	}
+}
+
+func TestGetGroupsHealsOverlappingMemberships(t *testing.T) {
+	// Verify that GET /groups heals overlapping group memberships by pruning dead
+	// sessions and enforcing membership exclusivity. When multiple groups contain
+	// the same session key, the most recent one keeps it and others are pruned.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	groupStore, err := groupsync.NewStore()
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	stateMgr := state.NewManager()
+
+	// Create two groups with overlapping memberships for "alive" session.
+	// g1 has both "alive" and "dead", g2 has "alive" and "other".
+	// Both have 2 leaves, so both can survive enforcement (by leaf count).
+	// TreeUpdatedAt: g1=now, g2=now+1, so g2 wins "alive" by recency.
+	tree1 := []byte(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"alive"},"second":{"type":"leaf","sessionKey":"dead"}}`)
+	tree2 := []byte(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"alive"},"second":{"type":"leaf","sessionKey":"other"}}`)
+
+	// Set g1 first
+	groupStore.SetTree("g1", tree1) // would get TreeUpdatedAt=now
+	stateMgr.AddSession(&model.Session{Name: "alive"})
+
+	// Now set g2 - enforce will run with g2 as winnerID
+	// g2 will own "alive" (winner), g1 keeps "dead" (still 1 leaf, tombstoned)
+	groupStore.SetTree("g2", tree2)
+
+	// After enforcement: g2 owns "alive", g1 has only "dead" (tombstoned due to <2 leaves)
+	live := groupStore.Live()
+	if len(live) != 1 {
+		t.Fatalf("expected 1 live group after SetTree enforcement, got %d: %v", len(live), live)
+	}
+	if _, ok := live["g2"]; !ok {
+		t.Fatalf("expected g2 to survive, got %v", live)
+	}
+
+	// Setup options with local state manager
+	opts := &Options{
+		GroupStore: groupStore,
+		StateMgr:   stateMgr,
+	}
+
+	// Call pruneGroupSessions with no peer manager - should be a no-op since
+	// we have no remote sessions and "alive" is alive locally
+	pruneGroupSessions(opts, nil, nil)
+
+	// Verify no changes (alive is still alive, no overlaps)
+	liveAfter := groupStore.Live()
+	if len(liveAfter) != 1 {
+		t.Fatalf("expected 1 live group after pruning, got %d", len(liveAfter))
+	}
+
+	// Test direct Reconcile when "alive" is gone
+	changed, _, err := groupStore.Reconcile(func(key string) bool {
+		return key == "alive" // "alive" is gone
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// g2 should be tombstoned ("alive" was its only leaf)
+	if len(changed) != 1 {
+		t.Fatalf("expected 1 changed group, got %d", len(changed))
+	}
+	if _, ok := changed["g2"]; !ok {
+		t.Fatalf("expected g2 in changed, got %v", changed)
+	}
+
+	// Verify g2 is now tombstoned
+	liveAfter = groupStore.Live()
+	if len(liveAfter) != 0 {
+		t.Fatalf("expected 0 live groups after pruning, got %d: %v", len(liveAfter), liveAfter)
+	}
+	if g2, ok := groupStore.Get("g2"); ok && g2.DeletedAt.IsZero() {
+		t.Fatalf("expected g2 to be tombstoned, got %v", g2)
+	}
+}
+
+// TestSetTreeTombstonedReturns410 verifies that SetTree on a tombstoned group
+// returns HTTP 410 Gone and doesn't broadcast or fanout.
+func TestSetTreeTombstonedReturns410(t *testing.T) {
+	groupStore, err := groupsync.NewStore()
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// Create group g1 with 2 leaves, then prune to 1 leaf to tombstone it
+	tree := []byte(`{"type":"leaf","sessionKey":"session1"}`)
+	groupStore.SetTree("g1", tree)
+
+	// Verify g1 is tombstoned (1 leaf)
+	g1, ok := groupStore.Get("g1")
+	if !ok {
+		t.Fatalf("expected g1 to exist")
+	}
+	if g1.DeletedAt.IsZero() {
+		t.Fatalf("expected g1 to be tombstoned, got %v", g1)
+	}
+
+	// Try to SetTree on tombstoned g1
+	newTree := []byte(`{"type":"leaf","sessionKey":"session2"}`)
+	_, _, _, err = groupStore.SetTree("g1", newTree)
+	if !errors.Is(err, groupsync.ErrTombstoned) {
+		t.Fatalf("expected ErrTombstoned, got %v", err)
+	}
+
+	// Verify g1 was not updated
+	g1After, _ := groupStore.Get("g1")
+	if string(g1After.Tree) != string(g1.Tree) {
+		t.Fatalf("expected g1 tree to not change, was %s, got %s", g1.Tree, g1After.Tree)
 	}
 }

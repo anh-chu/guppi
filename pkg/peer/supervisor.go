@@ -98,6 +98,16 @@ func (s *LinkSupervisor) SetGroupSink(sink GroupSink) {
 	s.deps.GroupSink = sink
 }
 
+// SetGroupCoordinator wires the group enforcement coordinator after construction.
+func (s *LinkSupervisor) SetGroupCoordinator(coord GroupEnforcementCoordinator) {
+	s.deps.GroupCoordinator = coord
+}
+
+// SetGroupFanoutCallback wires the group fanout callback after construction.
+func (s *LinkSupervisor) SetGroupFanoutCallback(cb func(id string, g Group)) {
+	s.deps.GroupFanoutCallback = cb
+}
+
 // SetBrowserHub wires the browser-events hub after construction.
 func (s *LinkSupervisor) SetBrowserHub(hub BrowserBroadcaster) {
 	s.deps.BrowserHub = hub

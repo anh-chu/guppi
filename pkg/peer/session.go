@@ -11,6 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/anh-chu/termyard/pkg/activity"
+	"github.com/anh-chu/termyard/pkg/groupsync"
 	"github.com/anh-chu/termyard/pkg/identity"
 	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/sessionlaunch"
@@ -56,8 +57,8 @@ type SessionOrderSink interface {
 
 // GroupSink is the narrow slice of group storage the peer loop needs.
 type GroupSink interface {
-	ApplyRemoteDelta(id string, group Group) (accepted bool, err error)
-	ApplyRemoteSnapshot(groups map[string]Group) (changed []string, err error)
+	ApplyRemoteDelta(id string, group Group) (accepted bool, enforced, enforcedPrior map[string]Group, err error)
+	ApplyRemoteSnapshot(groups map[string]Group) (changed []string, enforced, enforcedPrior map[string]Group, err error)
 	SnapshotGroups() map[string]Group
 }
 
@@ -66,6 +67,13 @@ type GroupSink interface {
 // remote update from a paired peer.
 type BrowserBroadcaster interface {
 	BroadcastJSON(v interface{})
+}
+
+// GroupEnforcementCoordinator notifies the naming system when exclusive group
+// membership enforcement causes tombstoning or tree mutations.
+type GroupEnforcementCoordinator interface {
+	Cancel(id string)
+	ObserveTreeMutation(id string, prior, after groupsync.Group)
 }
 
 // DaemonRegistry is the interface for daemon session operations.
@@ -79,21 +87,23 @@ type DaemonRegistry interface {
 
 // SessionDeps groups the runtime dependencies needed by a peer session.
 type SessionDeps struct {
-	Manager     *Manager
-	LocalMgr    *state.Manager
-	Identity    *identity.Identity
-	ActTracker  *activity.Tracker
-	ToolTracker *toolevents.Tracker
-	PeerStore   *identity.PeerStore
-	DaemonReg   DaemonRegistry
-	StreamReg   *StreamRegistry
-	CaptureReg  *CaptureRegistry
-	FileReadReg *FileReadRegistry
-	AttrsSink   SessionAttrsSink
-	Launch      *sessionlaunch.Service
-	OrderSink   SessionOrderSink
-	GroupSink   GroupSink
-	BrowserHub  BrowserBroadcaster
+	Manager              *Manager
+	LocalMgr             *state.Manager
+	Identity             *identity.Identity
+	ActTracker           *activity.Tracker
+	ToolTracker          *toolevents.Tracker
+	PeerStore            *identity.PeerStore
+	DaemonReg            DaemonRegistry
+	StreamReg            *StreamRegistry
+	CaptureReg           *CaptureRegistry
+	FileReadReg          *FileReadRegistry
+	AttrsSink            SessionAttrsSink
+	Launch               *sessionlaunch.Service
+	OrderSink            SessionOrderSink
+	GroupSink            GroupSink
+	BrowserHub           BrowserBroadcaster
+	GroupCoordinator     GroupEnforcementCoordinator
+	GroupFanoutCallback  func(id string, g Group)
 }
 
 // connWriter serializes WebSocket writes from multiple goroutines.

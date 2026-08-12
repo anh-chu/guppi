@@ -28,6 +28,12 @@ func BuildRouter(ctx context.Context, opts *Options) (chi.Router, *ws.Hub, error
 
 	coordinator := newGroupNamingCoordinator(ctx, opts, hub)
 
+	// Wire coordinator and group fanout to peer supervisor
+	if opts.LinkSupervisor != nil {
+		opts.LinkSupervisor.SetGroupCoordinator(coordinator)
+		opts.LinkSupervisor.SetGroupFanoutCallback(MakeGroupFanoutCallback(opts))
+	}
+
 	r := chi.NewRouter()
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.StripSlashes)

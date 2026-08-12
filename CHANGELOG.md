@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.4.7] — Server-Authoritative Group Membership
+
+### Bug Fixes
+- **groups:** a session can now belong to at most one live layout group; the server enforces exclusive membership on every group write, ending duplicate session rows and phantom UNNAMED group brackets in the sidebar.
+- **groups:** groups with fewer than two members are dissolved server-side; leaves pointing at sessions that no longer exist are pruned on load, healing previously corrupted group stores.
+- **groups:** dissolved groups stay dissolved; stale clients can no longer resurrect deleted groups (writes to tombstoned ids are rejected).
+- **web:** the client no longer writes layout trees back to the server on group switch or passive divergence; trees are pushed only after actual user edits, so server-side cleanup is never overwritten by stale tabs or devices.
+- **groups:** membership changes caused by enforcement now propagate to peers and trigger AI naming, so newly formed groups get names instead of lingering unnamed.
+
 ## [4.4.6] — Session Reconnect Fix
 
 ### Bug Fixes

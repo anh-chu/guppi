@@ -31,6 +31,8 @@ export interface WorkspaceView {
   activeKey: string | null
   singleView: string | null
   activeGroupId: string
+  paneTreeRev: number
+  paneTreeRevSynced: number
 }
 
 export interface WikiState {
@@ -59,7 +61,8 @@ export type WorkspaceAction =
   | { type: 'optimistic/add'; session: Session; now?: number }
   | { type: 'optimistic/remove'; name: string; host?: string }
   | { type: 'sessions/remove'; key: string }
-  | { type: 'groups/snapshot'; groups: GroupRecordMap; generation?: number }
+  | { type: 'groups/snapshot'; groups: GroupRecordMap; generation?: number; skipTreeAdoptFor?: string[] }
+  | { type: 'groups/treeSaved'; id: string; rev: number }
   | { type: 'groups/delta'; groups: GroupRecordMap; generation?: number }
   | { type: 'view/select'; key: string }
   | { type: 'view/navigate'; view?: View; sessionKey?: string | null }
@@ -130,6 +133,8 @@ export function createInitialWorkspaceState(input?: {
       activeKey: null,
       singleView: null,
       activeGroupId: groupId,
+      paneTreeRev: 0,
+      paneTreeRevSynced: 0,
       ...input?.view,
     },
     wiki: {
@@ -451,7 +456,53 @@ export function workspaceReducer(
       return { ...state, sessions: nextSessions, view: nextView, groups: nextGroups }
     }
 
-    case 'groups/snapshot':
+    case 'groups/snapshot': {
+      // Replace groups wholesale. If activeGroupId is present and paneTreeRev === paneTreeRevSynced
+      // (no pending local edits) and its tree differs, adopt the server tree (repairing activeKey if its leaf vanished).
+      // If activeGroupId is absent, clear paneTree/activeGroupId.
+      const skipTreeAdoptFor = action.skipTreeAdoptFor ?? []
+      const nextGroups = action.groups
+      const nextView = { ...state.view }
+
+      if (nextGroups[state.view.activeGroupId]) {
+        const activeGroup = nextGroups[state.view.activeGroupId]
+        const shouldAdopt = !skipTreeAdoptFor.includes(state.view.activeGroupId) &&
+          state.view.paneTreeRev === state.view.paneTreeRevSynced &&
+          JSON.stringify(activeGroup.tree) !== JSON.stringify(state.view.paneTree)
+        if (shouldAdopt) {
+          // Adopt server tree and repair activeKey if needed.
+          nextView.paneTree = activeGroup.tree
+          const leaves = getLeaves(activeGroup.tree)
+          if (!leaves.includes(nextView.activeKey ?? '')) {
+            nextView.activeKey = leaves[0] ?? null
+          }
+        }
+      } else {
+        // Active group is absent from snapshot: clear paneTree/activeGroupId.
+        nextView.paneTree = null
+        nextView.activeKey = null
+      }
+
+      return {
+        ...state,
+        groups: nextGroups,
+        groupsLoaded: true,
+        view: nextView,
+      }
+    }
+
+    case 'groups/treeSaved': {
+      // Update paneTreeRevSynced when a tree POST succeeds. Use Math.max so that
+      // out-of-order completion doesn't regress the synced rev (e.g. if two POSTs
+      // start with rev N and N+1, and N+1 completes first, we keep it).
+      // Only bump revSynced if the saved group is active, so we unblock future tree adoption.
+      const nextView = { ...state.view }
+      if (action.id === state.view.activeGroupId) {
+        nextView.paneTreeRevSynced = Math.max(state.view.paneTreeRevSynced, action.rev)
+      }
+      return { ...state, view: nextView }
+    }
+
     case 'groups/delta': {
       return {
         ...state,
@@ -481,30 +532,35 @@ export function workspaceReducer(
     }
 
     case 'view/close': {
-      return { ...state, view: closePane(state.view, action.sessionKey) }
+      const nextView = closePane(state.view, action.sessionKey)
+      return { ...state, view: { ...nextView, paneTreeRev: nextView.paneTreeRev + 1 } }
     }
 
     case 'view/removeFromLayout': {
-      return { ...state, view: removeFromLayout(state.view, action.sessionKey) }
+      const nextView = removeFromLayout(state.view, action.sessionKey)
+      return { ...state, view: { ...nextView, paneTreeRev: nextView.paneTreeRev + 1 } }
     }
 
     case 'view/split': {
+      const nextView = splitPane(state.view, action.targetKey, action.direction, action.newKey, action.newFirst)
       return {
         ...state,
-        view: splitPane(state.view, action.targetKey, action.direction, action.newKey, action.newFirst),
+        view: { ...nextView, paneTreeRev: nextView.paneTreeRev + 1 },
       }
     }
 
     case 'view/move': {
-      return { ...state, view: movePaneView(state.view, action.sourceKey, action.targetKey, action.edge) }
+      const nextView = movePaneView(state.view, action.sourceKey, action.targetKey, action.edge)
+      return { ...state, view: { ...nextView, paneTreeRev: nextView.paneTreeRev + 1 } }
     }
 
     case 'view/swap': {
-      return { ...state, view: swapPaneView(state.view, action.a, action.b) }
+      const nextView = swapPaneView(state.view, action.a, action.b)
+      return { ...state, view: { ...nextView, paneTreeRev: nextView.paneTreeRev + 1 } }
     }
 
     case 'view/setPaneTree': {
-      return { ...state, view: { ...state.view, paneTree: action.tree } }
+      return { ...state, view: { ...state.view, paneTree: action.tree, paneTreeRev: state.view.paneTreeRev + 1 } }
     }
 
     case 'view/setActiveGroup': {
@@ -630,7 +686,7 @@ export function workspaceReducer(
       return {
         ...state,
         ...s,
-        view: { ...state.view, ...(s.view ?? {}) },
+        view: { ...state.view, ...(s.view ?? {}), paneTreeRev: state.view.paneTreeRev },
         wiki: { ...state.wiki, ...(s.wiki ?? {}) },
       }
     }

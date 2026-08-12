@@ -8,8 +8,9 @@ import {
   type WorkspaceState,
   type LegacyMigrationInput,
 } from './workspaceReducer'
-import { getLeaves } from '../lib/paneTree'
+import { getLeaves, type PaneTree } from '../lib/paneTree'
 import type { Session } from '../hooks/useSessions'
+import type { GroupRecordMap } from '../hooks/useGroupSync'
 
 function sess(name: string, host = ''): Session {
   return {
@@ -299,13 +300,267 @@ describe('workspaceReducer', () => {
       const restored = workspaceReducer(s0, {
         type: 'restore',
         snapshot: {
-          view: { paneTree: tree, activeKey: 'x', activeGroupId: 'g', singleView: null, currentView: 'session', settingsOpen: false },
+          view: { paneTree: tree, activeKey: 'x', activeGroupId: 'g', singleView: null, currentView: 'session', settingsOpen: false, paneTreeRev: 0, paneTreeRevSynced: 0 },
           wiki: { target: { path: '/f', nonce: 5 }, history: [] },
         },
       })
       expect(restored.view.paneTree).toEqual(tree)
       expect(restored.view.activeGroupId).toBe('g')
       expect(restored.wiki.target).toEqual({ path: '/f', nonce: 5 })
+    })
+  })
+
+  describe('groups/snapshot behavior', () => {
+    it('replaces groups wholesale', () => {
+      const s0 = createInitialWorkspaceState()
+      const groups1: GroupRecordMap = {
+        g1: { tree: { type: 'leaf', sessionKey: 'a' }, rank: 'a0' },
+        g2: { tree: { type: 'leaf', sessionKey: 'b' }, rank: 'a1' },
+      }
+      const s1 = workspaceReducer(s0, {
+        type: 'groups/snapshot',
+        groups: groups1,
+      })
+      expect(Object.keys(s1.groups).sort()).toEqual(['g1', 'g2'])
+      // Now replace with new groups
+      const groups2: GroupRecordMap = {
+        g3: { tree: { type: 'leaf', sessionKey: 'c' }, rank: 'b0' },
+      }
+      const s2 = workspaceReducer(s1, {
+        type: 'groups/snapshot',
+        groups: groups2,
+      })
+      expect(Object.keys(s2.groups)).toEqual(['g3'])
+      expect(s2.groups.g1).toBeUndefined()
+    })
+
+    it('adopts active-group tree when it differs from local paneTree and rev === revSynced', () => {
+      const localTree: PaneTree = { type: 'leaf', sessionKey: 'local' }
+      const serverTree: PaneTree = { type: 'leaf', sessionKey: 'server' }
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('local'), sess('server')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree: localTree },
+        { type: 'groups/treeSaved', id: s0.view.activeGroupId, rev: 1 },
+      )
+      expect(s1.view.paneTree).toEqual(localTree)
+      expect(s1.view.paneTreeRev).toBe(1) // bumped by setPaneTree
+      expect(s1.view.paneTreeRevSynced).toBe(1) // synced by treeSaved
+      const activeId = s1.view.activeGroupId
+      const s2 = workspaceReducer(s1, {
+        type: 'groups/snapshot',
+        groups: { [activeId]: { tree: serverTree } },
+      })
+      expect(s2.view.paneTree).toEqual(serverTree) // adopted
+      expect(s2.view.paneTreeRev).toBe(1) // NOT bumped by adoption
+    })
+
+    it('repairs activeKey when adopted tree has different leaves', () => {
+      const oldTree: PaneTree = { type: 'leaf', sessionKey: 'gone' }
+      const newTree: PaneTree = {
+        type: 'split',
+        direction: 'h',
+        ratio: 0.5,
+        first: { type: 'leaf', sessionKey: 'a' },
+        second: { type: 'leaf', sessionKey: 'b' },
+      }
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('gone'), sess('a'), sess('b')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree: oldTree },
+        { type: 'view/setActiveKey', key: 'gone' },
+        { type: 'groups/treeSaved', id: s0.view.activeGroupId, rev: 1 },
+      )
+      expect(s1.view.activeKey).toBe('gone')
+      const activeId = s1.view.activeGroupId
+      const s2 = workspaceReducer(s1, {
+        type: 'groups/snapshot',
+        groups: { [activeId]: { tree: newTree } },
+      })
+      expect(s2.view.paneTree).toEqual(newTree)
+      expect(s2.view.activeKey).toBe('a') // repaired to first leaf
+    })
+
+    it('respects skipTreeAdoptFor and does not adopt those group trees', () => {
+      const localTree: PaneTree = { type: 'leaf', sessionKey: 'local' }
+      const serverTree: PaneTree = { type: 'leaf', sessionKey: 'server' }
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('local'), sess('server')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree: localTree },
+        { type: 'groups/treeSaved', id: s0.view.activeGroupId, rev: 1 },
+      )
+      const activeId = s1.view.activeGroupId
+      const s2 = workspaceReducer(s1, {
+        type: 'groups/snapshot',
+        groups: { [activeId]: { tree: serverTree } },
+        skipTreeAdoptFor: [activeId],
+      })
+      expect(s2.view.paneTree).toEqual(localTree) // NOT adopted due to skipTreeAdoptFor
+    })
+
+    it('does NOT adopt tree when paneTreeRev > paneTreeRevSynced (pending local edit)', () => {
+      const localTree: PaneTree = { type: 'leaf', sessionKey: 'local' }
+      const serverTree: PaneTree = { type: 'leaf', sessionKey: 'server' }
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('local'), sess('server')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree: localTree },
+      )
+      expect(s1.view.paneTreeRev).toBe(1)
+      expect(s1.view.paneTreeRevSynced).toBe(0)
+      const activeId = s1.view.activeGroupId
+      const s2 = workspaceReducer(s1, {
+        type: 'groups/snapshot',
+        groups: { [activeId]: { tree: serverTree } },
+      })
+      expect(s2.view.paneTree).toEqual(localTree) // NOT adopted because rev > revSynced
+    })
+
+    it('adopts tree after treeSaved unblocks by matching revSynced to rev', () => {
+      const localTree: PaneTree = { type: 'leaf', sessionKey: 'local' }
+      const serverTree: PaneTree = { type: 'leaf', sessionKey: 'server' }
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('local'), sess('server')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree: localTree },
+      )
+      expect(s1.view.paneTreeRev).toBe(1)
+      expect(s1.view.paneTreeRevSynced).toBe(0)
+      // Now treeSaved unblocks by setting revSynced = 1
+      const s1a = workspaceReducer(s1, { type: 'groups/treeSaved', id: s1.view.activeGroupId, rev: 1 })
+      expect(s1a.view.paneTreeRevSynced).toBe(1)
+      const activeId = s1a.view.activeGroupId
+      // Now snapshot can adopt
+      const s2 = workspaceReducer(s1a, {
+        type: 'groups/snapshot',
+        groups: { [activeId]: { tree: serverTree } },
+      })
+      expect(s2.view.paneTree).toEqual(serverTree) // adopted after revSynced = rev
+    })
+
+    it('clears paneTree and activeGroupId when active group is absent from snapshot', () => {
+      const s0 = createInitialWorkspaceState()
+      const activeId = s0.view.activeGroupId
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('a')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree: { type: 'leaf', sessionKey: 'a' } as PaneTree },
+      )
+      expect(s1.view.paneTree).not.toBeNull()
+      expect(s1.view.activeGroupId).toBe(activeId)
+      const groups: GroupRecordMap = {
+        otherGroup: { tree: { type: 'leaf', sessionKey: 'b' } },
+      }
+      const s2 = workspaceReducer(s1, {
+        type: 'groups/snapshot',
+        groups,
+      })
+      expect(s2.view.paneTree).toBeNull()
+      expect(s2.view.activeKey).toBeNull()
+    })
+  })
+
+  describe('paneTreeRev tracking', () => {
+    it('initializes paneTreeRev to 0', () => {
+      const s0 = createInitialWorkspaceState()
+      expect(s0.view.paneTreeRev).toBe(0)
+    })
+
+    it('increments paneTreeRev on user-edit actions (split, close, move, swap, removeFromLayout, setPaneTree)', () => {
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('a'), sess('b'), sess('c')], generation: 1, now: 0, authoritative: true },
+      )
+      expect(s1.view.paneTreeRev).toBe(0)
+
+      // split: bumps rev
+      const s2 = workspaceReducer(s1, { type: 'view/split', targetKey: 'a', direction: 'h', newKey: 'b' })
+      expect(s2.view.paneTreeRev).toBe(1)
+
+      // close: bumps rev
+      const s3 = workspaceReducer(s2, { type: 'view/close', sessionKey: 'b' })
+      expect(s3.view.paneTreeRev).toBe(2)
+
+      // move: bumps rev
+      const s4 = reduce(s3, { type: 'view/split', targetKey: 'a', direction: 'h', newKey: 'c' })
+      expect(s4.view.paneTreeRev).toBe(3)
+      const s5 = workspaceReducer(s4, { type: 'view/move', sourceKey: 'c', targetKey: 'a', edge: 'right' })
+      expect(s5.view.paneTreeRev).toBe(4)
+
+      // setPaneTree: bumps rev
+      const s6 = workspaceReducer(s5, { type: 'view/setPaneTree', tree: { type: 'leaf', sessionKey: 'a' } as PaneTree })
+      expect(s6.view.paneTreeRev).toBe(5)
+    })
+
+    it('does NOT increment paneTreeRev on setActiveGroup', () => {
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('a'), sess('b')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/split', targetKey: 'a', direction: 'h', newKey: 'b' },
+      )
+      const rev = s1.view.paneTreeRev
+      const s2 = workspaceReducer(s1, {
+        type: 'view/setActiveGroup',
+        groupId: 'newGroup',
+        tree: { type: 'leaf', sessionKey: 'a' } as PaneTree,
+      })
+      expect(s2.view.paneTreeRev).toBe(rev) // unchanged
+    })
+
+    it('does NOT increment paneTreeRev when groups/snapshot adopts a tree', () => {
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('a')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree: { type: 'leaf', sessionKey: 'a' } as PaneTree },
+      )
+      const rev = s1.view.paneTreeRev
+      const activeId = s1.view.activeGroupId
+      const groups: GroupRecordMap = {
+        [activeId]: { tree: { type: 'leaf', sessionKey: 'a' } },
+      }
+      const s2 = workspaceReducer(s1, {
+        type: 'groups/snapshot',
+        groups,
+      })
+      expect(s2.view.paneTreeRev).toBe(rev) // unchanged
+    })
+
+    it('treeSaved uses Math.max for monotonic revSynced even with out-of-order completion', () => {
+      const s0 = createInitialWorkspaceState()
+      const s1 = reduce(
+        s0,
+        { type: 'sessions/snapshot', sessions: [sess('a'), sess('b')], generation: 1, now: 0, authoritative: true },
+        { type: 'view/setPaneTree', tree: { type: 'leaf', sessionKey: 'a' } as PaneTree },
+      )
+      expect(s1.view.paneTreeRev).toBe(1)
+      expect(s1.view.paneTreeRevSynced).toBe(0)
+      const activeId = s1.view.activeGroupId
+
+      // treeSaved with rev=1 completes first
+      const s2 = workspaceReducer(s1, { type: 'groups/treeSaved', id: activeId, rev: 1 })
+      expect(s2.view.paneTreeRevSynced).toBe(1)
+
+      // User makes another edit (bumps rev to 2)
+      const s3 = reduce(s2, { type: 'view/setPaneTree', tree: { type: 'leaf', sessionKey: 'b' } as PaneTree })
+      expect(s3.view.paneTreeRev).toBe(2)
+      expect(s3.view.paneTreeRevSynced).toBe(1)
+
+      // treeSaved with rev=2 completes
+      const s4 = workspaceReducer(s3, { type: 'groups/treeSaved', id: activeId, rev: 2 })
+      expect(s4.view.paneTreeRevSynced).toBe(2)
+
+      // Now hypothetically rev=1 completes out-of-order (should not regress revSynced)
+      const s5 = workspaceReducer(s4, { type: 'groups/treeSaved', id: activeId, rev: 1 })
+      expect(s5.view.paneTreeRevSynced).toBe(2) // Math.max(2, 1) = 2, not regressed
     })
   })
 

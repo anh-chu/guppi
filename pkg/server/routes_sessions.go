@@ -1020,6 +1020,9 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			http.Error(w, "groups not available", http.StatusServiceUnavailable)
 			return
 		}
+		// Opportunistically heal groups by pruning gone sessions and enforcing
+		// membership exclusivity (each key owned by at most one group).
+		pruneGroupSessions(opts, hub, coordinator)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(opts.GroupStore.Live())
 	})
@@ -1051,9 +1054,36 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 				return
 			}
 			before, _ := opts.GroupStore.Get(body.ID)
-			group, err = opts.GroupStore.SetTree(body.ID, body.Tree)
-			if err == nil && coordinator != nil {
-				coordinator.ObserveTreeMutation(body.ID, before, group)
+			var enforcedChanged map[string]groupsync.Group
+			var enforcedPrior map[string]groupsync.Group
+			group, enforcedChanged, enforcedPrior, err = opts.GroupStore.SetTree(body.ID, body.Tree)
+			if err == nil {
+				if coordinator != nil {
+					coordinator.ObserveTreeMutation(body.ID, before, group)
+				}
+				// Broadcast and handle enforcement-changed groups
+				for id, changed := range enforcedChanged {
+					if !changed.DeletedAt.IsZero() {
+						// Tombstoned: cancel naming if active
+						if coordinator != nil {
+							coordinator.Cancel(id)
+						}
+					} else {
+						// Live: observe mutation for potential re-naming
+						if coordinator != nil {
+							prior := enforcedPrior[id]
+							coordinator.ObserveTreeMutation(id, prior, changed)
+						}
+					}
+					if hub != nil {
+						hub.BroadcastJSON(map[string]interface{}{
+							"type": "groups-updated",
+							"id":   id,
+							"op":   "tree",
+						})
+					}
+					fanoutGroupDeltaToPeers(opts, id, changed)
+				}
 			}
 		case "name":
 			mode := groupsync.NameModeManual
@@ -1105,6 +1135,8 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			code := http.StatusInternalServerError
 			if errors.Is(err, groupsync.ErrUnknownGroup) {
 				code = http.StatusNotFound
+			} else if errors.Is(err, groupsync.ErrTombstoned) {
+				code = http.StatusGone
 			}
 			http.Error(w, err.Error(), code)
 			return

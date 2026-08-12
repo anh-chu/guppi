@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+
+	"github.com/anh-chu/termyard/pkg/groupsync"
 )
 
 type fakeAttrSink struct {
@@ -44,10 +46,12 @@ type fakeGroupSink struct {
 	groups map[string]Group
 }
 
-func (f *fakeGroupSink) ApplyRemoteDelta(id string, group Group) (bool, error) { return true, nil }
+func (f *fakeGroupSink) ApplyRemoteDelta(id string, group Group) (bool, map[string]Group, map[string]Group, error) { 
+	return true, nil, nil, nil 
+}
 
-func (f *fakeGroupSink) ApplyRemoteSnapshot(groups map[string]Group) ([]string, error) {
-	return []string{"g"}, nil
+func (f *fakeGroupSink) ApplyRemoteSnapshot(groups map[string]Group) ([]string, map[string]Group, map[string]Group, error) {
+	return []string{"g"}, nil, nil, nil
 }
 
 func (f *fakeGroupSink) SnapshotGroups() map[string]Group { return f.groups }
@@ -60,6 +64,22 @@ func (h *fakeBrowserHub) BroadcastJSON(v interface{}) {
 	if m, ok := v.(map[string]interface{}); ok {
 		h.calls = append(h.calls, m)
 	}
+}
+
+type fakeGroupCoordinator struct {
+	cancelledIDs      []string
+	mutationNotified  map[string]bool // keyed by id
+}
+
+func (c *fakeGroupCoordinator) Cancel(id string) {
+	c.cancelledIDs = append(c.cancelledIDs, id)
+}
+
+func (c *fakeGroupCoordinator) ObserveTreeMutation(id string, prior, after groupsync.Group) {
+	if c.mutationNotified == nil {
+		c.mutationNotified = make(map[string]bool)
+	}
+	c.mutationNotified[id] = true
 }
 
 func makeLocalDeps(t *testing.T) SessionDeps {
@@ -190,4 +210,89 @@ func assertMessageType(t *testing.T, pc *PeerConnection, want string) {
 	case <-time.After(time.Second):
 		t.Fatalf("timeout waiting for %s", want)
 	}
+}
+
+// TestPeerEnforcementPropagation verifies that peer deltas triggering group
+// enforcement notify the naming coordinator and fanout loser records to peers.
+func TestPeerEnforcementPropagation(t *testing.T) {
+	deps := makeLocalDeps(t)
+
+	// Setup enforcing group sink that returns enforced/prior groups
+	groupCoord := &fakeGroupCoordinator{
+		mutationNotified: make(map[string]bool),
+	}
+	fanoutedGroups := []string{}
+
+	deps.GroupCoordinator = groupCoord
+	deps.GroupFanoutCallback = func(id string, g Group) {
+		fanoutedGroups = append(fanoutedGroups, id)
+	}
+
+	// Create a sink that returns enforced groups (tombstoned g2 loses to g1)
+	sink := &testEnforcingGroupSink{}
+	deps.GroupSink = sink
+	deps.BrowserHub = &fakeBrowserHub{}
+
+	pc := NewPeerConnection("peer", 1)
+
+	// Build a delta that enforces g2 as loser (tombstoned)
+	loserGroup := Group{
+		Tree:          []byte(`{"type":"leaf","sessionKey":"loser"}`),
+		TreeUpdatedAt: time.Now(),
+		DeletedAt:     time.Now(), // tombstoned
+	}
+	// Build enforced prior state (live)
+	priorGroup := Group{
+		Tree:          []byte(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"loser"},"second":{"type":"leaf","sessionKey":"other"}}`),
+		TreeUpdatedAt: time.Now().Add(-time.Hour),
+	}
+
+	sink.enforcedGroups = map[string]Group{"g2": loserGroup}
+	sink.enforcedPrior = map[string]Group{"g2": priorGroup}
+
+	// Send a group delta from remote that triggers enforcement
+	msg, _ := NewMessage(MsgGroupDelta, GroupDeltaPayload{
+		Origin: "remote-host",
+		ID:     "g1",
+		Group: Group{
+			Tree:          []byte(`{"type":"leaf","sessionKey":"loser"}`),
+			TreeUpdatedAt: time.Now(),
+		},
+	})
+
+	// Process the message
+	handleAttrsMessage("peer", msg, pc, deps, logrus.NewEntry(logrus.New()))
+
+	// Verify coordinator was notified for tombstoned loser (should call Cancel)
+	if len(groupCoord.cancelledIDs) != 1 || groupCoord.cancelledIDs[0] != "g2" {
+		t.Errorf("expected naming coordinator Cancel to be called for g2, got %v", groupCoord.cancelledIDs)
+	}
+
+	// Verify loser was fanned out to peers
+	if len(fanoutedGroups) == 0 {
+		t.Fatalf("expected fanout callback to be called for enforced groups, got %d", len(fanoutedGroups))
+	}
+	if fanoutedGroups[0] != "g2" {
+		t.Fatalf("expected g2 to be fanned out, got %v", fanoutedGroups)
+	}
+}
+
+// testEnforcingGroupSink simulates a sink that returns enforced groups due to
+// membership enforcement (e.g. key wins in another group, so losers are pruned).
+// The test uses this to inject enforced groups as if enforcement had occurred.
+type testEnforcingGroupSink struct {
+	enforcedGroups map[string]Group
+	enforcedPrior  map[string]Group
+}
+
+func (s *testEnforcingGroupSink) ApplyRemoteDelta(id string, group Group) (bool, map[string]Group, map[string]Group, error) {
+	return true, s.enforcedGroups, s.enforcedPrior, nil
+}
+
+func (s *testEnforcingGroupSink) ApplyRemoteSnapshot(groups map[string]Group) ([]string, map[string]Group, map[string]Group, error) {
+	return []string{"g"}, s.enforcedGroups, s.enforcedPrior, nil
+}
+
+func (s *testEnforcingGroupSink) SnapshotGroups() map[string]Group {
+	return nil
 }

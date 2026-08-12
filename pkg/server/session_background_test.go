@@ -29,7 +29,7 @@ func TestSessionBackgroundingHappyPath(t *testing.T) {
 
 	// Create a group with 2-leaf split containing session "sessionA"
 	tree := []byte(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"sessionA"},"second":{"type":"leaf","sessionKey":"sessionB"}}`)
-	if _, err := groupStore.SetTree("g1", tree); err != nil {
+	if _, _, _, err := groupStore.SetTree("g1", tree); err != nil {
 		t.Fatalf("SetTree: %v", err)
 	}
 
@@ -121,7 +121,7 @@ func TestSessionBackgroundingAtomicityFault(t *testing.T) {
 
 	// Create a group with 2-leaf split containing session "sessionA" and "sessionB"
 	tree := []byte(`{"type":"split","direction":"h","ratio":0.5,"first":{"type":"leaf","sessionKey":"sessionA"},"second":{"type":"leaf","sessionKey":"sessionB"}}`)
-	if _, err := groupStore.SetTree("g1", tree); err != nil {
+	if _, _, _, err := groupStore.SetTree("g1", tree); err != nil {
 		t.Fatalf("SetTree: %v", err)
 	}
 
