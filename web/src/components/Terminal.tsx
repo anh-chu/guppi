@@ -544,7 +544,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
   }, [])
 
   return (
-    <div className="flex-1 overflow-hidden flex flex-row bg-canvas">
+    <div className="group flex-1 overflow-hidden flex flex-row bg-canvas">
       <div className="h-full w-full flex flex-col p-[3px]">
         <div ref={popHomeRef} className="min-h-0 flex-1 relative">
         <div
