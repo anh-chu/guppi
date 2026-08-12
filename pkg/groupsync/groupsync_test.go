@@ -3,6 +3,7 @@ package groupsync
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -205,6 +206,9 @@ func TestEffectiveNameMode(t *testing.T) {
 
 func TestSetNamePersistsMode(t *testing.T) {
 	s := newTestStore(t)
+	if _, err := s.SetTree("g1", json.RawMessage(`{"type":"leaf","sessionKey":"a"}`)); err != nil {
+		t.Fatalf("SetTree: %v", err)
+	}
 	g, err := s.SetName("g1", "AI-chat", NameModeAuto)
 	if err != nil {
 		t.Fatalf("SetName: %v", err)
@@ -505,5 +509,18 @@ func TestRemoveSessionKey(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSetNameUnknownGroup(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.SetName("ghost", "AI Name", NameModeAuto); !errors.Is(err, ErrUnknownGroup) {
+		t.Fatalf("SetName unknown id: want ErrUnknownGroup, got %v", err)
+	}
+	if _, err := s.SetRank("ghost", "a0"); !errors.Is(err, ErrUnknownGroup) {
+		t.Fatalf("SetRank unknown id: want ErrUnknownGroup, got %v", err)
+	}
+	if len(s.Live()) != 0 {
+		t.Fatalf("phantom group materialized: %v", s.Live())
 	}
 }

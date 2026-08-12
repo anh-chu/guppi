@@ -2,6 +2,7 @@ package groupsync
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -128,11 +129,20 @@ func (s *Store) SetTree(id string, tree json.RawMessage) (Group, error) {
 	return s.groups[id], nil
 }
 
+// ErrUnknownGroup is returned by name/rank updates targeting an id that was
+// never created locally or via sync. Without this guard a late async update
+// (e.g. AI naming finishing after the group was deleted or deduped away)
+// would materialize a phantom empty-tree group record.
+var ErrUnknownGroup = errors.New("unknown group")
+
 // SetName applies a local name update.
 func (s *Store) SetName(id, name string, mode NameMode) (Group, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	g := s.groups[id]
+	g, ok := s.groups[id]
+	if !ok {
+		return Group{}, ErrUnknownGroup
+	}
 	g.Name = name
 	g.NameUpdatedAt = time.Now()
 	g.NameMode = mode
@@ -148,7 +158,10 @@ func (s *Store) SetName(id, name string, mode NameMode) (Group, error) {
 func (s *Store) SetRank(id, rank string) (Group, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	g := s.groups[id]
+	g, ok := s.groups[id]
+	if !ok {
+		return Group{}, ErrUnknownGroup
+	}
 	g.Rank = rank
 	g.RankUpdatedAt = time.Now()
 	s.groups[id] = g

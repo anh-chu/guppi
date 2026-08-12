@@ -1102,7 +1102,11 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 			return
 		}
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			code := http.StatusInternalServerError
+			if errors.Is(err, groupsync.ErrUnknownGroup) {
+				code = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), code)
 			return
 		}
 		if hub != nil {
