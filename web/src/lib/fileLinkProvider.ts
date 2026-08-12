@@ -161,7 +161,9 @@ class FileLinkProviderImpl implements ILinkProvider {
           link: {
             range: {
               start: { x: span.startX + 1, y: span.startY + 1 },
-              end:   { x: span.endX + 1,   y: span.endY + 1 },
+              // endX is already one past the last char (0-based exclusive),
+              // which equals the 1-based inclusive column of the last char.
+              end:   { x: span.endX,      y: span.endY + 1 },
             },
             text: token.slice(analysis.start, analysis.start + analysis.length),
             activate: () => this.onOpen(match),

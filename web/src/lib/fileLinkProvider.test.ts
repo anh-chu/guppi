@@ -82,9 +82,30 @@ describe('provideLinks token positions', () => {
   it('locates a single path at the correct columns', () => {
     const links = linksFor('/home/sil/main.go')
     expect(links).toHaveLength(1)
-    // xterm ranges are 1-based and end is exclusive-of-cell+1
+    // xterm ranges are 1-based and end is inclusive of the last cell
     expect(links[0].range.start.x).toBe(1)
+    expect(links[0].range.end.x).toBe(17) // 17-char path, last char at column 17
     expect(links[0].text).toBe('/home/sil/main.go')
+  })
+
+  it('quoted path: highlight excludes both quotes', () => {
+    const line = "open '/a/b/c.ts' now"
+    const links = linksFor(line)
+    expect(links).toHaveLength(1)
+    expect(links[0].text).toBe('/a/b/c.ts')
+    // token starts at index 5 with quote; path char starts at index 6 -> column 7
+    expect(links[0].range.start.x).toBe(7)
+    // path is 9 chars: columns 7..15 inclusive; closing quote at 16 excluded
+    expect(links[0].range.end.x).toBe(15)
+  })
+
+  it('parenthesized path with trailing comma: range ends on last path char', () => {
+    const links = linksFor('(/a/b.ts),')
+    expect(links).toHaveLength(1)
+    expect(links[0].text).toBe('/a/b.ts')
+    // path is 7 chars: columns 2..8 inclusive; ')' at 9 and ',' at 10 excluded
+    expect(links[0].range.start.x).toBe(2)
+    expect(links[0].range.end.x).toBe(8)
   })
 
   // This is the regression: position tracking used to advance by
