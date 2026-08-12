@@ -28,6 +28,11 @@ const (
 	FrameClose       = 0x04 // client → daemon: kill shell
 	FrameReplay      = 0x05 // daemon → client: ring buffer contents on connect
 	FrameQueryBuffer = 0x06 // client → daemon: request ring buffer replay (0 payload)
+
+	// MaxFramePayload is the largest frame payload accepted on either side of
+	// the daemon socket. It must exceed the 32 MiB replay ring buffer; a lower
+	// cap makes sessions with large scrollback permanently unreconnectable.
+	MaxFramePayload = 34 << 20
 )
 
 // DaemonConfig configures a session daemon.
@@ -528,7 +533,7 @@ func (d *daemon) handleClient(conn net.Conn) {
 		ftype := header[0]
 		plen := binary.BigEndian.Uint32(header[1:5])
 
-		if plen > 10*1024*1024 { // sanity: max 10 MiB per frame
+		if plen > MaxFramePayload { // sanity
 			return
 		}
 

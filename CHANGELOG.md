@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.4.6] — Session Reconnect Fix
+
+### Bug Fixes
+- **pty:** sessions with more than 10 MiB of scrollback could never reconnect (permanent "DISCONNECTED — RECONNECTING", usually after a server restart). All daemon socket frame caps now exceed the 32 MiB replay ring buffer.
+- **pty:** large pastes no longer kill the daemon connection; silence-monitor capture no longer fails on big buffers.
+
 ## [4.4.5] — Mobile UX & Group Sync
 
 ### Features

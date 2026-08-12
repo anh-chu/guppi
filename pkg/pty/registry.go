@@ -922,7 +922,7 @@ func (r *Registry) Kill(name string) error {
 
 // Capture limits.
 const (
-	captureMaxPayload  = 10 * 1024 * 1024 // sanity: max 10 MiB
+	captureMaxPayload  = MaxFramePayload
 	captureDialTimeout = 1 * time.Second
 	captureReadTimeout = 10 * time.Second
 	captureTailTimeout = 2 * time.Second

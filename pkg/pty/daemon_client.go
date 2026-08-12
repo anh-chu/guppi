@@ -89,7 +89,7 @@ func (d *DaemonSession) readFrames() {
 		ftype := header[0]
 		plen := binary.BigEndian.Uint32(header[1:5])
 
-		if plen > 10*1024*1024 { // sanity
+		if plen > MaxFramePayload { // sanity
 			d.signalDone()
 			return
 		}
