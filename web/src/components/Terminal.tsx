@@ -575,7 +575,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
           <button
             onClick={handlePopOut}
             title={poppedOut ? 'Return pane to tab' : 'Pop out to floating window'}
-            className="absolute top-2.5 right-11 z-20 p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
+            className="absolute top-2.5 right-11 z-20 p-1.5 rounded-sm bg-surface/40 backdrop-blur-md border border-hairline/60 text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="4" width="20" height="16" rx="2" /><rect x="12" y="11" width="8" height="6" rx="1" fill="currentColor" />
@@ -586,7 +586,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
             <button
               onClick={onToggleFullscreen}
               title={fullscreen ? 'Exit fullscreen (Esc / Cmd+Shift+F)' : 'Fullscreen (Cmd+Shift+F)'}
-              className="absolute top-2.5 right-2.5 z-20 p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
+              className="absolute top-2.5 right-2.5 z-20 p-1.5 rounded-sm bg-surface/40 backdrop-blur-md border border-hairline/60 text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
             >
               {fullscreen ? (
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -607,7 +607,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
               setComposeOpen(true)
             }}
             title="Compose Input (Cmd/Ctrl+Shift+U)"
-            className="absolute top-2.5 right-[124px] z-20 p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
+            className="absolute top-2.5 right-[124px] z-20 p-1.5 rounded-sm bg-surface/40 backdrop-blur-md border border-hairline/60 text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" />
@@ -619,7 +619,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                 setArtifactsOpen((v) => !v)
               }}
               title="Detected files"
-              className="absolute top-2.5 right-[74px] z-20 flex items-center gap-1 px-1.5 py-1 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all"
+              className="absolute top-2.5 right-[74px] z-20 flex items-center gap-1 px-1.5 py-1 rounded-sm bg-surface/40 backdrop-blur-md border border-hairline/60 text-mute hover:text-primary transition-all"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><polyline points="13 2 13 9 20 9" />
