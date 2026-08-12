@@ -105,12 +105,16 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
 
   // Open compose modal when the shortcut targets this terminal's key. The
   // nonce distinguishes repeated invocations, so closing the modal doesn't
-  // immediately reopen it and the shortcut works again afterwards.
+  // immediately reopen it and the shortcut works again afterwards. The ref
+  // starts at the current nonce so a remount (pane added/removed from a
+  // group) doesn't replay a stale request and pop the modal.
+  const composeNonceRef = useRef(composeTarget?.nonce)
   useEffect(() => {
-    if (composeTarget && composeTarget.key === currentKey) {
+    if (composeTarget && composeTarget.key === currentKey && composeTarget.nonce !== composeNonceRef.current) {
       setComposeOpen(true)
       setComposeText('')
     }
+    composeNonceRef.current = composeTarget?.nonce
   }, [composeTarget, currentKey])
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [expandedPreviewPath, setExpandedPreviewPath] = useState<string | null>(null)
@@ -469,6 +473,12 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
         e.preventDefault()
         setComposeOpen(false)
         focus()
+      } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault()
+        if (composeText) sendText(composeText)
+        setComposeOpen(false)
+        setComposeText('')
+        focus()
       } else if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         if (composeText) {
@@ -565,7 +575,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
           <button
             onClick={handlePopOut}
             title={poppedOut ? 'Return pane to tab' : 'Pop out to floating window'}
-            className="absolute top-2.5 right-11 z-20 p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            className="absolute top-2.5 right-11 z-20 p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="4" width="20" height="16" rx="2" /><rect x="12" y="11" width="8" height="6" rx="1" fill="currentColor" />
@@ -576,7 +586,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
             <button
               onClick={onToggleFullscreen}
               title={fullscreen ? 'Exit fullscreen (Esc / Cmd+Shift+F)' : 'Fullscreen (Cmd+Shift+F)'}
-              className="absolute top-2.5 right-2.5 z-20 p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              className="absolute top-2.5 right-2.5 z-20 p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
             >
               {fullscreen ? (
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -597,7 +607,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
               setComposeOpen(true)
             }}
             title="Compose Input (Cmd/Ctrl+Shift+U)"
-            className="absolute top-2.5 right-[124px] z-20 p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            className="absolute top-2.5 right-[124px] z-20 p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" />
@@ -860,7 +870,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
               autoFocus
               value={composeText}
               onChange={(e) => setComposeText(e.target.value)}
-              placeholder="Type here. Enter to send with newline, Shift+Enter to add newline, Esc to close."
+              placeholder="Type here. Enter sends, Cmd/Ctrl+Enter fills without Enter, Shift+Enter adds newline, Esc closes."
               className="h-40 resize-none bg-canvas px-4 py-3 font-mono text-[13px] text-ink outline-none"
               spellCheck={false}
             />
@@ -874,6 +884,7 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
                   focus()
                 }}
                 className="rounded-sm bg-surface-elevated px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-ink hover:bg-primary hover:text-primary-foreground transition-all"
+                title="Fill without Enter (Cmd/Ctrl+Enter)"
               >
                 Fill
               </button>

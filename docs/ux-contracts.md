@@ -327,7 +327,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
   - **Mobile:** Compose button in key bar (keyboard icon, 2nd button from left).
   - **Desktop:** Compose button in terminal toolbar (top-right, keyboard icon) or keyboard shortcut `$mod+Shift+U`.
 
-Modal behavior (both mobile and desktop): **Textarea** with monospace font, 160px height, word-wrap off. **Keyboard interactions:** Escape closes modal (refocuses terminal). Enter sends text with trailing newline (`\r`), closes modal, clears text. Shift+Enter inserts newline in textarea. **Two buttons:** "Fill" (sends text without newline), "Send" (sends text with newline). Textarea autofocus on open. Modal uses fixed inset-0 overlay (black/70% background), centered dialog with max-width 2xl.
+Modal behavior (both mobile and desktop): **Textarea** with monospace font, 160px height, word-wrap off. **Keyboard interactions:** Escape closes modal (refocuses terminal). Enter sends text with trailing newline (`\r`), closes modal, clears text. Cmd/Ctrl+Enter fills text without newline and closes. Shift+Enter inserts newline in textarea. Remounting a pane (group membership change) must not reopen the modal from a stale shortcut request. **Two buttons:** "Fill" (sends text without newline), "Send" (sends text with newline). Textarea autofocus on open. Modal uses fixed inset-0 overlay (black/70% background), centered dialog with max-width 2xl.
 
 **Why it matters:** Multi-line input is a contract for pasted scripts and structured commands; modal behavior (Escape closes, Enter sends) is a consistency contract with other app modals.
 
@@ -407,7 +407,7 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 ### 9.14 Terminal toolbar
 
-**Contract:** Session name shown. Ctrl/Alt sticky modifier buttons (mobile only). **Compose button** (keyboard icon, top-right toolbar; opens compose input modal; keyboard shortcut $mod+Shift+U). Artifact count badge (toggles preview panel). Fullscreen toggle button. Mobile key-bar toggle. Pop-out button (absolute positioned top-right, opacity-0 on hover/focus). Disconnect overlay: pulsing red dot + "Disconnected — Reconnecting" when not connected (position: absolute inset-0 z-10, pointer-events-none, doesn't block input).
+**Contract:** Session name shown. Ctrl/Alt sticky modifier buttons (mobile only). **Compose button** (keyboard icon, top-right toolbar; opens compose input modal; keyboard shortcut $mod+Shift+U). Artifact count badge (toggles preview panel). Fullscreen toggle button. Mobile key-bar toggle. Pop-out button (absolute positioned top-right). Compose/fullscreen/pop-out buttons idle at 60% opacity, full opacity on pane hover or keyboard focus. Disconnect overlay: pulsing red dot + "Disconnected — Reconnecting" when not connected (position: absolute inset-0 z-10, pointer-events-none, doesn't block input).
 
 **Why it matters:** Toolbar buttons and disconnect overlay are observable; removing them hides status and controls.
 
