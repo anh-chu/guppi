@@ -554,11 +554,11 @@ All context: terminal or global App.tsx.
 
 ## 13. Notifications & Toasts
 
-**Contract:** WS `notice` events → bottom-right stacked toasts (max 4 visible, newest on top). Severity: error 12s auto-dismiss, else info/warn 8s. Manual × dismiss anytime. Browser notifications: on waiting/error/stuck status transition (if enabled in prefs), closed on status change to active/completed. Push subscriptions (service worker): HTTPS or localhost, in-memory (lost on server restart; browser re-subscribes on load). Fullscreen mode suppresses banners (not toasts).
+**Contract:** WS `notice` events → bottom-right stacked toasts (max 4 visible, newest on top). Severity: error 12s auto-dismiss, else info/warn 8s. Manual × dismiss anytime. Browser notifications: on waiting/error/stuck status transition (if enabled in prefs), closed on status change to active/completed. Push subscriptions (service worker): HTTPS or localhost, in-memory (lost on server restart; browser re-subscribes on load). Fullscreen mode suppresses banners (not toasts). **PWA push (iOS/Android):** app is an installable PWA via `/manifest.webmanifest` (`display: standalone`) and a root-scope service worker `/sw.js` that handles `push` (shows `payload.title`/`body`, icon `apple-touch-icon.png`, badge `favicon-48.png`, tag `session:window`) and `notificationclick` (focuses an existing window or opens `/`). On iOS 16.4+, push requires: home-screen install (Add to Home Screen), standalone manifest, a user-gesture-triggered permission prompt (the Settings/Setup ENABLE button calls `subscribe()`), HTTPS, and the active service worker.
 
-**Why it matters:** Auto-dismiss timing and max-visible count are observable; changing them affects notification UX.
+**Why it matters:** Auto-dismiss timing and max-visible count are observable; changing them affects notification UX. Without the manifest and `/sw.js`, iOS PWAs cannot receive push at all.
 
-**Verification pointer:** `web/src/components/Toasts.tsx`, `web/src/hooks/useNotifications.ts`
+**Verification pointer:** `web/src/components/Toasts.tsx`, `web/src/hooks/useNotifications.ts`, `web/src/hooks/usePushNotifications.ts`, `web/public/sw.js`, `web/public/manifest.webmanifest`, `web/index.html` (manifest link)
 
 ---
 

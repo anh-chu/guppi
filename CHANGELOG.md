@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.10] — iOS PWA Push Notifications
+
+### Features
+- **web:** added the web app manifest (`display: standalone`) and a root-scope service worker (`/sw.js`) so Termyard installs as a PWA and can receive web push on iOS 16.4+ and Android. The frontend already registered `/sw.js` and the backend already sent VAPID push, but both files were missing, so push silently failed on installed PWAs. The service worker renders `push` payloads as notifications and focuses/opens the app on click.
+
 ## [4.4.9] — New Group Creation Fix
 
 ### Bug Fixes
