@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.11] — Notify on Agent Completion
+
+### Features
+- **notifications:** the `completed` transition (agent finishes its turn, working -> idle) now fires a "<tool> finished" browser notification and web push, not just `waiting`/`error`/`stuck`. `completed` was already a default-on, toggleable status in Settings but neither the browser-notification hook nor the push sender acted on it, so a finished agent was silently unsurfaced.
+
 ## [4.4.10] — iOS PWA Push Notifications
 
 ### Features

@@ -36,6 +36,9 @@ export function useNotifications(pushSubscribed = false) {
       shouldNotify = true
     } else if (evt.status === 'stuck' && prev?.status !== 'stuck' && enabledStatuses.includes('stuck')) {
       shouldNotify = true
+    } else if (evt.status === 'completed' && prev?.status !== 'completed' && enabledStatuses.includes('completed')) {
+      // Agent finished its task (working -> idle): worth surfacing, not just waiting.
+      shouldNotify = true
     }
 
     // Update prev state
@@ -53,8 +56,10 @@ export function useNotifications(pushSubscribed = false) {
         ? `${evt.tool} needs input`
         : evt.status === 'stuck'
           ? `${evt.tool} may be stuck`
-          : `${evt.tool} error`
-      const statusWord = evt.status === 'waiting' ? 'Waiting' : evt.status === 'stuck' ? 'Stuck' : 'Error'
+          : evt.status === 'completed'
+            ? `${evt.tool} finished`
+            : `${evt.tool} error`
+      const statusWord = evt.status === 'waiting' ? 'Waiting' : evt.status === 'stuck' ? 'Stuck' : evt.status === 'completed' ? 'Completed' : 'Error'
       const body = `${statusWord} in session "${evt.session}"${evt.message ? `: ${evt.message}` : ''}`
 
       if ('Notification' in window && globalThis.Notification.permission === 'granted') {

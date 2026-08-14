@@ -54,7 +54,7 @@ func (s *Sender) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if evt.Status != toolevents.StatusWaiting && evt.Status != toolevents.StatusError && evt.Status != toolevents.StatusStuck {
+			if evt.Status != toolevents.StatusWaiting && evt.Status != toolevents.StatusError && evt.Status != toolevents.StatusStuck && evt.Status != toolevents.StatusCompleted {
 				continue
 			}
 			s.sendAll(evt)
@@ -76,6 +76,8 @@ func (s *Sender) sendAll(evt *toolevents.Event) {
 		title = fmt.Sprintf("%s error", evt.Tool)
 	case toolevents.StatusStuck:
 		title = fmt.Sprintf("%s may be stuck", evt.Tool)
+	case toolevents.StatusCompleted:
+		title = fmt.Sprintf("%s finished", evt.Tool)
 	}
 
 	body := fmt.Sprintf("%s in session \"%s\"", evt.Status, evt.Session)
