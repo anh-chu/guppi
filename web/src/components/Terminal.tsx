@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react
 import { createPortal } from 'react-dom'
 import { useTerminal } from '../hooks/useTerminal'
 import { usePreferences } from '../hooks/usePreferences'
+import { useSpeechToText } from '../hooks/useSpeechToText'
 import { useArtifacts } from '../hooks/useArtifacts'
 import { UploadStatus } from './UploadStatus'
 import { cn } from '../lib/utils'
@@ -102,6 +103,9 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
   const [composeOpen, setComposeOpen] = useState(false)
   const [composeText, setComposeText] = useState('')
   const composeTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const speech = useSpeechToText((text) => {
+    setComposeText((prev) => (prev ? prev + (prev.endsWith(' ') ? '' : ' ') + text : text))
+  })
 
   // Open compose modal when the shortcut targets this terminal's key. The
   // nonce distinguishes repeated invocations, so closing the modal doesn't
@@ -116,6 +120,10 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
     }
     composeNonceRef.current = composeTarget?.nonce
   }, [composeTarget, currentKey])
+  // Stop dictation whenever the compose modal closes.
+  useEffect(() => {
+    if (!composeOpen && speech.listening) speech.toggle()
+  }, [composeOpen, speech])
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [expandedPreviewPath, setExpandedPreviewPath] = useState<string | null>(null)
   const { artifacts: serverArtifacts, refresh: refreshArtifacts } = useArtifacts(sessionName, hostId)
@@ -875,6 +883,27 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
               spellCheck={false}
             />
             <div className="flex justify-end gap-2 border-t border-hairline px-4 py-2.5 bg-surface-elevated/30">
+              {speech.supported && (
+                <button
+                  type="button"
+                  onClick={() => speech.toggle()}
+                  className={cn(
+                    'mr-auto flex items-center gap-2 rounded-sm border border-hairline px-4 py-1.5 text-xs font-bold uppercase tracking-widest transition-all',
+                    speech.listening
+                      ? 'bg-red-500 text-white animate-pulse'
+                      : 'text-mute hover:text-ink hover:bg-surface-elevated',
+                  )}
+                  title={speech.listening ? 'Stop dictation' : 'Start dictation'}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" y1="19" x2="12" y2="23" />
+                    <line x1="8" y1="23" x2="16" y2="23" />
+                  </svg>
+                  {speech.listening ? 'Stop' : 'Speak'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {

@@ -331,11 +331,11 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
   - **Mobile:** Compose button in key bar (keyboard icon, 2nd button from left).
   - **Desktop:** Compose button in terminal toolbar (top-right, keyboard icon) or keyboard shortcut `$mod+Shift+U`.
 
-Modal behavior (both mobile and desktop): **Textarea** with monospace font, 160px height, word-wrap off. **Keyboard interactions:** Escape closes modal (refocuses terminal). Enter sends text with trailing newline (`\r`), closes modal, clears text. Cmd/Ctrl+Enter fills text without newline and closes. Shift+Enter inserts newline in textarea. Remounting a pane (group membership change) must not reopen the modal from a stale shortcut request. **Two buttons:** "Fill" (sends text without newline), "Send" (sends text with newline). Textarea autofocus on open. Modal uses fixed inset-0 overlay (black/70% background), centered dialog with max-width 2xl.
+Modal behavior (both mobile and desktop): **Textarea** with monospace font, 160px height, word-wrap off. **Keyboard interactions:** Escape closes modal (refocuses terminal). Enter sends text with trailing newline (`\r`), closes modal, clears text. Cmd/Ctrl+Enter fills text without newline and closes. Shift+Enter inserts newline in textarea. Remounting a pane (group membership change) must not reopen the modal from a stale shortcut request. **Two buttons:** "Fill" (sends text without newline), "Send" (sends text with newline). **Speech-to-text:** When the browser supports the Web Speech API, a "Speak" button (left-aligned in footer) toggles voice dictation; finalized transcript chunks append to the textarea (space-separated), the button turns red and pulses while listening ("Stop"), and dictation stops automatically when the modal closes. Uses `navigator.language` as recognition language. Hidden entirely on unsupported browsers. Textarea autofocus on open. Modal uses fixed inset-0 overlay (black/70% background), centered dialog with max-width 2xl.
 
 **Why it matters:** Multi-line input is a contract for pasted scripts and structured commands; modal behavior (Escape closes, Enter sends) is a consistency contract with other app modals.
 
-**Verification pointer:** `web/src/components/Terminal.tsx` (composeOpen, composeText state; modal markup; keyboard handlers)
+**Verification pointer:** `web/src/components/Terminal.tsx` (composeOpen, composeText state; modal markup; keyboard handlers); `web/src/hooks/useSpeechToText.ts` (Web Speech API wrapper)
 
 ### 9.6 Predictive echo
 
