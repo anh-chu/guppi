@@ -45,6 +45,7 @@ interface SidebarProps {
   onSessionSelect: (session: Session) => void
   getSessionEvents: (session: string) => ToolEvent[]
   isSessionInActiveTurn: (session: string) => boolean
+  isSessionRecentlyDone: (session: string) => boolean
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
   agentCount?: number
   glance?: { parked: number; working: number; waiting: number }
@@ -155,6 +156,7 @@ export function Sidebar({
   onSessionSelect,
   getSessionEvents,
   isSessionInActiveTurn,
+  isSessionRecentlyDone,
   getSessionActivity,
   agentCount = 0,
   glance,
@@ -653,6 +655,8 @@ export function Sidebar({
     const proj = projectionOf(session)
     const isRenaming = renamingSession?.key === sk
     const isOffline = (session.host && session.host_online === false) || session.unreachable
+    // Transient highlight right after an agent finishes its turn (working -> idle).
+    const justDone = isSessionRecentlyDone(sk) && proj.status === 'idle'
     const stripeColor = hasMultipleHosts ? hostColor(session.host, localHostId) : null
     const hostLabel = stripeColor
       ? (hosts?.find(h => h.id === session.host)?.name ?? session.host_name ?? session.host ?? 'remote')
@@ -788,7 +792,8 @@ export function Sidebar({
             'relative flex flex-col w-full p-2.5 rounded-sm transition-all duration-200 text-ink',
             'hover:bg-white/[0.05]',
             isSelected && 'bg-white/[0.08] !text-primary border border-white/20',
-            !isSelected && 'border border-transparent',
+            !isSelected && !justDone && 'border border-transparent',
+            !isSelected && justDone && 'border border-[var(--accent-green)]/50 bg-[rgba(89,212,153,0.08)]',
             (isHiddenSection || isOffline) && 'opacity-60',
             isRenaming && 'cursor-default',
             draggingKey === sk && 'opacity-75 cursor-grab',
@@ -895,7 +900,9 @@ export function Sidebar({
                 {activityDisplay}
               </span>
               {(() => {
-                const cfg = statusBadgeConfig[statusBadge]
+                const cfg = justDone
+                  ? { label: 'done', color: 'var(--accent-green)', bg: 'rgba(89,212,153,0.12)', pulse: false }
+                  : statusBadgeConfig[statusBadge]
                 return (
                   <span
                     className={cn('shrink-0 ml-auto text-[9px] leading-none font-medium px-1.5 py-0.5 rounded-xs tabular-nums', cfg.pulse && 'animate-[pulse_1.5s_ease-in-out_infinite]')}

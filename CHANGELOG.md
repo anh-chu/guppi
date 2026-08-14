@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.12] — In-App Completion Signals
+
+### Features
+- **notifications:** agent completion now also surfaces inside the app, not just via browser/push notifications. When `completed` is enabled, finishing a turn raises an info toast ("<tool> finished") and the sidebar row shows a transient green "done" badge and border highlight for ~6s before settling back to idle. Previously `completed` cleared the turn instantly to a plain idle row with no in-UI signal.
+
 ## [4.4.11] — Notify on Agent Completion
 
 ### Features

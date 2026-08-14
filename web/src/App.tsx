@@ -88,7 +88,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const refreshGroups = groupSync.refresh
   const { setTree: setGroupTree, setName: setGroupName, setRank: setGroupRank, deleteGroup, forceAiName, namingGroupId, markGroupPending, clearGroupPending } = groupSync
 
-  const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, isSessionInActiveTurn, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
+  const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, isSessionInActiveTurn, isSessionRecentlyDone, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
   const { getSessionActivity, handleActivityEvent } = useActivity()
   const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications()
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
@@ -98,6 +98,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   const selectedSession = singleView ?? activeKey
   const { prefs } = usePreferences()
   const wikiEnabled = !prefs.wiki_disabled
+  // Stable ref so the WS event handler reads current prefs without re-subscribing.
+  const prefsRef = useRef(prefs)
+  prefsRef.current = prefs
   // Wiki open/close/target nonce/history live in a small controller so the UI
   // components render and coordinate without owning state transitions.
   const wiki = useWikiController(workspace, wikiEnabled)
@@ -652,6 +655,20 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (evt.type === 'tool-event') {
       handleToolEvent(evt)
       processToolEvent(evt)
+      // Surface a finished agent turn as an in-UI toast (gated on the same
+      // 'completed' notification pref as browser/push notifications).
+      if (evt.status === 'completed' && prefsRef.current.notifications.statuses.includes('completed')) {
+        setToasts(t => [
+          ...t,
+          {
+            id: ++toastIdRef.current,
+            severity: 'info' as const,
+            source: `${evt.tool || 'agent'} finished`,
+            message: `Completed in session "${evt.session}"${evt.message ? `: ${evt.message}` : ''}`,
+            session: evt.session || undefined,
+          },
+        ].slice(-4))
+      }
       window.dispatchEvent(new CustomEvent('termyard:artifacts', { detail: evt }))
       return
     }
@@ -1310,6 +1327,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             onSessionSelect={handleSessionSelect}
             getSessionEvents={getSessionEvents}
             isSessionInActiveTurn={isSessionInActiveTurn}
+            isSessionRecentlyDone={isSessionRecentlyDone}
             getSessionActivity={getSessionActivity}
             agentCount={allToolEvents.filter(e => e.auto_detected || LOUD_STATUSES.has(e.status)).length}
             glance={glance}

@@ -13,6 +13,9 @@ export interface ToolEvent {
   auto_detected?: boolean
 }
 
+// How long a finished session keeps its transient "done" highlight.
+const RECENTLY_DONE_TTL_MS = 6000
+
 export function useToolEvents() {
   const [events, setEvents] = useState<ToolEvent[]>([])
   // Tracks sessions with an in-progress hook-based agent turn.
@@ -21,6 +24,10 @@ export function useToolEvents() {
   // Outlives individual pane events so the badge doesn't flicker "idle"
   // during the brief gaps between tool calls within a single turn.
   const [activeSessions, setActiveSessions] = useState<Set<string>>(new Set())
+
+  // Sessions that just finished a turn (completed), kept briefly so the sidebar
+  // can show a transient "done" highlight before the row settles back to idle.
+  const [recentlyDone, setRecentlyDone] = useState<Set<string>>(new Set())
 
   // Fetch initial state
   const refresh = useCallback(async () => {
@@ -87,8 +94,15 @@ export function useToolEvents() {
     const sk = toolEvt.host ? `${toolEvt.host}/${toolEvt.session}` : toolEvt.session
     if (toolEvt.status === 'active' && !toolEvt.auto_detected) {
       setActiveSessions(prev => new Set([...prev, sk]))
+      // A new turn started: drop any stale "done" highlight.
+      setRecentlyDone(prev => { if (!prev.has(sk)) return prev; const next = new Set(prev); next.delete(sk); return next })
     } else if (toolEvt.status === 'completed') {
       setActiveSessions(prev => { const next = new Set(prev); next.delete(sk); return next })
+      // Mark as recently done and auto-expire the highlight.
+      setRecentlyDone(prev => new Set([...prev, sk]))
+      window.setTimeout(() => {
+        setRecentlyDone(prev => { if (!prev.has(sk)) return prev; const next = new Set(prev); next.delete(sk); return next })
+      }, RECENTLY_DONE_TTL_MS)
     }
 
     setEvents(prev => {
@@ -127,6 +141,11 @@ export function useToolEvents() {
     return activeSessions.has(key)
   }, [activeSessions])
 
+  // Returns true if the session finished a turn within the last few seconds.
+  const isSessionRecentlyDone = useCallback((key: string) => {
+    return recentlyDone.has(key)
+  }, [recentlyDone])
+
   // Dismiss a specific event (clear from server and local state)
   const dismissEvent = useCallback(async (evt: ToolEvent) => {
     try {
@@ -152,7 +171,8 @@ export function useToolEvents() {
     }
     setEvents([])
     setActiveSessions(new Set())
+    setRecentlyDone(new Set())
   }, [])
 
-  return { events, handleEvent, getSessionEvents, isSessionInActiveTurn, dismissEvent, dismissAll, refresh }
+  return { events, handleEvent, getSessionEvents, isSessionInActiveTurn, isSessionRecentlyDone, dismissEvent, dismissAll, refresh }
 }
