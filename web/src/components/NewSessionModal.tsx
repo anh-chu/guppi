@@ -351,7 +351,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
                 value={command}
                 onChange={e => { setCommand(e.target.value); setPreset(null) }}
                 onKeyDown={handleKeyDown}
-                placeholder="shell command..."
+                placeholder="shell command... (empty = default shell)"
                 className="mt-3 w-full text-[13px] text-ink bg-surface-elevated border border-hairline rounded-sm px-3 py-2 outline-none font-mono placeholder:text-mute/40 focus:border-primary/60 transition-colors"
               />
             </div>
@@ -392,7 +392,7 @@ export function NewSessionModal({ hosts, sessions, onCreateSession, onClose }: N
           <div className="flex gap-3">
             <button
               onClick={handleSubmit}
-              disabled={!(name.trim() || suggestedName) || !resolvedCommand || (worktreeMode && !worktreeBranch.trim())}
+              disabled={!(name.trim() || suggestedName) || (worktreeMode && !worktreeBranch.trim())}
               className="px-6 py-2 rounded-full text-[13px] font-bold uppercase tracking-widest bg-primary text-primary-foreground hover:bg-white/90 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             >
               Create
