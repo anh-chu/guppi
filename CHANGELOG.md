@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.4.13] — Compose Dictation & Default Shell
+
+### Features
+- **compose:** added Web Speech API speech-to-text dictation to the compose input modal.
+- **sessions:** leaving the shell command field empty in the new session dialog now launches the default shell.
+
 ## [4.4.12] — In-App Completion Signals
 
 ### Features
