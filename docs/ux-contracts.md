@@ -558,7 +558,7 @@ All context: terminal or global App.tsx.
 
 **Why it matters:** Auto-dismiss timing and max-visible count are observable; changing them affects notification UX. Without the manifest and `/sw.js`, iOS PWAs cannot receive push at all.
 
-**Verification pointer:** `web/src/components/Toasts.tsx`, `web/src/hooks/useNotifications.ts`, `web/src/hooks/usePushNotifications.ts`, `web/public/sw.js`, `web/public/manifest.webmanifest`, `web/index.html` (manifest link)
+**Verification pointer:** `web/src/components/Toasts.tsx`, `web/src/hooks/useNotifications.ts`, `web/src/hooks/usePushNotifications.ts`, `web/src/hooks/useToolEvents.ts` (`isSessionRecentlyDone`), `web/src/components/Sidebar.tsx` (done badge/highlight), `web/src/App.tsx` (completion toast), `web/public/sw.js`, `web/public/manifest.webmanifest`, `web/index.html` (manifest link)
 
 ---
 
