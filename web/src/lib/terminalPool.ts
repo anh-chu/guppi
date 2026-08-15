@@ -937,6 +937,11 @@ export class TerminalPool {
           entry.syncBuffer = []
           entry.syncCarryover = null
           entry.inReplayWindow = true
+          // The daemon resends its entire ring buffer. Reset xterm so the
+          // replay REPLACES the buffer instead of appending a duplicate copy
+          // on top of it (which pushed the frozen viewport up into the old
+          // history and filled scrollback with repeats).
+          entry.terminal.reset()
           // A fresh replay always starts pinned to bottom; any prior
           // scroll-up anchor is stale (buffer content is being replaced).
           entry.userScrolled = false

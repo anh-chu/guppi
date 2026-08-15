@@ -826,6 +826,7 @@ Peer→hub: result frame with no type field: `{path, quotedPath}` on success, `{
 - Heartbeat (terminal): 10s browser→server ping, no-traffic ≥25s → timeout/reconnect.
 - Activity broadcast ticker: 5s.
 - Replay fallback: 250ms max wait for replay-start; exceeded → force live.
+- On `replay-start` the frontend fully resets xterm (buffer + scrollback) before the daemon ring snapshot is written, so the replay REPLACES prior content. Without the reset, every reconnect appended a duplicate copy of the ring: scrollback accumulated repeats and a frozen viewport was pushed up into old history ("pane jumped to top after returning from a hidden/idle tab").
 - Peer reconnect backoff: 1s → 30s (double per failure, cap 30s, reset after up >30s), ±25% jitter.
 - Offline peer prune: 5 minutes before sessions hidden.
 - Inactivity waiting promotion: 30s no hook activity → "waiting" status (low precision fallback).

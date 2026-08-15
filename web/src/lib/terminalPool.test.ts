@@ -168,6 +168,8 @@ class FakeTerminal {
   attachCustomKeyEventHandler(_fn: (e: any) => boolean) {}
   getSelection() { return '' }
   clearSelection() {}
+  resetCount = 0
+  reset() { this.resetCount++ }
   scrollToBottom() {}
   scrollLines(_delta: number) {}
   focus() {}
@@ -765,6 +767,15 @@ describe('TerminalPool', () => {
     const written = term.writes[0].data
     expect(written).toBeInstanceOf(Uint8Array)
     expect([...(written as Uint8Array)]).toEqual([1, 2, 3, 4])
+  })
+
+  it('replay-start resets the xterm buffer so replay replaces content', () => {
+    const { ws, term } = openSession('s1')
+    expect(term.resetCount).toBe(0)
+    ws._message(JSON.stringify({ type: 'replay-start' }))
+    expect(term.resetCount).toBe(1)
+    ws._message(JSON.stringify({ type: 'replay-end' }))
+    expect(term.resetCount).toBe(1)
   })
 
   it('no replay-start -> binary passthrough after fallback timer', () => {

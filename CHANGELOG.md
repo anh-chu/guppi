@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.14] — Reconnect Replay Fix
+
+### Fixes
+- **terminal:** reset the xterm buffer when a replay starts. The daemon resends its entire ring buffer on every reconnect and the frontend used to append it on top of the existing content, so scrollback accumulated duplicated history and an idle pane could come back from a hidden tab sitting far up in old output instead of at the prompt.
+
 ## [4.4.13] — Compose Dictation & Default Shell
 
 ### Features
