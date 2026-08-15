@@ -1323,6 +1323,25 @@ export class TerminalPool {
         entry.activeCallbacks?.onAltModifierChange(false)
         return false
       }
+      if (
+        e.type === 'keydown' &&
+        e.altKey && !e.ctrlKey && !e.metaKey &&
+        (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === 'ArrowLeft')
+      ) {
+        // xterm.js 5.5.0 rewrites Alt+Arrow to Ctrl+Arrow on non-Mac platforms.
+        // Send the correct Alt-modified CSI sequence ourselves.
+        const finalByte =
+          e.key === 'ArrowUp' ? 0x41 /* A */ :
+          e.key === 'ArrowDown' ? 0x42 /* B */ :
+          e.key === 'ArrowRight' ? 0x43 /* C */ :
+          0x44 /* D */
+        this.sendRawBytes(
+          { generation: entry.generation, key: entry.key },
+          new Uint8Array([0x1b, 0x5b, 0x31, 0x3b, 0x33, finalByte]),
+        )
+        e.preventDefault()
+        return false
+      }
       if (e.type === 'keydown' && (e.metaKey || e.ctrlKey)) {
         const key = e.key.toLowerCase()
         if (!e.shiftKey) {

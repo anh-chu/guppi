@@ -377,7 +377,7 @@ Modal behavior (both mobile and desktop): **Textarea** with monospace font, 160p
 
 ### 9.10 Terminal keyboard shortcuts
 
-**Contract:** `$mod+Shift+F` (Ctrl/Cmd+Shift+F) → toggle fullscreen (only when active pane and `onToggleFullscreen` provided). `$mod+Shift+U` → open compose input modal on the active pane (Esc to close, Enter to send with newline, Shift+Enter for newline in textarea). Esc → exit fullscreen (only when fullscreen mode and quick-switcher not open). `$mod+C` → copy-or-SIGINT. `$mod+B` → Ctrl+B (tmux prefix). `$mod+V` → paste. Fullscreen window-level capture (capture-phase) intercepts keydown; suppresses to terminal only if fullscreen active.
+**Contract:** `$mod+Shift+F` (Ctrl/Cmd+Shift+F) → toggle fullscreen (only when active pane and `onToggleFullscreen` provided). `$mod+Shift+U` → open compose input modal on the active pane (Esc to close, Enter to send with newline, Shift+Enter for newline in textarea). Esc → exit fullscreen (only when fullscreen mode and quick-switcher not open). `$mod+C` → copy-or-SIGINT. `$mod+B` → Ctrl+B (tmux prefix). `$mod+V` → paste. Fullscreen window-level capture (capture-phase) intercepts keydown; suppresses to terminal only if fullscreen active. **Alt+Arrow keys** (Alt+Up/Down/Left/Right, no Ctrl/Meta) are intercepted before xterm's encoder and forward the standard Alt-modified CSI sequences (`\x1b[1;3A/B/C/D`) to the PTY; this works around xterm.js 5.5.0's hardcoded non-Mac hack that otherwise rewrites Alt+Arrow to Ctrl+Arrow (`\x1b[1;5*`). Applied uniformly on all platforms; also prevents the browser from treating Alt+Left/Right as history navigation.
 
 **Why it matters:** Keyboard shortcuts are muscle-memory contracts; adding/removing one breaks workflows.
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.15] - Alt+Arrow Key Fix
+
+### Fixes
+- **terminal:** Alt+Arrow keys now send the standard Alt-modified CSI sequences to the terminal instead of Ctrl+Arrow (xterm.js 5.5.0 non-Mac remap workaround).
+
 ## [4.4.14] — Reconnect Replay Fix
 
 ### Fixes
