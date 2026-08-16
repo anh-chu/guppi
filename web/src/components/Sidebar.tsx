@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import { generateKeyBetween } from 'fractional-indexing'
 import { Session, sessionKey, sessionLabel, sessionScheduleID } from '../hooks/useSessions'
 import type { SessionAttrSets } from '../hooks/useSessionAttrs'
@@ -145,7 +146,7 @@ function orderSessions(sessions: Session[], ranks: Record<string, string>): Sess
 export function Sidebar({
   sessions,
   selectedSession,
-  collapsed,
+  collapsed: persistentCollapsed,
   selfUpdateAvailable,
   collapseMode,
   width = 288,
@@ -177,6 +178,26 @@ export function Sidebar({
 
   onQuickShell,
 }: SidebarProps) {
+  const [hoverExpanded, setHoverExpanded] = useState(false)
+  const hoverLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const collapsed = persistentCollapsed && !(collapseMode === 'small' && hoverExpanded)
+  const handleSidebarMouseEnter = useCallback(() => {
+    if (hoverLeaveTimer.current !== null) {
+      clearTimeout(hoverLeaveTimer.current)
+      hoverLeaveTimer.current = null
+    }
+    if (persistentCollapsed && collapseMode === 'small') setHoverExpanded(true)
+  }, [persistentCollapsed, collapseMode])
+  const handleSidebarMouseLeave = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (hoverLeaveTimer.current !== null) clearTimeout(hoverLeaveTimer.current)
+    hoverLeaveTimer.current = setTimeout(() => {
+      hoverLeaveTimer.current = null
+      setHoverExpanded(false)
+    }, event.clientX <= 4 ? 600 : 220)
+  }, [])
+  useEffect(() => () => {
+    if (hoverLeaveTimer.current !== null) clearTimeout(hoverLeaveTimer.current)
+  }, [])
   const glancePreview = useGlance(!!hasMultipleHosts)
   const { schedules } = useSchedules()
   // background/hidden are SERVER-AUTHORITATIVE and arrive via props. They are
@@ -712,9 +733,8 @@ export function Sidebar({
         <div
           role="button"
           tabIndex={0}
-          {...glancePreview.trigger({ name: session.name, host: session.host, display_name: session.display_name, host_name: session.host_name })}
+          {...(!collapsed ? glancePreview.trigger({ name: session.name, host: session.host, display_name: session.display_name, host_name: session.host_name }) : {})}
           draggable={!collapsed && !isRenaming}
-
           onDragStart={(e) => {
             e.dataTransfer.setData('text/plain', sk)
             setDraggingKey(sk)
@@ -789,11 +809,15 @@ export function Sidebar({
           onTouchEnd={handleTouchEnd}
           onTouchMove={handleTouchEnd}
           className={cn(
-            'relative flex flex-col w-full p-2.5 rounded-sm transition-all duration-200 text-ink',
+            'relative flex flex-col w-full min-w-0 rounded-sm transition-all duration-200 text-ink',
+            collapsed ? 'px-0 py-2' : 'p-2.5',
             'hover:bg-white/[0.05]',
-            isSelected && 'bg-white/[0.08] !text-primary border border-white/20',
+            isSelected && !collapsed && 'bg-white/[0.08] !text-primary border border-white/20',
+            isSelected && collapsed && 'bg-white/[0.08] !text-primary',
             !isSelected && !justDone && 'border border-transparent',
-            !isSelected && justDone && 'border border-[var(--accent-green)]/50 bg-[rgba(89,212,153,0.08)]',
+            !isSelected && justDone && (collapsed
+              ? 'bg-[rgba(89,212,153,0.08)]'
+              : 'border border-[var(--accent-green)]/50 bg-[rgba(89,212,153,0.08)]'),
             (isHiddenSection || isOffline) && 'opacity-60',
             isRenaming && 'cursor-default',
             draggingKey === sk && 'opacity-75 cursor-grab',
@@ -807,88 +831,88 @@ export function Sidebar({
               aria-label={hostLabel ? `Host: ${hostLabel}` : 'remote host'}
             />
           )}
-          <div className="flex items-center gap-2 w-full">
-            {!collapsed && <AgentMark agentType={agentPresent ? agentType : undefined} className="h-3.5 w-3.5 shrink-0" />}
-            {!collapsed && needsAttention && (
-              <span
-                className="w-1.5 h-1.5 rounded-full bg-warning shrink-0 pointer-events-none"
-                title="Needs attention"
-                aria-label="Needs attention"
-              />
-            )}
-            {!collapsed && stripeColor && !inHostGroup && (
-              <span
-                className="w-2 h-2 rounded-full shrink-0 pointer-events-none"
-                style={{ backgroundColor: stripeColor }}
-                title={hostLabel ? `Host: ${hostLabel}` : undefined}
-                aria-label={hostLabel ? `Host: ${hostLabel}` : 'remote host'}
-              />
-            )}
-            {isRenaming ? (
-              <input
-                ref={renameInputRef}
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') submitRename()
-                  if (e.key === 'Escape') setRenamingSession(null)
-                }}
-                onBlur={submitRename}
-                onClick={(e) => e.stopPropagation()}
-                className="flex-1 text-sm text-ink bg-surface-elevated border border-primary rounded-sm px-1.5 py-0.5 outline-none font-sans font-medium"
-              />
-            ) : (
-              <span className="flex-1 flex items-baseline gap-1 min-w-0 overflow-hidden text-left">
-                {!collapsed && worktreeParent && (
-                  <span
-                    className="shrink min-w-0 truncate text-[12px] font-medium tracking-tight text-mute/40"
-                    title={session.worktree_parent}
-                  >
-                    {worktreeParent}
-                  </span>
-                )}
-                {!collapsed && worktreeParent && (
-                  <svg
-                    className="shrink-0 self-center text-primary/50"
-                    width="11" height="11" viewBox="0 0 24 24" fill="none"
-                    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                    aria-hidden
-                  >
-                    <line x1="6" x2="6" y1="3" y2="15" />
-                    <circle cx="18" cy="6" r="3" />
-                    <circle cx="6" cy="18" r="3" />
-                    <path d="M18 9a9 9 0 0 1-9 9" />
-                  </svg>
-                )}
-                {!collapsed && projectName && (
-                  <span
-                    className="shrink min-w-0 truncate text-[12px] font-medium tracking-tight text-mute/60"
-                    title={session.project_path}
-                  >
-                    {projectName}<span className="text-mute/30">/</span>
-                  </span>
-                )}
+          <div className={cn('flex min-w-0 items-center gap-2 w-full', collapsed && 'justify-center')}>
+              {!collapsed && <AgentMark agentType={agentPresent ? agentType : undefined} className="h-3.5 w-3.5 shrink-0" />}
+              {!collapsed && needsAttention && (
                 <span
-                  className={cn(
-                    'shrink-0 max-w-full text-[12px] font-medium tracking-tight overflow-hidden text-ellipsis whitespace-nowrap',
-                    isSelected && '!text-primary',
+                  className="w-1.5 h-1.5 rounded-full bg-warning shrink-0 pointer-events-none"
+                  title="Needs attention"
+                  aria-label="Needs attention"
+                />
+              )}
+              {!collapsed && stripeColor && !inHostGroup && (
+                <span
+                  className="w-2 h-2 rounded-full shrink-0 pointer-events-none"
+                  style={{ backgroundColor: stripeColor }}
+                  title={hostLabel ? `Host: ${hostLabel}` : undefined}
+                  aria-label={hostLabel ? `Host: ${hostLabel}` : 'remote host'}
+                />
+              )}
+              {isRenaming ? (
+                <input
+                  ref={renameInputRef}
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') submitRename()
+                    if (e.key === 'Escape') setRenamingSession(null)
+                  }}
+                  onBlur={submitRename}
+                  onClick={(e) => e.stopPropagation()}
+                  className="min-w-0 flex-1 text-sm text-ink bg-surface-elevated border border-primary rounded-sm px-1.5 py-0.5 outline-none font-sans font-medium"
+                />
+              ) : (
+                <span className={cn('flex-1 flex items-baseline gap-1 min-w-0 overflow-hidden text-left', collapsed && 'justify-center text-center')}>
+                  {!collapsed && worktreeParent && (
+                    <span
+                      className="shrink min-w-0 truncate text-[12px] font-medium tracking-tight text-mute/40"
+                      title={session.worktree_parent}
+                    >
+                      {worktreeParent}
+                    </span>
                   )}
-                  title={session.agent_session_id ? `${sessionLabel(session)} · ${session.agent_session_id}` : (sessionLabel(session) !== session.name ? `${sessionLabel(session)} (${session.name})` : session.name)}
-                >
-                  {collapsed ? sessionLabel(session).charAt(0).toUpperCase() : sessionLabel(session)}
+                  {!collapsed && worktreeParent && (
+                    <svg
+                      className="shrink-0 self-center text-primary/50"
+                      width="11" height="11" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                      aria-hidden
+                    >
+                      <line x1="6" x2="6" y1="3" y2="15" />
+                      <circle cx="18" cy="6" r="3" />
+                      <circle cx="6" cy="18" r="3" />
+                      <path d="M18 9a9 9 0 0 1-9 9" />
+                    </svg>
+                  )}
+                  {!collapsed && projectName && (
+                    <span
+                      className="shrink min-w-0 truncate text-[12px] font-medium tracking-tight text-mute/60"
+                      title={session.project_path}
+                    >
+                      {projectName}<span className="text-mute/30">/</span>
+                    </span>
+                  )}
+                  <span
+                    className={cn(
+                      'shrink-0 max-w-full text-[12px] font-medium tracking-tight overflow-hidden text-ellipsis whitespace-nowrap',
+                      isSelected && '!text-primary',
+                    )}
+                    title={session.agent_session_id ? `${sessionLabel(session)} · ${session.agent_session_id}` : (sessionLabel(session) !== session.name ? `${sessionLabel(session)} (${session.name})` : session.name)}
+                  >
+                    {collapsed ? sessionLabel(session).charAt(0).toUpperCase() : sessionLabel(session)}
+                  </span>
                 </span>
-              </span>
-            )}
-            {!collapsed && namingSessions.has(sessionKey(session)) && (
-              <span className="shrink-0" title="AI naming…">
-                <SparkleIcon spinning size={11} />
-              </span>
-            )}
-            {!collapsed && (
-              <span className="shrink-0 text-[10px] text-mute/50 font-medium tabular-nums" title={`Uptime: ${formatUptime(session.created)}`}>
-                {formatUptime(session.created)}
-              </span>
-            )}
+              )}
+              {!collapsed && namingSessions.has(sessionKey(session)) && (
+                <span className="shrink-0" title="AI naming…">
+                  <SparkleIcon spinning size={11} />
+                </span>
+              )}
+              {!collapsed && (
+                <span className="shrink-0 text-[10px] text-mute/50 font-medium tabular-nums" title={`Uptime: ${formatUptime(session.created)}`}>
+                  {formatUptime(session.created)}
+                </span>
+              )}
           </div>
 
           {!collapsed && (
@@ -1204,11 +1228,11 @@ export function Sidebar({
                     {renderSessions.map((session) => {
                       const sk = sessionKey(session)
                       return (
-                        <div key={sk} onClick={() =>
+                        <div key={sk} className="relative" onClick={() =>
                           group.isActive ? onSessionSelect(session) : onSwitchGroup?.(group.id, sk)
                         }>
                           {renderSessionItem(session, false, inHostGroup)}
-                          {fold && sk === primaryKey && tools.length > 0 && (
+                          {!collapsed && fold && sk === primaryKey && tools.length > 0 && (
                             <div className="flex flex-wrap gap-1 pl-3 pr-2 pb-1">
                               {tools.map((t) => (
                                 <button
@@ -1312,17 +1336,35 @@ export function Sidebar({
     : null
   const canRenameContextTarget = Boolean(contextTargetSession)
 
+  const normalWidth = Math.max(width, 260)
+  const hoverOverlay = persistentCollapsed && collapseMode === 'small' && hoverExpanded
+
   return (
-    <aside
-      style={!collapsed ? { width: Math.max(width, 260), minWidth: 260 } : undefined}
+    <div
       className={cn(
-      'relative flex flex-col h-full bg-canvas font-sans text-sm font-medium',
-      !resizing && 'transition-[width] duration-300',
-      collapsed
-        ? collapseMode === 'hidden' ? 'w-0 overflow-hidden' : 'w-16'
-        : '',
-      !isHidden && 'border-r border-hairline',
-    )}>
+        'relative h-full min-w-0 shrink-0',
+        persistentCollapsed
+          ? collapseMode === 'hidden' ? 'w-0' : 'w-11 max-w-11'
+          : '',
+      )}
+      style={!persistentCollapsed ? { width: normalWidth, minWidth: 260 } : undefined}
+    >
+      <aside
+        onMouseEnter={handleSidebarMouseEnter}
+        onMouseLeave={handleSidebarMouseLeave}
+        style={!collapsed ? { width: normalWidth, minWidth: 260 } : undefined}
+        className={cn(
+        'relative flex flex-col h-full min-w-0 overflow-hidden bg-canvas font-sans text-sm font-medium',
+        !resizing && 'transition-[width,box-shadow] motion-reduce:transition-none',
+        hoverExpanded
+          ? 'duration-[220ms] ease-[cubic-bezier(0.25,1,0.5,1)]'
+          : 'duration-[180ms] ease-[cubic-bezier(0.5,0,0.75,0)]',
+        hoverOverlay && 'absolute left-0 top-0 z-40 shadow-[8px_0_32px_rgba(0,0,0,0.5)]',
+        collapsed
+          ? collapseMode === 'hidden' ? 'w-0' : 'w-11'
+          : '',
+        !isHidden && 'border-r border-hairline',
+      )}>
       {glancePreview.popover}
       {!collapsed && (
         <div
@@ -1423,7 +1465,7 @@ export function Sidebar({
         </div>
       )}
 
-      <nav className="flex-1 overflow-y-auto p-2">
+      <nav className={cn('flex-1 overflow-y-auto px-2 pb-2', collapsed ? 'pt-10' : 'pt-2')}>
         <ul className="space-y-0.5">
           {visibleSessions.length === 0 && (
             <li className="p-3 text-mute text-sm">
@@ -1784,6 +1826,7 @@ export function Sidebar({
           )}
         </div>
       )}
-    </aside>
+      </aside>
+    </div>
   )
 }

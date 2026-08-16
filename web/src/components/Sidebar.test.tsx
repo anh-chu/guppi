@@ -54,6 +54,86 @@ function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> & { 
   )
 }
 
+describe('Sidebar hover expansion', () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve('') }),
+    )
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('temporarily expands the narrow sidebar while hovered', async () => {
+    const onToggleCollapse = vi.fn()
+    const { container } = renderSidebar({ collapsed: true, onToggleCollapse })
+    const aside = container.querySelector('aside') as HTMLElement
+
+    expect(aside.className).toContain('w-11')
+    expect(aside.parentElement?.className).toContain('max-w-11')
+    expect(screen.queryByTitle('Collapse sidebar')).toBeNull()
+
+    fireEvent.mouseEnter(aside)
+
+    expect(aside.parentElement?.className).toContain('w-11')
+    expect(aside.className).toContain('absolute')
+    expect(aside.style.width).toBe('288px')
+    expect(screen.getByTitle('Collapse sidebar')).toBeTruthy()
+    expect(onToggleCollapse).not.toHaveBeenCalled()
+
+    fireEvent.mouseLeave(aside)
+    await waitFor(() => expect(aside.className).toContain('w-11'))
+
+    expect(aside.parentElement?.className).toContain('w-11')
+    expect(aside.className).toContain('w-11')
+    expect(aside.className).not.toContain('absolute')
+    expect(aside.style.width).toBe('')
+    expect(screen.getByTitle('Expand sidebar')).toBeTruthy()
+    expect(onToggleCollapse).not.toHaveBeenCalled()
+  })
+
+  it('keeps collapsed session initial fully visible inside the 44px rail', () => {
+    const { container } = renderSidebar({ collapsed: true, selectedSession: 's1' })
+    const outer = container.querySelector('div.w-11.max-w-11') as HTMLElement
+    expect(outer).toBeTruthy()
+    // Initial letter 'S' (from 's1') must appear in the collapsed rail
+    expect(container.textContent).toContain('S')
+    // No avatar circle, no tooltip
+    expect(container.querySelector('.rounded-full.h-6.w-6')).toBeNull()
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    const sessionRow = container.querySelector('[data-session-key="s1"] > div') as HTMLElement
+    expect(sessionRow.className).not.toContain('border-white/20')
+  })
+
+  it('does not hover-expand hidden mode', () => {
+    const { container } = renderSidebar({ collapsed: true, collapseMode: 'hidden', onToggleCollapse: vi.fn() })
+    const aside = container.querySelector('aside') as HTMLElement
+
+    fireEvent.mouseEnter(aside)
+
+    expect(aside.className).toContain('w-0')
+    expect(screen.getByTitle('Expand sidebar')).toBeTruthy()
+    expect(screen.queryByTitle('Collapse sidebar')).toBeNull()
+  })
+})
+
 describe('Sidebar group AI naming', () => {
   beforeEach(() => {
     vi.stubGlobal(
