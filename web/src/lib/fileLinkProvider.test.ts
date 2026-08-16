@@ -48,18 +48,20 @@ describe('analyzeToken', () => {
   })
 })
 
-/** Minimal Terminal stand-in: one unwrapped buffer line of the given text. */
-function fakeTerminal(line: string, cols = 200) {
-  const cells = [...line]
+/** Minimal Terminal stand-in: unwrapped buffer lines of the given text. */
+function fakeTerminal(line: string | string[], cols = 200) {
+  const lines = typeof line === 'string' ? [line] : line
   return {
     cols,
     buffer: {
       active: {
         getLine(row: number) {
-          if (row !== 0) return undefined
+          const text = lines[row]
+          if (text === undefined) return undefined
+          const cells = [...text]
           return {
             isWrapped: false,
-            translateToString: () => line,
+            translateToString: () => text,
             getCell: (x: number) =>
               x < cells.length
                 ? { getCode: () => cells[x].codePointAt(0)! }
@@ -157,6 +159,27 @@ describe('provideLinks token positions', () => {
       { path: '/a/b.ts', line: 99 },
       { path: '/a/b.ts', line: 99 },
     ])
+  })
+
+  it('ignores stale async responses from a previous row', async () => {
+    let resolveFirst!: (exists: boolean) => void
+    const firstCheck = new Promise<boolean>(resolve => { resolveFirst = resolve })
+    const provider = createFileLinkProvider(
+      fakeTerminal(['/a/first.ts', '/b/second.ts']),
+      () => {},
+      path => path === '/a/first.ts' ? firstCheck : Promise.resolve(true),
+    )
+    const responses: Array<ILink[] | undefined> = []
+
+    provider.provideLinks(1, links => { responses.push(links) })
+    provider.provideLinks(2, links => { responses.push(links) })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(responses).toHaveLength(1)
+    expect(responses[0]?.[0].text).toBe('/b/second.ts')
+
+    resolveFirst(true)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(responses).toHaveLength(1)
   })
 
   it('returns undefined for a blank line', () => {

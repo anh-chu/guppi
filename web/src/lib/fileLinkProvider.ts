@@ -122,6 +122,8 @@ function findSpanInBuffer(
 }
 
 class FileLinkProviderImpl implements ILinkProvider {
+  private requestId = 0
+
   constructor(
     private terminal: Terminal,
     private onOpen: OpenFileHandler,
@@ -129,6 +131,7 @@ class FileLinkProviderImpl implements ILinkProvider {
   ) {}
 
   provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void): void {
+    const requestId = ++this.requestId
     // xterm passes a 1-based buffer line number, while Buffer.getLine() is
     // 0-based. WebLinksAddon does the same conversion (computeLink calls
     // _getWindowedLineStrings(y - 1)). Without it we scan the line BELOW the
@@ -200,6 +203,9 @@ class FileLinkProviderImpl implements ILinkProvider {
     // hiding a path we simply failed to confirm.
     const checkExists = this.checkExists
     Promise.all(candidates.map((c) => checkExists(c.path).catch(() => true))).then((results) => {
+      // xterm does not identify async provider replies. Ignore replies for an
+      // older hover request so a slow existence check cannot underline another row.
+      if (requestId !== this.requestId) return
       const links = candidates.filter((_, i) => results[i]).map((c) => c.link)
       callback(links.length ? links : undefined)
     })
