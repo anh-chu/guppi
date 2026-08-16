@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.4.20] - Terminal File Link Fixes
+
+### Fixes
+- **terminal:** file paths now open in the wiki only with Cmd/Ctrl-click, preserving plain and double-click text selection.
+- **terminal:** stale async file checks no longer leave file highlights under the wrong terminal row.
+
 ## [4.4.19] - Terminal Resize Scroll Fix
 
 ### Fixes
