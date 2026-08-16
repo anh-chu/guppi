@@ -1349,7 +1349,7 @@ export class TerminalPool {
         } else {
           if (key === '/' || key === '?' || key === '\\' || key === 'k' ||
               key === 'enter' || key === 'h' || key === 'f' || key === 'g' || key === 'u' ||
-              e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+              key === ',' || key === '.') {
             return false
           }
         }

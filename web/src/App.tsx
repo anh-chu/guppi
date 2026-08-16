@@ -579,9 +579,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       '$mod+Shift+u': handler(() => {
         if (activeKeyRef.current) setComposeTarget({ key: activeKeyRef.current, nonce: Date.now() })
       }),
-      // Cycle sessions: Cmd/Ctrl + Shift + Arrow (Shift+[ / ] switches browser tabs)
-      '$mod+Shift+ArrowRight': handler(() => cycle(1)),
-      '$mod+Shift+ArrowLeft': handler(() => cycle(-1)),
+      // Cycle sessions: Cmd/Ctrl + Shift + , / .
+      '$mod+Shift+Period': handler(() => cycle(1)),
+      '$mod+Shift+Comma': handler(() => cycle(-1)),
     }, { ignore })
   }, [navigateTo, activeKey, openNewSessionModal, openNewSessionPlain, wiki.togglePanel, setComposeTarget])
 

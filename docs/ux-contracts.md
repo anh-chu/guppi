@@ -511,7 +511,7 @@ All context: terminal or global App.tsx.
 |---|---|---|
 | `$mod+Shift+K` | Global | Quick Switcher (README says `Ctrl+K` — stale) |
 | `$mod+Shift+Enter` | Global | New Session / Split Pane |
-| `$mod+Shift+→` / `←` | Global | Next / Previous session (cycle) |
+| `$mod+Shift+.` / `,` | Global | Next / Previous session (cycle) |
 | `$mod+Shift+H` | Global | Overview (README says `Ctrl+H` — stale) |
 | `$mod+,` | Global | Settings |
 | `$mod+/` or `$mod+Shift+/` | Global | Help toggle |
