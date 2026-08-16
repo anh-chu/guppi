@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.21] - Session Shortcut Fix
+
+### Fixes
+- **navigation:** session cycling now uses Cmd/Ctrl+Shift+. for next and Cmd/Ctrl+Shift+/ for previous, avoiding macOS arrow-key conflicts.
+
 ## [4.4.20] - Terminal File Link Fixes
 
 ### Fixes

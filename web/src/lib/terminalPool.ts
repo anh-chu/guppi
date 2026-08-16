@@ -1347,9 +1347,8 @@ export class TerminalPool {
         if (!e.shiftKey) {
           if (key === ',' || key === '\\' || key === '/' || key === '?') return false
         } else {
-          if (key === '/' || key === '?' || key === '\\' || key === 'k' ||
-              key === 'enter' || key === 'h' || key === 'f' || key === 'g' || key === 'u' ||
-              key === ',' || key === '.') {
+          if (key === '/' || key === '?' || key === '>' || key === '\\' || key === 'k' ||
+              key === 'enter' || key === 'h' || key === 'f' || key === 'g' || key === 'u') {
             return false
           }
         }

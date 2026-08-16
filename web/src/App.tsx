@@ -549,9 +549,8 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     }
 
     return tinykeys(window, {
-      // Help: Cmd/Ctrl + / (Slash). Shift+Slash ('?') handled by same physical key.
+      // Help: Cmd/Ctrl + / (Slash).
       '$mod+Slash': handler(() => setHelpOpen(prev => !prev)),
-      '$mod+Shift+Slash': handler(() => setHelpOpen(prev => !prev)),
       // Toggle sidebar: Cmd/Ctrl + \
       '$mod+Backslash': handler(() => setSidebarCollapsed(c => !c)),
       // Settings: Cmd/Ctrl + ,
@@ -579,9 +578,9 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       '$mod+Shift+u': handler(() => {
         if (activeKeyRef.current) setComposeTarget({ key: activeKeyRef.current, nonce: Date.now() })
       }),
-      // Cycle sessions: Cmd/Ctrl + Shift + , / .
+      // Cycle sessions: Cmd/Ctrl + Shift + Period / Slash
       '$mod+Shift+Period': handler(() => cycle(1)),
-      '$mod+Shift+Comma': handler(() => cycle(-1)),
+      '$mod+Shift+Slash': handler(() => cycle(-1)),
     }, { ignore })
   }, [navigateTo, activeKey, openNewSessionModal, openNewSessionPlain, wiki.togglePanel, setComposeTarget])
 
