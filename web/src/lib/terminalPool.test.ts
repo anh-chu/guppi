@@ -170,8 +170,10 @@ class FakeTerminal {
   clearSelection() {}
   resetCount = 0
   reset() { this.resetCount++ }
-  scrollToBottom() {}
-  scrollLines(_delta: number) {}
+  scrollToBottomCount = 0
+  scrollToBottom() { this.scrollToBottomCount++ }
+  scrollLinesCalls: number[] = []
+  scrollLines(delta: number) { this.scrollLinesCalls.push(delta) }
   focus() {}
   refresh(_start: number, _end: number) {}
   writes: { data: Uint8Array | string; cb?: () => void }[] = []
@@ -778,6 +780,38 @@ describe('TerminalPool', () => {
     expect(term.resetCount).toBe(1)
   })
 
+  it('wheel at bottom does not pin resize to a stale scroll anchor', () => {
+    const container = fakeEl()
+    const viewport = fakeEl()
+    Object.assign(viewport, { scrollTop: 1000, clientHeight: 100, scrollHeight: 1100 })
+    container.querySelector = () => viewport
+    const lease = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
+    const entry = getEntry(pool, lease.key)!
+    const term = entry.terminal as unknown as FakeTerminal
+
+    container._fire('wheel')
+    expect(entry.userScrolled).toBe(false)
+
+    pool.fit(lease)
+    expect(term.scrollToBottomCount).toBeGreaterThan(0)
+    expect(term.scrollLinesCalls).toEqual([])
+  })
+
+  it('wheel that moves viewport marks terminal user-scrolled', () => {
+    const container = fakeEl()
+    const viewport = fakeEl()
+    Object.assign(viewport, { scrollTop: 1000, clientHeight: 100, scrollHeight: 1100 })
+    container.querySelector = () => viewport
+    pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
+    const entry = getEntry(pool, 's1')!
+
+    container._fire('wheel')
+    viewport.scrollTop = 900
+    viewport._fire('scroll')
+
+    expect(entry.userScrolled).toBe(true)
+  })
+
   it('no replay-start -> binary passthrough after fallback timer', () => {
     vi.useFakeTimers()
     const { ws, term } = openSession('s1')
@@ -1049,17 +1083,22 @@ describe('TerminalPool', () => {
     expect(socketCloseCount).toBeGreaterThan(0)
   })
 
-  it('wheel and touchmove set the userScrolled flag', () => {
+  it('wheel and touchmove only mark userScrolled after viewport movement', () => {
     const container = fakeEl()
+    const viewport = fakeEl()
+    Object.assign(viewport, { scrollTop: 1000, clientHeight: 100, scrollHeight: 1100 })
+    container.querySelector = () => viewport
     const lease = pool.checkout(defId('s1'), defPrefs(), container, noopCbs())
     const entry = getEntry(pool, lease.key)!
     expect(entry.userScrolled).toBe(false)
+
     container._fire('wheel', {} as WheelEvent)
-    expect(entry.userScrolled).toBe(true)
-    const epoch = entry.fitEpoch
     container._fire('touchmove', {} as TouchEvent)
+    expect(entry.userScrolled).toBe(false)
+
+    viewport.scrollTop = 900
+    viewport._fire('scroll')
     expect(entry.userScrolled).toBe(true)
-    expect(entry.fitEpoch).toBe(epoch)
   })
 
   it('sendImage transmits a paste-image control', async () => {

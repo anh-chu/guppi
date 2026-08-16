@@ -1473,11 +1473,14 @@ export class TerminalPool {
         markUserScroll()
       }
     }
-    const onWheel = () => markUserScroll()
+    // A gesture alone does not prove that xterm moved the viewport. Stamp it
+    // so the viewport scroll listener can promote it only after actual motion.
+    const stampUserScroll = () => { entry.lastUserScrollAt = performance.now() }
+    const onWheel = stampUserScroll
     const vpEl = container.querySelector('.xterm-viewport') as HTMLElement | null
     vpEl?.addEventListener('scroll', onViewportScroll, { passive: true })
     container.addEventListener('wheel', onWheel, { passive: true })
-    container.addEventListener('touchmove', markUserScroll, { passive: true })
+    container.addEventListener('touchmove', stampUserScroll, { passive: true })
     // Scrollbar-drag gesture: mousedown on the viewport starts a drag that
     // fires 'scroll' events without wheel/touchmove. Only stamp the gesture
     // window here — a bare click must not unpin; the scroll listener promotes
@@ -1575,7 +1578,7 @@ export class TerminalPool {
         window.removeEventListener('mouseup', onViewportMouseUp, true)
       }
       container.removeEventListener('wheel', onWheel)
-      container.removeEventListener('touchmove', markUserScroll)
+      container.removeEventListener('touchmove', stampUserScroll)
     }
   }
 
