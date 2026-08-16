@@ -138,7 +138,7 @@ describe('provideLinks token positions', () => {
     expect(links[0].text).toBe('/x/y.go')
   })
 
-  it('activate reports the parsed path, line and column', () => {
+  it('requires Cmd/Ctrl-click to open a file', () => {
     const seen: Array<{ path: string; line: number | null }> = []
     const provider = createFileLinkProvider(
       fakeTerminal('see /a/b.ts:99 here'),
@@ -147,9 +147,16 @@ describe('provideLinks token positions', () => {
     let links: ILink[] = []
     provider.provideLinks(1, l => { links = l ?? [] })
     expect(links).toHaveLength(1)
-    // node test env has no MouseEvent; activate only forwards the parsed match
-    links[0].activate(undefined as never, links[0].text)
-    expect(seen).toEqual([{ path: '/a/b.ts', line: 99 }])
+
+    links[0].activate({ ctrlKey: false, metaKey: false } as MouseEvent, links[0].text)
+    expect(seen).toEqual([])
+
+    links[0].activate({ ctrlKey: true, metaKey: false } as MouseEvent, links[0].text)
+    links[0].activate({ ctrlKey: false, metaKey: true } as MouseEvent, links[0].text)
+    expect(seen).toEqual([
+      { path: '/a/b.ts', line: 99 },
+      { path: '/a/b.ts', line: 99 },
+    ])
   })
 
   it('returns undefined for a blank line', () => {

@@ -166,17 +166,21 @@ class FileLinkProviderImpl implements ILinkProvider {
               end:   { x: span.endX,      y: span.endY + 1 },
             },
             text: token.slice(analysis.start, analysis.start + analysis.length),
-            activate: () => this.onOpen(match),
+            activate: (event) => {
+              if (event.ctrlKey || event.metaKey) this.onOpen(match)
+            },
             hover: (event) => {
               if (event?.target instanceof HTMLElement) {
                 event.target.style.cursor = 'pointer'
                 event.target.style.textDecoration = 'underline'
+                event.target.title = 'Cmd/Ctrl-click to open file'
               }
             },
             leave: (event) => {
               if (event?.target instanceof HTMLElement) {
                 event.target.style.cursor = ''
                 event.target.style.textDecoration = ''
+                event.target.title = ''
               }
             },
           },
