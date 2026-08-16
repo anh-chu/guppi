@@ -1126,7 +1126,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     if (!targetKey && singleView) {
       key = singleView
       const newGroupId = Math.random().toString(36).slice(2)
-      const currentRank = syncedGroups[activeGroupId]?.rank ?? null
+      const currentRank = syncedGroups[activeGroupId]?.rank || null
       if (paneTree) {
         const savedTree = removeLeaf(paneTree, singleView)
         if (savedTree) void setGroupTree(activeGroupId, savedTree)

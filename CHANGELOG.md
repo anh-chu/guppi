@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.18] - Standalone Split Drop Fix
+
+### Fixes
+- **groups:** dropping New session onto a standalone terminal no longer crashes when the active group rank is empty.
+
 ## [4.4.15] - Alt+Arrow Key Fix
 
 ### Fixes
