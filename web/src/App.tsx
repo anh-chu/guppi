@@ -1347,7 +1347,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             filterProtectionActive={filterProtectionActive}
 
             onQuickShell={handleQuickShell}
-            onDropNewSession={handleDropNewSession}
           />
         )}
         <div

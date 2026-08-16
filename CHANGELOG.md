@@ -1,10 +1,5 @@
 # Changelog
 
-## [4.4.16] — Sidebar New-Drop Fix
-
-### Fixes
-- **sidebar:** dropping the New button onto a session row now creates the session before applying the row drop.
-
 ## [4.4.15] - Alt+Arrow Key Fix
 
 ### Fixes

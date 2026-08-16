@@ -57,7 +57,6 @@ func TestNextBackoffSequence(t *testing.T) {
 }
 
 func TestSupervisorStatusFresh(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	s := NewSupervisor()
 	st := s.Status()
 	if st.Installed {
