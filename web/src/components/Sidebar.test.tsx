@@ -117,3 +117,27 @@ describe('Sidebar group AI naming', () => {
     )
   })
 })
+
+describe('Sidebar New-session drop', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockReturnValue({ matches: false }),
+    })
+  })
+
+  afterEach(cleanup)
+
+  it('forwards a New-session drop to the target session', () => {
+    const onDropNewSession = vi.fn()
+    const { container } = renderSidebar({ onDropNewSession })
+    const row = container.querySelector('[data-session-key="s1"] > div')
+
+    expect(row).toBeTruthy()
+    fireEvent.drop(row!, {
+      dataTransfer: { types: ['application/x-termyard-new-session'] },
+    })
+
+    expect(onDropNewSession).toHaveBeenCalledWith('s1', 'center')
+  })
+})

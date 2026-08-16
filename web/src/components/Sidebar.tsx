@@ -69,6 +69,7 @@ interface SidebarProps {
   // Direct PTY session keys currently in the pane tree
 
   onQuickShell?: () => void
+  onDropNewSession?: (targetKey: string, edge: 'left' | 'right' | 'top' | 'bottom' | 'center') => void
 }
 
 interface RenameState {
@@ -176,6 +177,7 @@ export function Sidebar({
   filterProtectionActive,
 
   onQuickShell,
+  onDropNewSession,
 }: SidebarProps) {
   const glancePreview = useGlance(!!hasMultipleHosts)
   const { schedules } = useSchedules()
@@ -749,6 +751,10 @@ export function Sidebar({
           }}
           onDrop={(e) => {
             e.preventDefault()
+            if (e.dataTransfer.types.includes('application/x-termyard-new-session')) {
+              onDropNewSession?.(sk, 'center')
+              return
+            }
             if (!draggingKey || draggingKey === sk) return
             // Recompute zone from drop position — onDragLeave may have cleared state
             const rect = e.currentTarget.getBoundingClientRect()
