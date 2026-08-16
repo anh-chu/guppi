@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.19] - Terminal Resize Scroll Fix
+
+### Fixes
+- **terminal:** keep terminals pinned to the bottom after width reflow unless the user actually scrolled up.
+
 ## [4.4.18] - Standalone Split Drop Fix
 
 ### Fixes
