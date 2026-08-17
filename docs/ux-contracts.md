@@ -431,7 +431,7 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 ### 9.16 Wiki Panel mobile
 
-**Contract:** On mobile/coarse-pointer (viewport <900px or touch device), wiki panel enters full-screen modal mode: `fixed inset-0 z-40 bg-canvas flex flex-row`. The drag-resize handle is hidden. The close button in the header remains visible, allowing dismissal. All other UI is hidden behind the panel. On desktop, panel renders as a side dock (resizable, collapsible as before).
+**Contract:** On mobile/coarse-pointer (viewport <900px or touch device), wiki panel enters full-screen modal mode: `fixed inset-0 z-40 bg-canvas flex flex-row`. The drag-resize handle is hidden. The close button in the header remains visible, allowing dismissal. All other UI is hidden behind the panel. On desktop, panel renders as a side dock, resizable up to 80% of the available view after the sidebar (collapsible as before).
 
 **Why it matters:** Mobile screens lack space for a docked file viewer; full-screen modal is the only usable layout on small viewports.
 

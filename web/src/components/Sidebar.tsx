@@ -1341,6 +1341,7 @@ export function Sidebar({
 
   return (
     <div
+      data-sidebar
       className={cn(
         'relative h-full min-w-0 shrink-0',
         persistentCollapsed

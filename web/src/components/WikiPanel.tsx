@@ -32,7 +32,9 @@ interface WikiPanelProps {
 
 export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, onClose }: WikiPanelProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(480)
+  const [maxWidth, setMaxWidth] = useState(900)
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 900px), (pointer: coarse)').matches)
 
@@ -232,13 +234,35 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
     }
   })()
 
+  // Keep desktop width capped at 80% of the view after the sidebar.
+  useEffect(() => {
+    if (isMobile) return
+    const layout = panelRef.current?.parentElement
+    if (!layout) return
+
+    const syncMaxWidth = () => {
+      const sidebar = layout.querySelector<HTMLElement>('[data-sidebar]')
+      const availableWidth = layout.getBoundingClientRect().width - (sidebar?.getBoundingClientRect().width ?? 0)
+      const nextMaxWidth = Math.max(320, availableWidth * 0.8)
+      setMaxWidth(nextMaxWidth)
+      setWidth(current => Math.min(current, nextMaxWidth))
+    }
+
+    const observer = new ResizeObserver(syncMaxWidth)
+    observer.observe(layout)
+    const sidebar = layout.querySelector<HTMLElement>('[data-sidebar]')
+    if (sidebar) observer.observe(sidebar)
+    syncMaxWidth()
+    return () => observer.disconnect()
+  }, [isMobile])
+
   // Drag resize
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       const drag = dragRef.current
       if (!drag) return
       const delta = drag.startX - e.clientX
-      setWidth(Math.max(320, Math.min(900, drag.startWidth + delta)))
+      setWidth(Math.max(320, Math.min(maxWidth, drag.startWidth + delta)))
     }
     const onUp = () => { dragRef.current = null }
     window.addEventListener('mousemove', onMove)
@@ -247,7 +271,7 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-  }, [])
+  }, [maxWidth])
 
   const basename = currentPath
     ? currentPath.split('/').pop()
@@ -320,7 +344,7 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
   })()
 
   return (
-    <div className={isMobile ? 'fixed inset-0 z-40 bg-canvas flex flex-row' : 'flex flex-row h-full shrink-0 border-l border-hairline'} style={!isMobile ? { width } : {}}>
+    <div ref={panelRef} className={isMobile ? 'fixed inset-0 z-40 bg-canvas flex flex-row' : 'flex flex-row h-full shrink-0 border-l border-hairline'} style={!isMobile ? { width, maxWidth } : {}}>
       {!isMobile && (
         <div
           className="w-1 cursor-col-resize bg-transparent hover:bg-primary/30 transition-colors shrink-0"
