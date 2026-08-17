@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.4.22] - Wiki Panel Improvements
+
+### Features
+- **wiki:** desktop panel can expand to the app viewport and return to its previous docked width.
+- **wiki:** desktop panel resize now reaches 80% of the available view after the sidebar.
+
+### Fixes
+- **wiki:** releasing the resize pointer over the viewer no longer leaves resizing active.
+
 ## [4.4.21] - Session Shortcut Fix
 
 ### Fixes

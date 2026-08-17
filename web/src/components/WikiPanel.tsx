@@ -35,6 +35,7 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
   const panelRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(480)
   const [maxWidth, setMaxWidth] = useState(900)
+  const [isFullscreen, setIsFullscreen] = useState(false)
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 900px), (pointer: coarse)').matches)
 
@@ -45,6 +46,18 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
     media.addEventListener('change', sync)
     return () => media.removeEventListener('change', sync)
   }, [])
+
+  useEffect(() => {
+    if (!isFullscreen) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      setIsFullscreen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [isFullscreen])
 
   // wiki-viewer lifecycle status, polled for the overlay.
   const [wikiStatus, setWikiStatus] = useState<WikiStatus | null>(null)
@@ -256,22 +269,12 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
     return () => observer.disconnect()
   }, [isMobile])
 
-  // Drag resize
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      const drag = dragRef.current
-      if (!drag) return
-      const delta = drag.startX - e.clientX
-      setWidth(Math.max(320, Math.min(maxWidth, drag.startWidth + delta)))
-    }
-    const onUp = () => { dragRef.current = null }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-  }, [maxWidth])
+  const resizeFromPointer = (clientX: number) => {
+    const drag = dragRef.current
+    if (!drag) return
+    const delta = drag.startX - clientX
+    setWidth(Math.max(320, Math.min(maxWidth, drag.startWidth + delta)))
+  }
 
   const basename = currentPath
     ? currentPath.split('/').pop()
@@ -343,15 +346,26 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
     return null
   })()
 
+  const panelIsFullscreen = isMobile || isFullscreen
+
   return (
-    <div ref={panelRef} className={isMobile ? 'fixed inset-0 z-40 bg-canvas flex flex-row' : 'flex flex-row h-full shrink-0 border-l border-hairline'} style={!isMobile ? { width, maxWidth } : {}}>
-      {!isMobile && (
+    <div ref={panelRef} className={panelIsFullscreen ? 'fixed inset-0 z-40 bg-canvas flex flex-row' : 'flex flex-row h-full shrink-0 border-l border-hairline'} style={!panelIsFullscreen ? { width, maxWidth } : {}}>
+      {!panelIsFullscreen && (
         <div
           className="w-1 cursor-col-resize bg-transparent hover:bg-primary/30 transition-colors shrink-0"
-          onMouseDown={e => {
+          style={{ touchAction: 'none' }}
+          onPointerDown={e => {
             e.preventDefault()
+            e.currentTarget.setPointerCapture(e.pointerId)
             dragRef.current = { startX: e.clientX, startWidth: width }
           }}
+          onPointerMove={e => resizeFromPointer(e.clientX)}
+          onPointerUp={e => {
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+            dragRef.current = null
+          }}
+          onPointerCancel={() => { dragRef.current = null }}
+          onLostPointerCapture={() => { dragRef.current = null }}
         />
       )}
 
@@ -373,6 +387,22 @@ export function WikiPanel({ filePath, openNonce, sessionCwd, hostId, session, on
                   <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
                 </svg>
               </a>
+            )}
+            {!isMobile && (
+              <button
+                onClick={() => setIsFullscreen(value => !value)}
+                title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                className="p-1 text-mute hover:text-primary transition-colors"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  {isFullscreen ? (
+                    <><polyline points="9 3 9 9 3 9"/><polyline points="15 3 15 9 21 9"/><polyline points="3 15 9 15 9 21"/><polyline points="21 15 15 15 15 21"/></>
+                  ) : (
+                    <><polyline points="15 3 21 3 21 9"/><polyline points="9 3 3 3 3 9"/><polyline points="3 15 3 21 9 21"/><polyline points="21 15 21 21 15 21"/></>
+                  )}
+                </svg>
+              </button>
             )}
             <button
               onClick={onClose}
