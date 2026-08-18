@@ -1548,8 +1548,13 @@ export default function App() {
       const viewport = window.visualViewport
       const height = viewport?.height ?? window.innerHeight
       const width = viewport?.width ?? window.innerWidth
+      // iOS shifts the visual viewport down (offsetTop) when the soft keyboard
+      // opens; fixed overlays anchored to layout-top would otherwise scroll off
+      // the top of the screen. Expose it so they can follow the visible area.
+      const offsetTop = viewport?.offsetTop ?? 0
       document.documentElement.style.setProperty('--app-height', `${Math.round(height)}px`)
       document.documentElement.style.setProperty('--app-width', `${Math.round(width)}px`)
+      document.documentElement.style.setProperty('--app-offset-top', `${Math.round(offsetTop)}px`)
     }
 
     syncViewport()

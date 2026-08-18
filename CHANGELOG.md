@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.4.23] - Sidebar and Mobile Fixes
+
+### Fixes
+- **sidebar:** dragging the width handle no longer collapses a hover-expanded sidebar mid-drag.
+- **sidebar:** hover-expand is now desktop-only (fine pointer), so the mobile collapse toggle no longer desyncs and stops working.
+- **mobile:** removed the terminal long-press gesture that opened the copy dialog while scrolling; use the key-bar clipboard menu instead.
+- **mobile:** compose input modal now anchors to the visual viewport so the soft keyboard no longer pushes it out of view.
+
 ## [4.4.22] - Wiki Panel Improvements
 
 ### Features

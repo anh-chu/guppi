@@ -63,7 +63,7 @@ describe('Sidebar hover expansion', () => {
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
       value: vi.fn().mockImplementation((query: string) => ({
-        matches: false,
+        matches: /hover: hover|pointer: fine/.test(query),
         media: query,
         onchange: null,
         addListener: vi.fn(),

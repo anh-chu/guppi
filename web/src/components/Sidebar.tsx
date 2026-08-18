@@ -180,15 +180,26 @@ export function Sidebar({
 }: SidebarProps) {
   const [hoverExpanded, setHoverExpanded] = useState(false)
   const hoverLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Guards the resize drag: while resizing, the pointer routinely leaves the
+  // aside bounds, which must NOT collapse a hover-expanded overlay mid-drag.
+  const resizingRef = useRef(false)
+  // Hover-expand is a desktop affordance. On touch devices a tap fires a
+  // synthetic mouseenter, which would silently hover-expand a collapsed rail
+  // and desync the collapse toggle (button then appears to do nothing).
+  const canHoverExpand = useMemo(() =>
+    typeof window !== 'undefined' &&
+    window.matchMedia('(hover: hover) and (pointer: fine)').matches, [])
   const collapsed = persistentCollapsed && !(collapseMode === 'small' && hoverExpanded)
   const handleSidebarMouseEnter = useCallback(() => {
+    if (!canHoverExpand) return
     if (hoverLeaveTimer.current !== null) {
       clearTimeout(hoverLeaveTimer.current)
       hoverLeaveTimer.current = null
     }
     if (persistentCollapsed && collapseMode === 'small') setHoverExpanded(true)
-  }, [persistentCollapsed, collapseMode])
+  }, [canHoverExpand, persistentCollapsed, collapseMode])
   const handleSidebarMouseLeave = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (resizingRef.current) return
     if (hoverLeaveTimer.current !== null) clearTimeout(hoverLeaveTimer.current)
     hoverLeaveTimer.current = setTimeout(() => {
       hoverLeaveTimer.current = null
@@ -232,7 +243,13 @@ export function Sidebar({
   const [resizing, setResizing] = useState(false)
   const startResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
+    resizingRef.current = true
     setResizing(true)
+    // A drag started from the hover overlay must stay expanded until release.
+    if (hoverLeaveTimer.current !== null) {
+      clearTimeout(hoverLeaveTimer.current)
+      hoverLeaveTimer.current = null
+    }
     const startX = e.clientX
     const startW = width
     const onMove = (ev: MouseEvent) => {
@@ -240,6 +257,7 @@ export function Sidebar({
       onWidthChange?.(next)
     }
     const onUp = () => {
+      resizingRef.current = false
       setResizing(false)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)

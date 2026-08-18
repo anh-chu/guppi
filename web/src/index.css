@@ -22,6 +22,7 @@
 :root {
   --app-height: 100dvh;
   --app-width: 100vw;
+  --app-offset-top: 0px;
 
   /* Dark Design Tokens — Surface */
   --canvas: oklch(0.1 0 0);
