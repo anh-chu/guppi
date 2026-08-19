@@ -218,6 +218,21 @@ func (m *Manager) UpdateSessionMetadataFromEvent(evt *toolevents.Event) {
 		meta.PromptPreview = evt.Message
 	}
 	if evt.AgentSessionID != "" {
+		// A shell session can host several agent sessions back to back. When the
+		// upstream agent session id changes, reset the naming context so the new
+		// agent session earns its own name instead of inheriting the previous one.
+		if meta.AgentSessionID != "" && meta.AgentSessionID != evt.AgentSessionID {
+			meta.UserPrompt = ""
+			meta.LastUserPrompt = ""
+			meta.LastAgentMessage = ""
+			meta.UserPromptCount = 0
+			if !meta.UserSetName {
+				meta.DisplayName = ""
+				meta.NameAssigned = false
+				meta.Renamed = false
+				meta.LastNamedAt = time.Time{}
+			}
+		}
 		if meta.AgentSessionID != evt.AgentSessionID {
 			changed = true
 		}
@@ -234,10 +249,12 @@ func (m *Manager) UpdateSessionMetadataFromEvent(evt *toolevents.Event) {
 		}
 		if meta.LastUserPrompt != evt.UserPrompt {
 			meta.LastUserPrompt = evt.UserPrompt // always track latest for AI naming
+			meta.UserPromptCount++
 			changed = true
 			// A new user prompt steers the work; re-name (debounced) unless the
-			// first-prompt pass below already handles it.
-			if !firstPrompt && !meta.UserSetName &&
+			// first-prompt pass below already handles it. Naming only uses messages
+			// up to the 2nd user prompt, so freeze once that prompt lands.
+			if !firstPrompt && !meta.UserSetName && meta.UserPromptCount < 2 &&
 				time.Since(meta.LastNamedAt) > nameRefreshInterval {
 				nameRefresh = true
 			}
@@ -248,7 +265,9 @@ func (m *Manager) UpdateSessionMetadataFromEvent(evt *toolevents.Event) {
 		changed = true
 		// Re-name on completed turns as the work evolves, debounced per session.
 		// firstPrompt / a fresh user prompt already cover the other naming passes.
-		if !firstPrompt && !nameRefresh && !meta.UserSetName && evt.Status == toolevents.StatusCompleted &&
+		// Only the first turn (before the 2nd user prompt) feeds naming.
+		if !firstPrompt && !nameRefresh && !meta.UserSetName && meta.UserPromptCount < 2 &&
+			evt.Status == toolevents.StatusCompleted &&
 			time.Since(meta.LastNamedAt) > nameRefreshInterval {
 			nameRefresh = true
 		}

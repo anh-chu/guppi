@@ -461,6 +461,14 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 **Verification pointer:** `web/src/hooks/useActivity.ts`, `pkg/activity/tracker.go`
 
+### 10.3a Automatic AI session naming
+
+**Contract:** Agent sessions get an AI-generated sidebar label automatically. Naming fires on the first user prompt and refreshes on completed turns while the work is still in its first turn, then **freezes once the user submits their second prompt** — only messages up to (not including) the 2nd user prompt feed the name. A shell session can host several agent sessions back to back; each is tracked by its upstream agent session id, so when a new agent session starts in the same shell the naming context resets (prompt, prompt count, and the auto-generated label clear) and the new agent session earns its own name. Manual/AI-rename (user-set) labels always win and survive an agent-session change. Manual **AI rename** (sparkle button) bypasses the freeze and re-generates on demand.
+
+**Why it matters:** The auto-name scope (first turn only, per agent session) is the difference between a stable label that reflects the task and one that drifts or is reused across unrelated agent runs.
+
+**Verification pointer:** `pkg/state/sessions.go` (UpdateSessionMetadataFromEvent), `pkg/state/naming.go`
+
 ### 10.4 Session discovery & pruning
 
 **Contract:** Snapshot from `/api/sessions` (local + peer merged). Live events: `sessions-changed`, `session-added`, `session-removed`, `session-renamed`. **Session removal:** triggered by either a `session-removed` broadcast or absence from an authoritative reconnect snapshot (no N-consecutive-snapshot prune, no polling). Removal is immediate and bounded best-effort to ~1s under normal operating load. When removed, the session is pruned from UI (list, pane tree, terminal pool, persisted groups); disconnected (failed snapshot fetch) → nothing pruned, filters protected. Connection state (`connection.live`) drives "offline" display when events WS down. URL rewritten if current session renamed.

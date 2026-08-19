@@ -19,6 +19,7 @@ type SessionMetadata struct {
 	AgentSessionID   string
 	UserPrompt       string    // first user message; set once, for sidebar display
 	LastUserPrompt   string    // latest user message; always updated, for AI naming
+	UserPromptCount  int       // distinct user prompts seen for the current agent session; freezes AI naming after the 2nd
 	LastAgentMessage string    // last agent response; always updated
 	DisplayName      string    // AI-generated friendly label, refreshed as work evolves
 	UserSetName      bool      // user manually set DisplayName; AI must not overwrite
