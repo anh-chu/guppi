@@ -24,6 +24,9 @@ interface TiledViewProps {
   getCwd?: (key: string) => string | undefined
   onOpenFile?: (path: string, cwd?: string, hostId?: string, sessionName?: string) => boolean
   composeTarget?: { key: string; nonce: number } | null
+  // Phone mode: collapse a group's split layout to one pane at a time with a
+  // tab strip to switch, since tiling is unusable on a phone-sized screen.
+  phoneSingle?: boolean
 }
 
 const MIN_PANE_SIZE = 200 // px
@@ -48,6 +51,7 @@ export function TiledView({
   getCwd,
   onOpenFile,
   composeTarget,
+  phoneSingle,
 }: TiledViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -530,7 +534,74 @@ export function TiledView({
     )
   }
 
+  // --------------- phone single-in-view ---------------
+
+  // On phones, a group shows one pane at a time. All terminals stay mounted
+  // (hidden via visibility, so xterm keeps its measured size) and a tab strip
+  // switches the visible one.
+  const renderPhoneSingle = (t: PaneTree) => {
+    const leaves = getLeaves(t)
+    const active = activeKey && leaves.includes(activeKey) ? activeKey : leaves[0]
+    return (
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-none flex overflow-x-auto bg-surface border-b border-hairline">
+          {leaves.map((key) => {
+            const { name } = parseSessionKey(key)
+            const isActive = key === active
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => { if (key !== active) onActivate(key) }}
+                className={cn(
+                  'px-3 py-2 text-[12px] whitespace-nowrap border-r border-hairline transition-colors',
+                  isActive ? 'bg-surface-elevated text-ink font-medium' : 'text-mute active:bg-surface-elevated',
+                )}
+              >
+                {name}
+              </button>
+            )
+          })}
+        </div>
+        <div className="flex-1 relative overflow-hidden">
+          {leaves.map((key) => {
+            const { host, name } = parseSessionKey(key)
+            const isActive = key === active
+            return (
+              <div
+                key={key}
+                ref={isActive ? terminalContainerRef : undefined}
+                className="absolute inset-0 flex flex-col overflow-hidden"
+                style={{ visibility: isActive ? 'visible' : 'hidden', zIndex: isActive ? 1 : 0 }}
+              >
+                <Terminal
+                  sessionName={name}
+                  hostId={host || undefined}
+                  backend={getBackend?.(key)}
+                  fullscreen={isActive ? fullscreen : false}
+                  onOpenFile={(path) => onOpenFile?.(path, getCwd?.(key), host || undefined, name) ?? false}
+                  onToggleFullscreen={isActive ? onToggleFullscreen : undefined}
+                  keyBarEnabled={isActive}
+                  composeTarget={composeTarget}
+                  currentKey={key}
+                />
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
   // --------------- main render ---------------
+
+  if (phoneSingle && tree && totalLeaves > 1) {
+    return (
+      <div ref={containerRef} className="flex-1 flex flex-col overflow-hidden relative">
+        {renderPhoneSingle(tree)}
+      </div>
+    )
+  }
 
   return (
     <div

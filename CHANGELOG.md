@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.5.0] - Mobile Tiling and Key Bar
+
+### Features
+- **mobile:** grouped sessions on phones now show one pane at a time with a tab strip to switch, instead of an unusable split layout. Tablets and desktop keep full tiling.
+
+### Fixes
+- **mobile:** the terminal key bar now appears on all touch devices (phones and tablets) and no longer on narrow desktop windows.
+
 ## [4.4.23] - Sidebar and Mobile Fixes
 
 ### Fixes

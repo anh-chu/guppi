@@ -120,6 +120,19 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     return s ? sessionCwd(s) : undefined
   }, [sessions])
 
+  // Phone (not tablet): coarse pointer with a short side under 540px, so it
+  // matches phones in either orientation but excludes tablets and desktop.
+  // Tiling is unusable at this size, so grouped panes collapse to one-at-a-time.
+  const PHONE_QUERY = '(pointer: coarse) and ((max-width: 540px) or (max-height: 540px))'
+  const [isPhone, setIsPhone] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia(PHONE_QUERY).matches)
+  useEffect(() => {
+    const mq = window.matchMedia(PHONE_QUERY)
+    const sync = () => setIsPhone(mq.matches)
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
+
   const activeGroup = syncedGroups[activeGroupId]
   const activeGroupName = activeGroup?.name ?? ''
 
@@ -1481,6 +1494,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
               getCwd={cwdForKey}
               onOpenFile={wiki.openFile}
               composeTarget={composeTarget}
+              phoneSingle={isPhone}
             />
           ) : (
             <Overview

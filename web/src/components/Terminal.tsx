@@ -191,7 +191,9 @@ export function Terminal({ sessionName, hostId, backend, fullscreen, onToggleFul
   }, [rebind])
 
   useEffect(() => {
-    const media = window.matchMedia('(max-width: 900px), (pointer: coarse)')
+    // Coarse pointer = touch device (phone/tablet). Deliberately not width-based:
+    // a narrow desktop window is still a mouse device and should not get the bar.
+    const media = window.matchMedia('(pointer: coarse)')
     const sync = () => setShowMobileKeyBar(media.matches)
     sync()
     media.addEventListener('change', sync)
