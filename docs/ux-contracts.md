@@ -55,6 +55,7 @@ Feature behavior is fragile during refactors. A 400ms hover delay, a two-step ki
   - [9.14 Terminal toolbar](#914-terminal-toolbar)
   - [9.15 Scroll scrubber](#915-scroll-scrubber)
   - [9.16 Wiki Panel mobile](#916-wiki-panel-mobile)
+  - [9.17 Kitty graphics protocol](#917-kitty-graphics-protocol)
 - [10. Session Lifecycle & Status](#10-session-lifecycle-status)
   - [10.1 Session states](#101-session-states)
   - [10.2 Tool events & agent tracking](#102-tool-events-agent-tracking)
@@ -434,6 +435,20 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 **Contract:** On mobile/coarse-pointer (viewport <900px or touch device), wiki panel enters full-screen modal mode: `fixed inset-0 z-40 bg-canvas flex flex-row`. The drag-resize handle is hidden. The close button in the header remains visible, allowing dismissal. All other UI is hidden behind the panel. On desktop, panel renders as a side dock, resizable up to 80% of the available view after the sidebar (collapsible as before). The header's `Enter fullscreen` control expands it to the app viewport, hides the resize handle, and changes to `Exit fullscreen`; `Escape` exits expanded mode without closing the panel. The control is hidden on mobile.
 
 **Why it matters:** Mobile screens lack space for a docked file viewer; full-screen modal is the only usable layout on small viewports.
+
+### 9.17 Kitty graphics protocol
+
+**Contract:** The terminal renders images sent via the kitty graphics protocol (APC `ESC _G <control>;<base64> ESC \`), so programs like tode/terminal-browser, `icat`, `timg`, `chafa -f kitty`, and `viu` display real images inline. PTY output is scanned for `_G` sequences before reaching xterm; matched commands are removed from the text stream and handled by an overlay `<canvas>` layered over `.xterm-screen`. Images are anchored to their absolute scrollback row, so they scroll with the text and disappear when scrolled off or when the buffer is reset/replayed. Supported: direct transmission (`t=d`), formats RGB (`f=24`), RGBA (`f=32`, default) and PNG (`f=100`), zlib-compressed pixel data (`o=z`, inflated via `DecompressionStream`), chunked transfer (`m=1`), actions transmit (`a=t`), transmit+display (`a=T`), put (`a=p`), delete (`a=d`: all/by-id/by-number/cursor), query (`a=q`, the capability probe), and **Unicode placeholders** (`U=1`). Query/transmit results are reported back to the program as terminal input (`ESC _G…;OK ESC \`), honoring quiet levels (`q=1`/`q=2`). After a display the cursor advances right by the placement columns and down by its rows unless `C=1`.
+
+**File / temp / shared-memory transmission (`t=f`/`t=t`/`t=s`):** the browser cannot read server-side paths, but the PTY **daemon** (which always runs on the same host as the shell, local or remote peer) can. A streaming transcoder on the daemon output path (`pkg/pty/kittytranscode.go`) rewrites file/temp/shm transmit commands into inline `t=d` commands with the referenced bytes base64-inlined (respecting `S`/`O` size/offset, deleting temp files after read, reading `t=s` from `/dev/shm`, chunked at 4096, 100 MiB cap). File/shm queries are rewritten to `t=d` so the program believes the medium is supported and the daemon transcodes its frames. On any read error the original command passes through unchanged. Non-graphics and already-direct output pass through byte-identical via a fast path. This means local `icat`/`timg`/`chafa` and tode's shared-memory frames all work.
+
+**Unicode placeholders:** a virtual placement (`a=T`/`a=p` with `U=1`, grid `c`×`r`) transmits the image without drawing it; the image is then rendered wherever `U+10EEEE` placeholder cells appear, decoding the image id from the cell foreground color and the row/column from combining diacritics (`web/src/lib/kittyDiacritics.ts`, kitty's 297-entry table). This unlocks neovim image plugins (image.nvim, hologram, molten) and similar TUIs.
+
+**Not supported** (ignored, never crash): animation (`a=f/a=a/a=c`), relative placements (`P/Q/H/V`), source-rectangle cropping display keys (`x/y/w/h`, `X/Y`), and negative z-index (text-over-image). Coexists with the existing Sixel image support (xterm `ImageAddon`); the two use different protocols and do not conflict.
+
+**Why it matters:** xterm.js has no built-in kitty graphics support and only speaks Sixel/IIP; without this, any kitty-protocol program (notably tode) reports "this terminal cannot show images" and renders nothing. This makes guppi's browser terminal a first-class host for the growing set of image-capable TUIs, including remote-host sessions.
+
+**Verification pointer:** `web/src/lib/kittyGraphics.ts` (parser + overlay renderer + placeholder pass), `web/src/lib/kittyDiacritics.ts` (placeholder diacritic table), `web/src/lib/terminalPool.ts` (`writeOut` routing, `entry.kitty` lifecycle: instantiate near ImageAddon load, `attach()` after `term.open`, `reset()` on replay-start, `dispose()` on teardown), `pkg/pty/kittytranscode.go` (daemon file/temp/shm→direct transcoder, wired in `pkg/pty/daemon.go` `pumpPTY`), tests: `web/src/lib/kittyGraphics.test.ts`, `web/src/lib/kittyDiacritics.test.ts`, `pkg/pty/kittytranscode_test.go`
 
 **Verification pointer:** `web/src/components/WikiPanel.tsx` (isMobile state, conditional className)
 

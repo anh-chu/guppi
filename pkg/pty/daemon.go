@@ -208,6 +208,7 @@ func RunDaemon(cfg DaemonConfig) error {
 		socketPath: socketPath,
 		log:        log,
 		clients:    make(map[net.Conn]chan []byte),
+		transcoder: &kittyTranscoder{log: log},
 		shellDone:  make(chan struct{}),
 	}
 
@@ -384,6 +385,7 @@ type daemon struct {
 	ln         net.Listener
 	socketPath string
 	log        *logrus.Entry
+	transcoder *kittyTranscoder
 
 	clientsMu sync.RWMutex
 	clients   map[net.Conn]chan []byte // per-client write channel
@@ -441,8 +443,11 @@ func (d *daemon) pumpPTY() {
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
-			d.ring.Write(data)
-			d.broadcast(data)
+			out := d.transcoder.Feed(data)
+			if len(out) > 0 {
+				d.ring.Write(out)
+				d.broadcast(out)
+			}
 		}
 		if err != nil {
 			if err != io.EOF {

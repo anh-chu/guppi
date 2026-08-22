@@ -21,6 +21,7 @@ import { getXtermTheme } from '../theme'
 import { ConnectionMachine } from './terminal/connectionMachine'
 import { ReplayBuffer } from './terminal/replayBuffer'
 import { neutralizeXtermScrollbarFallback, measureXtermCharSize } from './terminal/xtermCompat'
+import { KittyGraphics } from './kittyGraphics'
 import { transferNode } from './pip'
 
 // Re-export the public contracts owned by the submodules so existing callers
@@ -332,6 +333,7 @@ interface PoolEntry {
   fitAddon: FitAddon
   webglAddon: WebglAddon | null
   imageAddon: ImageAddon | null
+  kitty: KittyGraphics | null
   graphemesAddon: UnicodeGraphemesAddon | null
   graphemesLoaded: boolean
 
@@ -495,6 +497,7 @@ export class TerminalPool {
     }
     try { term.open(container) } catch { /* ignored */ }
     neutralizeXtermScrollbarFallback(term)
+    try { entry.kitty?.attach() } catch { /* ignored */ }
 
     entry.activeContainer = container
 
@@ -610,6 +613,7 @@ export class TerminalPool {
     if (crossedDocument || forceRebind) {
       try { entry.terminal.open(container) } catch { /* ignored */ }
       neutralizeXtermScrollbarFallback(entry.terminal)
+      try { entry.kitty?.attach() } catch { /* ignored */ }
     }
 
     entry.activeContainer = container
@@ -903,6 +907,16 @@ export class TerminalPool {
       try { term.loadAddon(imageAddon) } catch { /* ignored */ }
     }
 
+    // Kitty graphics protocol: intercepts APC _G sequences from PTY output and
+    // renders images on an overlay canvas. Responses (query/probe) are sent
+    // back to the PTY as terminal input.
+    const kitty = new KittyGraphics(term, {
+      sendResponse: (b) => {
+        const ws = entry.connection.socket
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(b)
+      },
+    })
+
     // Unicode graphemes: always on, no user toggle.
     let graphemesAddon: UnicodeGraphemesAddon | null = null
     let graphemesLoaded = false
@@ -942,6 +956,7 @@ export class TerminalPool {
           // on top of it (which pushed the frozen viewport up into the old
           // history and filled scrollback with repeats).
           entry.terminal.reset()
+          entry.kitty?.reset()
           // A fresh replay always starts pinned to bottom; any prior
           // scroll-up anchor is stale (buffer content is being replaced).
           entry.userScrolled = false
@@ -990,6 +1005,7 @@ export class TerminalPool {
       fitAddon,
       webglAddon,
       imageAddon,
+      kitty,
       graphemesAddon,
       graphemesLoaded,
 
@@ -1122,10 +1138,17 @@ export class TerminalPool {
     this.writeRaw(entry, text)
   }
 
+  // Route PTY output through the kitty graphics interceptor when present so
+  // APC _G image sequences are handled; otherwise write directly to xterm.
+  private writeOut(entry: PoolEntry, data: Uint8Array | string, cb: () => void): void {
+    if (entry.kitty) entry.kitty.write(data, cb)
+    else entry.terminal.write(data, cb)
+  }
+
   private flushReplayBuffer(entry: PoolEntry, onParsed?: () => void): void {
     const all = entry.replayBuffer.flush()
     if (all) {
-      entry.terminal.write(all, () => {
+      this.writeOut(entry, all, () => {
         if (!entry.userScrolled) {
           try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
         }
@@ -1138,7 +1161,7 @@ export class TerminalPool {
 
   // Replay / non-control output: no latency measurement; just write and scroll.
   private writeRaw(entry: PoolEntry, data: Uint8Array | string): void {
-    entry.terminal.write(data, () => {
+    this.writeOut(entry, data, () => {
       if (!entry.userScrolled) {
         try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
       }
@@ -1214,7 +1237,7 @@ export class TerminalPool {
             out.length = 0
           }
           const all = concatU8Legacy(entry.syncBuffer)
-          entry.terminal.write(all, () => {
+          this.writeOut(entry, all, () => {
             if (!entry.userScrolled) {
               try { entry.terminal.scrollToBottom() } catch { /* ignored */ }
             }
@@ -1245,7 +1268,7 @@ export class TerminalPool {
   private writeLiveRaw(entry: PoolEntry, data: Uint8Array): void {
     const hadPending = entry.writePending
     entry.writePending = false
-    entry.terminal.write(data, () => {
+    this.writeOut(entry, data, () => {
       if (hadPending) {
         entry.writePending = false
       }
@@ -1282,6 +1305,7 @@ export class TerminalPool {
     // Open terminal into container
     try { term.open(container) } catch { /* ignored */ }
     neutralizeXtermScrollbarFallback(term)
+    try { entry.kitty?.attach() } catch { /* ignored */ }
 
     const helperTextarea = container.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null
 
@@ -1604,6 +1628,7 @@ export class TerminalPool {
     // Dispose addons
     if (entry.webglAddon) { entry.webglAddon.dispose(); entry.webglAddon = null }
     if (entry.imageAddon) { entry.imageAddon.dispose(); entry.imageAddon = null }
+    if (entry.kitty) { try { entry.kitty.dispose() } catch { /* ignored */ } entry.kitty = null }
     if (entry.graphemesAddon) { entry.graphemesAddon.dispose(); entry.graphemesAddon = null }
 
     // Dispose terminal

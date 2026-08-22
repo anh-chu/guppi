@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.6.0] - Images in the Terminal
+
+### Features
+- **terminal:** full kitty graphics protocol support renders raster images inline in the browser terminal. Image viewers (`icat`, `timg`, `chafa -f kitty`, `viu`), neovim image plugins (image.nvim, hologram, molten), and terminal browsers now display images, over local and remote sessions. Handles direct, zlib-compressed, RGB/RGBA/PNG, chunked transfers, cursor placement, and Unicode placeholders, alongside existing Sixel support.
+- **terminal:** the session daemon transcodes file, temp-file, and shared-memory image transmissions into inline data on the host where the shell runs, so image tools that use those transfer modes work even though the browser cannot read server-side files.
+
+### Notes
+- Not implemented (degrade quietly): animation/video, sub-region cropping, relative placements, and negative z-index (text over image).
+
 ## [4.5.0] - Mobile Tiling and Key Bar
 
 ### Features

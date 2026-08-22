@@ -19,6 +19,7 @@ Termyard parks all of that in one place. It renders your live sessions in the br
 - **Push notifications.** Get a browser or desktop alert when an agent needs you, including when the tab is closed or you are signed out.
 - **Multi-machine.** Connect any number of Termyard nodes through the dashboard. Sessions on every machine show up in one view.
 - **The real terminal, in the browser.** PTY-backed xterm.js rendering means you get the exact terminal: borders, splits, colors, scrollback. Type, scroll, and resize like you are local.
+- **Images in the terminal.** Full kitty graphics protocol support, so image tools render inline in the browser terminal: `icat`, `timg`, `chafa`, `viu`, neovim image plugins, and terminal browsers. Works over local and remote sessions. Most browser terminals cannot do this at all.
 - **Live session discovery.** Sessions update in real time through daemon process scanning.
 - **Quick switcher.** `Ctrl+K` to jump between sessions and windows. Your hands never leave the keyboard.
 - **One binary.** Go backend with the React frontend embedded. No separate processes, no Node runtime in production.
@@ -224,6 +225,18 @@ The terminal captures mouse events, so a normal click and drag selects text insi
 | **iOS (Safari)** | Touch-select does not work in the terminal. Connect a mouse or trackpad, use `Option`+drag, then copy from the context menu |
 
 This is standard xterm.js behavior. The modifier tells the browser to handle the selection instead of sending mouse events to the terminal.
+
+### Images in the terminal
+
+Termyard's browser terminal implements the kitty graphics protocol, so programs that draw raster images render them inline, in the browser, over a real (possibly remote) PTY. That covers image viewers (`icat`, `timg`, `chafa -f kitty`, `viu`), neovim image plugins (image.nvim, hologram, molten), and terminal browsers. This is unusual: xterm.js has no built-in kitty graphics support, and most browser terminals manage Sixel at best.
+
+It works whether the session is local or on a remote paired machine. Programs often hand the terminal a file, temp file, or shared-memory handle instead of the pixels; the browser cannot read those, so the session daemon (which runs where your shell runs) reads the data and streams it to the browser for you. Direct, zlib-compressed, RGB/RGBA/PNG, chunked transfers, cursor placement, and Unicode placeholders are all handled, and Sixel still works alongside it.
+
+**Limitations.** A few kitty features are not implemented. They degrade quietly, nothing crashes:
+
+- No animation or video (for example `mpv`, animated frames).
+- No cropping to a sub-region of an image, relative placements, or drawing text on top of an image (negative z-index).
+- Very long scrollback can eventually misalign an image that has scrolled far back into history.
 
 ### Lock and sign out
 
