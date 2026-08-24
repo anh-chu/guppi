@@ -148,6 +148,17 @@ func serveAndWait(ctx context.Context, opts *Options, logger *logrus.Entry, hand
 
 	serverErr := make(chan error, 2)
 
+	// Tear down child processes on every return path, including the early
+	// listen-failure returns below. These resources live in opts and are
+	// created elsewhere; only an uncatchable kill (or wrangler's second-signal
+	// os.Exit) can now skip them.
+	if opts.PortForwardStore != nil {
+		defer opts.PortForwardStore.StopAll()
+	}
+	if opts.WikiLite != nil {
+		defer opts.WikiLite.Stop()
+	}
+
 	tlsCfg, err := tlsConfig(opts)
 	if err != nil {
 		return err
@@ -200,6 +211,7 @@ func serveAndWait(ctx context.Context, opts *Options, logger *logrus.Entry, hand
 		if err != nil {
 			logger.WithError(err).Warn("failed to listen on unix socket, notify via socket will be unavailable")
 		} else {
+			defer func() { _ = socket.Cleanup(socketPath) }()
 			go func() {
 				if err := srv.Serve(unixListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					logger.WithError(err).Error("unix socket listen error")
@@ -223,20 +235,6 @@ func serveAndWait(ctx context.Context, opts *Options, logger *logrus.Entry, hand
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.WithError(err).Error("unable to shutdown gracefully")
 		return err
-	}
-
-	// Clean up socket file
-	if unixListener != nil {
-		_ = socket.Cleanup(socketPath)
-	}
-
-	// Stop any socat processes
-	if opts.PortForwardStore != nil {
-		opts.PortForwardStore.StopAll()
-	}
-
-	if opts.WikiLite != nil {
-		opts.WikiLite.Stop()
 	}
 
 	return nil

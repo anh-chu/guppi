@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.6.1] - Process Cleanup Fixes
+
+### Fixes
+- **sessions:** reap `systemctl` and session-daemon child processes instead of only releasing the Go handle, so they no longer accumulate as permanent zombies (one per session create/destroy).
+- **server:** tear down port-forward, wiki-lite, and unix-socket resources via deferred cleanup so child processes are stopped on early listen-failure and error return paths, not just the happy shutdown path.
+
 ## [4.6.0] - Images in the Terminal
 
 ### Features

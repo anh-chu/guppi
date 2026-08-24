@@ -225,12 +225,13 @@ func (r *Registry) Create(name, shell, cwd string, cols, rows uint16) (SessionIn
 		}
 	}
 
-	// Release the process handle so the daemon is fully independent.
+	// Reap the child in the background so it never becomes a zombie. Release()
+	// only drops Go's handle; it does not wait4(), so the child (systemd-run
+	// wrapper, or the daemon itself on the direct-spawn fallback) would zombie
+	// on exit. Wait() in a goroutine reaps without blocking the caller.
 	// Keep track of the PID to check for exit on readiness timeout.
 	originalPid := cmd.Process.Pid
-	if err := cmd.Process.Release(); err != nil {
-		log.WithError(err).Warn("failed to release daemon process handle")
-	}
+	go func(c *exec.Cmd) { _ = c.Wait() }(cmd)
 
 	// Poll for the sidecar JSON to be written with the correct nonce, PID alive,
 	// and socket dialable (up to 2s). This ensures the daemon has started, written
@@ -267,7 +268,7 @@ readiness_poll:
 					return SessionInfo{}, fmt.Errorf("daemon did not become ready within 2s, and direct spawn retry failed: %w", err)
 				}
 				originalPid = cmd.Process.Pid
-				_ = cmd.Process.Release()
+				go func(c *exec.Cmd) { _ = c.Wait() }(cmd)
 				devNull2.Close()
 				useSystemd = false
 				retried = true
@@ -1166,9 +1167,14 @@ func (r *Registry) StopSystemdUnit(unit string) {
 		return
 	}
 
-	// Don't wait — systemctl stop on a dead scope may hang briefly.
-	// Release the process handle so it runs independently.
-	_ = stop.Process.Release()
+	// Reap in the background so we never block the caller and never leak a
+	// zombie. systemctl stop on a dead scope can hang, so bound it and kill
+	// the process if it overruns.
+	go func() {
+		timer := time.AfterFunc(10*time.Second, func() { _ = stop.Process.Kill() })
+		_ = stop.Wait()
+		timer.Stop()
+	}()
 	log.Debug("requested systemd scope stop")
 }
 
