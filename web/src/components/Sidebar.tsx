@@ -739,7 +739,7 @@ export function Sidebar({
     return order.map(path => map.get(path)!)
   }, [viewMode, hasMultipleHosts, unifiedItems])
 
-  const renderSessionItem = (session: Session, isHiddenSection = false, inHostGroup = false, inProjectGroup = false, extras?: { tileFlag?: number; originLabel?: string }) => {
+  const renderSessionItem = (session: Session, isHiddenSection = false, inHostGroup = false, inProjectGroup = false, extras?: { tileFlag?: number; originLabel?: string; groupActions?: { onAiName: () => void; onRename: () => void; aiPending: boolean } }) => {
     const sk = sessionKey(session)
     const isSelected = selectedSession === sk
     const proj = projectionOf(session)
@@ -862,7 +862,7 @@ export function Sidebar({
           onTouchEnd={handleTouchEnd}
           onTouchMove={handleTouchEnd}
           className={cn(
-            'relative flex flex-col w-full min-w-0 rounded-sm transition-all duration-200 text-ink',
+            'group relative flex flex-col w-full min-w-0 rounded-sm transition-all duration-200 text-ink',
             collapsed ? 'px-0 py-2' : 'px-2 py-1.5',
             'hover:bg-white/[0.05]',
             isSelected && !collapsed && 'bg-white/[0.08] !text-primary border border-white/20',
@@ -982,6 +982,30 @@ export function Sidebar({
                   ⊞ {extras.tileFlag}
                 </span>
               )}
+              {!collapsed && extras?.groupActions && (
+                <>
+                  <button
+                    type="button"
+                    title="AI name this group"
+                    disabled={extras.groupActions.aiPending}
+                    onClick={(e) => { e.stopPropagation(); extras?.groupActions?.onAiName() }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-mute/40 hover:text-primary shrink-0 flex items-center disabled:opacity-100"
+                  >
+                    <SparkleIcon spinning={extras.groupActions.aiPending} size={10} />
+                  </button>
+                  <button
+                    type="button"
+                    title="Rename group"
+                    onClick={(e) => { e.stopPropagation(); extras?.groupActions?.onRename() }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-mute/40 hover:text-ink shrink-0 flex items-center"
+                  >
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                  </button>
+                </>
+              )}
               {!collapsed && namingSessions.has(sessionKey(session)) && (
                 <span className="shrink-0" title="AI naming…">
                   <SparkleIcon spinning size={11} />
@@ -1058,47 +1082,32 @@ export function Sidebar({
     const companions = groupSessions.filter(s => sessionKey(s) !== primaryKey)
     return (
       <Fragment key={group.id}>
-        <li className="group/gname flex items-center gap-1.5 px-2 pt-1.5 pb-0 min-h-[18px]">
-          {renamingGroupId === group.id ? (
-            <input
-              ref={groupRenameInputRef}
-              value={groupRenameValue}
-              onChange={(e) => setGroupRenameValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') submitGroupRename(); if (e.key === 'Escape') setRenamingGroupId(null) }}
-              onBlur={submitGroupRename}
-              onClick={(e) => e.stopPropagation()}
-              placeholder="Group name…"
-              className="flex-1 text-[11px] text-ink bg-surface-elevated border border-primary rounded-xs px-1.5 py-0 outline-none font-sans font-medium"
-            />
-          ) : (
-            <>
-              <span className={cn('text-[10px] font-semibold tracking-wider uppercase truncate flex-1 select-none', group.name ? 'text-mute/70' : 'text-mute/25')}>
-                {group.name || 'unnamed'}
-              </span>
-              <button
-                type="button"
-                title="AI name this group"
-                disabled={aiPendingGroupId === group.id}
-                onClick={(e) => { e.stopPropagation(); handleAiNameGroup(group.id, groupSessions, group.name) }}
-                className="opacity-0 group-hover/gname:opacity-100 transition-opacity text-mute/40 hover:text-primary shrink-0 flex items-center disabled:opacity-100"
-              >
-                <SparkleIcon spinning={aiPendingGroupId === group.id} size={10} />
-              </button>
-              <button
-                type="button"
-                title="Rename group"
-                onClick={(e) => { e.stopPropagation(); setRenamingGroupId(group.id); setGroupRenameValue(group.name || '') }}
-                className="opacity-0 group-hover/gname:opacity-100 transition-opacity text-mute/40 hover:text-ink shrink-0 flex items-center"
-              >
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                </svg>
-              </button>
-            </>
-          )}
-        </li>
-        {renderSessionItem(primary, false, false, true, { tileFlag: groupSessions.length })}
+        {!collapsed && (group.name || renamingGroupId === group.id) && (
+          <li className="flex items-center gap-1.5 px-2 pt-1 pb-0 min-h-[16px]">
+            {renamingGroupId === group.id ? (
+              <input
+                ref={groupRenameInputRef}
+                value={groupRenameValue}
+                onChange={(e) => setGroupRenameValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitGroupRename(); if (e.key === 'Escape') setRenamingGroupId(null) }}
+                onBlur={submitGroupRename}
+                onClick={(e) => e.stopPropagation()}
+                placeholder="Group name…"
+                className="flex-1 text-[11px] text-ink bg-surface-elevated border border-primary rounded-xs px-1.5 py-0 outline-none font-sans font-medium"
+              />
+            ) : (
+              <span className="text-[9px] font-medium tracking-wide uppercase truncate text-mute/45 select-none">{group.name}</span>
+            )}
+          </li>
+        )}
+        {renderSessionItem(primary, false, false, true, {
+          tileFlag: groupSessions.length,
+          groupActions: {
+            onAiName: () => handleAiNameGroup(group.id, groupSessions, group.name),
+            onRename: () => { setRenamingGroupId(group.id); setGroupRenameValue(group.name || '') },
+            aiPending: aiPendingGroupId === group.id,
+          },
+        })}
         {companions.length > 0 && (
           <li className="ml-3 pl-2 border-l border-hairline/60">
             <ul className="space-y-0.5">
@@ -1745,6 +1754,12 @@ export function Sidebar({
           ) : (
             projectGroups.map(section => {
               const open = !collapsedProjects.has(section.path)
+              const sectionSessions = section.items.flatMap(it => it.kind === 'session' ? [it.session] : it.sessions)
+              const dotColor = sectionSessions.some(s => projectionOf(s).needsAttention)
+                ? 'var(--warning)'
+                : sectionSessions.some(s => statusOf(s) === 'working')
+                  ? 'var(--accent-green)'
+                  : 'var(--mute)'
               return (
                 <li key={`proj:${section.path}`}>
                   <button
@@ -1754,9 +1769,10 @@ export function Sidebar({
                     className="w-full flex items-center gap-2 px-1 pt-3 pb-1 text-left"
                   >
                     <span className="text-[10px] font-mono text-mute/60 shrink-0 w-3">{open ? '▾' : '▸'}</span>
-                    <span className="text-[11px] font-semibold uppercase tracking-widest text-mute/70 truncate max-w-[60%]">{section.label}</span>
+                    <span className="text-[12px] font-semibold text-ink truncate min-w-0">{section.label}</span>
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
+                    <div className="flex-1" />
                     <span className="text-[10px] font-mono text-mute/40 shrink-0">{section.count}</span>
-                    <div className="flex-1 h-px bg-hairline/60" />
                   </button>
                   {open && (
                     <ul className="space-y-0.5">
