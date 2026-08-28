@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react'
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, Fragment } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { generateKeyBetween } from 'fractional-indexing'
 import { Session, sessionKey, sessionLabel, sessionScheduleID } from '../hooks/useSessions'
@@ -11,7 +11,7 @@ import { cn } from '../lib/utils'
 import { renameSession, aiNameSession as aiNameSessionApi, killSession as killSessionApi } from '../lib/sessionActions'
 import { describeCron } from '../lib/cron'
 import { formatRelativeTime, formatUptime } from '../lib/time'
-import { pathLeaf } from '../lib/path'
+import { pathLeaf, projectLabel } from '../lib/path'
 import { isToolSession, sessionProjection, LOUD_STATUSES } from '../lib/sessionState'
 import { hostColor } from '../lib/hostColor'
 import { AgentMark } from './AgentMark'
@@ -237,9 +237,26 @@ export function Sidebar({
   const [confirmKillKey, setConfirmKillKey] = useState<string | null>(null)
   const [confirmWorktreeKillKey, setConfirmWorktreeKillKey] = useState<string | null>(null)
   const [filterOpen, setFilterOpen] = useState(false)
-  const [viewMode, setViewMode] = useState<'default' | 'status'>(() =>
-    localStorage.getItem('termyard:view-mode') === 'status' ? 'status' : 'default')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [viewMode, setViewMode] = useState<'project' | 'status'>(() =>
+    localStorage.getItem('termyard:view-mode') === 'status' ? 'status' : 'project')
   useEffect(() => { localStorage.setItem('termyard:view-mode', viewMode) }, [viewMode])
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem('termyard:collapsed-projects')
+      if (stored) return new Set(JSON.parse(stored))
+    } catch {}
+    return new Set()
+  })
+  const toggleProjectCollapsed = useCallback((path: string) => {
+    setCollapsedProjects(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      try { localStorage.setItem('termyard:collapsed-projects', JSON.stringify([...next])) } catch {}
+      return next
+    })
+  }, [])
   const [resizing, setResizing] = useState(false)
   const startResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -408,11 +425,21 @@ export function Sidebar({
   const orderedSessions = useMemo(() => orderSessions(sessions, sessionOrderRanks), [sessions, sessionOrderRanks])
 
   const visibleSessions = useMemo(() => {
-    const filtered = orderedSessions.filter(session => !hiddenSet.has(sessionKey(session)) && !backgroundSet.has(sessionKey(session)))
-    if (projectFilters.length === 0) return filtered
-    const allowed = new Set(projectFilters)
-    return filtered.filter(session => session.project_path && allowed.has(session.project_path))
-  }, [orderedSessions, hiddenSet, backgroundSet, projectFilters])
+    let filtered = orderedSessions.filter(session => !hiddenSet.has(sessionKey(session)) && !backgroundSet.has(sessionKey(session)))
+    if (projectFilters.length > 0) {
+      const allowed = new Set(projectFilters)
+      filtered = filtered.filter(session => session.project_path && allowed.has(session.project_path))
+    }
+    const q = searchQuery.trim().toLowerCase()
+    if (q) {
+      filtered = filtered.filter(session =>
+        sessionLabel(session).toLowerCase().includes(q) ||
+        session.name.toLowerCase().includes(q) ||
+        (session.project_path ?? '').toLowerCase().includes(q),
+      )
+    }
+    return filtered
+  }, [orderedSessions, hiddenSet, backgroundSet, projectFilters, searchQuery])
 
   const hiddenSessions = orderedSessions.filter(session => hiddenSet.has(sessionKey(session)))
   const backgroundSessions = orderedSessions.filter(session => backgroundSet.has(sessionKey(session)))
@@ -688,7 +715,31 @@ export function Sidebar({
       .filter(bucket => bucket.sessions.length > 0)
   }, [viewMode, visibleSessions, statusOf])
 
-  const renderSessionItem = (session: Session, isHiddenSection = false, inHostGroup = false) => {
+  // Project (cwd) grouping — the default single-host view. Sessions and tiled
+  // groups are bucketed by project_path; a tiled group inherits its primary
+  // (first-leaf) session's project. Preserves first-seen order (rank order).
+  const projectGroups = useMemo(() => {
+    if (viewMode === 'status' || hasMultipleHosts) return []
+    const order: string[] = []
+    const map = new Map<string, { path: string; label: string; items: UnifiedItem[]; count: number }>()
+    const projectOf = (item: UnifiedItem) => item.kind === 'session'
+      ? (item.session.project_path || '')
+      : (item.sessions[0]?.project_path || '')
+    for (const item of unifiedItems) {
+      const path = projectOf(item)
+      let group = map.get(path)
+      if (!group) {
+        group = { path, label: projectLabel(path), items: [], count: 0 }
+        map.set(path, group)
+        order.push(path)
+      }
+      group.items.push(item)
+      group.count += item.kind === 'session' ? 1 : item.sessions.length
+    }
+    return order.map(path => map.get(path)!)
+  }, [viewMode, hasMultipleHosts, unifiedItems])
+
+  const renderSessionItem = (session: Session, isHiddenSection = false, inHostGroup = false, inProjectGroup = false, extras?: { tileFlag?: number; originLabel?: string }) => {
     const sk = sessionKey(session)
     const isSelected = selectedSession === sk
     const proj = projectionOf(session)
@@ -707,26 +758,10 @@ export function Sidebar({
       ? (session.windows ?? []).flatMap(w => (w.panes ?? []).map(p => ({ ...p, windowIndex: w.index })))
       : []
     const showPanes = allPanes.length > 1
-    const activeCmd = proj.activeCommand
-    const cmdIsShell = proj.commandIsShell
     const agentPresent = proj.agentPresent
     const needsAttention = proj.needsAttention
-    const activityLabel = proj.activityLabel
-    const userPrompt = proj.userPrompt
-    const lastAgentMessage = proj.lastAgentMessage
-    const promptPreview = proj.promptPreview
-    // Bottom row, always non-empty: live activity → last agent message → terminal
-    // capture, falling back to a waiting hint (agent) or the live command (shell).
+    // Single-line rows: a leading dot carries status; the row's status word is in its title.
     const statusBadge = proj.status as StatusBadge
-    const activityIsLive = agentPresent && !!(activityLabel || lastAgentMessage || promptPreview)
-    // While actively working, lastAgentMessage/promptPreview may be stale
-    // leftovers from a prior turn — the current userPrompt is more relevant.
-    // Live tool activity still wins as the most immediate signal.
-    const workingPrompt = statusBadge === 'working' ? userPrompt : undefined
-    const activityDisplay = agentPresent
-      ? (activityLabel || workingPrompt || lastAgentMessage || promptPreview || userPrompt || 'Waiting for prompt')
-      : (activeCmd ? `❯ ${activeCmd}` : 'idle')
-    const isPromptFallback = agentPresent && !!userPrompt && activityDisplay === userPrompt
 
     const handleTouchStart = (e: React.TouchEvent) => {
       if (isRenaming) return
@@ -828,7 +863,7 @@ export function Sidebar({
           onTouchMove={handleTouchEnd}
           className={cn(
             'relative flex flex-col w-full min-w-0 rounded-sm transition-all duration-200 text-ink',
-            collapsed ? 'px-0 py-2' : 'p-2.5',
+            collapsed ? 'px-0 py-2' : 'px-2 py-1.5',
             'hover:bg-white/[0.05]',
             isSelected && !collapsed && 'bg-white/[0.08] !text-primary border border-white/20',
             isSelected && collapsed && 'bg-white/[0.08] !text-primary',
@@ -850,14 +885,24 @@ export function Sidebar({
             />
           )}
           <div className={cn('flex min-w-0 items-center gap-2 w-full', collapsed && 'justify-center')}>
+              {!collapsed && (() => {
+                // Attention outranks status for the dot color so a loud event stays
+                // visible even while the underlying status reads working/idle.
+                const cfg = needsAttention
+                  ? { color: 'var(--warning)', pulse: true }
+                  : justDone
+                    ? { color: 'var(--accent-green)', pulse: false }
+                    : statusBadgeConfig[statusBadge]
+                return (
+                  <span
+                    className={cn('w-2 h-2 rounded-full shrink-0 pointer-events-none', cfg.pulse && 'animate-[pulse_1.5s_ease-in-out_infinite]')}
+                    style={{ background: cfg.color }}
+                    title={needsAttention ? 'Needs attention' : statusBadge}
+                    aria-label={needsAttention ? 'Needs attention' : statusBadge}
+                  />
+                )
+              })()}
               {!collapsed && <AgentMark agentType={agentPresent ? agentType : undefined} className="h-3.5 w-3.5 shrink-0" />}
-              {!collapsed && needsAttention && (
-                <span
-                  className="w-1.5 h-1.5 rounded-full bg-warning shrink-0 pointer-events-none"
-                  title="Needs attention"
-                  aria-label="Needs attention"
-                />
-              )}
               {!collapsed && stripeColor && !inHostGroup && (
                 <span
                   className="w-2 h-2 rounded-full shrink-0 pointer-events-none"
@@ -902,7 +947,7 @@ export function Sidebar({
                       <path d="M18 9a9 9 0 0 1-9 9" />
                     </svg>
                   )}
-                  {!collapsed && projectName && (
+                  {!collapsed && !inProjectGroup && projectName && (
                     <span
                       className="shrink min-w-0 truncate text-[12px] font-medium tracking-tight text-mute/60"
                       title={session.project_path}
@@ -921,6 +966,22 @@ export function Sidebar({
                   </span>
                 </span>
               )}
+              {!collapsed && extras?.originLabel && (
+                <span
+                  className="shrink-0 text-[9px] font-mono text-mute/80 bg-surface border border-hairline rounded-xs px-1 py-0.5 leading-none"
+                  title={session.project_path}
+                >
+                  {extras.originLabel}
+                </span>
+              )}
+              {!collapsed && extras?.tileFlag && extras.tileFlag > 1 && (
+                <span
+                  className="shrink-0 text-[9px] font-mono text-primary bg-primary/15 border border-primary/30 rounded-xs px-1 py-0.5 leading-none"
+                  title="Tiled group"
+                >
+                  ⊞ {extras.tileFlag}
+                </span>
+              )}
               {!collapsed && namingSessions.has(sessionKey(session)) && (
                 <span className="shrink-0" title="AI naming…">
                   <SparkleIcon spinning size={11} />
@@ -932,30 +993,6 @@ export function Sidebar({
                 </span>
               )}
           </div>
-
-          {!collapsed && (
-            <div className="mt-1 flex items-center gap-1.5 min-w-0">
-              {isPromptFallback && (
-                <span className="shrink-0 text-primary/50 text-[10px] leading-tight select-none">›</span>
-              )}
-              <span className={cn('min-w-0 truncate text-[10px]', activityIsLive ? 'text-mute/70' : 'text-mute/40')} title={activityDisplay}>
-                {activityDisplay}
-              </span>
-              {(() => {
-                const cfg = justDone
-                  ? { label: 'done', color: 'var(--accent-green)', bg: 'rgba(89,212,153,0.12)', pulse: false }
-                  : statusBadgeConfig[statusBadge]
-                return (
-                  <span
-                    className={cn('shrink-0 ml-auto text-[9px] leading-none font-medium px-1.5 py-0.5 rounded-xs tabular-nums', cfg.pulse && 'animate-[pulse_1.5s_ease-in-out_infinite]')}
-                    style={{ color: cfg.color, background: cfg.bg }}
-                  >
-                    {cfg.label}
-                  </span>
-                )
-              })()}
-            </div>
-          )}
 
           {pairTarget === sk && (
             <div className="absolute inset-0 rounded-sm bg-canvas/80 backdrop-blur-sm border-2 border-primary flex items-center justify-center pointer-events-none z-10">
@@ -1008,6 +1045,73 @@ export function Sidebar({
     )
   }
 
+
+  // Compact tiled-group rendering for project (cwd) view: the primary
+  // (active/first) session as a normal row flagged with the tile count, then
+  // its companions indented under a connector, each showing an origin chip when
+  // their own project differs from the primary's.
+  const renderProjectTiledGroup = (group: NonNullable<typeof layoutGroups>[number], groupSessions: Session[]) => {
+    const primary = groupSessions.find(s => sessionKey(s) === group.activeKey) ?? groupSessions[0]
+    if (!primary) return null
+    const primaryKey = sessionKey(primary)
+    const primaryProject = primary.project_path || ''
+    const companions = groupSessions.filter(s => sessionKey(s) !== primaryKey)
+    return (
+      <Fragment key={group.id}>
+        <li className="group/gname flex items-center gap-1.5 px-2 pt-1.5 pb-0 min-h-[18px]">
+          {renamingGroupId === group.id ? (
+            <input
+              ref={groupRenameInputRef}
+              value={groupRenameValue}
+              onChange={(e) => setGroupRenameValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitGroupRename(); if (e.key === 'Escape') setRenamingGroupId(null) }}
+              onBlur={submitGroupRename}
+              onClick={(e) => e.stopPropagation()}
+              placeholder="Group name…"
+              className="flex-1 text-[11px] text-ink bg-surface-elevated border border-primary rounded-xs px-1.5 py-0 outline-none font-sans font-medium"
+            />
+          ) : (
+            <>
+              <span className={cn('text-[10px] font-semibold tracking-wider uppercase truncate flex-1 select-none', group.name ? 'text-mute/70' : 'text-mute/25')}>
+                {group.name || 'unnamed'}
+              </span>
+              <button
+                type="button"
+                title="AI name this group"
+                disabled={aiPendingGroupId === group.id}
+                onClick={(e) => { e.stopPropagation(); handleAiNameGroup(group.id, groupSessions, group.name) }}
+                className="opacity-0 group-hover/gname:opacity-100 transition-opacity text-mute/40 hover:text-primary shrink-0 flex items-center disabled:opacity-100"
+              >
+                <SparkleIcon spinning={aiPendingGroupId === group.id} size={10} />
+              </button>
+              <button
+                type="button"
+                title="Rename group"
+                onClick={(e) => { e.stopPropagation(); setRenamingGroupId(group.id); setGroupRenameValue(group.name || '') }}
+                className="opacity-0 group-hover/gname:opacity-100 transition-opacity text-mute/40 hover:text-ink shrink-0 flex items-center"
+              >
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                </svg>
+              </button>
+            </>
+          )}
+        </li>
+        {renderSessionItem(primary, false, false, true, { tileFlag: groupSessions.length })}
+        {companions.length > 0 && (
+          <li className="ml-3 pl-2 border-l border-hairline/60">
+            <ul className="space-y-0.5">
+              {companions.map(s => renderSessionItem(
+                s, false, false, true,
+                (s.project_path || '') !== primaryProject ? { originLabel: projectLabel(s.project_path) } : undefined,
+              ))}
+            </ul>
+          </li>
+        )}
+      </Fragment>
+    )
+  }
 
   const renderGroupItem = (group: NonNullable<typeof layoutGroups>[number], groupSessions: Session[], inHostGroup = false) => {
     const firstLeaf = group.leaves[0]
@@ -1396,6 +1500,34 @@ export function Sidebar({
       )}
       {!collapsed && (
         <div className="px-2 pt-2" ref={filterRef}>
+          <div className="relative mb-1.5">
+            <svg
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-mute/60 pointer-events-none"
+              width="13" height="13" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden
+            >
+              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+            </svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setSearchQuery('') } }}
+              placeholder="Search sessions"
+              aria-label="Search sessions"
+              className="w-full rounded-md border border-hairline bg-surface-elevated pl-8 pr-7 py-2 text-xs text-ink placeholder:text-mute/50 outline-none focus:border-primary/60 transition-colors font-sans"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                title="Clear search"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-mute/60 hover:text-ink px-1"
+              >
+                ×
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-1.5">
             <button
               type="button"
@@ -1406,8 +1538,8 @@ export function Sidebar({
             </button>
             <button
               type="button"
-              onClick={() => setViewMode(m => (m === 'status' ? 'default' : 'status'))}
-              title={viewMode === 'status' ? 'Grouping by status — click for default order' : 'Group sessions by status'}
+              onClick={() => setViewMode(m => (m === 'status' ? 'project' : 'status'))}
+              title={viewMode === 'status' ? 'Grouping by status — click to group by project' : 'Group sessions by status'}
               aria-pressed={viewMode === 'status'}
               className={cn(
                 'shrink-0 rounded-md border px-2 py-2 transition-colors',
@@ -1511,7 +1643,7 @@ export function Sidebar({
           })}
 
           {/* Drop target at start of list */}
-          {viewMode === 'default' && draggingKey && visibleSessions.length > 0 && (
+          {viewMode === 'project' && draggingKey && visibleSessions.length > 0 && (
             <li
               className="h-4 relative"
               onDragOver={(e) => {
@@ -1545,7 +1677,7 @@ export function Sidebar({
           )}
 
           {/* Unified ordered list — groups appear at their natural position */}
-          {viewMode === 'default' && (hasMultipleHosts && !collapsed ? (
+          {viewMode === 'project' && (hasMultipleHosts && !collapsed ? (
             <>
               {hostGroups.map(hostGroup => {
                 const isMixedBucket = hostGroup.kind === 'mixed'
@@ -1603,12 +1735,38 @@ export function Sidebar({
                 )
               })}
             </>
-          ) : (
+          ) : collapsed ? (
             unifiedItems.map(item => {
               if (item.kind === 'session') {
                 return renderSessionItem(item.session, false)
               }
               return renderGroupItem(item.group, item.sessions, false)
+            })
+          ) : (
+            projectGroups.map(section => {
+              const open = !collapsedProjects.has(section.path)
+              return (
+                <li key={`proj:${section.path}`}>
+                  <button
+                    type="button"
+                    onClick={() => toggleProjectCollapsed(section.path)}
+                    title={section.path || undefined}
+                    className="w-full flex items-center gap-2 px-1 pt-3 pb-1 text-left"
+                  >
+                    <span className="text-[10px] font-mono text-mute/60 shrink-0 w-3">{open ? '▾' : '▸'}</span>
+                    <span className="text-[11px] font-semibold uppercase tracking-widest text-mute/70 truncate max-w-[60%]">{section.label}</span>
+                    <span className="text-[10px] font-mono text-mute/40 shrink-0">{section.count}</span>
+                    <div className="flex-1 h-px bg-hairline/60" />
+                  </button>
+                  {open && (
+                    <ul className="space-y-0.5">
+                      {section.items.map(item => item.kind === 'session'
+                        ? renderSessionItem(item.session, false, false, true)
+                        : renderProjectTiledGroup(item.group, item.sessions))}
+                    </ul>
+                  )}
+                </li>
+              )
             })
           ))}
 

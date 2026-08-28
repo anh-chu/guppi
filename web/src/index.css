@@ -49,14 +49,14 @@
   --font-display: "Space Mono", "JetBrains Mono", monospace;
 
   /* Dark Design Tokens — Brand */
-  --primary: oklch(0.7 0.1 210);
+  --primary: oklch(0.72 0.16 210);
   --primary-pressed: #e8e8e8;
   --on-primary: oklch(0.1 0 0);
   --button-fg: #18191a;
 
   /* Dark Design Tokens — Accent */
-  --accent-blue: oklch(0.7 0.1 210);
-  --accent-blue-soft: oklch(0.7 0.1 210 / 0.15);
+  --accent-blue: oklch(0.72 0.16 210);
+  --accent-blue-soft: oklch(0.72 0.16 210 / 0.15);
   --accent-red: oklch(0.55 0.2 25);
   --accent-red-soft: oklch(0.55 0.2 25 / 0.15);
   --accent-green: oklch(0.65 0.15 145);
@@ -85,19 +85,19 @@
   --destructive-foreground: var(--on-dark);
   --border: var(--hairline);
   --input: var(--surface-elevated);
-  --ring: oklch(0.7 0.1 210);
+  --ring: oklch(0.72 0.16 210);
   --success: var(--accent-green);
   --warning: var(--accent-yellow);
   --radius: 0.5rem;
   --sidebar: var(--canvas);
   --sidebar-foreground: var(--ink);
-  --sidebar-primary: oklch(0.7 0.1 210);
+  --sidebar-primary: oklch(0.72 0.16 210);
   --sidebar-primary-foreground: oklch(0.1 0 0);
   --sidebar-accent: oklch(0.18 0 0);
   --sidebar-accent-foreground: var(--ink);
   --sidebar-border: var(--hairline);
-  --sidebar-ring: oklch(0.7 0.1 210);
-  --chart-primary: oklch(0.65 0.1 210);
+  --sidebar-ring: oklch(0.72 0.16 210);
+  --chart-primary: oklch(0.68 0.14 210);
   --chart-secondary: oklch(0.65 0.1 310);
 }
 
