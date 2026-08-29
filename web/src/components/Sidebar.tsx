@@ -290,6 +290,19 @@ export function Sidebar({
   const [draggingKey, setDraggingKey] = useState<string | null>(null)
   const [pairTarget, setPairTarget] = useState<string | null>(null)
   const [dropIndicator, setDropIndicator] = useState<{ key: string; position: 'above' | 'below' } | null>(null)
+  // Section (cwd group) reordering in project view — persisted order of section keys.
+  const [draggingSectionKey, setDraggingSectionKey] = useState<string | null>(null)
+  const [sectionDrop, setSectionDrop] = useState<{ key: string; position: 'above' | 'below' } | null>(null)
+  const [projectOrder, setProjectOrder] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('termyard:project-order')
+      if (stored) return JSON.parse(stored)
+    } catch {}
+    return []
+  })
+  useEffect(() => {
+    try { localStorage.setItem('termyard:project-order', JSON.stringify(projectOrder)) } catch {}
+  }, [projectOrder])
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
     try {
       const stored = localStorage.getItem('termyard:collapsed-groups')
@@ -655,8 +668,11 @@ export function Sidebar({
       const members = item.kind === 'session' ? [item.session] : item.sessions
       if (members.some(s => s.host_online === false)) section.online = false
     }
-    return order.map(k => map.get(k)!)
-  }, [viewMode, unifiedItems, hosts, localHostId])
+    // Apply the user's persisted section order; sections never moved keep their
+    // first-seen order and sort after moved ones (stable sort on Infinity ties).
+    const rank = (k: string) => { const i = projectOrder.indexOf(k); return i === -1 ? Number.POSITIVE_INFINITY : i }
+    return order.map(k => map.get(k)!).sort((a, b) => rank(a.key) - rank(b.key))
+  }, [viewMode, unifiedItems, hosts, localHostId, projectOrder])
 
   const renderSessionItem = (session: Session, isHiddenSection = false, inHostGroup = false, inProjectGroup = false, extras?: { tileFlag?: number; originLabel?: string; groupActions?: { onAiName: () => void; onRename: () => void; aiPending: boolean } }) => {
     const sk = sessionKey(session)
@@ -1619,9 +1635,36 @@ export function Sidebar({
                   : 'var(--mute)'
               return (
                 <li key={`proj:${section.key}`} className={cn('flex flex-col rounded-sm mt-1.5 first:mt-0', !section.online && 'opacity-75')}>
+                  {sectionDrop?.key === section.key && sectionDrop.position === 'above' && (
+                    <div className="h-1 mb-0.5 bg-accent-green rounded-full pointer-events-none shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
+                  )}
                   <button
                     type="button"
+                    draggable={!collapsed}
                     onClick={() => toggleProjectCollapsed(section.key)}
+                    onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData('text/plain', section.key); setDraggingSectionKey(section.key) }}
+                    onDragEnd={() => { setDraggingSectionKey(null); setSectionDrop(null) }}
+                    onDragOver={(e) => {
+                      if (!draggingSectionKey || draggingSectionKey === section.key) return
+                      e.preventDefault(); e.stopPropagation()
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      setSectionDrop({ key: section.key, position: (e.clientY - rect.top) / rect.height < 0.5 ? 'above' : 'below' })
+                    }}
+                    onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setSectionDrop(null) }}
+                    onDrop={(e) => {
+                      if (!draggingSectionKey || draggingSectionKey === section.key) return
+                      e.preventDefault(); e.stopPropagation()
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      const position = (e.clientY - rect.top) / rect.height < 0.5 ? 'above' : 'below'
+                      const cur = projectGroups.map(s => s.key)
+                      const without = cur.filter(k => k !== draggingSectionKey)
+                      const ti = without.indexOf(section.key)
+                      if (ti !== -1) {
+                        without.splice(position === 'above' ? ti : ti + 1, 0, draggingSectionKey)
+                        setProjectOrder(without)
+                      }
+                      setDraggingSectionKey(null); setSectionDrop(null)
+                    }}
                     title={section.path || undefined}
                     className="w-full flex items-center gap-2 px-2.5 py-2 text-left rounded-sm bg-white/[0.04] transition-colors hover:bg-white/[0.07]"
                   >
@@ -1638,6 +1681,9 @@ export function Sidebar({
                     <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
                     <span className="text-[10px] font-mono text-mute/50 shrink-0">· {section.count}</span>
                   </button>
+                  {sectionDrop?.key === section.key && sectionDrop.position === 'below' && (
+                    <div className="h-1 mt-0.5 bg-accent-green rounded-full pointer-events-none shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
+                  )}
                   {open && (
                     <ul className="space-y-0.5">
                       {section.items.map(item => item.kind === 'session'
