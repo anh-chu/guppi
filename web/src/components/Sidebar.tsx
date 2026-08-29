@@ -1761,18 +1761,17 @@ export function Sidebar({
                   ? 'var(--accent-green)'
                   : 'var(--mute)'
               return (
-                <li key={`proj:${section.path}`}>
+                <li key={`proj:${section.path}`} className="flex flex-col rounded-sm mt-1.5 first:mt-0">
                   <button
                     type="button"
                     onClick={() => toggleProjectCollapsed(section.path)}
                     title={section.path || undefined}
-                    className="w-full flex items-center gap-2 px-1 pt-3 pb-1 text-left"
+                    className="w-full flex items-center gap-2 px-2.5 py-2 text-left rounded-sm bg-white/[0.04] transition-colors hover:bg-white/[0.07]"
                   >
                     <span className="text-[10px] font-mono text-mute/60 shrink-0 w-3">{open ? '▾' : '▸'}</span>
-                    <span className="text-[12px] font-semibold text-ink truncate min-w-0">{section.label}</span>
+                    <span className="text-[11px] font-medium truncate flex-1 text-left">{section.label}</span>
                     <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
-                    <div className="flex-1" />
-                    <span className="text-[10px] font-mono text-mute/40 shrink-0">{section.count}</span>
+                    <span className="text-[10px] font-mono text-mute/50 shrink-0">· {section.count}</span>
                   </button>
                   {open && (
                     <ul className="space-y-0.5">
