@@ -34,7 +34,7 @@ function normalizeAgent(agentType?: string) {
   return 'custom'
 }
 
-export function AgentMark({ agentType, className }: { agentType?: string; className?: string }) {
+export function AgentMark({ agentType, className, bare }: { agentType?: string; className?: string; bare?: boolean }) {
   const key = normalizeAgent(agentType)
   const isShell = key === 'shell'
   const color = isShell ? 'var(--mute)' : (toolColors[key] || 'var(--primary)')
@@ -45,15 +45,14 @@ export function AgentMark({ agentType, className }: { agentType?: string; classN
     <span
       title={isShell ? 'shell' : (agentType || 'custom')}
       className={cn(
-        'inline-flex items-center justify-center rounded border',
+        'inline-flex items-center justify-center',
+        !bare && 'rounded border',
         !iconPath && !isShell && 'text-[9px] font-semibold tracking-wide',
         className,
       )}
-      style={{
-        color,
-        borderColor: `${color}55`,
-        background: `${color}18`,
-      }}
+      style={bare
+        ? { color }
+        : { color, borderColor: `${color}55`, background: `${color}18` }}
     >
       {isShell ? (
         // Terminal prompt glyph (Lucide "terminal"): chevron + command line.

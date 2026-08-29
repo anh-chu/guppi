@@ -837,15 +837,7 @@ export function Sidebar({
                   />
                 )
               })()}
-              {!collapsed && <AgentMark agentType={agentPresent ? agentType : undefined} className="h-3.5 w-3.5 shrink-0" />}
-              {!collapsed && stripeColor && !inHostGroup && (
-                <span
-                  className="w-2 h-2 rounded-full shrink-0 pointer-events-none"
-                  style={{ backgroundColor: stripeColor }}
-                  title={hostLabel ? `Host: ${hostLabel}` : undefined}
-                  aria-label={hostLabel ? `Host: ${hostLabel}` : 'remote host'}
-                />
-              )}
+              {!collapsed && <AgentMark agentType={agentPresent ? agentType : undefined} bare className="h-3.5 w-3.5 shrink-0" />}
               {isRenaming ? (
                 <input
                   ref={renameInputRef}
@@ -903,7 +895,7 @@ export function Sidebar({
               )}
               {!collapsed && extras?.originLabel && (
                 <span
-                  className="shrink-0 text-[9px] font-mono text-mute/80 bg-surface border border-hairline rounded-xs px-1 py-0.5 leading-none"
+                  className="shrink-0 text-[9px] font-mono text-mute/60 leading-none"
                   title={session.project_path}
                 >
                   {extras.originLabel}
@@ -911,7 +903,7 @@ export function Sidebar({
               )}
               {!collapsed && extras?.tileFlag && extras.tileFlag > 1 && (
                 <span
-                  className="shrink-0 text-[9px] font-mono text-primary bg-primary/15 border border-primary/30 rounded-xs px-1 py-0.5 leading-none"
+                  className="shrink-0 text-[9px] font-mono text-primary/70 leading-none"
                   title="Tiled group"
                 >
                   ⊞ {extras.tileFlag}
@@ -1162,7 +1154,7 @@ export function Sidebar({
               <div className="flex items-center gap-2 w-full group/collname">
                 <span className="text-[10px] font-mono text-mute/50 shrink-0 w-3">{groupSessions.length}</span>
                 {collapsedAgentTypes.map((t, i) => (
-                  <AgentMark key={i} agentType={t} className="h-3.5 min-w-5 px-0.5 shrink-0" />
+                  <AgentMark key={i} agentType={t} bare className="h-3.5 min-w-5 px-0.5 shrink-0" />
                 ))}
                 {renamingGroupId === group.id ? (
                   <input
@@ -1634,7 +1626,7 @@ export function Sidebar({
                   ? 'var(--accent-green)'
                   : 'var(--mute)'
               return (
-                <li key={`proj:${section.key}`} className={cn('flex flex-col rounded-sm mt-1.5 first:mt-0', !section.online && 'opacity-75')}>
+                <li key={`proj:${section.key}`} className={cn('flex flex-col', !section.online && 'opacity-75')}>
                   {sectionDrop?.key === section.key && sectionDrop.position === 'above' && (
                     <div className="h-1 mb-0.5 bg-accent-green rounded-full pointer-events-none shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
                   )}
@@ -1666,13 +1658,13 @@ export function Sidebar({
                       setDraggingSectionKey(null); setSectionDrop(null)
                     }}
                     title={section.path || undefined}
-                    className="w-full flex items-center gap-2 px-2.5 py-2 text-left rounded-sm bg-white/[0.04] transition-colors hover:bg-white/[0.07]"
+                    className="group/hdr w-full flex items-center gap-2 px-1.5 pt-3 pb-1 text-left"
                   >
-                    <span className="text-[10px] font-mono text-mute/60 shrink-0 w-3">{open ? '▾' : '▸'}</span>
-                    <span className="text-[11px] font-medium truncate flex-1 text-left">{section.label}</span>
+                    <span className="text-[10px] font-mono text-mute/50 shrink-0 w-3">{open ? '▾' : '▸'}</span>
+                    <span className="text-[11px] font-medium truncate flex-1 text-left text-mute/70 group-hover/hdr:text-ink transition-colors">{section.label}</span>
                     {section.hostId !== (localHostId ?? '') && (
                       <span
-                        className="text-[9px] font-mono text-mute/60 rounded-xs border border-hairline bg-white/[0.03] px-1 py-0.5 shrink-0 truncate max-w-[100px]"
+                        className="text-[9px] font-mono text-mute/50 shrink-0 truncate max-w-[100px]"
                         title={section.hostName}
                       >
                         {section.hostName}{!section.online && ' · offline'}
