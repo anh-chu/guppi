@@ -304,13 +304,6 @@ export function Sidebar({
     } catch {}
     return new Set()
   })
-  const [collapsedHosts, setCollapsedHosts] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem('termyard:collapsed-hosts')
-      if (stored) return new Set(JSON.parse(stored))
-    } catch {}
-    return new Set()
-  })
   const toggleGroupCollapsed = useCallback((id: string) => {
     setCollapsedGroups(prev => {
       const next = new Set(prev)
@@ -326,15 +319,6 @@ export function Sidebar({
       if (next.has(id)) next.delete(id)
       else next.add(id)
       try { localStorage.setItem('termyard:expanded-schedule-groups', JSON.stringify([...next])) } catch {}
-      return next
-    })
-  }, [])
-  const toggleHostCollapsed = useCallback((id: string) => {
-    setCollapsedHosts(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      try { localStorage.setItem('termyard:collapsed-hosts', JSON.stringify([...next])) } catch {}
       return next
     })
   }, [])
@@ -596,84 +580,6 @@ export function Sidebar({
   }, [visibleSessions, layoutGroups, scheduleIDs])
 
 
-  type HostBucket = {
-    kind: 'host' | 'mixed'
-    hostId: string
-    name: string
-    online: boolean
-    sessions: Session[]
-    items: UnifiedItem[]
-  }
-
-  const hostGroups = useMemo((): HostBucket[] => {
-    if (!hasMultipleHosts) return []
-    const localBucketId = localHostId ?? ''
-    const mixedBucketId = '__mixed__'
-    const buckets = new Map<string, HostBucket>()
-
-    const ensureBucket = (hostId: string, name: string, kind: HostBucket['kind']) => {
-      const existing = buckets.get(hostId)
-      if (existing) return existing
-      const bucket: HostBucket = { kind, hostId, name, online: false, sessions: [], items: [] }
-      buckets.set(hostId, bucket)
-      return bucket
-    }
-
-    const hostNameFor = (hostId: string, fallback?: string) => (
-      hostId === localBucketId
-        ? 'This machine'
-        : hosts?.find(host => host.id === hostId)?.name ?? fallback ?? hostId
-    )
-
-    const sessionHostId = (session: Session) => (session.host && session.host !== localHostId ? session.host : localBucketId)
-
-    for (const item of unifiedItems) {
-      if (item.kind === 'session') {
-        const hostId = sessionHostId(item.session)
-        const bucket = ensureBucket(hostId, hostNameFor(hostId, item.session.host_name), 'host')
-        bucket.items.push(item)
-        bucket.sessions.push(item.session)
-        bucket.online ||= item.session.host_online !== false
-        continue
-      }
-
-      const groupHostIds = new Set(item.sessions.map(sessionHostId))
-      if (groupHostIds.size === 1) {
-        const hostId = groupHostIds.values().next().value as string
-        const bucket = ensureBucket(hostId, hostNameFor(hostId, item.sessions[0]?.host_name), 'host')
-        bucket.items.push(item)
-        bucket.sessions.push(...item.sessions)
-        bucket.online ||= item.sessions.some(session => session.host_online !== false)
-      } else {
-        const bucket = ensureBucket(mixedBucketId, 'Mixed hosts', 'mixed')
-        bucket.items.push(item)
-        bucket.sessions.push(...item.sessions)
-        bucket.online ||= item.sessions.some(session => session.host_online !== false)
-      }
-    }
-
-    // Surface connected online peers even with zero sessions, so the list
-    // confirms a machine is linked rather than hiding idle peers. Offline
-    // idle peers stay hidden to avoid clutter.
-    for (const host of hosts ?? []) {
-      if (host.local || host.id === localBucketId || !host.online) continue
-      const bucket = ensureBucket(host.id, hostNameFor(host.id, host.name), 'host')
-      bucket.online = true
-    }
-
-    const localBucket = buckets.get(localBucketId)
-    const remoteBuckets = Array.from(buckets.values())
-      .filter(bucket => bucket.kind === 'host' && bucket.hostId !== localBucketId)
-      .sort((a, b) => a.name.localeCompare(b.name))
-    const mixedBucket = buckets.get(mixedBucketId)
-
-    return [
-      ...(localBucket && localBucket.items.length > 0 ? [localBucket] : []),
-      ...remoteBuckets,
-      ...(mixedBucket && mixedBucket.items.length > 0 ? [mixedBucket] : []),
-    ]
-  }, [hasMultipleHosts, hosts, localHostId, unifiedItems])
-
   // Schedule groups render in a dedicated pinned block above the Hidden section,
   // out of the scrolling session list — recurring/background work, not active.
   const scheduleGroups = useMemo(() => {
@@ -715,29 +621,42 @@ export function Sidebar({
       .filter(bucket => bucket.sessions.length > 0)
   }, [viewMode, visibleSessions, statusOf])
 
-  // Project (cwd) grouping — the default single-host view. Sessions and tiled
-  // groups are bucketed by project_path; a tiled group inherits its primary
-  // (first-leaf) session's project. Preserves first-seen order (rank order).
+  // Project (cwd) grouping — the default view. Each section is one host+path
+  // combination; a tiled group inherits its primary (first-leaf) session's host
+  // and project. Preserves first-seen order (rank order). Host is surfaced as a
+  // header chip only when multiple hosts are connected.
   const projectGroups = useMemo(() => {
-    if (viewMode === 'status' || hasMultipleHosts) return []
+    if (viewMode === 'status') return []
+    const localBucketId = localHostId ?? ''
+    const sessionHostId = (s: Session) => (s.host && s.host !== localHostId ? s.host : localBucketId)
+    const hostNameFor = (hostId: string, fallback?: string) => (
+      hostId === localBucketId
+        ? 'This machine'
+        : hosts?.find(h => h.id === hostId)?.name ?? fallback ?? hostId
+    )
+    const primaryOf = (item: UnifiedItem) => item.kind === 'session' ? item.session : item.sessions[0]
+    type Section = { key: string; path: string; label: string; hostId: string; hostName: string; online: boolean; items: UnifiedItem[]; count: number }
     const order: string[] = []
-    const map = new Map<string, { path: string; label: string; items: UnifiedItem[]; count: number }>()
-    const projectOf = (item: UnifiedItem) => item.kind === 'session'
-      ? (item.session.project_path || '')
-      : (item.sessions[0]?.project_path || '')
+    const map = new Map<string, Section>()
     for (const item of unifiedItems) {
-      const path = projectOf(item)
-      let group = map.get(path)
-      if (!group) {
-        group = { path, label: projectLabel(path), items: [], count: 0 }
-        map.set(path, group)
-        order.push(path)
+      const primary = primaryOf(item)
+      if (!primary) continue
+      const hostId = sessionHostId(primary)
+      const path = primary.project_path || ''
+      const key = `${hostId}\u0000${path}`
+      let section = map.get(key)
+      if (!section) {
+        section = { key, path, label: projectLabel(path), hostId, hostName: hostNameFor(hostId, primary.host_name), online: true, items: [], count: 0 }
+        map.set(key, section)
+        order.push(key)
       }
-      group.items.push(item)
-      group.count += item.kind === 'session' ? 1 : item.sessions.length
+      section.items.push(item)
+      section.count += item.kind === 'session' ? 1 : item.sessions.length
+      const members = item.kind === 'session' ? [item.session] : item.sessions
+      if (members.some(s => s.host_online === false)) section.online = false
     }
-    return order.map(path => map.get(path)!)
-  }, [viewMode, hasMultipleHosts, unifiedItems])
+    return order.map(k => map.get(k)!)
+  }, [viewMode, unifiedItems, hosts, localHostId])
 
   const renderSessionItem = (session: Session, isHiddenSection = false, inHostGroup = false, inProjectGroup = false, extras?: { tileFlag?: number; originLabel?: string; groupActions?: { onAiName: () => void; onRename: () => void; aiPending: boolean } }) => {
     const sk = sessionKey(session)
@@ -1686,65 +1605,7 @@ export function Sidebar({
           )}
 
           {/* Unified ordered list — groups appear at their natural position */}
-          {viewMode === 'project' && (hasMultipleHosts && !collapsed ? (
-            <>
-              {hostGroups.map(hostGroup => {
-                const isMixedBucket = hostGroup.kind === 'mixed'
-                const open = isMixedBucket ? true : !collapsedHosts.has(hostGroup.hostId)
-                const bucketKey = hostGroup.kind === 'host' ? hostGroup.hostId || '__local__' : '__mixed__'
-                return (
-                  <li
-                    key={`host:${bucketKey}`}
-                    data-host-id={bucketKey}
-                    className={cn('flex flex-col rounded-sm', !hostGroup.online && 'opacity-75')}
-                  >
-                    {hostGroup.kind === 'host' ? (
-                      <button
-                        type="button"
-                        onClick={() => toggleHostCollapsed(hostGroup.hostId)}
-                        className="w-full flex items-center gap-2 px-2.5 py-2 text-left rounded-sm bg-white/[0.04] transition-colors hover:bg-white/[0.07]"
-                      >
-                        <span className="text-[10px] font-mono text-mute/60 shrink-0 w-3">
-                          {open ? '▾' : '▸'}
-                        </span>
-                        <span className="text-[11px] font-medium truncate flex-1 text-left">
-                          {hostGroup.name}
-                        </span>
-                        {!hostGroup.online && (
-                          <span className="text-[9px] font-semibold uppercase tracking-widest rounded-xs border border-hairline px-1.5 py-0.5 text-mute/50">
-                            offline
-                          </span>
-                        )}
-                        <span className="text-[10px] font-mono text-mute/50 shrink-0">
-                          · {hostGroup.sessions.length}
-                        </span>
-                      </button>
-                    ) : (
-                      <div className="w-full flex items-center gap-2 px-2.5 py-2 text-left rounded-sm bg-white/[0.04] border-b border-hairline/40">
-                        <span className="text-[10px] font-mono text-mute/60 shrink-0 w-3">•</span>
-                        <span className="text-[11px] font-medium truncate flex-1 text-left">
-                          {hostGroup.name}
-                        </span>
-                        <span className="text-[10px] font-mono text-mute/50 shrink-0">
-                          · {hostGroup.sessions.length}
-                        </span>
-                      </div>
-                    )}
-                    {open && (hostGroup.items.length > 0 ? (
-                      <ul className="space-y-0.5 pl-1">
-                        {hostGroup.items.map(item => item.kind === 'session'
-                          ? renderSessionItem(item.session, false, true)
-                          : renderGroupItem(item.group, item.sessions, true)
-                        )}
-                      </ul>
-                    ) : (
-                      <p className="pl-6 pr-2.5 pb-2 text-[11px] text-mute/40 select-none">no sessions</p>
-                    ))}
-                  </li>
-                )
-              })}
-            </>
-          ) : collapsed ? (
+          {viewMode === 'project' && (collapsed ? (
             unifiedItems.map(item => {
               if (item.kind === 'session') {
                 return renderSessionItem(item.session, false)
@@ -1753,7 +1614,7 @@ export function Sidebar({
             })
           ) : (
             projectGroups.map(section => {
-              const open = !collapsedProjects.has(section.path)
+              const open = !collapsedProjects.has(section.key)
               const sectionSessions = section.items.flatMap(it => it.kind === 'session' ? [it.session] : it.sessions)
               const dotColor = sectionSessions.some(s => projectionOf(s).needsAttention)
                 ? 'var(--warning)'
@@ -1761,15 +1622,23 @@ export function Sidebar({
                   ? 'var(--accent-green)'
                   : 'var(--mute)'
               return (
-                <li key={`proj:${section.path}`} className="flex flex-col rounded-sm mt-1.5 first:mt-0">
+                <li key={`proj:${section.key}`} className={cn('flex flex-col rounded-sm mt-1.5 first:mt-0', !section.online && 'opacity-75')}>
                   <button
                     type="button"
-                    onClick={() => toggleProjectCollapsed(section.path)}
+                    onClick={() => toggleProjectCollapsed(section.key)}
                     title={section.path || undefined}
                     className="w-full flex items-center gap-2 px-2.5 py-2 text-left rounded-sm bg-white/[0.04] transition-colors hover:bg-white/[0.07]"
                   >
                     <span className="text-[10px] font-mono text-mute/60 shrink-0 w-3">{open ? '▾' : '▸'}</span>
                     <span className="text-[11px] font-medium truncate flex-1 text-left">{section.label}</span>
+                    {hasMultipleHosts && (
+                      <span
+                        className="text-[9px] font-mono text-mute/60 rounded-xs border border-hairline bg-white/[0.03] px-1 py-0.5 shrink-0 truncate max-w-[100px]"
+                        title={section.hostName}
+                      >
+                        {section.hostName}{!section.online && ' · offline'}
+                      </span>
+                    )}
                     <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
                     <span className="text-[10px] font-mono text-mute/50 shrink-0">· {section.count}</span>
                   </button>
