@@ -1670,7 +1670,7 @@ export function Sidebar({
                   >
                     <span className="text-[10px] font-mono text-mute/60 shrink-0 w-3">{open ? '▾' : '▸'}</span>
                     <span className="text-[11px] font-medium truncate flex-1 text-left">{section.label}</span>
-                    {hasMultipleHosts && (
+                    {section.hostId !== (localHostId ?? '') && (
                       <span
                         className="text-[9px] font-mono text-mute/60 rounded-xs border border-hairline bg-white/[0.03] px-1 py-0.5 shrink-0 truncate max-w-[100px]"
                         title={section.hostName}
@@ -1679,7 +1679,7 @@ export function Sidebar({
                       </span>
                     )}
                     <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
-                    <span className="text-[10px] font-mono text-mute/50 shrink-0">· {section.count}</span>
+                    <span className="text-[10px] font-mono text-mute/40 shrink-0">{section.count}</span>
                   </button>
                   {sectionDrop?.key === section.key && sectionDrop.position === 'below' && (
                     <div className="h-1 mt-0.5 bg-accent-green rounded-full pointer-events-none shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
