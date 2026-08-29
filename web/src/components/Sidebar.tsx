@@ -1001,22 +1001,18 @@ export function Sidebar({
     const companions = groupSessions.filter(s => sessionKey(s) !== primaryKey)
     return (
       <Fragment key={group.id}>
-        {!collapsed && (group.name || renamingGroupId === group.id) && (
+        {!collapsed && renamingGroupId === group.id && (
           <li className="flex items-center gap-1.5 px-2 pt-1 pb-0 min-h-[16px]">
-            {renamingGroupId === group.id ? (
-              <input
-                ref={groupRenameInputRef}
-                value={groupRenameValue}
-                onChange={(e) => setGroupRenameValue(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') submitGroupRename(); if (e.key === 'Escape') setRenamingGroupId(null) }}
-                onBlur={submitGroupRename}
-                onClick={(e) => e.stopPropagation()}
-                placeholder="Group name…"
-                className="flex-1 text-[11px] text-ink bg-surface-elevated border border-primary rounded-xs px-1.5 py-0 outline-none font-sans font-medium"
-              />
-            ) : (
-              <span className="text-[9px] font-medium tracking-wide uppercase truncate text-mute/45 select-none">{group.name}</span>
-            )}
+            <input
+              ref={groupRenameInputRef}
+              value={groupRenameValue}
+              onChange={(e) => setGroupRenameValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitGroupRename(); if (e.key === 'Escape') setRenamingGroupId(null) }}
+              onBlur={submitGroupRename}
+              onClick={(e) => e.stopPropagation()}
+              placeholder="Group name…"
+              className="flex-1 text-[11px] text-ink bg-surface-elevated border border-primary rounded-xs px-1.5 py-0 outline-none font-sans font-medium"
+            />
           </li>
         )}
         {renderSessionItem(primary, false, false, true, {
