@@ -823,24 +823,21 @@ export function Sidebar({
           )}
           <div className={cn('flex min-w-0 items-center gap-2 w-full', collapsed && 'justify-center')}>
               {!collapsed && (() => {
-                // Dot only for attention (warning, pulsing) or just-done (green flash);
-                // reserve the slot so names stay aligned across rows with/without a dot.
+                // Dot only for attention (warning, pulsing) or just-done (green flash).
+                // No reserved slot: rows without a dot sit flush at the glyph.
                 const cfg = needsAttention
                   ? { color: 'var(--warning)', pulse: true }
                   : justDone
                     ? { color: 'var(--accent-green)', pulse: false }
                     : null
+                if (!cfg) return null
                 return (
-                  <span className="w-2 shrink-0 flex items-center justify-center">
-                    {cfg && (
-                      <span
-                        className={cn('w-2 h-2 rounded-full pointer-events-none', cfg.pulse && 'animate-[pulse_1.5s_ease-in-out_infinite]')}
-                        style={{ background: cfg.color }}
-                        title={needsAttention ? 'Needs attention' : statusBadge}
-                        aria-label={needsAttention ? 'Needs attention' : statusBadge}
-                      />
-                    )}
-                  </span>
+                  <span
+                    className={cn('w-2 h-2 rounded-full shrink-0 pointer-events-none', cfg.pulse && 'animate-[pulse_1.5s_ease-in-out_infinite]')}
+                    style={{ background: cfg.color }}
+                    title={needsAttention ? 'Needs attention' : statusBadge}
+                    aria-label={needsAttention ? 'Needs attention' : statusBadge}
+                  />
                 )
               })()}
               {!collapsed && <AgentMark agentType={agentPresent ? agentType : undefined} bare className="h-3.5 w-3.5 shrink-0" />}
