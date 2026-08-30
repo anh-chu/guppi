@@ -1620,11 +1620,9 @@ export function Sidebar({
             projectGroups.map(section => {
               const open = !collapsedProjects.has(section.key)
               const sectionSessions = section.items.flatMap(it => it.kind === 'session' ? [it.session] : it.sessions)
-              const dotColor = sectionSessions.some(s => projectionOf(s).needsAttention)
-                ? 'var(--warning)'
-                : sectionSessions.some(s => statusOf(s) === 'working')
-                  ? 'var(--accent-green)'
-                  : 'var(--mute)'
+              const attention = sectionSessions.some(s => projectionOf(s).needsAttention)
+              const working = !attention && sectionSessions.some(s => statusOf(s) === 'working')
+              const dotColor = attention ? 'var(--warning)' : working ? 'var(--accent-green)' : null
               return (
                 <li key={`proj:${section.key}`} className={cn('flex flex-col', !section.online && 'opacity-75')}>
                   {sectionDrop?.key === section.key && sectionDrop.position === 'above' && (
@@ -1670,7 +1668,7 @@ export function Sidebar({
                         {section.hostName}{!section.online && ' · offline'}
                       </span>
                     )}
-                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
+                    {dotColor && <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', attention && 'animate-pulse')} style={{ background: dotColor }} />}
                     <span className="text-[10px] font-mono text-mute/40 shrink-0">{section.count}</span>
                   </button>
                   {sectionDrop?.key === section.key && sectionDrop.position === 'below' && (
