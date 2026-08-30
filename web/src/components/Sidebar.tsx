@@ -695,8 +695,10 @@ export function Sidebar({
     const showPanes = allPanes.length > 1
     const agentPresent = proj.agentPresent
     const needsAttention = proj.needsAttention
-    // Single-line rows: a leading dot carries status; the row's status word is in its title.
+    // Single-line rows: the leading dot is reserved for attention/just-done only;
+    // working state shimmers the name; idle/other show no dot. Status word is in title.
     const statusBadge = proj.status as StatusBadge
+    const working = !needsAttention && !justDone && statusBadge === 'working'
 
     const handleTouchStart = (e: React.TouchEvent) => {
       if (isRenaming) return
@@ -821,20 +823,24 @@ export function Sidebar({
           )}
           <div className={cn('flex min-w-0 items-center gap-2 w-full', collapsed && 'justify-center')}>
               {!collapsed && (() => {
-                // Attention outranks status for the dot color so a loud event stays
-                // visible even while the underlying status reads working/idle.
+                // Dot only for attention (warning, pulsing) or just-done (green flash);
+                // reserve the slot so names stay aligned across rows with/without a dot.
                 const cfg = needsAttention
                   ? { color: 'var(--warning)', pulse: true }
                   : justDone
                     ? { color: 'var(--accent-green)', pulse: false }
-                    : statusBadgeConfig[statusBadge]
+                    : null
                 return (
-                  <span
-                    className={cn('w-2 h-2 rounded-full shrink-0 pointer-events-none', cfg.pulse && 'animate-[pulse_1.5s_ease-in-out_infinite]')}
-                    style={{ background: cfg.color }}
-                    title={needsAttention ? 'Needs attention' : statusBadge}
-                    aria-label={needsAttention ? 'Needs attention' : statusBadge}
-                  />
+                  <span className="w-2 shrink-0 flex items-center justify-center">
+                    {cfg && (
+                      <span
+                        className={cn('w-2 h-2 rounded-full pointer-events-none', cfg.pulse && 'animate-[pulse_1.5s_ease-in-out_infinite]')}
+                        style={{ background: cfg.color }}
+                        title={needsAttention ? 'Needs attention' : statusBadge}
+                        aria-label={needsAttention ? 'Needs attention' : statusBadge}
+                      />
+                    )}
+                  </span>
                 )
               })()}
               {!collapsed && <AgentMark agentType={agentPresent ? agentType : undefined} bare className="h-3.5 w-3.5 shrink-0" />}
@@ -885,6 +891,7 @@ export function Sidebar({
                   <span
                     className={cn(
                       'shrink-0 max-w-full text-[12px] font-medium tracking-tight overflow-hidden text-ellipsis whitespace-nowrap',
+                      working && !isSelected && 'text-shimmer',
                       isSelected && '!text-primary',
                     )}
                     title={session.agent_session_id ? `${sessionLabel(session)} · ${session.agent_session_id}` : (sessionLabel(session) !== session.name ? `${sessionLabel(session)} (${session.name})` : session.name)}
