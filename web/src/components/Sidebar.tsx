@@ -1622,7 +1622,6 @@ export function Sidebar({
               const sectionSessions = section.items.flatMap(it => it.kind === 'session' ? [it.session] : it.sessions)
               const attention = sectionSessions.some(s => projectionOf(s).needsAttention)
               const working = !attention && sectionSessions.some(s => statusOf(s) === 'working')
-              const dotColor = attention ? 'var(--warning)' : working ? 'var(--accent-green)' : null
               return (
                 <li key={`proj:${section.key}`} className={cn('flex flex-col', !section.online && 'opacity-75')}>
                   {sectionDrop?.key === section.key && sectionDrop.position === 'above' && (
@@ -1659,7 +1658,7 @@ export function Sidebar({
                     className="group/hdr w-full flex items-center gap-2 px-1.5 pt-3 pb-1 text-left"
                   >
                     <span className="text-[10px] font-mono text-mute/50 shrink-0 w-3">{open ? '▾' : '▸'}</span>
-                    <span className="text-[11px] font-medium truncate flex-1 text-left text-mute/70 group-hover/hdr:text-ink transition-colors">{section.label}</span>
+                    <span className={cn('text-[11px] font-medium truncate flex-1 text-left transition-colors', working ? 'text-shimmer' : 'text-mute/70 group-hover/hdr:text-ink')}>{section.label}</span>
                     {section.hostId !== (localHostId ?? '') && (
                       <span
                         className="text-[9px] font-mono text-mute/50 shrink-0 truncate max-w-[100px]"
@@ -1668,7 +1667,7 @@ export function Sidebar({
                         {section.hostName}{!section.online && ' · offline'}
                       </span>
                     )}
-                    {dotColor && <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', attention && 'animate-pulse')} style={{ background: dotColor }} />}
+                    {attention && <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse" style={{ background: 'var(--warning)' }} />}
                     <span className="text-[10px] font-mono text-mute/40 shrink-0">{section.count}</span>
                   </button>
                   {sectionDrop?.key === section.key && sectionDrop.position === 'below' && (

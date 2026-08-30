@@ -262,6 +262,23 @@
   }
 }
 
+/* Working-state text shimmer: a brighter highlight sweeps across muted text. */
+@keyframes textShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.text-shimmer {
+  background: linear-gradient(90deg, var(--mute) 0%, var(--mute) 38%, var(--ink) 50%, var(--mute) 62%, var(--mute) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: textShimmer 2.2s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .text-shimmer { animation: none; color: var(--ink); }
+}
+
 @keyframes slideIn {
   from {
     opacity: 0;
