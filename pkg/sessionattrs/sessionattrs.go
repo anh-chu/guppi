@@ -36,9 +36,10 @@ import (
 )
 
 // Attr is the shared attribute set for one session key. A key is retained in
-// the store as long as either bit is set OR it is acting as a recent tombstone
-// (both bits false) guarding against a stale delta resurrecting it. UpdatedAt
-// drives per-key last-write-wins reconciliation across the mesh.
+// the store as long as any field carries meaning (a bit set OR a schedule owner)
+// OR it is acting as a recent tombstone (all fields cleared) guarding against a
+// stale delta resurrecting it. UpdatedAt drives per-key last-write-wins
+// reconciliation across the mesh.
 type Attr struct {
 	Background bool      `json:"background"`
 	Hidden     bool      `json:"hidden"`
@@ -46,7 +47,11 @@ type Attr struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-func (a Attr) empty() bool { return !a.Background && !a.Hidden }
+// empty reports whether an attr carries no meaningful state. A schedule owner
+// counts as meaningful: otherwise Prune would treat a schedule-only attr as an
+// expired tombstone and delete it after tombstoneTTL, silently un-grouping the
+// session from its schedule.
+func (a Attr) empty() bool { return !a.Background && !a.Hidden && a.ScheduleID == "" }
 
 // tombstoneTTL bounds how long a cleared (both-false) entry is kept to suppress
 // out-of-order resurrection. After this it is dropped on the next mutation.

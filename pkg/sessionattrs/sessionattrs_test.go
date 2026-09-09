@@ -74,6 +74,29 @@ func TestMigrateKeyPreservesAttrsAcrossRename(t *testing.T) {
 	}
 }
 
+func TestPruneKeepsScheduleOnlyAttrPastTombstoneTTL(t *testing.T) {
+	old := time.Now().Add(-2 * tombstoneTTL)
+	s := &Store{path: filepath.Join(t.TempDir(), "attrs.json"), attrs: map[string]Attr{
+		// Schedule-only attr for a still-live session, older than tombstoneTTL.
+		"host-1/run-1": {ScheduleID: "sched-1", UpdatedAt: old},
+		// A genuine expired tombstone should still be dropped.
+		"host-1/dead": {UpdatedAt: old},
+	}}
+
+	live := map[string]bool{"host-1/run-1": true}
+	online := map[string]bool{"host-1": true}
+	if _, _, err := s.Prune(live, online); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+
+	if got := s.attrs["host-1/run-1"].ScheduleID; got != "sched-1" {
+		t.Fatalf("schedule-only attr was pruned: %#v", s.attrs["host-1/run-1"])
+	}
+	if _, ok := s.attrs["host-1/dead"]; ok {
+		t.Fatalf("expired tombstone should have been dropped")
+	}
+}
+
 func TestApplyRemoteCarriesAndPreservesScheduleID(t *testing.T) {
 	s := &Store{path: filepath.Join(t.TempDir(), "attrs.json"), attrs: map[string]Attr{}}
 
