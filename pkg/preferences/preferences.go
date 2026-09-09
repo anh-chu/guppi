@@ -71,7 +71,7 @@ func Default() *Preferences {
 	return &Preferences{
 		Terminal: Terminal{
 			FontSize:         13,
-			FontFamily:       "Space Mono",
+			FontFamily:       "JetBrains Mono",
 			Scrollback:       5000,
 			Renderer:         "webgl",
 		},

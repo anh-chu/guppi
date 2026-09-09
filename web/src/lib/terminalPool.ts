@@ -699,6 +699,8 @@ export class TerminalPool {
     const fontFamily = `'${prefs.fontFamily}', 'JetBrains Mono', 'Fira Code', Menlo, Monaco, 'Inconsolata LGC Nerd Font Mono', 'DejaVu Sans Mono Symbols', monospace`
     entry.terminal.options.fontSize = prefs.fontSize
     entry.terminal.options.fontFamily = fontFamily
+    entry.terminal.options.fontWeight = 300
+    entry.terminal.options.fontWeightBold = 500
     measureXtermCharSize(entry.terminal)
 
     // WebGL renderer (always attempted; silent fallback to DOM on failure/context loss)
@@ -886,6 +888,8 @@ export class TerminalPool {
       theme: xtermTheme,
       fontSize: prefs.fontSize,
       fontFamily,
+      fontWeight: 300,
+      fontWeightBold: 500,
       cursorBlink: true,
       scrollback: prefs.scrollback,
       allowProposedApi: true,

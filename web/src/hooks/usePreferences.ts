@@ -39,7 +39,7 @@ export interface Preferences {
 export const defaultPreferences: Preferences = {
   terminal: {
     font_size: 13,
-    font_family: 'Space Mono',
+    font_family: 'JetBrains Mono',
     scrollback: 50000,
     renderer: 'webgl',
   },
