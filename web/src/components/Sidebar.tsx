@@ -55,9 +55,6 @@ interface SidebarProps {
   sessionOrderRanks: Record<string, string>
   setSessionOrderRank: (key: string, rank: string) => void
   onSwitchGroup?: (groupId: string, focusKey?: string) => void
-  onRenameGroup?: (groupId: string, name: string) => void
-  forceAiName?: (groupId: string) => Promise<boolean>
-  namingGroupId?: string | null
   onPairSessions?: (keyA: string, keyB: string) => void
   onSessionKilled?: (key: string) => void
   sessionAttrs: SessionAttrSets
@@ -166,9 +163,6 @@ export function Sidebar({
   sessionOrderRanks,
   setSessionOrderRank,
   onSwitchGroup,
-  onRenameGroup,
-  forceAiName,
-  namingGroupId,
   onPairSessions,
   onSessionKilled,
   sessionAttrs,
@@ -336,10 +330,6 @@ export function Sidebar({
     })
   }, [])
   const [, setUptimeTick] = useState(0)
-  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null)
-  const [groupRenameValue, setGroupRenameValue] = useState('')
-  const [legacyAiGroupId, setLegacyAiGroupId] = useState<string | null>(null)
-  const aiPendingGroupId = namingGroupId ?? legacyAiGroupId
   // Session keys (host/name) currently being AI-named, for the inline spinner.
   const [namingSessions, setNamingSessions] = useState<Set<string>>(new Set())
   const setNaming = (key: string, on: boolean) => setNamingSessions(prev => {
@@ -348,7 +338,6 @@ export function Sidebar({
     return next
   })
   const renameInputRef = useRef<HTMLInputElement>(null)
-  const groupRenameInputRef = useRef<HTMLInputElement>(null)
   const filterRef = useRef<HTMLDivElement>(null)
   const touchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -359,12 +348,6 @@ export function Sidebar({
     }
   }, [renamingSession])
 
-  useEffect(() => {
-    if (renamingGroupId && groupRenameInputRef.current) {
-      groupRenameInputRef.current.focus()
-      groupRenameInputRef.current.select()
-    }
-  }, [renamingGroupId])
 
   useEffect(() => {
     const id = window.setInterval(() => setUptimeTick(value => value + 1), 60_000)
@@ -498,58 +481,6 @@ export function Sidebar({
     }
   }
 
-  const fallbackAiNameGroup = async (groupId: string, groupSessions: Session[], current?: string) => {
-    const members = groupSessions
-      .map(s => ({
-        label: sessionLabel(s),
-        agent: s.agent_type || '',
-        project: s.project_path || '',
-        prompt: (s.user_prompt || s.prompt_preview || '').trim(),
-      }))
-      .filter(m => m.label)
-    if (members.length === 0) return
-    setLegacyAiGroupId(groupId)
-    try {
-      const res = await fetch('/api/group/name', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ members, current: current || undefined }),
-      })
-      if (res.ok) {
-        const { name } = await res.json()
-        if (name) onRenameGroup?.(groupId, name)
-      } else {
-        const text = await res.text().catch(() => `AI naming failed (${res.status})`)
-        throw new Error(text)
-      }
-    } finally {
-      setLegacyAiGroupId(null)
-    }
-  }
-
-  const showErrorToast = (message: string) => {
-    window.dispatchEvent(new CustomEvent('termyard:toast', { detail: { severity: 'error', source: 'termyard', message } }))
-  }
-
-  const handleAiNameGroup = async (groupId: string, groupSessions: Session[], current?: string) => {
-    if (!forceAiName) return
-    try {
-      const supported = await forceAiName(groupId)
-      if (!supported) {
-        await fallbackAiNameGroup(groupId, groupSessions, current)
-      }
-    } catch (err) {
-      showErrorToast(err instanceof Error ? err.message : 'Failed to AI-name group')
-    }
-  }
-
-  const submitGroupRename = () => {
-    if (renamingGroupId) {
-      onRenameGroup?.(renamingGroupId, groupRenameValue.trim())
-    }
-    setRenamingGroupId(null)
-  }
-
   const allGroupedKeys = useMemo(() =>
     new Set(layoutGroups?.flatMap(g => g.leaves) ?? []),
     [layoutGroups]
@@ -674,7 +605,7 @@ export function Sidebar({
     return order.map(k => map.get(k)!).sort((a, b) => rank(a.key) - rank(b.key))
   }, [viewMode, unifiedItems, hosts, localHostId, projectOrder])
 
-  const renderSessionItem = (session: Session, isHiddenSection = false, inHostGroup = false, inProjectGroup = false, extras?: { tileFlag?: number; originLabel?: string; groupActions?: { onAiName: () => void; onRename: () => void; aiPending: boolean } }) => {
+  const renderSessionItem = (session: Session, isHiddenSection = false, inHostGroup = false, inProjectGroup = false, extras?: { tileFlag?: number; originLabel?: string }) => {
     const sk = sessionKey(session)
     const isSelected = selectedSession === sk
     const proj = projectionOf(session)
@@ -913,30 +844,6 @@ export function Sidebar({
                   ⊞ {extras.tileFlag}
                 </span>
               )}
-              {!collapsed && extras?.groupActions && (
-                <>
-                  <button
-                    type="button"
-                    title="AI name this group"
-                    disabled={extras.groupActions.aiPending}
-                    onClick={(e) => { e.stopPropagation(); extras?.groupActions?.onAiName() }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-mute/40 hover:text-primary shrink-0 flex items-center disabled:opacity-100"
-                  >
-                    <SparkleIcon spinning={extras.groupActions.aiPending} size={10} />
-                  </button>
-                  <button
-                    type="button"
-                    title="Rename group"
-                    onClick={(e) => { e.stopPropagation(); extras?.groupActions?.onRename() }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-mute/40 hover:text-ink shrink-0 flex items-center"
-                  >
-                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                    </svg>
-                  </button>
-                </>
-              )}
               {!collapsed && namingSessions.has(sessionKey(session)) && (
                 <span className="shrink-0" title="AI naming…">
                   <SparkleIcon spinning size={11} />
@@ -1013,28 +920,7 @@ export function Sidebar({
     const companions = groupSessions.filter(s => sessionKey(s) !== primaryKey)
     return (
       <Fragment key={group.id}>
-        {!collapsed && renamingGroupId === group.id && (
-          <li className="flex items-center gap-1.5 px-2 pt-1 pb-0 min-h-[16px]">
-            <input
-              ref={groupRenameInputRef}
-              value={groupRenameValue}
-              onChange={(e) => setGroupRenameValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') submitGroupRename(); if (e.key === 'Escape') setRenamingGroupId(null) }}
-              onBlur={submitGroupRename}
-              onClick={(e) => e.stopPropagation()}
-              placeholder="Group name…"
-              className="flex-1 text-[11px] text-ink bg-surface-elevated border border-primary rounded-xs px-1.5 py-0 outline-none font-sans font-medium"
-            />
-          </li>
-        )}
-        {renderSessionItem(primary, false, false, true, {
-          tileFlag: groupSessions.length,
-          groupActions: {
-            onAiName: () => handleAiNameGroup(group.id, groupSessions, group.name),
-            onRename: () => { setRenamingGroupId(group.id); setGroupRenameValue(group.name || '') },
-            aiPending: aiPendingGroupId === group.id,
-          },
-        })}
+        {renderSessionItem(primary, false, false, true, { tileFlag: groupSessions.length })}
         {companions.length > 0 && (
           <li className="ml-3 pl-2 border-l border-hairline/60">
             <ul className="space-y-0.5">
@@ -1141,7 +1027,6 @@ export function Sidebar({
               role="button"
               tabIndex={0}
               onClick={() => {
-                if (renamingGroupId === group.id) return
                 if (group.isActive) {
                   const activeSession = groupSessions.find(s => sessionKey(s) === group.activeKey) ?? groupSessions[0]
                   if (activeSession) onSessionSelect(activeSession)
@@ -1160,57 +1045,15 @@ export function Sidebar({
                 {collapsedAgentTypes.map((t, i) => (
                   <AgentMark key={i} agentType={t} bare className="h-3.5 min-w-5 px-0.5 shrink-0" />
                 ))}
-                {renamingGroupId === group.id ? (
-                  <input
-                    ref={groupRenameInputRef}
-                    value={groupRenameValue}
-                    onChange={(e) => setGroupRenameValue(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') submitGroupRename()
-                      if (e.key === 'Escape') setRenamingGroupId(null)
-                    }}
-                    onBlur={submitGroupRename}
-                    onClick={(e) => e.stopPropagation()}
-                    placeholder={groupSessions.map(s => s.name).join(' · ')}
-                    className="flex-1 text-sm text-ink bg-surface-elevated border border-primary rounded-xs px-1.5 py-0 outline-none font-sans font-medium"
-                  />
-                ) : (
-                  <span className="flex-1 text-sm font-medium text-ink truncate">
-                    {group.name || groupSessions.map(s => s.name).join(' · ')}
-                  </span>
-                )}
-                {formatUptime(collapsedNewest?.created) && !renamingGroupId && (
+                <span className="flex-1 text-sm font-medium text-ink truncate">
+                  {groupSessions.map(s => s.name).join(' · ')}
+                </span>
+                {formatUptime(collapsedNewest?.created) && (
                   <span className="shrink-0 rounded-xs border border-hairline px-1.5 py-0.5 text-xs text-mute font-medium">
                     {formatUptime(collapsedNewest.created)}
                   </span>
                 )}
-                {/* AI name */}
-                {!renamingGroupId && (
-                  <button
-                    type="button"
-                    title="AI name this group"
-                    disabled={aiPendingGroupId === group.id}
-                    onClick={(e) => { e.stopPropagation(); handleAiNameGroup(group.id, groupSessions, group.name) }}
-                    className="opacity-0 group-hover/collname:opacity-100 transition-opacity text-mute/40 hover:text-primary shrink-0 flex items-center disabled:opacity-100"
-                  >
-                    <SparkleIcon spinning={aiPendingGroupId === group.id} size={11} />
-                  </button>
-                )}
-                {/* Rename pencil */}
-                {!renamingGroupId && (
-                  <button
-                    type="button"
-                    title="Rename group"
-                    onClick={(e) => { e.stopPropagation(); setRenamingGroupId(group.id); setGroupRenameValue(group.name || '') }}
-                    className="opacity-0 group-hover/collname:opacity-100 transition-opacity text-mute/40 hover:text-ink shrink-0 flex items-center"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                    </svg>
-                  </button>
-                )}
-                {group.isActive && !renamingGroupId && (
+                {group.isActive && (
                   <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
                 )}
               </div>
@@ -1222,55 +1065,6 @@ export function Sidebar({
             </div>
           ) : (
             <>
-              {/* Group name label row (expanded) */}
-              {!collapsed && (
-                <div className="group/gname flex items-center gap-1.5 px-2 pt-1 pb-0.5 min-h-[20px]">
-                  {renamingGroupId === group.id ? (
-                    <input
-                      ref={groupRenameInputRef}
-                      value={groupRenameValue}
-                      onChange={(e) => setGroupRenameValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') submitGroupRename()
-                        if (e.key === 'Escape') setRenamingGroupId(null)
-                      }}
-                      onBlur={submitGroupRename}
-                      onClick={(e) => e.stopPropagation()}
-                      placeholder="Group name…"
-                      className="flex-1 text-[11px] text-ink bg-surface-elevated border border-primary rounded-xs px-1.5 py-0 outline-none font-sans font-medium"
-                    />
-                  ) : (
-                    <>
-                      <span className={cn(
-                        'text-[10px] font-semibold tracking-wider uppercase truncate flex-1 select-none',
-                        group.name ? 'text-mute/70' : 'text-mute/25'
-                      )}>
-                        {group.name || 'unnamed'}
-                      </span>
-                      <button
-                        type="button"
-                        title="AI name this group"
-                        disabled={aiPendingGroupId === group.id}
-                        onClick={(e) => { e.stopPropagation(); handleAiNameGroup(group.id, groupSessions, group.name) }}
-                        className="opacity-0 group-hover/gname:opacity-100 transition-opacity text-mute/40 hover:text-primary shrink-0 flex items-center disabled:opacity-100"
-                      >
-                        <SparkleIcon spinning={aiPendingGroupId === group.id} size={10} />
-                      </button>
-                      <button
-                        type="button"
-                        title="Rename group"
-                        onClick={(e) => { e.stopPropagation(); setRenamingGroupId(group.id); setGroupRenameValue(group.name || '') }}
-                        className="opacity-0 group-hover/gname:opacity-100 transition-opacity text-mute/40 hover:text-ink shrink-0 flex items-center"
-                      >
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                        </svg>
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
               {(() => {
                 const tools = groupSessions.filter(s => isToolSession(s, getSessionEvents(sessionKey(s))))
                 const agents = groupSessions.filter(s => !tools.includes(s))

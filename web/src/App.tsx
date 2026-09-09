@@ -86,7 +86,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
 
   const refresh = workspaceActions.refresh
   const refreshGroups = groupSync.refresh
-  const { setTree: setGroupTree, setName: setGroupName, setRank: setGroupRank, deleteGroup, forceAiName, namingGroupId, markGroupPending, clearGroupPending } = groupSync
+  const { setTree: setGroupTree, setName: setGroupName, setRank: setGroupRank, deleteGroup, markGroupPending, clearGroupPending } = groupSync
 
   const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, isSessionInActiveTurn, isSessionRecentlyDone, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
   const { getSessionActivity, handleActivityEvent } = useActivity()
@@ -925,10 +925,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
   }, [syncedGroups, activeGroupId, paneTree, activeKey, refocusTerminal, setGroupTree, workspaceActions])
   switchToGroupRef.current = switchToGroup
 
-  const renameGroup = useCallback((groupId: string, name: string) => {
-    void setGroupName(groupId, name)
-  }, [setGroupName])
-
   // Safety-net refocus when activeKey changes via paths that don't call
   // selectSession (e.g. onActivate from clicking inside TiledView).
   useEffect(() => {
@@ -1348,9 +1344,6 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
             sessionOrderRanks={sessionOrderRanks}
             setSessionOrderRank={setSessionOrderRank}
             onSwitchGroup={switchToGroup}
-            onRenameGroup={renameGroup}
-            forceAiName={forceAiName}
-            namingGroupId={namingGroupId}
             onPairSessions={handlePairSessions}
             onSessionKilled={removeSessionFromLayout}
             sessionAttrs={sessionAttrs}

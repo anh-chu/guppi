@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import type { WorkspaceAction } from '../state/workspaceReducer'
 import type { PaneTree } from '../lib/paneTree'
 import { getLeaves } from '../lib/paneTree'
@@ -24,7 +24,6 @@ export function useGroupSync(
   // Per-id counter: incremented when POST starts, decremented when it finishes.
   // id is in-flight while count > 0. Used to skip tree adoption during pending POSTs.
   const inFlightCounterRef = useRef<Map<string, number>>(new Map())
-  const [namingGroupId, setNamingGroupId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!authenticated) return
@@ -127,33 +126,5 @@ export function useGroupSync(
     else inFlightCounterRef.current.delete(id)
   }, [])
 
-  const forceAiName = useCallback(async (id: string): Promise<boolean> => {
-    setNamingGroupId(id)
-    try {
-      const res = await fetch('/api/groups', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, op: 'ai-name' }),
-      })
-      if (!res.ok) {
-        // A legacy server that does not recognise the ai-name op is not a
-        // hard failure; the caller can fall back to the stateless endpoint.
-        if (res.status === 400) {
-          const text = await res.text().catch(() => '')
-          if (/invalid op|unknown op/i.test(text)) return false
-        }
-        throw new Error(`Failed to force AI name: ${res.status}`)
-      }
-      const body = await res.json()
-      const inFlightIds = Array.from(inFlightCounterRef.current.entries())
-        .filter(([, count]) => count > 0)
-        .map(([id]) => id)
-      dispatch({ type: 'groups/snapshot', groups: toGroups(body), skipTreeAdoptFor: inFlightIds })
-      return true
-    } finally {
-      setNamingGroupId(null)
-    }
-  }, [dispatch])
-
-  return { refresh, setTree, setName, setRank, deleteGroup, forceAiName, namingGroupId, markGroupPending, clearGroupPending }
+  return { refresh, setTree, setName, setRank, deleteGroup, markGroupPending, clearGroupPending }
 }
