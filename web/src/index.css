@@ -279,6 +279,12 @@
   .text-shimmer { animation: none; color: var(--ink); }
 }
 
+/* Hover-revealed control entrance (e.g. the per-heading new-session +). */
+@keyframes hoverPop {
+  from { opacity: 0; transform: translateX(-4px) scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+
 @keyframes slideIn {
   from {
     opacity: 0;

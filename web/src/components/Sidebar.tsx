@@ -1450,9 +1450,9 @@ export function Sidebar({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setSearchQuery('') } }}
-                placeholder="Search sessions"
+                placeholder="Search"
                 aria-label="Search sessions"
-                className="w-full rounded-md border border-hairline bg-surface-elevated pl-8 pr-7 py-2 text-xs text-ink placeholder:text-mute/50 outline-none focus:border-primary/60 transition-colors font-sans"
+                className={cn('w-full rounded-md border border-hairline bg-surface-elevated pl-8 py-2 text-xs text-ink placeholder:text-mute/50 outline-none focus:border-primary/60 transition-colors font-sans', searchQuery ? 'pr-7' : 'pr-2.5')}
               />
               {searchQuery && (
                 <button
@@ -1630,7 +1630,7 @@ export function Sidebar({
                     type="button"
                     title="New session here"
                     onClick={() => onQuickShell('')}
-                    className="hidden group-hover/hdr:flex text-mute/50 hover:text-primary shrink-0 items-center"
+                    className="hidden group-hover/hdr:flex group-hover/hdr:animate-[hoverPop_140ms_ease-out] text-mute/50 hover:text-primary shrink-0 items-center"
                   >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
                   </button>
@@ -1697,7 +1697,7 @@ export function Sidebar({
                         type="button"
                         title="New session here"
                         onClick={(e) => { e.stopPropagation(); onQuickShell(section.path) }}
-                        className="hidden group-hover/hdr:flex text-mute/50 hover:text-primary shrink-0 items-center"
+                        className="hidden group-hover/hdr:flex group-hover/hdr:animate-[hoverPop_140ms_ease-out] text-mute/50 hover:text-primary shrink-0 items-center"
                       >
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
                       </button>
