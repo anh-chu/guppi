@@ -1437,6 +1437,34 @@ export function Sidebar({
       {!collapsed && (
         <div className="px-2 pt-2" ref={filterRef}>
           <div className="flex items-center gap-1.5 mb-1.5">
+            <div className="relative flex-1 min-w-0">
+              <svg
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-mute/60 pointer-events-none"
+                width="13" height="13" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden
+              >
+                <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+              </svg>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setSearchQuery('') } }}
+                placeholder="Search sessions"
+                aria-label="Search sessions"
+                className="w-full rounded-md border border-hairline bg-surface-elevated pl-8 pr-7 py-2 text-xs text-ink placeholder:text-mute/50 outline-none focus:border-primary/60 transition-colors font-sans"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  title="Clear search"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-mute/60 hover:text-ink px-1"
+                >
+                  ×
+                </button>
+              )}
+            </div>
             <button
               type="button"
               onClick={() => setFilterOpen(value => !value)}
@@ -1490,34 +1518,6 @@ export function Sidebar({
                 </svg>
               </button>
             )}
-            <div className="relative flex-1 min-w-0">
-              <svg
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-mute/60 pointer-events-none"
-                width="13" height="13" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden
-              >
-                <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
-              </svg>
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setSearchQuery('') } }}
-                placeholder="Search sessions"
-                aria-label="Search sessions"
-                className="w-full rounded-md border border-hairline bg-surface-elevated pl-8 pr-7 py-2 text-xs text-ink placeholder:text-mute/50 outline-none focus:border-primary/60 transition-colors font-sans"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery('')}
-                  title="Clear search"
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-mute/60 hover:text-ink px-1"
-                >
-                  ×
-                </button>
-              )}
-            </div>
           </div>
           {filterOpen && (
             <div className="mt-1 rounded-lg border border-hairline bg-surface p-2">
