@@ -22,6 +22,7 @@ interface TiledViewProps {
   onMovePanes?: (sourceKey: string, targetKey: string, edge: 'left'|'right'|'top'|'bottom') => void
   getBackend?: (key: string) => string | undefined
   getCwd?: (key: string) => string | undefined
+  getName?: (key: string) => string | undefined
   onOpenFile?: (path: string, cwd?: string, hostId?: string, sessionName?: string) => boolean
   composeTarget?: { key: string; nonce: number } | null
   // Phone mode: collapse a group's split layout to one pane at a time with a
@@ -49,6 +50,7 @@ export function TiledView({
   onMovePanes,
   getBackend,
   getCwd,
+  getName,
   onOpenFile,
   composeTarget,
   phoneSingle,
@@ -304,7 +306,7 @@ export function TiledView({
             keyBarEnabled={isActive}
             composeTarget={composeTarget}
             currentKey={sessionKey}
-            displayName={name}
+            displayName={getName?.(sessionKey) ?? name}
             cwd={getCwd?.(sessionKey)}
             onSplit={(dir) => onSplit(sessionKey, dir)}
             onClose={() => onClose(sessionKey)}
@@ -419,6 +421,12 @@ export function TiledView({
                   keyBarEnabled={isActive}
                   composeTarget={composeTarget}
                   currentKey={key}
+                  displayName={getName?.(key) ?? name}
+                  cwd={getCwd?.(key)}
+                  onSplit={(dir) => onSplit(key, dir)}
+                  onClose={() => onClose(key)}
+                  onKill={() => onKill?.(key)}
+                  onPopOut={() => onPopOut(key)}
                 />
               </div>
             )

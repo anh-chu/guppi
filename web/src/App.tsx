@@ -15,7 +15,7 @@ import { HelpModal } from './components/HelpModal'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
-import { Session, sessionKey, parseSessionKey, optimisticSession, sessionCwd } from './hooks/useSessions'
+import { Session, sessionKey, sessionLabel, parseSessionKey, optimisticSession, sessionCwd } from './hooks/useSessions'
 import { useWorkspace } from './hooks/useWorkspace'
 import { useHosts } from './hooks/useHosts'
 import { useToolEvents } from './hooks/useToolEvents'
@@ -1461,7 +1461,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
                 )}
                 composeTarget={composeTarget}
                 currentKey={singleView}
-                displayName={sessions.find(s => sessionKey(s) === singleView)?.display_name || parseSessionKey(singleView).name}
+                displayName={(() => { const s = sessions.find(s => sessionKey(s) === singleView); return s ? sessionLabel(s) : parseSessionKey(singleView).name })()}
                 cwd={cwdForKey(singleView)}
                 onSplit={(dir) => { splitTargetRef.current = { key: singleView, direction: dir }; openNewSessionModal() }}
                 onClose={() => navigateTo(null)}
@@ -1497,6 +1497,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
               }
               getBackend={(key) => sessions.find(s => sessionKey(s) === key)?.backend}
               getCwd={cwdForKey}
+              getName={(key) => { const s = sessions.find(s => sessionKey(s) === key); return s ? sessionLabel(s) : parseSessionKey(key).name }}
               onOpenFile={wiki.openFile}
               composeTarget={composeTarget}
               phoneSingle={isPhone}
