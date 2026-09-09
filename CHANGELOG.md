@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.7.1] - Remove Group Naming
+
+### Changes
+- **sidebar:** removed group naming entirely. The AI-name and rename affordances on tiled/group rows are gone, and a group is now identified by its member names rather than a generated label.
+- **server:** removed the group auto-namer and its `/api/group/name` endpoint and `ai-name` group op; the background naming coordinator and its peer hook are deleted, so groups are no longer auto-named.
+
 ## [4.7.0] - Sidebar and Terminal Readability Overhaul
 
 ### Features
