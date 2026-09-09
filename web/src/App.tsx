@@ -1461,6 +1461,11 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
                 )}
                 composeTarget={composeTarget}
                 currentKey={singleView}
+                displayName={sessions.find(s => sessionKey(s) === singleView)?.display_name || parseSessionKey(singleView).name}
+                cwd={cwdForKey(singleView)}
+                onSplit={(dir) => { splitTargetRef.current = { key: singleView, direction: dir }; openNewSessionModal() }}
+                onClose={() => navigateTo(null)}
+                onKill={() => killPane(singleView)}
               />
             </div>
           ) : currentView === 'session' && paneTree ? (
