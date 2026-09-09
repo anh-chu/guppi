@@ -701,6 +701,7 @@ export class TerminalPool {
     entry.terminal.options.fontFamily = fontFamily
     entry.terminal.options.fontWeight = 300
     entry.terminal.options.fontWeightBold = 500
+    entry.terminal.options.lineHeight = 1.2
     measureXtermCharSize(entry.terminal)
 
     // WebGL renderer (always attempted; silent fallback to DOM on failure/context loss)
@@ -890,6 +891,7 @@ export class TerminalPool {
       fontFamily,
       fontWeight: 300,
       fontWeightBold: 500,
+      lineHeight: 1.2,
       cursorBlink: true,
       scrollback: prefs.scrollback,
       allowProposedApi: true,
