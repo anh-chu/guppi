@@ -163,7 +163,7 @@ func TestGetGroupsHealsOverlappingMemberships(t *testing.T) {
 
 	// Call pruneGroupSessions with no peer manager - should be a no-op since
 	// we have no remote sessions and "alive" is alive locally
-	pruneGroupSessions(opts, nil, nil)
+	pruneGroupSessions(opts, nil)
 
 	// Verify no changes (alive is still alive, no overlaps)
 	liveAfter := groupStore.Live()

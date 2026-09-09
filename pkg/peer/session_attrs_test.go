@@ -7,7 +7,6 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/anh-chu/termyard/pkg/groupsync"
 )
 
 type fakeAttrSink struct {
@@ -64,22 +63,6 @@ func (h *fakeBrowserHub) BroadcastJSON(v interface{}) {
 	if m, ok := v.(map[string]interface{}); ok {
 		h.calls = append(h.calls, m)
 	}
-}
-
-type fakeGroupCoordinator struct {
-	cancelledIDs      []string
-	mutationNotified  map[string]bool // keyed by id
-}
-
-func (c *fakeGroupCoordinator) Cancel(id string) {
-	c.cancelledIDs = append(c.cancelledIDs, id)
-}
-
-func (c *fakeGroupCoordinator) ObserveTreeMutation(id string, prior, after groupsync.Group) {
-	if c.mutationNotified == nil {
-		c.mutationNotified = make(map[string]bool)
-	}
-	c.mutationNotified[id] = true
 }
 
 func makeLocalDeps(t *testing.T) SessionDeps {
@@ -213,17 +196,13 @@ func assertMessageType(t *testing.T, pc *PeerConnection, want string) {
 }
 
 // TestPeerEnforcementPropagation verifies that peer deltas triggering group
-// enforcement notify the naming coordinator and fanout loser records to peers.
+// enforcement fanout loser records to peers.
 func TestPeerEnforcementPropagation(t *testing.T) {
 	deps := makeLocalDeps(t)
 
 	// Setup enforcing group sink that returns enforced/prior groups
-	groupCoord := &fakeGroupCoordinator{
-		mutationNotified: make(map[string]bool),
-	}
 	fanoutedGroups := []string{}
 
-	deps.GroupCoordinator = groupCoord
 	deps.GroupFanoutCallback = func(id string, g Group) {
 		fanoutedGroups = append(fanoutedGroups, id)
 	}
@@ -262,11 +241,6 @@ func TestPeerEnforcementPropagation(t *testing.T) {
 
 	// Process the message
 	handleAttrsMessage("peer", msg, pc, deps, logrus.NewEntry(logrus.New()))
-
-	// Verify coordinator was notified for tombstoned loser (should call Cancel)
-	if len(groupCoord.cancelledIDs) != 1 || groupCoord.cancelledIDs[0] != "g2" {
-		t.Errorf("expected naming coordinator Cancel to be called for g2, got %v", groupCoord.cancelledIDs)
-	}
 
 	// Verify loser was fanned out to peers
 	if len(fanoutedGroups) == 0 {

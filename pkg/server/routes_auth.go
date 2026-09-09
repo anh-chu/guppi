@@ -20,7 +20,7 @@ import (
 
 // registerAPIRoutes mounts the /api tree, including public auth/version/tool
 // endpoints, the protected session/peer/scheduler group, and portforwards.
-func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *groupNamingCoordinator) {
+func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 	r.Route("/api", func(r chi.Router) {
 		// Public auth endpoints (no middleware)
 		r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasswordStore))
@@ -135,7 +135,7 @@ func registerAPIRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *gr
 				r.Use(auth.Middleware(opts.SessionMgr))
 			}
 
-			registerSessionsRoutes(r, opts, hub, coordinator)
+			registerSessionsRoutes(r, opts, hub)
 			registerSchedulerRoutes(r, opts)
 			registerPeerRoutes(r, opts)
 		})

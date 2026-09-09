@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/anh-chu/termyard/pkg/groupsync"
@@ -212,10 +213,9 @@ func sessionKey(host, name string) string {
 // pruneGroupSessions garbage-collects group membership by removing session keys
 // whose owning host is online but whose session is genuinely gone from the
 // authoritative mesh. Enforces membership exclusivity (each key owned by at most
-// one group). Changed groups are broadcast + fanned out to peers; tombstoned
-// groups trigger naming coordinator cancellation. No-op when peer mode is
-// unavailable or group store is absent.
-func pruneGroupSessions(opts *Options, hub *ws.Hub, coordinator *groupNamingCoordinator) {
+// one group). Changed groups are broadcast + fanned out to peers. No-op when
+// peer mode is unavailable or group store is absent.
+func pruneGroupSessions(opts *Options, hub *ws.Hub) {
 	if opts.GroupStore == nil || opts.PeerMgr == nil {
 		return
 	}
@@ -277,25 +277,13 @@ func pruneGroupSessions(opts *Options, hub *ws.Hub, coordinator *groupNamingCoor
 		return true // owner online, we've received sessions, and key absent
 	}
 
-	changed, prior, err := opts.GroupStore.Reconcile(gone)
+	changed, _, err := opts.GroupStore.Reconcile(gone)
 	if err != nil || len(changed) == 0 {
 		return
 	}
 
 	// Broadcast and fanout each changed group
 	for id, g := range changed {
-		if !g.DeletedAt.IsZero() {
-			// Tombstoned: cancel naming if active
-			if coordinator != nil {
-				coordinator.Cancel(id)
-			}
-		} else {
-			// Live: observe mutation for potential re-naming
-			if coordinator != nil {
-				priorState := prior[id]
-				coordinator.ObserveTreeMutation(id, priorState, g)
-			}
-		}
 		// Broadcast to browser tabs
 		if hub != nil {
 			hub.BroadcastJSON(map[string]interface{}{
@@ -307,6 +295,16 @@ func pruneGroupSessions(opts *Options, hub *ws.Hub, coordinator *groupNamingCoor
 		// Fanout to peers
 		fanoutGroupDeltaToPeers(opts, id, g)
 	}
+}
+
+// splitSessionKey separates a global session key into host and name. Bare keys
+// have an empty host.
+func splitSessionKey(key string) (host, name string) {
+	i := strings.LastIndex(key, "/")
+	if i < 0 {
+		return "", key
+	}
+	return key[:i], key[i+1:]
 }
 
 // pruneSessionAttrs garbage-collects session-attribute keys whose owning host

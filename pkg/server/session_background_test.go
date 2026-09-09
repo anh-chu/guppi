@@ -40,7 +40,7 @@ func TestSessionBackgroundingHappyPath(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	registerSessionsRoutes(router, opts, nil, nil)
+	registerSessionsRoutes(router, opts, nil)
 
 	// POST /session-attrs with background=true
 	body := map[string]interface{}{
@@ -142,7 +142,7 @@ func TestSessionBackgroundingAtomicityFault(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	registerSessionsRoutes(router, opts, nil, nil)
+	registerSessionsRoutes(router, opts, nil)
 
 	// POST /session-attrs with background=true
 	// This should fail on attrs save, triggering rollback

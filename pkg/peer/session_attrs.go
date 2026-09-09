@@ -5,7 +5,6 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/anh-chu/termyard/pkg/groupsync"
 )
 
 // sendInitialSessionAttrs pushes our full shared session-attribute map once on
@@ -172,7 +171,7 @@ func handleAttrsMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 		if p.Origin == deps.Identity.Fingerprint() || deps.GroupSink == nil {
 			return
 		}
-		changed, enforced, enforcedPrior, err := deps.GroupSink.ApplyRemoteSnapshot(p.Groups)
+		changed, enforced, _, err := deps.GroupSink.ApplyRemoteSnapshot(p.Groups)
 		if err != nil {
 			log.WithError(err).Warn("apply remote group snapshot failed")
 			return
@@ -184,44 +183,8 @@ func handleAttrsMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 				"origin": p.Origin,
 			})
 		}
-		// Notify coordinator and fanout enforced (loser) groups
+		// Fanout enforced (loser) groups to peers
 		for id, changed := range enforced {
-			// Convert to groupsync.Group for coordinator
-			changedSys := groupsync.Group{
-				Tree:              append([]byte(nil), changed.Tree...),
-				TreeUpdatedAt:     changed.TreeUpdatedAt,
-				Name:              changed.Name,
-				NameUpdatedAt:     changed.NameUpdatedAt,
-				NameMode:          groupsync.NameMode(changed.NameMode),
-				NameModeUpdatedAt: changed.NameModeUpdatedAt,
-				Rank:              changed.Rank,
-				RankUpdatedAt:     changed.RankUpdatedAt,
-				DeletedAt:         changed.DeletedAt,
-			}
-			if !changed.DeletedAt.IsZero() {
-				// Tombstoned: cancel naming if active
-				if deps.GroupCoordinator != nil {
-					deps.GroupCoordinator.Cancel(id)
-				}
-			} else {
-				// Live: observe mutation for potential re-naming
-				if deps.GroupCoordinator != nil {
-					prior := enforcedPrior[id]
-					priorSys := groupsync.Group{
-						Tree:              append([]byte(nil), prior.Tree...),
-						TreeUpdatedAt:     prior.TreeUpdatedAt,
-						Name:              prior.Name,
-						NameUpdatedAt:     prior.NameUpdatedAt,
-						NameMode:          groupsync.NameMode(prior.NameMode),
-						NameModeUpdatedAt: prior.NameModeUpdatedAt,
-						Rank:              prior.Rank,
-						RankUpdatedAt:     prior.RankUpdatedAt,
-						DeletedAt:         prior.DeletedAt,
-					}
-					deps.GroupCoordinator.ObserveTreeMutation(id, priorSys, changedSys)
-				}
-			}
-			// Fanout enforced loser record to peers
 			if deps.GroupFanoutCallback != nil {
 				deps.GroupFanoutCallback(id, changed)
 			}
@@ -237,7 +200,7 @@ func handleAttrsMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 		if p.Origin == deps.Identity.Fingerprint() || deps.GroupSink == nil {
 			return
 		}
-		accepted, enforced, enforcedPrior, err := deps.GroupSink.ApplyRemoteDelta(p.ID, p.Group)
+		accepted, enforced, _, err := deps.GroupSink.ApplyRemoteDelta(p.ID, p.Group)
 		if err != nil {
 			log.WithError(err).Warn("apply remote group delta failed")
 			return
@@ -260,44 +223,8 @@ func handleAttrsMessage(peerID string, msg *Message, pc *PeerConnection, deps Se
 				})
 			}
 		}
-		// Notify coordinator and fanout enforced (loser) groups
+		// Fanout enforced (loser) groups to peers
 		for id, changed := range enforced {
-			// Convert to groupsync.Group for coordinator
-			changedSys := groupsync.Group{
-				Tree:              append([]byte(nil), changed.Tree...),
-				TreeUpdatedAt:     changed.TreeUpdatedAt,
-				Name:              changed.Name,
-				NameUpdatedAt:     changed.NameUpdatedAt,
-				NameMode:          groupsync.NameMode(changed.NameMode),
-				NameModeUpdatedAt: changed.NameModeUpdatedAt,
-				Rank:              changed.Rank,
-				RankUpdatedAt:     changed.RankUpdatedAt,
-				DeletedAt:         changed.DeletedAt,
-			}
-			if !changed.DeletedAt.IsZero() {
-				// Tombstoned: cancel naming if active
-				if deps.GroupCoordinator != nil {
-					deps.GroupCoordinator.Cancel(id)
-				}
-			} else {
-				// Live: observe mutation for potential re-naming
-				if deps.GroupCoordinator != nil {
-					prior := enforcedPrior[id]
-					priorSys := groupsync.Group{
-						Tree:              append([]byte(nil), prior.Tree...),
-						TreeUpdatedAt:     prior.TreeUpdatedAt,
-						Name:              prior.Name,
-						NameUpdatedAt:     prior.NameUpdatedAt,
-						NameMode:          groupsync.NameMode(prior.NameMode),
-						NameModeUpdatedAt: prior.NameModeUpdatedAt,
-						Rank:              prior.Rank,
-						RankUpdatedAt:     prior.RankUpdatedAt,
-						DeletedAt:         prior.DeletedAt,
-					}
-					deps.GroupCoordinator.ObserveTreeMutation(id, priorSys, changedSys)
-				}
-			}
-			// Fanout enforced loser record to peers
 			if deps.GroupFanoutCallback != nil {
 				deps.GroupFanoutCallback(id, changed)
 			}

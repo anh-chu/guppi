@@ -34,7 +34,7 @@ import (
 
 // registerSessionsRoutes mounts the protected session/activity/stats/sync
 // endpoints under /api. Callers must apply auth middleware separately.
-func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinator *groupNamingCoordinator) {
+func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub) {
 
 	// Agent status -- check which agents are installed/configured
 	r.Get("/agent-status", func(w http.ResponseWriter, r *http.Request) {
@@ -913,9 +913,6 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 
 		// Broadcast group tree mutations (same pattern as POST /group op=tree).
 		for id, changed := range groupsChanged {
-			if coordinator != nil {
-				coordinator.ObserveTreeMutation(id, groupsPrior[id], changed)
-			}
 			if hub != nil {
 				hub.BroadcastJSON(map[string]interface{}{"type": "groups-updated", "id": id, "op": "tree"})
 			}
@@ -976,7 +973,7 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		}
 		// Opportunistically heal groups by pruning gone sessions and enforcing
 		// membership exclusivity (each key owned by at most one group).
-		pruneGroupSessions(opts, hub, coordinator)
+		pruneGroupSessions(opts, hub)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(opts.GroupStore.Live())
 	})
@@ -1007,28 +1004,11 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 				http.Error(w, "tree is required", http.StatusBadRequest)
 				return
 			}
-			before, _ := opts.GroupStore.Get(body.ID)
 			var enforcedChanged map[string]groupsync.Group
-			var enforcedPrior map[string]groupsync.Group
-			group, enforcedChanged, enforcedPrior, err = opts.GroupStore.SetTree(body.ID, body.Tree)
+			group, enforcedChanged, _, err = opts.GroupStore.SetTree(body.ID, body.Tree)
 			if err == nil {
-				if coordinator != nil {
-					coordinator.ObserveTreeMutation(body.ID, before, group)
-				}
 				// Broadcast and handle enforcement-changed groups
 				for id, changed := range enforcedChanged {
-					if !changed.DeletedAt.IsZero() {
-						// Tombstoned: cancel naming if active
-						if coordinator != nil {
-							coordinator.Cancel(id)
-						}
-					} else {
-						// Live: observe mutation for potential re-naming
-						if coordinator != nil {
-							prior := enforcedPrior[id]
-							coordinator.ObserveTreeMutation(id, prior, changed)
-						}
-					}
 					if hub != nil {
 						hub.BroadcastJSON(map[string]interface{}{
 							"type": "groups-updated",

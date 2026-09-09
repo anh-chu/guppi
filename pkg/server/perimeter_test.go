@@ -31,7 +31,7 @@ func toolEventRouter(t *testing.T, authEnabled bool) (chi.Router, *Options) {
 	}
 	hub := ws.NewHub(nil, tracker)
 	r := chi.NewRouter()
-	registerAPIRoutes(r, opts, hub, nil)
+	registerAPIRoutes(r, opts, hub)
 	return r, opts
 }
 
@@ -113,7 +113,7 @@ func TestToolEvent_UnixSocketAccepted(t *testing.T) {
 
 func TestPprof_AbsentByDefault(t *testing.T) {
 	r := chi.NewRouter()
-	registerAPIRoutes(r, &Options{}, nil, nil)
+	registerAPIRoutes(r, &Options{}, nil)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 

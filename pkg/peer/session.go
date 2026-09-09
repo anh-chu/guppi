@@ -11,7 +11,6 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/anh-chu/termyard/pkg/activity"
-	"github.com/anh-chu/termyard/pkg/groupsync"
 	"github.com/anh-chu/termyard/pkg/identity"
 	"github.com/anh-chu/termyard/pkg/pty"
 	"github.com/anh-chu/termyard/pkg/sessionlaunch"
@@ -69,13 +68,6 @@ type BrowserBroadcaster interface {
 	BroadcastJSON(v interface{})
 }
 
-// GroupEnforcementCoordinator notifies the naming system when exclusive group
-// membership enforcement causes tombstoning or tree mutations.
-type GroupEnforcementCoordinator interface {
-	Cancel(id string)
-	ObserveTreeMutation(id string, prior, after groupsync.Group)
-}
-
 // DaemonRegistry is the interface for daemon session operations.
 type DaemonRegistry interface {
 	Create(name, shell, cwd string, cols, rows uint16) (pty.SessionInfo, error)
@@ -102,8 +94,7 @@ type SessionDeps struct {
 	OrderSink            SessionOrderSink
 	GroupSink            GroupSink
 	BrowserHub           BrowserBroadcaster
-	GroupCoordinator     GroupEnforcementCoordinator
-	GroupFanoutCallback  func(id string, g Group)
+	GroupFanoutCallback func(id string, g Group)
 }
 
 // connWriter serializes WebSocket writes from multiple goroutines.

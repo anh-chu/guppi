@@ -484,23 +484,4 @@ func (m *Manager) otherDisplayNames(exclude string) []string {
 	return out
 }
 
-// GenerateGroupName synthesizes a single label for a layout group from its
-// member session labels. Groups are a frontend-only concept, so this is a
-// stateless helper: it does not persist anything. Returns ErrDisabled when the
-// namer is off and an error on any network/parse failure; callers keep the
-// existing name on error.
-func (m *Manager) GenerateGroupName(members []namer.GroupMember, current string) (string, error) {
-	m.mu.RLock()
-	n := m.namer
-	m.mu.RUnlock()
-	if n == nil || !n.Enabled() {
-		return "", namer.ErrDisabled
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-	return n.Generate(ctx, namer.Context{
-		Kind:    namer.KindGroup,
-		Members: members,
-		Current: current,
-	})
-}
+
