@@ -1630,7 +1630,7 @@ export function Sidebar({
                     type="button"
                     title="New session here"
                     onClick={() => onQuickShell('')}
-                    className="opacity-0 group-hover/hdr:opacity-100 transition-opacity text-mute/50 hover:text-primary shrink-0 flex items-center"
+                    className="hidden group-hover/hdr:flex text-mute/50 hover:text-primary shrink-0 items-center"
                   >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
                   </button>
@@ -1697,7 +1697,7 @@ export function Sidebar({
                         type="button"
                         title="New session here"
                         onClick={(e) => { e.stopPropagation(); onQuickShell(section.path) }}
-                        className="opacity-0 group-hover/hdr:opacity-100 transition-opacity text-mute/50 hover:text-primary shrink-0 flex items-center"
+                        className="hidden group-hover/hdr:flex text-mute/50 hover:text-primary shrink-0 items-center"
                       >
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
                       </button>
