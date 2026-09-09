@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.7.0] - Sidebar and Terminal Readability Overhaul
+
+### Features
+- **sidebar:** sessions now group by working directory (host + path) by default, with status grouping available as a toggle. Each cwd is its own section, split per host so the same path on two machines stays separate; remote sections carry a host chip.
+- **sidebar:** single-line, name-first rows. The session name is the visual hero; a leading dot appears only when a session needs attention (pulsing) or just finished (green), and working sessions signal with a subtle shimmer on the name instead of another dot.
+- **sidebar:** drag section headers to reorder whole workspaces (persisted), in addition to reordering rows within a section. Faint hairline dividers separate workspaces for easier skimming, and a persistent search field replaces the modal quick switcher.
+- **terminal:** one shared header bar for every pane (single and tiled), folding the old floating toolbar and the separate tiled-pane header into a single row with a `cwd / name` breadcrumb and all controls (compose, artifacts, split, pop-out, fullscreen, close, kill). On touch devices it collapses to an overlay pill.
+
+### Changes
+- **terminal:** lighter, more legible default text: JetBrains Mono at weight 300 with 1.2 line height (was Space Mono at the default weight). Existing saved font preferences are untouched.
+- **theme:** punchier accent color and a restrained visual language across the sidebar (backgrounds and borders reserved for interaction state; structure carried by whitespace and weight).
+- **typography:** app chrome (titles, headings, session names) now uses the sans face; the monospace display font is reserved for the Termyard wordmark.
+- **sidebar:** the separate host-grouped view was removed; host context now lives on the row/section instead.
+
 ## [4.6.1] - Process Cleanup Fixes
 
 ### Fixes
