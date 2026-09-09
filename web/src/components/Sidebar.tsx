@@ -69,7 +69,7 @@ interface SidebarProps {
   filterProtectionActive?: boolean
   // Direct PTY session keys currently in the pane tree
 
-  onQuickShell?: () => void
+  onQuickShell?: (cwd?: string) => void
 }
 
 interface RenameState {
@@ -1436,41 +1436,26 @@ export function Sidebar({
       )}
       {!collapsed && (
         <div className="px-2 pt-2" ref={filterRef}>
-          <div className="relative mb-1.5">
-            <svg
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-mute/60 pointer-events-none"
-              width="13" height="13" viewBox="0 0 24 24" fill="none"
-              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden
-            >
-              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
-            </svg>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setSearchQuery('') } }}
-              placeholder="Search sessions"
-              aria-label="Search sessions"
-              className="w-full rounded-md border border-hairline bg-surface-elevated pl-8 pr-7 py-2 text-xs text-ink placeholder:text-mute/50 outline-none focus:border-primary/60 transition-colors font-sans"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                title="Clear search"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-mute/60 hover:text-ink px-1"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 mb-1.5">
             <button
               type="button"
               onClick={() => setFilterOpen(value => !value)}
-              className="flex-1 min-w-0 rounded-md border border-hairline bg-surface-elevated px-3 py-2 text-left text-xs text-mute hover:text-ink font-medium transition-colors truncate"
+              title={filterLabel}
+              aria-label={filterLabel}
+              aria-pressed={projectFilters.length > 0}
+              className={cn(
+                'relative shrink-0 rounded-md border px-2 py-2 transition-colors',
+                projectFilters.length > 0
+                  ? 'border-primary/50 bg-primary/15 text-primary'
+                  : 'border-hairline bg-surface-elevated text-mute hover:text-ink',
+              )}
             >
-              {filterLabel}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+              </svg>
+              {projectFilters.length > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-0.5 rounded-full text-[9px] font-bold leading-[14px] text-center" style={{ background: 'var(--primary)', color: 'var(--on-primary)' }}>{projectFilters.length}</span>
+              )}
             </button>
             <button
               type="button"
@@ -1493,19 +1478,6 @@ export function Sidebar({
                 <circle cx="3.5" cy="18" r="1.5" fill="currentColor" stroke="none" />
               </svg>
             </button>
-            {onQuickShell && (
-              <button
-                type="button"
-                onClick={onQuickShell}
-                title="Quick Shell"
-                className="shrink-0 rounded-md border border-hairline bg-surface-elevated px-2 py-2 text-mute hover:text-ink transition-colors"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="4 17 10 11 4 5" />
-                  <line x1="12" y1="19" x2="20" y2="19" />
-                </svg>
-              </button>
-            )}
             {onToggleCollapse && (
               <button
                 type="button"
@@ -1518,6 +1490,34 @@ export function Sidebar({
                 </svg>
               </button>
             )}
+            <div className="relative flex-1 min-w-0">
+              <svg
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-mute/60 pointer-events-none"
+                width="13" height="13" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden
+              >
+                <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+              </svg>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setSearchQuery('') } }}
+                placeholder="Search sessions"
+                aria-label="Search sessions"
+                className="w-full rounded-md border border-hairline bg-surface-elevated pl-8 pr-7 py-2 text-xs text-ink placeholder:text-mute/50 outline-none focus:border-primary/60 transition-colors font-sans"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  title="Clear search"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-mute/60 hover:text-ink px-1"
+                >
+                  ×
+                </button>
+              )}
+            </div>
           </div>
           {filterOpen && (
             <div className="mt-1 rounded-lg border border-hairline bg-surface p-2">
@@ -1620,6 +1620,23 @@ export function Sidebar({
               }
               return renderGroupItem(item.group, item.sessions, false)
             })
+          ) : projectGroups.length === 0 ? (
+            <li className="flex flex-col">
+              <div className="group/hdr w-full flex items-center gap-2 px-1.5 pt-3 pb-1">
+                <span className="text-[10px] font-mono text-mute/50 shrink-0 w-3" />
+                <span className="text-[11px] font-medium truncate flex-1 text-left text-mute/70">home</span>
+                {onQuickShell && (
+                  <button
+                    type="button"
+                    title="New session here"
+                    onClick={() => onQuickShell('')}
+                    className="opacity-0 group-hover/hdr:opacity-100 transition-opacity text-mute/50 hover:text-primary shrink-0 flex items-center"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                  </button>
+                )}
+              </div>
+            </li>
           ) : (
             projectGroups.map((section, sectionIndex) => {
               const open = !collapsedProjects.has(section.key)
@@ -1631,10 +1648,12 @@ export function Sidebar({
                   {sectionDrop?.key === section.key && sectionDrop.position === 'above' && (
                     <div className="h-1 mb-0.5 bg-accent-green rounded-full pointer-events-none shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
                   )}
-                  <button
-                    type="button"
+                  <div
+                    role="button"
+                    tabIndex={0}
                     draggable={!collapsed}
                     onClick={() => toggleProjectCollapsed(section.key)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleProjectCollapsed(section.key) } }}
                     onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData('text/plain', section.key); setDraggingSectionKey(section.key) }}
                     onDragEnd={() => { setDraggingSectionKey(null); setSectionDrop(null) }}
                     onDragOver={(e) => {
@@ -1673,7 +1692,17 @@ export function Sidebar({
                     )}
                     {attention && <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse" style={{ background: 'var(--warning)' }} />}
                     <span className="text-[10px] font-mono text-mute/40 shrink-0">{section.count}</span>
-                  </button>
+                    {onQuickShell && (
+                      <button
+                        type="button"
+                        title="New session here"
+                        onClick={(e) => { e.stopPropagation(); onQuickShell(section.path) }}
+                        className="opacity-0 group-hover/hdr:opacity-100 transition-opacity text-mute/50 hover:text-primary shrink-0 flex items-center"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                      </button>
+                    )}
+                  </div>
                   {sectionDrop?.key === section.key && sectionDrop.position === 'below' && (
                     <div className="h-1 mt-0.5 bg-accent-green rounded-full pointer-events-none shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
                   )}

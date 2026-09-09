@@ -1086,7 +1086,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     return null
   }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions, setGroupTree, setGroupRank, clearGroupPending])
 
-  const handleQuickShell = useCallback(() => {
+  const handleQuickShell = useCallback((path: string = '') => {
     const name = `shell-${Date.now()}`
     const sk = localHostId ? `${localHostId}/${name}` : name
     // Optimistic: fire the backend create first (non-awaited) so the daemon
@@ -1096,7 +1096,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
     fetch('/api/session/new', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, path: '', command: '', backend: 'daemon' }),
+      body: JSON.stringify({ name, path, command: '', backend: 'daemon' }),
     }).then(res => {
       if (!res.ok) {
         workspaceActions.removeOptimistic(name, localHostId)
@@ -1110,7 +1110,7 @@ function AppInner({ onLogout, authenticated }: { onLogout?: () => void; authenti
       if (pendingSessionRef.current === sk) pendingSessionRef.current = null
     })
     pendingSessionRef.current = sk
-    workspaceActions.addOptimistic(optimisticSession(name, localHostId, localHostName))
+    workspaceActions.addOptimistic(optimisticSession(name, localHostId, localHostName, path))
     selectSession(sk)
     setTimeout(() => refocusTerminal(), 0)
   }, [selectSession, refocusTerminal, localHostId, localHostName, workspaceActions])
