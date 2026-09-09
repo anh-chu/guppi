@@ -123,7 +123,6 @@ func TestRouteTableSnapshot(t *testing.T) {
 		"POST /api/auth/login",
 		"POST /api/auth/logout",
 		"POST /api/auth/setup",
-		"POST /api/group/name",
 		"POST /api/groups",
 		"POST /api/peers",
 		"POST /api/peers/{fp}/reconnect",

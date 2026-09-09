@@ -26,11 +26,10 @@ func BuildRouter(ctx context.Context, opts *Options) (chi.Router, *ws.Hub, error
 	opts.Launch.Hub = opts.Hub
 	wireSessionAttrsSync(opts, hub)
 
-	coordinator := newGroupNamingCoordinator(ctx, opts, hub)
-
-	// Wire coordinator and group fanout to peer supervisor
+	// Group naming has been removed. The naming coordinator is no longer
+	// instantiated, so every (nil-guarded) naming hook on the server and peer
+	// paths becomes a no-op. Group fanout to peers is unrelated and stays.
 	if opts.LinkSupervisor != nil {
-		opts.LinkSupervisor.SetGroupCoordinator(coordinator)
 		opts.LinkSupervisor.SetGroupFanoutCallback(MakeGroupFanoutCallback(opts))
 	}
 
@@ -66,7 +65,7 @@ func BuildRouter(ctx context.Context, opts *Options) (chi.Router, *ws.Hub, error
 	go hub.Run(ctx)
 	go runUpdateChecker(opts)
 
-	registerAPIRoutes(r, opts, hub, coordinator)
+	registerAPIRoutes(r, opts, hub, nil)
 	registerWSRoutes(r, opts, hub)
 	registerPeerWSRoutes(r, opts)
 	registerProxyFileRoutes(r, opts)

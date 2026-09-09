@@ -332,52 +332,6 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 		json.NewEncoder(w).Encode(map[string]string{"name": name})
 	})
 
-	// AI-name a layout group from its member session labels. Groups are
-	// a frontend-only concept, so this is stateless: it returns a name,
-	// the client persists it.
-	r.Post("/group/name", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			ID      string              `json:"id,omitempty"`
-			Members []namer.GroupMember `json:"members"`
-			Current string              `json:"current,omitempty"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		// Explicit force path: name a persisted group from its tree and persist
-		// the result server-side. Preferred by new clients.
-		if req.ID != "" && coordinator != nil {
-			group, err := coordinator.Force(r.Context(), req.ID)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"name": group.Name, "group": group})
-			return
-		}
-
-		// Legacy stateless path: clients send members and persist the name
-		// themselves. Kept for one release for older callers.
-		if len(req.Members) == 0 {
-			http.Error(w, "members is required", http.StatusBadRequest)
-			return
-		}
-		if opts.StateMgr == nil {
-			http.Error(w, "state manager unavailable", http.StatusInternalServerError)
-			return
-		}
-		name, err := opts.StateMgr.GenerateGroupName(req.Members, req.Current)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"name": name})
-	})
-
 	r.Post("/session/rename", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			OldName string `json:"old_name"`
@@ -1097,32 +1051,6 @@ func registerSessionsRoutes(r chi.Router, opts *Options, hub *ws.Hub, coordinato
 				}
 			}
 			group, err = opts.GroupStore.SetName(body.ID, body.Name, mode)
-		case "ai-name":
-			if coordinator == nil {
-				http.Error(w, "group naming unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			group, err = coordinator.Force(r.Context(), body.ID)
-			if err != nil {
-				code := http.StatusInternalServerError
-				msg := err.Error()
-				switch {
-				case strings.Contains(msg, "not found"):
-					code = http.StatusNotFound
-				case strings.Contains(msg, "needs at least 2 members"),
-					strings.Contains(msg, "is deleted"),
-					strings.Contains(msg, "malformed tree"),
-					strings.Contains(msg, "membership changed during naming"),
-					strings.Contains(msg, "disappeared during naming"):
-					code = http.StatusUnprocessableEntity
-				case strings.Contains(msg, "state manager unavailable"),
-					strings.Contains(msg, "generation failed"),
-					strings.Contains(msg, "persist group name"):
-					code = http.StatusServiceUnavailable
-				}
-				http.Error(w, msg, code)
-				return
-			}
 		case "rank":
 			group, err = opts.GroupStore.SetRank(body.ID, body.Rank)
 		case "delete":
