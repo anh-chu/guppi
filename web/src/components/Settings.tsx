@@ -163,7 +163,7 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
     <div className={cn('flex-1 overflow-y-auto font-sans text-[13px] font-medium bg-canvas scroll-smooth', bucket ? 'px-5 pb-5 pt-5 sm:pt-12' : 'p-10')}>
       <div className={cn(bucket ? 'max-w-full' : 'max-w-2xl mx-auto')}>
         <div className="flex items-center justify-between mb-8">
-          <h2 className="font-display text-xl font-bold text-ink">Settings</h2>
+          <h2 className="font-sans text-xl font-bold text-ink">Settings</h2>
           {saving && <span className="text-xs font-bold text-primary animate-pulse">SAVING...</span>}
         </div>
 

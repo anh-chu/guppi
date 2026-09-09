@@ -67,7 +67,7 @@ function GlancePopover({ anchor, target, hasMultipleHosts }: { anchor: HTMLEleme
       className="fixed z-50 w-[440px] max-h-[320px] flex flex-col rounded-sm border border-hairline bg-surface-elevated shadow-[0_8px_24px_rgba(0,0,0,0.45)] overflow-hidden pointer-events-none"
     >
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-hairline bg-surface-elevated/40 shrink-0">
-        <span className="font-display text-[12px] font-bold text-ink truncate">{target.display_name || target.name}</span>
+        <span className="font-sans text-[12px] font-bold text-ink truncate">{target.display_name || target.name}</span>
         {hasMultipleHosts && <span className="text-[10px] text-mute/60 shrink-0">{target.host_name || 'Local'}</span>}
       </div>
       <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto">

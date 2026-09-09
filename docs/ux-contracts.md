@@ -406,6 +406,12 @@ Terminal theme drives 21 ANSI colors + cursor + selection background.
 
 **Verification pointer:** `web/src/lib/terminalPool.ts` (WebGL load/fallback logic), `web/src/components/Settings.tsx` (font family control), `pkg/preferences/preferences.go` (renderer field comment)
 
+### 9.12a App-chrome typography
+
+**Contract:** App UI uses **sans** (`Inter`, `--font-sans`) for all chrome: titles, panel/section headings, session names, labels, and body text. **Monospace** (`--font-mono` / `font-mono`) is reserved for terminal output and for path/id/port/tabular-numeric "data" affordances (uptime, counts, breadcrumbs, ports, fingerprints) where glyph alignment matters. The Space Mono display face (`--font-display` / `.font-display`) is used **only for the Termyard brand wordmark** (`TopBar.tsx`), not for headings. Headings that previously used `font-display` were converted to `font-sans`.
+
+**Why it matters:** A monospace display font on titles/names reads as "code" and fights scannability; reserving mono for actual data keeps the chrome calm and the one brand mark distinct. Re-applying `font-display` to a heading is a regression.
+
 ### 9.13 DEC 2026 synchronized updates
 
 **Contract:** PTY output between BSU marker `\x1b[?2026h` and ESU marker `\x1b[?2026l` buffered and written as single atomic write. Markers stripped from output. Straddling marker prefix carried over. Lookalike-prefix bytes pass through. ESU without BSU → no-op.

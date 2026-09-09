@@ -111,7 +111,7 @@ function HostStatsSection({ host, totalPanes }: { host: Host; totalPanes: number
   const processes = hostStats.processes || []
   return (
     <div className="mb-8">
-      <h3 className="font-display text-[13px] font-bold text-ink mb-4 flex items-center gap-2">
+      <h3 className="font-sans text-[13px] font-bold text-ink mb-4 flex items-center gap-2">
         <span className={`w-1.5 h-1.5 rounded-full ${host.online ? 'bg-success' : 'bg-stone'}`} />
         {host.name}
       </h3>
@@ -189,7 +189,7 @@ function SessionCard({
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-2">
-            <span className={`font-display text-[13px] font-bold truncate ${signal.state === 'idle' ? 'text-mute' : 'text-ink'}`}>{session.display_name || session.name}</span>
+            <span className={`font-sans text-[13px] font-bold truncate ${signal.state === 'idle' ? 'text-mute' : 'text-ink'}`}>{session.display_name || session.name}</span>
             {scheduleRunCount && scheduleRunCount > 1 && <span className="text-[10px] font-bold text-mute/50 shrink-0" title={`${scheduleRunCount} runs`}>×{scheduleRunCount}</span>}
           </div>
           <div className="text-[10px] text-mute/60">
@@ -429,7 +429,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
     )
     return (
       <div key={railKey} className="min-w-[260px] flex flex-col gap-2" style={{ flexGrow: railItems.length, flexBasis: 0 }}>
-        <h3 className="font-display text-[13px] font-bold text-mute mb-1 flex items-center gap-2">
+        <h3 className="font-sans text-[13px] font-bold text-mute mb-1 flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-mute/40" />
           {label}
           <span className="text-mute/40 font-bold text-xs">({railItems.length})</span>
@@ -462,7 +462,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
       <div className="flex gap-3 mb-10 items-start overflow-x-auto tex-yardgrid rounded-sm p-3">
         {byState.filter(({ items: colItems }) => colItems.length > 0).map(({ state, items: colItems }) => (
           <div key={state} className={`flex flex-col gap-2 ${colItems.length === 0 ? 'min-w-[160px]' : split ? 'min-w-[220px]' : 'min-w-[260px]'}`} style={{ flexGrow: Math.max(colItems.length, 0.5), flexBasis: 0 }}>
-            <h3 className="font-display text-[13px] font-bold text-ink mb-1 flex items-center gap-2">
+            <h3 className="font-sans text-[13px] font-bold text-ink mb-1 flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full" style={{ background: COLUMN_META[state].color }} />
               {COLUMN_META[state].label}
               <span className="text-mute/40 font-bold text-xs">({colItems.length})</span>
@@ -480,7 +480,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
       </div>
 
       <details open className="mt-4 rounded-md border border-hairline bg-surface tex-yardgrid overflow-hidden">
-        <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between font-display text-[13px] text-ink">
+        <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between font-sans text-[13px] text-ink">
           <span>Yard health</span>
           <span className="text-mute/60 text-xs">System stats</span>
         </summary>
@@ -492,8 +492,8 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
             })
           ) : (
             <div className="grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-4">
-              {stats?.processes && stats.processes.length > 0 && <div><h3 className="font-display text-[13px] font-bold text-ink mb-4 ml-1">Processes</h3><div className="bg-surface border border-hairline rounded-lg p-5"><ProcessBar processes={stats.processes} totalPanes={stats.panes} /></div></div>}
-              {stats?.system && <div><h3 className="font-display text-[13px] font-bold text-ink mb-4 ml-1">System</h3><SystemStatsCard system={stats.system} /></div>}
+              {stats?.processes && stats.processes.length > 0 && <div><h3 className="font-sans text-[13px] font-bold text-ink mb-4 ml-1">Processes</h3><div className="bg-surface border border-hairline rounded-lg p-5"><ProcessBar processes={stats.processes} totalPanes={stats.panes} /></div></div>}
+              {stats?.system && <div><h3 className="font-sans text-[13px] font-bold text-ink mb-4 ml-1">System</h3><SystemStatsCard system={stats.system} /></div>}
             </div>
           )}
         </div>
@@ -518,7 +518,7 @@ export function Overview({ sessions, hosts, hiddenSet, backgroundSet, scheduleID
       <div onPointerDown={startResize} title="Drag to resize" className="shrink-0 w-1.5 cursor-col-resize bg-hairline/40 hover:bg-primary/50 transition-colors" />
       <div className="shrink-0 border-l border-hairline flex flex-col" style={{ width: splitWidth }}>
         <div className="shrink-0 h-9 flex items-center gap-2 px-3 border-b border-hairline bg-surface-elevated/40">
-          <span className="font-display text-[13px] font-bold text-ink truncate min-w-0 flex-1">{selected.display_name || selected.name}</span>
+          <span className="font-sans text-[13px] font-bold text-ink truncate min-w-0 flex-1">{selected.display_name || selected.name}</span>
           <button title="Open full view" onClick={() => onSessionSelect(selected)} className="p-1.5 rounded-sm bg-surface border border-hairline text-mute hover:text-primary transition-all">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />

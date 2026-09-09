@@ -3,7 +3,7 @@ import { cn } from '../../lib/utils'
 function Section({ id, title, description, children, hidden }: { id: string; title: string; description?: string; children: React.ReactNode; hidden?: boolean }) {
   return (
     <section id={id} className={cn('rounded-lg border border-hairline bg-surface p-6 scroll-mt-6', hidden && 'hidden')}>
-      <h3 className="font-display text-[13px] font-bold text-ink mb-1">{title}</h3>
+      <h3 className="font-sans text-[13px] font-bold text-ink mb-1">{title}</h3>
       {description && <p className="text-xs font-medium text-mute/60 mb-5">{description}</p>}
       {!description && <div className="mb-5" />}
       <div className="flex flex-col gap-4">
