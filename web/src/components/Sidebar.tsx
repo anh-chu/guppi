@@ -1621,13 +1621,13 @@ export function Sidebar({
               return renderGroupItem(item.group, item.sessions, false)
             })
           ) : (
-            projectGroups.map(section => {
+            projectGroups.map((section, sectionIndex) => {
               const open = !collapsedProjects.has(section.key)
               const sectionSessions = section.items.flatMap(it => it.kind === 'session' ? [it.session] : it.sessions)
               const attention = sectionSessions.some(s => projectionOf(s).needsAttention)
               const working = !attention && sectionSessions.some(s => statusOf(s) === 'working')
               return (
-                <li key={`proj:${section.key}`} className={cn('flex flex-col', !section.online && 'opacity-75')}>
+                <li key={`proj:${section.key}`} className={cn('flex flex-col', sectionIndex > 0 && 'mt-2 border-t border-hairline', !section.online && 'opacity-75')}>
                   {sectionDrop?.key === section.key && sectionDrop.position === 'above' && (
                     <div className="h-1 mb-0.5 bg-accent-green rounded-full pointer-events-none shadow-[0_0_8px_rgba(89,212,153,0.4)]" />
                   )}
